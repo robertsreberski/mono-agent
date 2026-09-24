@@ -12,6 +12,7 @@ import {
 } from "./bundle-format.js";
 import {
   mergeCanonicalMemoryBundles,
+  MemoryBundleMergeError,
   type MemoryBundleEntityConflictPolicy,
   type MemoryBundleIdConflictPolicy,
   type MemoryBundleMergeCounts,
@@ -220,6 +221,9 @@ export function prepareMemoryBundleImport(
     };
   } catch (error) {
     if (error instanceof MemoryBundleImportError) throw error;
+    if (error instanceof MemoryBundleMergeError && error.code === "facts_not_supported") {
+      throw new MemoryBundleImportError("import_facts_not_supported", undefined, error);
+    }
     throw new MemoryBundleImportError("import_prepare_failed", undefined, error);
   }
 }
@@ -366,6 +370,9 @@ export async function applyMemoryBundleImport(
     db = undefined;
     if (!transactionDurable || backup === undefined) {
       if (error instanceof MemoryBundleImportError) throw error;
+      if (error instanceof MemoryBundleMergeError && error.code === "facts_not_supported") {
+        throw new MemoryBundleImportError("import_facts_not_supported", backup?.path, error);
+      }
       throw new MemoryBundleImportError("import_apply_failed", backup?.path, error);
     }
     try {

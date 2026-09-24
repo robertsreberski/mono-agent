@@ -7,7 +7,7 @@ import type {
   ReplayProjectionDbReplacement,
   ReplayProjectionDbSnapshot,
 } from "../store/db.js";
-import { FACT_LEDGER_FILE, readFactLedgerStrict } from "./fact-ledger.js";
+import { FACT_LEDGER_FILE, FACT_MARKER_FILE, MAX_FACT_LEDGER_BYTES } from "./fact-ledger.js";
 import {
   CANONICAL_FILE_MISSING,
   canonicalMemoryRootPath,
@@ -560,7 +560,15 @@ function readBujoSourceFingerprint(root: string, includeReplay: boolean): string
   }));
   const graphPresent = readCanonicalFileSnapshot(root, "graph.jsonl", { allowMissing: true }) !== undefined;
   // Optional like graph.jsonl: no new hash domain for legacy trees/bundles.
-  const factsPresent = readFactLedgerStrict(root).present;
+  // Fingerprint CAS calls hash the bytes below; they must not parse every fact
+  // line. Full marker/hash/line validation belongs to open and rebuild.
+  const factsPresent = readCanonicalFileSnapshot(root, FACT_LEDGER_FILE,
+    { allowMissing: true, maxBytes: MAX_FACT_LEDGER_BYTES, strictUtf8: true }) !== undefined;
+  const markerPresent = readCanonicalFileSnapshot(root, FACT_MARKER_FILE,
+    { allowMissing: true, maxBytes: 512 }) !== undefined;
+  if (factsPresent !== markerPresent) {
+    throw new Error("memory-facts: fact ledger and marker are not both present; stop the store and restore a verified backup.");
+  }
   const replayPresent = includeReplay && readReplayProjectionStrict(root).state.kind === "present";
   const paths = [
     ...listCanonicalRootFileNames(root, {

@@ -141,8 +141,10 @@ describe("canonical memory bundle merge", () => {
       attribution: "unknown" as const, sourceMemoryId: "B-1", sourceTextSha256: "0".repeat(64),
       recordedAt: "2026-09-24T00:00:00.000Z" };
     const factBytes = Buffer.from(`${JSON.stringify({ ...claim, factId: deriveFactId(claim) })}\n`);
-    expect(() => mergeCanonicalMemoryBundles(empty, { ...empty, factsBytes: factBytes })).toThrow(/fact/);
-    expect(() => mergeCanonicalMemoryBundles({ ...empty, factsBytes: factBytes }, empty)).toThrow(/fact/);
+    expect(() => mergeCanonicalMemoryBundles(empty, { ...empty, factsBytes: factBytes }))
+      .toThrowError(expect.objectContaining({ code: "facts_not_supported" }));
+    expect(() => mergeCanonicalMemoryBundles({ ...empty, factsBytes: factBytes }, empty))
+      .toThrowError(expect.objectContaining({ code: "facts_not_supported" }));
   });
 
   it("unions disjoint corpora and preserves bullets verbatim, refs included", () => {

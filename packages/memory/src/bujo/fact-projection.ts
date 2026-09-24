@@ -43,10 +43,20 @@ export function projectFactLedger(
       supersedes.set(line.oldFactId, { oldFactId: line.oldFactId, newFactId: line.newFactId, at: line.at });
     }
   }
+  // SQLite's default BINARY collation orders UTF-8 bytes, not locale-sensitive
+  // display strings. Parity compares these ordered rows byte-for-byte.
+  const binary = (left: string, right: string): number => Buffer.compare(Buffer.from(left), Buffer.from(right));
+  const ordered = (...pairs: readonly (readonly [string, string])[]): number => {
+    for (const [left, right] of pairs) {
+      const result = binary(left, right);
+      if (result !== 0) return result;
+    }
+    return 0;
+  };
   return {
-    claims: [...claims.values()].sort((a, b) => a.factId.localeCompare(b.factId)),
-    sources: [...sources.values()].sort((a, b) => `${a.factId}\0${a.memoryId}\0${a.sourceTextSha256}`
-      .localeCompare(`${b.factId}\0${b.memoryId}\0${b.sourceTextSha256}`)),
-    supersedes: [...supersedes.values()].sort((a, b) => a.oldFactId.localeCompare(b.oldFactId)),
+    claims: [...claims.values()].sort((a, b) => binary(a.factId, b.factId)),
+    sources: [...sources.values()].sort((a, b) => ordered(
+      [a.factId, b.factId], [a.memoryId, b.memoryId], [a.sourceTextSha256, b.sourceTextSha256])),
+    supersedes: [...supersedes.values()].sort((a, b) => binary(a.oldFactId, b.oldFactId)),
   };
 }

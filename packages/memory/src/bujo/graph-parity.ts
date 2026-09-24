@@ -1,3 +1,4 @@
+import type { DbFactProjection } from "../store/db-facts.js";
 import type {
   CanonicalGraphSnapshot,
   EntityRecord,
@@ -69,6 +70,8 @@ export interface CanonicalGraphParityResult {
   readonly relations: CanonicalGraphParitySection;
   readonly associations: CanonicalGraphParitySection;
   readonly supports: CanonicalGraphParitySection;
+  /** Claim, source-membership, and correction rows; content-free counters. */
+  readonly facts: CanonicalGraphParitySection;
 }
 
 /**
@@ -154,13 +157,13 @@ export function auditCanonicalGraphParity(
     const relations = compareRelations(expected.relations, active.relations);
     const associations = compareAssociations(expected.associations, active.associations);
     const supports = compareSupports(expected.collectionSupports, active);
-    let factsMatch: boolean;
+    let facts: CanonicalGraphParitySection;
     try {
-      factsMatch = tier !== "bujo" || JSON.stringify(canonicalAfter.facts) === JSON.stringify(db.factProjection());
+      facts = compareFacts(canonicalAfter.facts ?? { claims: [], sources: [], supersedes: [] }, db.factProjection());
     } catch {
       return invalidResult(tier, { code: "active-index-invalid" });
     }
-    const matches = factsMatch && sectionMatches(entities)
+    const matches = sectionMatches(facts) && sectionMatches(entities)
       && sectionMatches(relations)
       && sectionMatches(associations)
       && sectionMatches(supports);
@@ -175,6 +178,7 @@ export function auditCanonicalGraphParity(
       relations,
       associations,
       supports,
+      facts,
     };
   }
 
@@ -239,6 +243,7 @@ function invalidResult(tier: BujoTier, issue: CanonicalGraphParityIssue): Canoni
     relations: emptySection(),
     associations: emptySection(),
     supports: emptySection(),
+    facts: emptySection(),
   };
 }
 
@@ -253,6 +258,7 @@ function inProgressResult(tier: BujoTier, mutation: CanonicalGraphMutationState)
     relations: emptySection(),
     associations: emptySection(),
     supports: emptySection(),
+    facts: emptySection(),
   };
 }
 
@@ -370,6 +376,28 @@ function compareSupports(
       provenance: false,
     }),
   );
+}
+
+function compareFacts(canonical: DbFactProjection, active: DbFactProjection): CanonicalGraphParitySection {
+  const rows = (projection: DbFactProjection) => [
+    ...projection.claims.map((claim) => ({
+      key: JSON.stringify(["claim", claim.factId]), payload: JSON.stringify(claim),
+      timestamp: claim.recordedAt, provenance: "",
+    })),
+    ...projection.sources.map((source) => ({
+      key: JSON.stringify(["source", source.factId, source.memoryId, source.sourceTextSha256]),
+      payload: JSON.stringify(source), timestamp: source.recordedAt, provenance: source.attribution,
+    })),
+    ...projection.supersedes.map((edge) => ({
+      key: JSON.stringify(["supersede", edge.oldFactId]), payload: JSON.stringify(edge),
+      timestamp: edge.at, provenance: "",
+    })),
+  ];
+  return compareByKey(rows(canonical), rows(active), (row) => row.key, (left, right) => ({
+    payload: left.payload !== right.payload,
+    timestamp: left.timestamp !== right.timestamp,
+    provenance: left.provenance !== right.provenance,
+  }));
 }
 
 interface RecordMismatch {

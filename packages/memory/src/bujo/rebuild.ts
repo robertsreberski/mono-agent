@@ -1067,6 +1067,9 @@ export async function rollbackMemoryIndex(options: SafeMemoryIndexOptions): Prom
     if (manifest?.rollback === undefined) throw new Error("memory-rebuild: no retained rollback generation is available.");
     assertNoActiveSqliteWriter(managedGenerationDbPath(root, manifest.active.name, true));
     const target = manifest.rollback;
+    if (target.tier !== "bujo" && readFactLedgerStrict(root).lines.length > 0) {
+      throw new Error("memory-rebuild: non-empty facts ledger requires the BuJo tier; non-BuJo rollback refused. Restore a stopped-store backup instead.");
+    }
     assertConfiguredIdentity(target, options);
     const snapshot = snapshotCanonicalSources(root, target.tier);
     if (snapshot.fingerprint !== target.sourceFingerprint) {

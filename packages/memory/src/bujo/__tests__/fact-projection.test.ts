@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import BetterSqlite3 from "better-sqlite3";
 
 import { openMemoryDb } from "../../store/index.js";
 import { rewriteBullet } from "../daily.js";
@@ -11,7 +12,7 @@ import { auditCanonicalGraphParity } from "../graph-parity.js";
 import { createBujoMemoryStore } from "../store.js";
 import { appendFactLines, deriveFactId, FACT_LEDGER_FILE, FACT_MARKER_FILE, readFactLedgerStrict, type FactClaim, type FactSource, type FactSupersede } from "../fact-ledger.js";
 import { readManagedIndexManifest, resolveActiveMemoryDbPath } from "../generations.js";
-import { safeRebuildMemoryIndex } from "../rebuild.js";
+import { rollbackMemoryIndex, safeRebuildMemoryIndex } from "../rebuild.js";
 import { readBujoCanonicalSourceFingerprint } from "../replay-projection.js";
 import { cleanupBujoFixtures, createBujoFixture } from "./bundle-fixtures.js";
 
@@ -31,6 +32,107 @@ function claim(id: string, text: string, date: string, runId: string): FactClaim
 afterEach(cleanupBujoFixtures);
 
 describe("offline typed fact projection", () => {
+  it("opens pre-facts managed BuJo generations read-only and writable without changing their fingerprint", async () => {
+    const fixture = await createBujoFixture({ prefix: "fact-pre-upgrade", bullets: [{ id: "B-1", text: FIRST }] });
+    const fingerprint = readBujoCanonicalSourceFingerprint(fixture.root);
+    const raw = new BetterSqlite3(resolveActiveMemoryDbPath(fixture.root));
+    try { raw.exec("DROP TABLE entity_fact_supersedes; DROP TABLE entity_fact_sources; DROP TABLE entity_facts"); }
+    finally { raw.close(); }
+    const readOnly = createBujoMemoryStore({ root: fixture.root, tier: "bujo", readOnly: true,
+      embeddings: fixture.embeddings, dim: fixture.dim });
+    await readOnly.close();
+    expect(readBujoCanonicalSourceFingerprint(fixture.root)).toBe(fingerprint);
+    const writable = createBujoMemoryStore({ root: fixture.root, tier: "bujo",
+      embeddings: fixture.embeddings, dim: fixture.dim,
+      llm: { id: "must-not-call", complete: async () => { throw new Error("no model"); } } });
+    await writable.close();
+    const db = openMemoryDb({ path: resolveActiveMemoryDbPath(fixture.root), readOnly: true });
+    try { expect(db.factProjection()).toEqual({ claims: [], sources: [], supersedes: [] }); }
+    finally { db.close(); }
+    expect(readBujoCanonicalSourceFingerprint(fixture.root)).toBe(fingerprint);
+    expect(readFactLedgerStrict(fixture.root).present).toBe(false);
+  });
+
+  it("keeps byte-sorted mixed-case source IDs in exact SQLite parity", async () => {
+    const fixture = await createBujoFixture({ prefix: "fact-binary-order", bullets: [
+      { id: "B-a", text: FIRST }, { id: "B-Z", text: SECOND },
+    ], entities: [{ id: "person:alice", name: "Alice", type: "person", createdAt: "2026-07-30T00:00:00.000Z" }] });
+    const first = claim("B-a", FIRST, "2000-02-29", "run-mixed");
+    appendFactLines(fixture.root, [first, { v: 1, kind: "fact-source", factId: first.factId,
+      sourceMemoryId: "B-Z", sourceTextSha256: hash(SECOND), attribution: "document", recordedAt: first.recordedAt }]);
+    await safeRebuildMemoryIndex({ root: fixture.root, tier: "bujo", embeddings: fixture.embeddings, dim: fixture.dim });
+    const db = openMemoryDb({ path: resolveActiveMemoryDbPath(fixture.root), readOnly: true });
+    try {
+      expect(db.factProjection().sources.map((source) => source.memoryId)).toEqual(["B-Z", "B-a"]);
+      expect(auditCanonicalGraphParity(fixture.root, db)).toMatchObject({ status: "match", facts: { matched: 3 } });
+    } finally { db.close(); }
+    const store = createBujoMemoryStore({ root: fixture.root, tier: "bujo",
+      embeddings: fixture.embeddings, dim: fixture.dim,
+      llm: { id: "must-not-call", complete: async () => { throw new Error("no model"); } } });
+    await store.close();
+  });
+
+  it("classifies only singleton and overlapping location values as conflicts, preserving dated history", async () => {
+    const specs = [
+      ["birth_date", { type: "date", date: "2000-02-29" }],
+      ["birth_date", { type: "date", date: "2001-02-28" }],
+      ["full_name", { type: "text", text: "Alice Smith" }],
+      ["full_name", { type: "text", text: "Alice Jones" }],
+      ["preferred_name", { type: "text", text: "Alice" }],
+      ["preferred_name", { type: "text", text: "Ali" }],
+      ["home_location", { type: "text", text: "Berlin" }],
+      ["home_location", { type: "text", text: "Paris" }],
+      ["work_location", { type: "text", text: "Rome" }],
+      ["work_location", { type: "text", text: "Milan" }],
+      ["relationship", { type: "relationship", role: "friend", targetEntityId: "person:bob" }],
+      ["relationship", { type: "relationship", role: "friend", targetEntityId: "person:charlie" }],
+      ["other:language", { type: "text", text: "English" }],
+      ["other:language", { type: "text", text: "French" }],
+      ["home_location", { type: "text", text: "Oslo" }],
+      ["home_location", { type: "text", text: "Bern" }],
+    ] as const;
+    const fixture = await createBujoFixture({ prefix: "fact-conflict-classes",
+      bullets: specs.map((_, index) => ({ id: `B-${index}`, text: FIRST, ...(index === 0 ? { status: "done" as const } : {}) })),
+      entities: ["alice", "bob", "charlie"].map((id) => ({ id: `person:${id}`, name: id,
+        type: "person" as const, createdAt: "2026-07-30T00:00:00.000Z" })) });
+    const lines: FactClaim[] = specs.map(([key, value], index) => {
+      const base = claim(`B-${index}`, FIRST, "2000-02-29", `run-${index}`);
+      const interval = index === 6 ? { validFrom: "2020-01-01", validTo: "2021-12-31" }
+        : index === 7 ? { validFrom: "2022-01-01", validTo: "2023-12-31" }
+          : index === 8 ? { validFrom: "2020-01-01", validTo: "2024-12-31" }
+            : index === 9 ? { validFrom: "2024-01-01", validTo: "2025-12-31" } : {};
+      const parts = { ...base, key, value, ...interval,
+        ...(index >= 14 ? { entityId: "person:bob" } : {}) } as FactClaim;
+      return { ...parts, factId: deriveFactId(parts) };
+    });
+    appendFactLines(fixture.root, lines);
+    await safeRebuildMemoryIndex({ root: fixture.root, tier: "bujo", embeddings: fixture.embeddings, dim: fixture.dim });
+    const db = openMemoryDb({ path: resolveActiveMemoryDbPath(fixture.root), readOnly: true });
+    try {
+      const indexed = new Map(db.activeFactClaims("2024-06-01").map((fact) => [fact.factId, fact]));
+      const flags = lines.map((line) => indexed.get(line.factId)?.conflict);
+      expect(flags).toEqual([true, true, true, true, true, true, false, false, true, true,
+        false, false, false, false, true, true]);
+      expect(indexed.get(lines[0]!.factId)).toMatchObject({ active: true, currentAt: true }); // done is live
+      expect(indexed.get(lines[6]!.factId)).toMatchObject({ active: true, currentAt: false });
+      expect(indexed.get(lines[8]!.factId)).toMatchObject({ active: true, currentAt: true });
+      expect(indexed.get(lines[9]!.factId)).toMatchObject({ active: true, currentAt: true });
+      expect(() => db.activeFactClaims("2023-02-29")).toThrow(/real ISO civil date/);
+    } finally { db.close(); }
+  });
+
+  it("refuses a retained non-BuJo rollback after a fact ledger appears", async () => {
+    const fixture = await createBujoFixture({ prefix: "fact-rollback-guard", bullets: [{ id: "B-1", text: FIRST }],
+      entities: [{ id: "person:alice", name: "Alice", type: "person", createdAt: "2026-07-30T00:00:00.000Z" }] });
+    await safeRebuildMemoryIndex({ root: fixture.root, tier: "journal", embeddings: fixture.embeddings, dim: fixture.dim });
+    await safeRebuildMemoryIndex({ root: fixture.root, tier: "bujo", embeddings: fixture.embeddings, dim: fixture.dim });
+    expect(readManagedIndexManifest(fixture.root)?.rollback?.tier).toBe("journal");
+    appendFactLines(fixture.root, [claim("B-1", FIRST, "2000-02-29", "rollback-guard")]);
+    await expect(rollbackMemoryIndex({ root: fixture.root, tier: "journal", embeddings: fixture.embeddings,
+      dim: fixture.dim })).rejects.toThrow(/non-BuJo rollback refused/);
+    expect(readManagedIndexManifest(fixture.root)?.active.tier).toBe("bujo");
+  });
+
   it("keeps the ledger and marker through stopped-store forget backups", async () => {
     const fixture = await createBujoFixture({ prefix: "fact-forget-backup", bullets: [
       { id: "B-1", text: FIRST }, { id: "B-2", text: SECOND },
@@ -77,9 +179,9 @@ describe("offline typed fact projection", () => {
       const expected = db.factProjection();
       db.replaceFactProjection({ ...expected,
         claims: [...expected.claims, { ...expected.claims[0]!, factId: `f:${hash("extra")}` }] });
-      expect(auditCanonicalGraphParity(fixture.root, db).status).toBe("mismatch");
+      expect(auditCanonicalGraphParity(fixture.root, db)).toMatchObject({ status: "mismatch", facts: { extra: 1 } });
       db.replaceFactProjection({ claims: [], sources: [], supersedes: [] });
-      expect(auditCanonicalGraphParity(fixture.root, db).status).toBe("mismatch");
+      expect(auditCanonicalGraphParity(fixture.root, db)).toMatchObject({ status: "mismatch", facts: { missing: 2 } });
     } finally { db.close(); }
     expect(() => createBujoMemoryStore({ root: fixture.root, tier: "bujo", embeddings: fixture.embeddings,
       dim: fixture.dim, llm: { id: "must-not-call", complete: async () => { throw new Error("no model"); } } }))

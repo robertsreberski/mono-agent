@@ -106,10 +106,15 @@ must be raised safely before production capture reaches that capacity. Both file
 included in a full-root backup; portable export copies both. Offline BuJo
 rebuild projects typed claims and source memberships without a model call.
 SQLite computes live support at query time from each source's bullet status and
-text digest; competing live values remain conflicts and corrections keep old
-claims as history. Imports and merges with typed claims are refused until
-fact-aware bundle merge exists, while legacy/empty-ledger bundles retain their
-existing behavior. Capture does not write typed-fact records yet. The reserved future kinds `alias` and `same-as`
+text digest; singleton values conflict, location values conflict only across
+intersecting validity intervals, and corrections keep old claims as history.
+A dated query reports currentness without deleting historical values. Imports
+and merges with typed claims are refused until fact-aware bundle merge exists,
+while legacy/empty-ledger bundles retain their existing behavior. Capture does
+not write typed-fact records yet. Before any production fact writer ships, its
+durable capture intent must pin exact ledger bytes and recover a crash between
+ledger append and marker rename (including a missing marker); this A1 reader
+intentionally fails closed instead of guessing at a torn append. The reserved future kinds `alias` and `same-as`
 are unsupported and rejected, not inferred from graph adjacency. Explicit
 `remember()` still creates a Markdown bullet, never an implicit typed fact.
 

@@ -33,7 +33,9 @@ export interface DbFactProjection {
 export interface DbFactActiveClaim extends DbFactClaim {
   readonly active: boolean;
   readonly supportingMemoryIds: readonly string[];
-  /** More than one distinct live value for the same subject/key is a conflict. */
+  /** At the explicitly requested civil date; absent when no date is supplied. */
+  readonly currentAt?: boolean;
+  /** Conflicting singleton value (or overlapping location intervals). */
   readonly conflict: boolean;
 }
 
@@ -95,8 +97,11 @@ export class MemoryDbFacts extends MemoryDbGraph {
     return { claims, sources, supersedes };
   }
 
-  /** Query-time support; never persist active/retired status into fact rows. */
-  activeFactClaims(): readonly DbFactActiveClaim[] {
+  /** Query-time support; dates constrain currentAt, never erase historical claims. */
+  activeFactClaims(asOfDate?: string): readonly DbFactActiveClaim[] {
+    if (asOfDate !== undefined && !isCivilDate(asOfDate)) {
+      throw new Error("memory-store: fact query date must be a real ISO civil date.");
+    }
     const { claims, sources, supersedes } = this.factProjection();
     const memorySources = this.db.prepare(`SELECT id, status, text FROM memories`).all() as
       Array<{ id: string; status: string; text: string }>;
@@ -105,7 +110,7 @@ export class MemoryDbFacts extends MemoryDbGraph {
     const live = new Map<string, string[]>();
     for (const source of sources) {
       const memory = memories.get(source.memoryId);
-      if (memory === undefined || !["open", "scheduled", "migrated"].includes(memory.status)
+      if (memory === undefined || memory.status === "invalidated" || memory.status === "dropped"
         || createHash("sha256").update(memory.text).digest("hex") !== source.sourceTextSha256) continue;
       const supported = live.get(source.factId) ?? [];
       if (!supported.includes(memory.id)) supported.push(memory.id);
@@ -115,22 +120,35 @@ export class MemoryDbFacts extends MemoryDbGraph {
       supportingMemoryIds: (live.get(claim.factId) ?? []).sort(),
       active: !corrected.has(claim.factId) && (live.get(claim.factId)?.length ?? 0) > 0,
     }));
-    const groups = new Map<string, Set<string>>();
+    const groups = new Map<string, typeof active>();
     for (const claim of active) {
-      if (!claim.active) continue;
-      const group = factConflictGroup(claim);
-      const values = groups.get(group) ?? new Set<string>();
-      values.add(claim.valueJson);
-      groups.set(group, values);
+      if (!claim.active || !isExclusiveKey(claim.key)) continue;
+      const key = `${claim.entityId}\0${claim.key}`;
+      groups.set(key, [...(groups.get(key) ?? []), claim]);
     }
     return active.map((claim) => ({ ...claim,
-      conflict: claim.active && (groups.get(factConflictGroup(claim))?.size ?? 0) > 1 }));
+      ...(asOfDate === undefined ? {} : { currentAt: claim.active
+        && (claim.validFrom === undefined || claim.validFrom <= asOfDate)
+        && (claim.validTo === undefined || asOfDate <= claim.validTo) }),
+      conflict: claim.active && (groups.get(`${claim.entityId}\0${claim.key}`) ?? []).some((other) =>
+        other.factId !== claim.factId && other.valueJson !== claim.valueJson
+        && (isSingletonKey(claim.key) || intervalsOverlap(claim, other))),
+    }));
   }
 }
 
-function factConflictGroup(claim: DbFactClaim): string {
-  if (claim.key.startsWith("other:")) return `${claim.entityId}\0${claim.key}\0${claim.factId}`;
-  if (claim.key !== "relationship") return `${claim.entityId}\0${claim.key}`;
-  const value = JSON.parse(claim.valueJson) as { readonly role: string };
-  return `${claim.entityId}\0${claim.key}\0${value.role}`;
+function isSingletonKey(key: string): boolean {
+  return key === "birth_date" || key === "full_name" || key === "preferred_name";
+}
+function isExclusiveKey(key: string): boolean {
+  return isSingletonKey(key) || key === "home_location" || key === "work_location";
+}
+function intervalsOverlap(left: DbFactClaim, right: DbFactClaim): boolean {
+  return (left.validFrom === undefined || right.validTo === undefined || left.validFrom <= right.validTo)
+    && (right.validFrom === undefined || left.validTo === undefined || right.validFrom <= left.validTo);
+}
+function isCivilDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(value) || value.startsWith("0000-")) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().startsWith(`${value}T`);
 }

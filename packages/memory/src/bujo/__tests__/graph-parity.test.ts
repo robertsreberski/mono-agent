@@ -121,6 +121,7 @@ describe("canonical graph parity", () => {
         provenanceMismatches: 1,
       },
       supports: emptySection(),
+      facts: emptySection(),
     });
     expect(snapshots).toBe(6);
     db.close();

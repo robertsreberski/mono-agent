@@ -74,9 +74,14 @@ describe("strict canonical facts ledger", () => {
       wire({ ...item, key: "other:bad-" }), wire({ ...item, qualifier: " hello" }),
       wire({ ...item, recordedAt: "2026-09-24" }), wire({ ...item, validFrom: "2026-12-01", validTo: "2026-01-01" }),
       `${JSON.stringify(item).slice(0, -1)},"kind":"fact"}\n`, `${JSON.stringify(item)} `,
-      JSON.stringify(item), `${" ".repeat(MAX_FACT_LINE_BYTES)}\n`]) {
+      JSON.stringify(item)]) {
       expect(() => parseFactLedger(invalid)).toThrow();
     }
+    // Syntactically valid JSON over the wire limit must fail for its bytes,
+    // before canonical-form validation can mask the bound.
+    const validOversizedJson = `${JSON.stringify(item)}${" ".repeat(MAX_FACT_LINE_BYTES - Buffer.byteLength(JSON.stringify(item)))}\n`;
+    expect(() => JSON.parse(validOversizedJson)).not.toThrow();
+    expect(() => parseFactLedger(validOversizedJson)).toThrow(/line 1 exceeds the byte limit/);
     expect(() => parseFactLedger(" ".repeat(MAX_FACT_LEDGER_BYTES + 1))).toThrow(/byte limit/);
     const path = root();
     writeFileSync(join(path, FACT_LEDGER_FILE), Buffer.from([0xff, 0x0a]), { mode: 0o600 });
@@ -110,7 +115,7 @@ describe("strict canonical facts ledger", () => {
     expect(() => readFactLedgerStrict(path)).toThrow(/do not match/);
   });
 
-  it("appends and fsyncs before marker rename, failing safely if interrupted at either boundary", () => {
+  it("fails closed after an interrupted append and remains idempotent after marker publication", () => {
     const path = root();
     const first = claim();
     const second = claim({ runId: "run-2" });

@@ -272,6 +272,9 @@ export function readFactLedgerStrict(root: string): FactLedgerSnapshot {
  * capture intents must pin the lines before invoking this method. The append is
  * fsynced before the atomic marker rename; a crash in between fails closed on
  * open. Retry after a committed marker is idempotent, never a second assertion.
+ * IMPORTANT: no production caller is allowed until a capture-intent writer pins
+ * the exact bytes and can recover ledger>marker or missing-marker after a crash;
+ * this standalone primitive intentionally cannot authorize that recovery.
  */
 export function appendFactLines(root: string, additional: readonly FactLine[],
   hooks: { readonly afterLedgerAppend?: () => void; readonly afterMarkerRename?: () => void } = {}): FactLedgerSnapshot {

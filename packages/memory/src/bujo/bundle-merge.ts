@@ -98,6 +98,7 @@ export interface MemoryBundleMergePlan {
 export type MemoryBundleMergeErrorCode =
   | "id_conflict"
   | "unsupported_daily_path"
+  | "facts_not_supported"
   | "replay_conflict";
 
 export class MemoryBundleMergeError extends Error {
@@ -125,7 +126,8 @@ export function mergeCanonicalMemoryBundles(
 ): MemoryBundleMergePlan {
   if (parseFactLedger(destination.factsBytes?.toString("utf8")).length > 0
     || parseFactLedger(incoming.factsBytes?.toString("utf8")).length > 0) {
-    throw new Error("memory-bundle-merge: non-empty facts ledger cannot be merged until fact-aware import is available.");
+    throw new MemoryBundleMergeError("facts_not_supported",
+      "non-empty facts ledger cannot be merged until fact-aware import is available.");
   }
   const onConflict = options.onConflict ?? "fail";
   const entityConflict = options.entityConflict ?? "target";
