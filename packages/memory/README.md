@@ -110,7 +110,7 @@ The normal write and read paths are:
 | --- | --- |
 | `src/store/` | SQLite schema, FTS5/sqlite-vec indexes, graph projection, ranking, and low-level database maintenance. |
 | `src/search/` | Ollama, LM Studio, and OpenAI embedding clients plus the embedding circuit breaker. |
-| `src/bujo/` | Lite/Journal/BuJo tiers, canonical Markdown, durable intake, capture/reconciliation, recall composition, health, rebuild, rollback, and explicit forget/recovery. Rebuild source validation and SQLite writer fencing are isolated in `rebuild-source-validation.ts` and `rebuild-sqlite-safety.ts`. |
+| `src/bujo/` | Lite/Journal/BuJo tiers, canonical Markdown, durable intake, capture/reconciliation, recall composition, health, rebuild, rollback, and explicit forget/curate recovery. Rebuild source validation and SQLite writer fencing are isolated in `rebuild-source-validation.ts` and `rebuild-sqlite-safety.ts`. |
 
 Run config-aware maintenance through `mono-agent memory <subcommand>` from the
 agent folder. The retired `memory-bujo` executable is no longer packaged.
@@ -491,6 +491,7 @@ AUTO_RECALL_MAX_BYTES
 AUTO_RECALL_MAX_HITS
 AUTO_RECALL_MIN_SCORE
 AUTO_RECALL_RELATIVE_SCORE
+ApplyExplicitMemoryCurateOptions
 ApplyExplicitMemoryForgetOptions
 ApplyMemoryBundleImportOptions
 BUJO_MEMORY_HEALTH_SCHEMA_VERSION
@@ -522,9 +523,17 @@ CompletedTurnIntakeAudit
 CompletedTurnIntakeInspection
 CompletedTurnIntakeItem
 CompletedTurnIntakeSnapshot
+CurateAction
+CurateDiscard
+CurateLine
+CurateProposal
+CurateReason
+CurateSnapshot
+CurateSuggestionResult
 DEFAULT_MEMORY_FORGET_BACKUP_MAX_AGE_DAYS
 DEFAULT_MEMORY_FORGET_BACKUP_MAX_COUNT
 ExplicitForgetPreview
+ExplicitMemoryCurateError
 ExplicitMemoryForgetApplyResult
 ExplicitMemoryForgetError
 ExplicitMemoryForgetErrorCode
@@ -591,6 +600,7 @@ MigrateResult
 PrepareMemoryBundleImportOptions
 ReconcileAction
 ReconcileDeps
+RestoreExplicitMemoryCurateOptions
 RestoreExplicitMemoryForgetOptions
 RestoreMemoryBundleImportOptions
 SafeMemoryIndexOptions
@@ -600,6 +610,7 @@ adoptLegacyReplayProjection
 appendAssociation
 appendBullet
 appendGraphBatch
+applyExplicitMemoryCurate
 applyExplicitMemoryForget
 applyMemoryBundleImport
 auditBujoMemoryHealth
@@ -610,11 +621,13 @@ composeRecallBlock
 createBujoMemoryStore
 createIdFactory
 createOllamaLlm
+curateEstimate
 dailyFilePath
 exportMemoryBundle
 extractCapturePlanStrict
 findCanonicalMemoryBullet
 inspectCompletedTurnIntake
+inspectCurateSource
 isConversationRelativeQuery
 migrate
 normalizeMemoryText
@@ -624,6 +637,8 @@ parseDailyFile
 parseMemoryExportBundleManifest
 prepareMemoryBundleImport
 previewCanonicalExplicitForgetMemories
+previewCurateMutations
+proposeCurate
 pruneExplicitMemoryForgetBackups
 readBujoCanonicalSourceFingerprint
 readBujoRuntimeSnapshot
@@ -635,8 +650,10 @@ reconcileBatch
 renderKnownEntityHints
 resolveActiveMemoryDbPath
 resolveCompletedTurnIntake
+resolveExplicitMemoryCurateRoot
 resolveExplicitMemoryForgetRoot
 resolveMemoryBundleImportRoot
+restoreExplicitMemoryCurate
 restoreExplicitMemoryForget
 restoreMemoryBundleImport
 retryCompletedTurnIntake
@@ -646,6 +663,7 @@ selectAutomaticRecallHits
 selectKnownEntityHints
 serializeBullet
 serializeDailyFile
+validateCurateProposal
 writeFutureLog
 writeIndex
 ```

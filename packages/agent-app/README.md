@@ -920,6 +920,11 @@ mono-agent memory retry <64-character-id> --json
 mono-agent memory resolve <64-character-id> <reason-slug> --json
 
 # Explicit BuJo cleanup: prepare is read-only; apply/restore require stop.
+mono-agent memory curate prepare --plan ./curate-plan.json --limit 120 --dry-run
+mono-agent memory curate prepare --plan ./curate-plan.json
+mono-agent memory curate review --plan ./curate-plan.json --accept drop:generic-advice,label:*
+# Stop the agent before apply; keep the returned backup for a possible restore.
+mono-agent memory curate apply --plan ./curate-plan.json
 mono-agent memory forget prepare --ids-file ./forget-ids.txt --reason noise_cleanup --plan ./forget-plan.json --json
 mono-agent memory forget apply --plan ./forget-plan.json --json
 mono-agent memory forget restore --backup /path/returned/by/apply --json

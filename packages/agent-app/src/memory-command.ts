@@ -4,9 +4,11 @@ import {
   lstat,
   open as openFile,
   readFile,
+  rename,
   readdir,
   realpath,
   stat,
+  unlink,
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
@@ -24,6 +26,8 @@ import type {
   BujoMemoryHealthReport,
   CompletedTurnIntakeInspection,
   LegacyReplayAdoptionResult,
+  CurateProposal,
+  CurateDiscard,
   MemoryBundleExportErrorCode,
   MemoryBundleImportErrorCode,
 } from "@mono-agent/memory/bujo";
@@ -54,6 +58,7 @@ const REPLAY_ADOPTION_SCHEMA_VERSION = 1;
 const MEMORY_FORGET_SCHEMA_VERSION = 1;
 const MAX_FORGET_IDS = 32;
 const MAX_FORGET_PLAN_BYTES = 1024 * 1024;
+const MAX_CURATE_PLAN_BYTES = 8 * 1024 * 1024;
 const MEMORY_ID_RE = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/u;
 const FTS_FALLBACK_MEMORY_SEARCH_CODES = new Set<MemorySearchErrorCode>([
   "embedding_circuit_open",
@@ -106,6 +111,12 @@ export interface RunMemoryCommandInput {
   readonly limit?: number;
   readonly idsFile?: string;
   readonly reason?: string;
+  readonly curateAccept?: string;
+  readonly curateReject?: string;
+  readonly model?: string;
+  readonly dryRun?: boolean;
+  /** Host-injected fake memory model for isolated curation preparation tests. */
+  readonly curateLlm?: import("@mono-agent/memory/bujo").LlmComplete;
   readonly planPath?: string;
   readonly backupPath?: string;
   readonly bundlePath?: string;
@@ -155,6 +166,11 @@ export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<nu
       writeReplayAdoptionCliFailure(input.json, "replay_adoption_usage");
       return 2;
     }
+    if (input.positionals[0] === "curate") {
+      write(input.json, { operation: `curate-${input.positionals[1] ?? "unknown"}`, status: "failed", code: "curate_usage" },
+        () => `${usageError}\n`);
+      return 2;
+    }
     if (input.positionals[0] === "forget") {
       writeMemoryForgetFailure(input.json, input.positionals[1] ?? "unknown", "forget_usage");
       return 2;
@@ -185,6 +201,11 @@ export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<nu
     }
     if (subcommand === "adopt-replay") {
       writeReplayAdoptionCliFailure(input.json, "replay_adoption_requires_bujo");
+      return 1;
+    }
+    if (subcommand === "curate") {
+      write(input.json, { operation: `curate-${rest[0] ?? "unknown"}`, status: "failed", code: "curate_requires_bujo" },
+        () => "Memory curate requires a configured BuJo store.\n");
       return 1;
     }
     if (subcommand === "forget") {
@@ -248,6 +269,8 @@ export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<nu
       return await runReplayAdoption(context, input.json);
     case "forget":
       return await runMemoryForget(context, rest, input);
+    case "curate":
+      return await runMemoryCurate(context, rest, input);
     case "export":
       return await runMemoryBundleExport(context, input);
     case "import":
@@ -269,7 +292,7 @@ function memoryCommandUsageError(input: RunMemoryCommandInput): string | undefin
   if (input.strict && subcommand !== "audit") {
     return "--strict is only supported for `mono-agent memory audit`.";
   }
-  if (input.limit !== undefined && subcommand !== "stats" && subcommand !== "search" && subcommand !== "top") {
+  if (input.limit !== undefined && subcommand !== "stats" && subcommand !== "search" && subcommand !== "top" && !(subcommand === "curate" && rest[0] === "prepare")) {
     return "--limit is only supported for memory stats, search, and top.";
   }
   switch (subcommand) {
@@ -308,6 +331,18 @@ function memoryCommandUsageError(input: RunMemoryCommandInput): string | undefin
       return INTAKE_REASON_RE.test(rest[1] ?? "")
         ? undefined
         : "memory resolve reason must be a 1-64 character lowercase slug.";
+    case "curate": {
+      if (rest.length !== 1) return "Usage: mono-agent memory curate prepare|review|apply|restore.";
+      if (rest[0] === "prepare") return input.planPath !== undefined && input.backupPath === undefined && input.curateAccept === undefined && input.curateReject === undefined
+        ? undefined : "Usage: mono-agent memory curate prepare --plan file [--limit N] [--model provider:model] [--dry-run].";
+      if (rest[0] === "review") return input.planPath !== undefined && input.backupPath === undefined && input.model === undefined && !input.dryRun
+        ? undefined : "Usage: mono-agent memory curate review --plan file [--accept category,...] [--reject category,...].";
+      if (rest[0] === "apply") return input.planPath !== undefined && input.backupPath === undefined && input.model === undefined && !input.dryRun
+        ? undefined : "Usage: mono-agent memory curate apply --plan file.";
+      if (rest[0] === "restore") return input.backupPath !== undefined && input.planPath === undefined && input.model === undefined && !input.dryRun
+        ? undefined : "Usage: mono-agent memory curate restore --backup dir.";
+      return "Usage: mono-agent memory curate prepare|review|apply|restore.";
+    }
     case "forget": {
       const operation = rest[0];
       if (rest.length !== 1 || (operation !== "prepare" && operation !== "apply" && operation !== "restore")) {
@@ -1311,22 +1346,28 @@ async function readMemoryForgetPlan(path: string): Promise<MemoryForgetPlan> {
   return { ...payload, planDigest: value.planDigest };
 }
 
-async function writePrivateJsonExclusive(path: string, value: unknown): Promise<void> {
+async function writePrivateJsonExclusive(path: string, value: unknown, maxBytes = MAX_FORGET_PLAN_BYTES): Promise<void> {
+  const serialized = `${JSON.stringify(value, null, 2)}\n`;
+  if (Buffer.byteLength(serialized, "utf8") > maxBytes) throw new Error("private plan exceeds size limit");
   const handle = await openFile(
     path,
     constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
     0o600,
   );
   try {
-    await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+    await handle.writeFile(serialized, "utf8");
     await handle.sync();
     const opened = await handle.stat();
     const current = await lstat(path);
-    assertPinnedFile(opened, current, path, true, MAX_FORGET_PLAN_BYTES);
-  } finally {
+    assertPinnedFile(opened, current, path, true, maxBytes);
+  } catch (error) {
     await handle.close();
+    await unlink(path).catch(() => {});
+    throw error;
   }
-  await fsyncParentDirectory(path);
+  await handle.close();
+  try { await fsyncParentDirectory(path); }
+  catch (error) { await unlink(path).catch(() => {}); throw error; }
 }
 
 async function readPrivateJson(path: string, maxBytes: number): Promise<unknown> {
@@ -2842,5 +2883,197 @@ function isNativeModuleFailure(error: unknown): boolean {
     return /better[-_ ]?sqlite|sqlite[-_ ]?vec|node_module_version|native module|dlopen|\.node\b/iu.test(`${code} ${message}`);
   } catch {
     return false;
+  }
+}
+
+interface CuratePlan {
+  readonly schemaVersion: 1;
+  readonly operation: "curate";
+  readonly rootFingerprint: string;
+  readonly sourceFingerprint: string;
+  readonly model: string;
+  readonly createdAt: string;
+  readonly proposals: readonly CurateProposal[];
+  readonly discarded: readonly CurateDiscard[];
+  readonly planDigest: string;
+}
+
+function curatePlanDigest(plan: Omit<CuratePlan, "planDigest">): string {
+  return createHash("sha256").update(JSON.stringify({ ...plan, proposals: plan.proposals.map(({ accepted: _accepted, ...immutable }) => immutable) })).digest("hex");
+}
+
+function parseCuratePlan(value: unknown): CuratePlan {
+  if (!isObject(value) || !hasExactKeys(value, ["schemaVersion", "operation", "rootFingerprint", "sourceFingerprint", "model", "createdAt", "proposals", "discarded", "planDigest"])
+    || value.schemaVersion !== 1 || value.operation !== "curate" || !isSha256(value.rootFingerprint)
+    || !isSha256(value.sourceFingerprint) || typeof value.model !== "string" || value.model.length > 160
+    || typeof value.createdAt !== "string" || !isCanonicalIso(value.createdAt)
+    || !isSha256(value.planDigest)
+    || !Array.isArray(value.proposals) || value.proposals.length > 4096
+    || !Array.isArray(value.discarded) || value.discarded.length > 8192
+    || value.discarded.some((entry: unknown) => !isObject(entry) || !hasExactKeys(entry, ["id", "reason"])
+      || typeof entry.id !== "string" || (entry.id !== "unbound" && !MEMORY_ID_RE.test(entry.id))
+      || !["unknown-id", "duplicate-id", "invalid-proposal", "missing-proposal", "invalid-preview"].includes(String(entry.reason)))) {
+    throw new Error("invalid curate plan");
+  }
+  const bujo = value.proposals as CurateProposal[];
+  const ids = new Set<string>();
+  for (const proposal of bujo) {
+    if (!isObject(proposal) || !(["action", "accepted", "source"].every((key) => Object.hasOwn(proposal, key)) && Object.keys(proposal).every((key) => ["action", "accepted", "source", "reason", "text", "labels", "mergeEntity"].includes(key)))) throw new Error("invalid proposal shape");
+    const source = proposal.source;
+    if (!isObject(source) || !hasExactKeys(source, ["id", "file", "line", "text", "textHash", "createdAt", "refs"])) throw new Error("invalid proposal source");
+    if (ids.has(source.id as string)) throw new Error("duplicate proposal id");
+    ids.add(source.id as string);
+  }
+  const parsed = value as unknown as CuratePlan;
+  const { planDigest, ...payload } = parsed;
+  if (curatePlanDigest(payload) !== planDigest) throw new Error("curate plan checksum mismatch");
+  return parsed;
+}
+
+async function runMemoryCurate(context: MemoryCommandContext, rest: readonly string[], input: RunMemoryCommandInput): Promise<number> {
+  const operation = rest[0];
+  const memory = context.config.memory;
+  if (memory?.mode !== "bujo" || memory.embeddings === undefined) {
+    write(input.json, { operation: `curate-${operation ?? "unknown"}`, status: "failed", code: "curate_requires_bujo" },
+      () => "Memory curate requires a configured BuJo store with embeddings.\n");
+    return 1;
+  }
+  try {
+    const bujo = await loadBujoModule();
+    const root = bujo.resolveExplicitMemoryCurateRoot(resolve(context.cwd, memory.path));
+    if (operation === "prepare") {
+      const snapshot = bujo.inspectCurateSource(root, input.limit ?? 120);
+      bujo.previewCurateMutations(root, []);
+      if (Buffer.byteLength(JSON.stringify(snapshot.lines), "utf8") > MAX_CURATE_PLAN_BYTES / 2) {
+        throw new Error("curate source exceeds private plan bound");
+      }
+      const estimate = bujo.curateEstimate(snapshot, memory.capture);
+      const model = input.model ?? memory.llm?.model;
+      if (model === undefined) throw new Error("memory LLM not configured");
+      const estimateText = `Curate estimate: ${estimate.lines} lines, ${estimate.calls} calls, ~${estimate.inputTokens} input / ~${estimate.outputTokens} output tokens; cost unknown.\n`;
+      if (input.dryRun) {
+        write(input.json, { operation: "curate-prepare", status: "estimated", model, estimate }, () => estimateText);
+        return 0;
+      }
+      process.stderr.write(estimateText);
+      const llm = input.curateLlm
+        ?? await (await import("./configured-agent.js")).createConfiguredCurationLlm(context.config, input.model);
+      const suggested = await bujo.proposeCurate(snapshot, llm, memory.capture);
+      if (snapshot.fingerprint !== bujo.readBujoCanonicalSourceFingerprint(root)) throw new Error("source changed while preparing");
+      const proposals: CurateProposal[] = [];
+      const discarded: CurateDiscard[] = [...suggested.discarded];
+      // Common case costs one canonical preview; bisect only a rejected group.
+      // An invalid individual suggestion cannot discard the rest of a paid pass.
+      const admit = (group: readonly CurateProposal[]): void => {
+        if (group.length === 0) return;
+        try { bujo.previewCurateMutations(root, [...proposals, ...group]); proposals.push(...group); }
+        catch {
+          if (group.length === 1) { discarded.push({ id: group[0]!.source.id, reason: "invalid-preview" }); return; }
+          const middle = Math.floor(group.length / 2);
+          admit(group.slice(0, middle)); admit(group.slice(middle));
+        }
+      };
+      admit(suggested.proposals);
+      if (snapshot.fingerprint !== bujo.readBujoCanonicalSourceFingerprint(root)) throw new Error("source changed while preparing");
+      const planPath = await canonicalProspectivePath(resolve(context.cwd, input.planPath!));
+      if (isSameOrUnderDirectory(root, planPath)) throw new Error("plan cannot be inside memory root");
+      const payload = { schemaVersion: 1, operation: "curate", rootFingerprint: memoryRootFingerprint(root),
+        sourceFingerprint: snapshot.fingerprint, model, createdAt: new Date().toISOString(), proposals, discarded } as const;
+      const plan: CuratePlan = { ...payload, planDigest: curatePlanDigest(payload) };
+      await writePrivateJsonExclusive(planPath, plan, MAX_CURATE_PLAN_BYTES);
+      const discardedByReason = Object.fromEntries([...new Set(discarded.map(({ reason }) => reason))].map((reason) => [reason,
+        discarded.filter((item) => item.reason === reason).length]));
+      write(input.json, { operation: "curate-prepare", status: "prepared", planPath, count: proposals.length,
+        discarded: discarded.length, discardedByReason },
+        () => `Curate plan prepared: ${proposals.length} proposals, ${discarded.length} discarded (${JSON.stringify(discardedByReason)}) at ${planPath}. Review before applying.\n`);
+      return 0;
+    }
+    if (operation === "review" || operation === "apply") {
+      const planPath = resolve(context.cwd, input.planPath!);
+      const safePath = await canonicalProspectivePath(planPath);
+      if (isSameOrUnderDirectory(root, safePath)) throw new Error("plan cannot be inside memory root");
+      const plan = parseCuratePlan(await readPrivateJson(planPath, MAX_CURATE_PLAN_BYTES));
+      for (const item of plan.proposals) bujo.validateCurateProposal(item);
+      if (plan.rootFingerprint !== memoryRootFingerprint(root)) throw new Error("plan belongs to another root");
+      if (operation === "review") {
+        const accept = input.curateAccept?.split(",") ?? [];
+        const reject = input.curateReject?.split(",") ?? [];
+        const selectors = [...accept, ...reject];
+        if (selectors.some((selector) => !/^(keep|drop|rewrite|label|merge):(?:\*|[a-z][a-z-]{0,40})$|^id:[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/u.test(selector))
+          || new Set(selectors).size !== selectors.length) throw new Error("invalid or duplicate review selector");
+        const matches = (selector: string, proposal: CurateProposal) => selector === `id:${proposal.source.id}`
+          || selector === `${proposal.action}:*` || selector === `${proposal.action}:${proposal.reason ?? "none"}`;
+        if (selectors.some((selector) => !plan.proposals.some((proposal) => matches(selector, proposal)))) throw new Error("review selector matched no proposals");
+        if (selectors.length > 0) {
+          const updated = { ...plan, proposals: plan.proposals.map((proposal) => ({ ...proposal,
+            accepted: reject.some((selector) => matches(selector, proposal)) ? false
+              : accept.some((selector) => matches(selector, proposal)) ? true : proposal.accepted })) };
+          const temp = `${planPath}.${process.pid.toString(36)}.tmp`;
+          await writePrivateJsonExclusive(temp, updated, MAX_CURATE_PLAN_BYTES);
+          try { await rename(temp, planPath); }
+          catch (error) { await unlink(temp).catch(() => {}); throw error; }
+          await fsyncParentDirectory(planPath);
+          const { curateAccept: _accept, curateReject: _reject, ...remainder } = input;
+          return await runMemoryCurate(context, rest, remainder);
+        }
+        const counts: Record<string, { total: number; accepted: number }> = {};
+        for (const item of plan.proposals) {
+          const key = `${item.action}:${item.reason ?? "none"}`;
+          const count = counts[key] ?? { total: 0, accepted: 0 };
+          count.total++;
+          if (item.accepted) count.accepted++;
+          counts[key] = count;
+        }
+        write(input.json, { operation: "curate-review", counts, discarded: plan.discarded,
+          examples: plan.proposals.slice(0, 5).map(({ source, action, reason, accepted }) => ({ id: source.id, action, reason, accepted })) },
+          () => `Curate review: ${JSON.stringify(counts)}\nDiscarded suggestions (${plan.discarded.length}): ${JSON.stringify(plan.discarded.slice(0, 20))}${plan.discarded.length > 20 ? " (more in private plan)" : ""}\nExamples: ${JSON.stringify(plan.proposals.slice(0, 5).map(({ source, action, reason, accepted }) => ({ id: source.id, action, reason, accepted })))}\nUse --accept drop:generic-advice,label:* or --reject id:<id>; review the private plan before applying.\n`);
+        return 0;
+      }
+      // The package checks freshness under the writer lease. An interrupted root-swap
+      // must be allowed through this CLI gate even when mutation changed the source:
+      // only its matching durable transaction can restore the pre-apply tree.
+      if (plan.proposals.every((item) => !item.accepted || item.action === "keep")) {
+        write(input.json, { operation: "curate-apply", status: "no-op" }, () => "No proposals accepted; memory unchanged.\n");
+        return 0;
+      }
+      await assertNoLiveConfiguredAgent(context.configPath, await memoryRegistryDirs(context));
+      const settings = previewRecallSettings(context.config);
+      if (settings?.embeddings === undefined) throw new Error("embeddings required");
+      const selected = plan.proposals.filter((proposal) => proposal.accepted && proposal.action !== "keep");
+      const { createMemoryEmbeddingProvider } = await loadMemoryRecallModule();
+      const embeddings = await createMemoryEmbeddingProvider(settings.embeddings);
+      const result = await bujo.applyExplicitMemoryCurate({ root, proposals: selected,
+        expectedRootFingerprint: plan.rootFingerprint, expectedSourceFingerprint: plan.sourceFingerprint,
+        planDigest: createHash("sha256").update(JSON.stringify({ planDigest: plan.planDigest, selected })).digest("hex"),
+        embeddings, dimension: settings.embeddings.dim ?? 768 });
+      write(input.json, { operation: "curate-apply", status: "applied", count: result.changed, backupPath: result.backupPath },
+        () => `Curated ${result.changed} memory lines; restore backup: ${result.backupPath}.\n`);
+      return 0;
+    }
+    await assertNoLiveConfiguredAgent(context.configPath, await memoryRegistryDirs(context));
+    const result = await bujo.restoreExplicitMemoryCurate({ root, backupPath: resolve(context.cwd, input.backupPath!),
+      expectedRootFingerprint: memoryRootFingerprint(root) });
+    write(input.json, { operation: "curate-restore", status: result.status, backupPath: result.backupPath },
+      () => `Memory restored from ${result.backupPath}.\n`);
+    return 0;
+  } catch (error) {
+    const status = error instanceof Error && error.name === "ExplicitMemoryCurateError" && "code" in error
+      ? String(error.code) : operation === "prepare" ? "prepare_failed" : operation === "review" ? "review_failed"
+        : operation === "restore" ? "restore_failed" : "apply_failed";
+    const backupPath = error instanceof Error && "backupPath" in error && typeof error.backupPath === "string"
+      ? error.backupPath : undefined;
+    const messages: Readonly<Record<string, string>> = {
+      apply_failed: "Curation was refused before a recoverable backup was available.",
+      apply_failed_recovered: "Curation failed; the complete pre-apply backup was restored.",
+      apply_recovery_failed: "Curation recovery could not be verified; keep the agent stopped and restore the reported backup.",
+      restore_failed: "Curation restore was refused; the current store was not intentionally overwritten.",
+      prepare_failed: "Curation preparation failed without changing the memory store.",
+      review_failed: "Curation review failed without changing the memory store.",
+    };
+    const code = Object.hasOwn(messages, status) ? status : "apply_failed";
+    write(input.json, { operation: `curate-${operation ?? "unknown"}`, status: "failed", code: `curate_${code}`,
+      ...(backupPath === undefined ? {} : { backupPath }) },
+      () => `${messages[code]}${backupPath === undefined ? "" : ` Backup: ${backupPath}.`}\n`);
+    return 1;
   }
 }

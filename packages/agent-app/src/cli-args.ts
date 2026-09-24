@@ -158,6 +158,10 @@ export interface ParsedCliArgs {
   readonly reason?: string;
   /** memory forget prepare/apply: owner-private plan artifact. */
   readonly planPath?: string;
+  /** memory curate review: comma-separated action:reason category selectors. */
+  readonly curateAccept?: string;
+  /** memory curate review: comma-separated action:reason category selectors. */
+  readonly curateReject?: string;
   /** memory forget restore: owner-private backup directory. */
   readonly backupPath?: string;
   /** `mono-agent memory export|import` bundle directory. */
@@ -215,6 +219,8 @@ const CLI_VALUE_FLAGS = new Set([
   "--ids-file",
   "--reason",
   "--plan",
+  "--accept",
+  "--reject",
   "--backup",
   "--bundle",
   "--on-conflict",
@@ -385,6 +391,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let idsFile: string | undefined;
   let reason: string | undefined;
   let planPath: string | undefined;
+  let curateAccept: string | undefined;
+  let curateReject: string | undefined;
   let backupPath: string | undefined;
   let bundlePath: string | undefined;
   let includeExtras = false;
@@ -489,7 +497,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       case "--limit": {
         const raw = requireValue(rest, ++i, flag);
         const parsed = Number(raw);
-        const maximum = cmd === "continuations" ? 500 : 100;
+        const maximum = cmd === "continuations" ? 500 : positionals[0] === "curate" ? 4096 : 100;
         if (!Number.isInteger(parsed) || parsed < 1 || parsed > maximum) {
           throw new Error(`--limit must be an integer between 1 and ${String(maximum)}.`);
         }
@@ -508,6 +516,12 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         break;
       case "--plan":
         planPath = requireValue(rest, ++i, flag);
+        break;
+      case "--accept":
+        curateAccept = requireValue(rest, ++i, flag);
+        break;
+      case "--reject":
+        curateReject = requireValue(rest, ++i, flag);
         break;
       case "--backup":
         backupPath = requireValue(rest, ++i, flag);
@@ -802,7 +816,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   }
   if (
     (planPath !== undefined || backupPath !== undefined)
-    && (cmd !== "memory" || (positionals[0] !== "forget" && positionals[0] !== "import"))
+    && (cmd !== "memory" || (positionals[0] !== "forget" && positionals[0] !== "import" && positionals[0] !== "curate"))
   ) {
     throw new Error("--plan and --backup are only supported for `mono-agent memory forget` and `mono-agent memory import`.");
   }
@@ -861,14 +875,18 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     "runs", "memory", "continuations", "jobs", INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
   ]);
   assertFlagCommand(name !== undefined, "--name", cmd, ["init", "web"]);
-  assertFlagCommand(model !== undefined, "--model", cmd, ["init"]);
+  if ((curateAccept !== undefined || curateReject !== undefined)
+    && (cmd !== "memory" || positionals[0] !== "curate" || positionals[1] !== "review")) {
+    throw new Error("--accept and --reject require `mono-agent memory curate review`.");
+  }
+  assertFlagCommand(model !== undefined, "--model", cmd, positionals[0] === "curate" && positionals[1] === "prepare" ? ["init", "memory"] : ["init"]);
   assertFlagCommand(fallbacks.length > 0, "--fallback", cmd, ["init"]);
   assertFlagCommand(effort !== undefined, "--effort", cmd, ["init"]);
   assertFlagCommand(memory !== undefined, "--memory", cmd, ["init"]);
   assertFlagCommand(preset !== undefined, "--preset", cmd, ["init", "validate"]);
   assertFlagCommand(withChannels !== undefined, "--with", cmd, ["init"]);
   assertFlagCommand(yes, "--yes", cmd, ["init", "web"]);
-  assertFlagCommand(dryRun, "--dry-run", cmd, ["init"]);
+  assertFlagCommand(dryRun, "--dry-run", cmd, positionals[0] === "curate" && positionals[1] === "prepare" ? ["init", "memory"] : ["init"]);
   assertFlagCommand(all, "--all", cmd, ["web"]);
   assertFlagCommand(since !== undefined, "--since", cmd, ["runs"]);
   assertFlagCommand(until !== undefined, "--until", cmd, ["runs"]);
@@ -960,6 +978,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(idsFile === undefined ? {} : { idsFile }),
     ...(reason === undefined ? {} : { reason }),
     ...(planPath === undefined ? {} : { planPath }),
+    ...(curateAccept === undefined ? {} : { curateAccept }),
+    ...(curateReject === undefined ? {} : { curateReject }),
     ...(backupPath === undefined ? {} : { backupPath }),
     ...(bundlePath === undefined ? {} : { bundlePath }),
     ...(includeExtras ? { includeExtras } : {}),
