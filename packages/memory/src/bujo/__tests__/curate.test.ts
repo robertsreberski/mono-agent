@@ -58,7 +58,9 @@ describe("curation preparation", () => {
         key: "preferred_name", value: { type: "text", text: "Morgan" }, attribution: "document" }] },
     ]) });
     expect(labelled.proposals[1]?.labels?.[0]).toMatchObject({ attribution: "assistant-inferred" });
-    expect(() => validateCurateProposal({ ...labelled.proposals[1]!, labels: [{ ...labelled.proposals[1]!.labels![0]!, attribution: "document" }] })).toThrow();
+    const factLabel = labelled.proposals[1]!.labels![0]!;
+    if (factLabel.kind !== "fact") throw new Error("expected fact label");
+    expect(() => validateCurateProposal({ ...labelled.proposals[1]!, labels: [{ ...factLabel, attribution: "document" }] })).toThrow();
   });
 });
 
