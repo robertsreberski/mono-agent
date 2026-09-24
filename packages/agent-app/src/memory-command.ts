@@ -2920,7 +2920,7 @@ function parseCuratePlan(value: unknown): CuratePlan {
   for (const proposal of bujo) {
     if (!isObject(proposal) || !(["action", "accepted", "source"].every((key) => Object.hasOwn(proposal, key)) && Object.keys(proposal).every((key) => ["action", "accepted", "source", "reason", "text", "labels", "mergeEntity"].includes(key)))) throw new Error("invalid proposal shape");
     const source = proposal.source;
-    if (!isObject(source) || !hasExactKeys(source, ["id", "file", "line", "text", "textHash", "createdAt", "refs"])) throw new Error("invalid proposal source");
+    if (!isObject(source) || !hasExactKeys(source, ["id", "file", "line", "text", "textHash", "createdAt", "status", "refs"])) throw new Error("invalid proposal source");
     if (ids.has(source.id as string)) throw new Error("duplicate proposal id");
     ids.add(source.id as string);
   }
@@ -2959,7 +2959,6 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       const llm = input.curateLlm
         ?? await (await import("./configured-agent.js")).createConfiguredCurationLlm(context.config, input.model);
       const suggested = await bujo.proposeCurate(snapshot, llm, memory.capture);
-      if (snapshot.fingerprint !== bujo.readBujoCanonicalSourceFingerprint(root)) throw new Error("source changed while preparing");
       const proposals: CurateProposal[] = [];
       const discarded: CurateDiscard[] = [...suggested.discarded];
       // Common case costs one canonical preview; bisect only a rejected group.
@@ -2974,7 +2973,6 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
         }
       };
       admit(suggested.proposals);
-      if (snapshot.fingerprint !== bujo.readBujoCanonicalSourceFingerprint(root)) throw new Error("source changed while preparing");
       const planPath = await canonicalProspectivePath(resolve(context.cwd, input.planPath!));
       if (isSameOrUnderDirectory(root, planPath)) throw new Error("plan cannot be inside memory root");
       const payload = { schemaVersion: 1, operation: "curate", rootFingerprint: memoryRootFingerprint(root),

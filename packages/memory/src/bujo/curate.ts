@@ -7,7 +7,7 @@ import { isRememberedMemoryId } from "./canonical-lookup.js";
 import { factSupported, valueSupported } from "./capture-labels.js";
 import { forgetExplicitMemories, previewCanonicalExplicitForgetMemories } from "./migrate.js";
 import { writeCanonicalFileAtomic } from "./path-safety.js";
-import type { MemoryDb } from "../store/index.js";
+import type { MemoryDb, MemoryStatus } from "../store/index.js";
 import { readBujoCanonicalSourceFingerprint } from "./replay-projection.js";
 import { validateMemoryLabel, labelsOf, withMemoryLabels, type MemoryLabel } from "./labels.js";
 import type { LlmComplete } from "./llm.js";
@@ -27,6 +27,7 @@ export interface CurateLine {
   readonly text: string;
   readonly textHash: string;
   readonly createdAt: string;
+  readonly status: MemoryStatus;
   readonly refs: readonly string[];
 }
 export interface CurateProposal {
@@ -61,7 +62,7 @@ export function inspectCurateSource(root: string, limit = 120): CurateSnapshot {
       if (ids.has(bullet.id)) throw new Error("memory-curate: duplicate canonical id");
       ids.add(bullet.id);
       if (lines.length < limit) lines.push({ id: bullet.id, file, line: entry.lineNumber, text: bullet.text,
-        textHash: hash(bullet.text), createdAt: bullet.createdAt, refs: bullet.refs });
+        textHash: hash(bullet.text), createdAt: bullet.createdAt, status: bullet.status, refs: bullet.refs });
     }
   }
   const graph = readCanonicalGraphStrictSnapshot(root).records;
@@ -78,6 +79,7 @@ export function validateCurateProposal(proposal: CurateProposal): void {
     || source.text.length > 8192 || source.textHash !== hash(source.text)
     || typeof source.createdAt !== "string" || !Number.isFinite(Date.parse(source.createdAt))
     || new Date(source.createdAt).toISOString() !== source.createdAt
+    || !["open", "done", "scheduled", "migrated"].includes(source.status)
     || !Array.isArray(source.refs) || source.refs.length > 64 || source.refs.some((ref) => typeof ref !== "string" || ref.length > 1100)
     || (proposal.reason !== undefined && (action !== "drop" || !REASONS.includes(proposal.reason)))
     || (action === "drop" && proposal.reason === undefined)
@@ -231,7 +233,7 @@ export function previewCurateMutations(root: string, proposals: readonly CurateP
     const bullet = line?.bullet;
     if (!bullet || bullet.id !== source.id || bullet.text !== source.text || bullet.createdAt !== source.createdAt
       || JSON.stringify(bullet.refs) !== JSON.stringify(source.refs)
-      || bullet.status === "dropped" || bullet.status === "invalidated") throw new Error("memory-curate: stale source line");
+      || bullet.status !== source.status) throw new Error("memory-curate: stale source line");
     if (proposal.action === "label") withMemoryLabels(bullet, [...labelsOf(bullet), ...proposal.labels!]);
     if (proposal.action === "rewrite") {
       withMemoryLabels(bullet, labelsOf(bullet).filter((label) => label.kind === "fact" && factSupported(label, proposal.text!)));

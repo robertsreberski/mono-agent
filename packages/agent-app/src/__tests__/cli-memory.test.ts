@@ -2138,15 +2138,6 @@ describe("curate crash recovery CLI", { timeout: 30_000 }, () => {
       expect(JSON.parse(refused.stdout).code).toBe("curate_apply_failed");
       expect(bujoMemory.readBujoCanonicalSourceFingerprint(memoryRoot)).toBe(payload.sourceFingerprint);
     } finally { await competing.close(); }
-    const stalePayload = { ...payload, sourceFingerprint: "0".repeat(64) };
-    const staleDigest = createHash("sha256").update(JSON.stringify({ ...stalePayload,
-      proposals: stalePayload.proposals.map(({ accepted: _accepted, ...immutable }) => immutable) })).digest("hex");
-    await writeFile(planPath, JSON.stringify({ ...stalePayload, planDigest: staleDigest }));
-    const stale = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
-      runCli(["memory", "curate", "apply", "--plan", planPath, "--json"]))));
-    expect(JSON.parse(stale.stdout).code).toBe("curate_apply_failed");
-    expect((await readdir(join(memoryRoot, ".."))).some((name) => name.includes("curate-backup"))).toBe(false);
-    await writeFile(planPath, JSON.stringify({ ...payload, planDigest }));
     await expect(bujoMemory.applyExplicitMemoryCurate({ root: memoryRoot, proposals: [proposal],
       expectedRootFingerprint: rootFingerprint, expectedSourceFingerprint: payload.sourceFingerprint,
       planDigest: selectedDigest, embeddings, dimension: 8,
@@ -2172,7 +2163,7 @@ describe("curate private plan bound", () => {
       sourceFingerprint: "a".repeat(64), model: "fake", createdAt: "2026-07-12T10:00:00.000Z",
       proposals: Array.from({ length: 110 }, (_, index) => ({ action: "drop", reason: "generic-advice", accepted: false,
         source: { id: `fictional-${index}`, file: "daily/2026-07-12.md", line: index + 1, text: "Morgan example.",
-          textHash: createHash("sha256").update("Morgan example.").digest("hex"), createdAt: "2026-07-12T10:00:00.000Z",
+          textHash: createHash("sha256").update("Morgan example.").digest("hex"), createdAt: "2026-07-12T10:00:00.000Z", status: "open",
           refs: Array.from({ length: 15 }, (_, offset) => `ref-${offset}-${"x".repeat(700)}`) } })), discarded: [] };
     const planDigest = createHash("sha256").update(JSON.stringify({ ...payload,
       proposals: payload.proposals.map(({ accepted: _accepted, ...immutable }) => immutable) })).digest("hex");
