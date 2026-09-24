@@ -129,7 +129,9 @@ scrollable body; the parent Activity keeps the launch and terminal job rows.
 **Limits.** `maxConcurrent` (default 5) is an upper bound on simultaneous
 subagents; the provider may schedule fewer. `Agent` calls can overlap even when
 stateful tools are offered, but an **invoked** stateful, MCP, or unknown tool is
-an exclusive barrier: earlier calls settle first and later calls wait. `maxPerTurn` (default 20) bounds the total per parent turn and is the real
+an exclusive barrier: earlier calls settle first and later calls wait.
+Overlapping children share the workspace, so give parallel children disjoint file
+ownership rather than allowing competing writes to the same paths. `maxPerTurn` (default 20) bounds the total per parent turn and is the real
 runaway guard, since a delegation loop can spend budget serially without ever
 hitting the concurrency cap. Each subagent gets `maxTurns` (default 100) and
 `timeoutMs` (default 5 minutes), and its timeout starts only once it actually
@@ -499,9 +501,10 @@ calls may overlap even if stateful tools are merely offered. An invoked `Write`,
 admitted calls, then blocks later calls until its result settles. A background
 process job or detached Agent releases admission on its started receipt, not
 when the detached work finishes; separate job and child limits still apply.
-Calls waiting behind the gate already have Pi's durable `effect_pending` intent:
-if interrupted before admission, non-replay-safe calls recover as interrupted,
-not re-executed. A host can also force every tool to run sequentially:
+Calls waiting behind the gate already have Pi's durable `effect_pending` intent
+and emitted `tool_execution_start`: a visible “running” state and its duration
+include time waiting for admission, not just execution time. If interrupted
+before admission, non-replay-safe calls recover as interrupted, not re-executed. A host can also force every tool to run sequentially:
 
 ```ts
 const runtimeOptions = {

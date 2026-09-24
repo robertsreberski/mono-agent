@@ -122,19 +122,21 @@ export function createPiSessionAdapter(rawSession) {
   };
 }
 
-function adaptTool(tool, gate, questionState) {
+function adaptTool(tool, gate, questionState, runState) {
   return {
     ...tool,
     async execute(toolCallId, params, onUpdate, _toolContext, _invocation, context) {
       const signal = context.abortSignal;
       const release = gate ? await gate.acquire(isSharedTool(tool), signal) : () => {};
       try {
-        if (signal?.aborted) throw new Error("tool execution aborted");
+        if (runState.stopping || signal?.aborted) throw new Error("tool execution aborted");
         // Pi prepares/publishes every invocation before execute. Its before_tool
         // hook may therefore already have run while this call waited behind a
         // successful AskParent. Never enter a later tool after that question.
         if (questionState.awaiting) {
-          return { content: [{ type: "text", text: "Child turn ended awaiting a parent reply." }], terminate: true };
+          // Pi classifies a thrown tool error as isError; the after_tool hook
+          // still supplies terminate, matching the old before_tool block.
+          throw new Error("Child turn ended awaiting a parent reply.");
         }
         const result = await tool.execute(toolCallId, params, signal, onUpdate);
         if (tool.name === "AskParent" && result?.details?.tool === "AskParent") {
@@ -209,7 +211,13 @@ export async function createPiHarnessAdapter(session, options) {
   // the wrapper gates *invoked* calls, not the set of offered tools.
   const gate = toolExecution === "parallel" ? createToolExecutionGate() : null;
   const questionState = { awaiting: false };
-  const adaptedTools = originalTools.map((tool) => adaptTool(tool, gate, questionState));
+  const runState = { stopping: false, stopEpoch: 0 };
+  const stopTools = () => {
+    runState.stopping = true;
+    runState.stopEpoch += 1;
+    gate?.stop();
+  };
+  const adaptedTools = originalTools.map((tool) => adaptTool(tool, gate, questionState, runState));
   const activeToolNames = originalTools.map((tool) => tool.name);
 
   // Flipped by the bridge's mid-run compaction controller for the lifetime of a
@@ -319,6 +327,7 @@ export async function createPiHarnessAdapter(session, options) {
     // it every steer consumed mid-run stays "pending" until the whole run
     // ends and is only acknowledged in one batch at the end.
     async prompt(text, promptOptions) {
+      const stopEpoch = runState.stopEpoch;
       const images = promptOptions?.images;
       const admission = getOrThrow(await lane.accept({
         kind: "prompt",
@@ -328,6 +337,12 @@ export async function createPiHarnessAdapter(session, options) {
       const { operationId } = admission;
       if (typeof operationId !== "string" || operationId.length === 0) {
         throw new Error("Pi run was admitted without an operation id");
+      }
+      // A restored adapter may run another prompt after an earlier abort.
+      // Never reopen if an abort/close began while this accept was pending.
+      if (stopEpoch === runState.stopEpoch && !closed) {
+        runState.stopping = false;
+        gate?.resume();
       }
       promptOptions?.onOperationAdmitted?.(operationId);
       const driven = getOrThrow(await lane.drive({ operationId, waitForRetry: true }, PI_CONTEXT));
@@ -353,6 +368,9 @@ export async function createPiHarnessAdapter(session, options) {
       return getOrThrow(await lane.cancelQueued(entryId, PI_CONTEXT));
     },
     async abort() {
+      // Pi's effect gate can be aborting before its abortSignal fires (and a
+      // failed durable commit may never fire it). Close our admission first.
+      stopTools();
       const result = await lane.abort(PI_CONTEXT);
       // Aborting an already-idle lane is a benign race with prompt settlement.
       if (!result.ok) {
@@ -408,6 +426,7 @@ export async function createPiHarnessAdapter(session, options) {
     },
     async abortOpenOperations() {
       if (!created.open.some((operation) => operation.lane === "main")) return;
+      stopTools();
       // mono-agent tools predate Pi's invocation memo/checkpoint API, so replaying
       // an interrupted durable operation could repeat an external side effect.
       // Fail closed by settling it as aborted before admitting a new prompt.
@@ -415,6 +434,7 @@ export async function createPiHarnessAdapter(session, options) {
       await lane.waitForIdle(PI_CONTEXT);
     },
     async close() {
+      stopTools();
       if (closed) return;
       closed = true;
       removePromptCacheDiagnostics();

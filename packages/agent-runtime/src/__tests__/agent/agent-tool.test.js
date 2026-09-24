@@ -36,9 +36,9 @@ describe("Agent tool registration", () => {
     expect(createAgentTool(subagentOptions({ depth: 0 }))).not.toBeNull();
   });
 
-  it("leaves executionMode undefined so it never serializes a mixed tool batch", () => {
-    // pi-agent-core makes the WHOLE batch sequential when any tool in it
-    // declares executionMode "sequential" (dist/agent-loop.js:289).
+  it("leaves Agent shareable for the harness's per-invocation gate", () => {
+    // Other offered tools do not make Agent exclusive. Invoked exclusive calls
+    // remain FIFO barriers in the Pi harness adapter.
     expect(createAgentTool(subagentOptions()).executionMode).toBeUndefined();
   });
 

@@ -22,12 +22,19 @@ async function batch(names, { mode = "safe-parallel", question = false } = {}) {
   const repo = new MemorySessionRepo();
   const rawSession = await repo.create({ id: `gate-${Math.random()}` }, PI_CONTEXT);
   const session = createPiSessionAdapter(rawSession);
+  let lane;
+  const originalAttach = session.attach.bind(session);
+  session.attach = (harness, nextLane) => {
+    originalAttach(harness, nextLane);
+    if (nextLane) lane = nextLane;
+  };
   const events = [];
   const blockers = names.map(() => deferred());
   const tools = [...new Set([...names, "Bash"])].map((name) => ({
     name, label: name, description: name,
     parameters: { type: "object", properties: {} },
-    ...(name === "Agent" || name === "Read" ? {} : { executionMode: "sequential" }),
+    ...(["Agent", "Read", "AgentManage", "Monitor", "Unknown"].includes(name)
+      ? {} : { executionMode: "sequential" }),
     async execute(id) {
       events.push(`enter:${id}`);
       await blockers[Number(id.slice(5))].promise;
@@ -46,7 +53,7 @@ async function batch(names, { mode = "safe-parallel", question = false } = {}) {
     blockers.forEach((blocker) => blocker.resolve());
     try { return await run; } finally { await harness.close(); await repo.close(PI_CONTEXT); }
   };
-  return { events, blockers, run, finish, harness, session };
+  return { events, blockers, run, finish, harness, session, lane };
 }
 
 const enter = (i) => `enter:call-${i}`;
@@ -86,6 +93,23 @@ describe("Pi harness invoked-call admission", () => {
       }
     },
   );
+
+  it("keeps FIFO admission across Agent, Bash, Agent", async () => {
+    const state = await batch(["Agent", "Bash", "Agent"]);
+    try {
+      await wait(() => expect(state.events).toContain(enter(0)));
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      expect(state.events).not.toContain(enter(1));
+      expect(state.events).not.toContain(enter(2));
+      state.blockers[0].resolve();
+      await wait(() => expect(state.events).toContain(enter(1)));
+      expect(state.events).not.toContain(enter(2));
+      state.blockers[1].resolve();
+      await wait(() => expect(state.events).toContain(enter(2)));
+      expect(state.events.indexOf(exit(0))).toBeLessThan(state.events.indexOf(enter(1)));
+      expect(state.events.indexOf(exit(1))).toBeLessThan(state.events.indexOf(enter(2)));
+    } finally { await state.finish(); }
+  });
 
   it("keeps forced sequential even for two Agents", async () => {
     const state = await batch(["Agent", "Agent"], { mode: "sequential" });
@@ -140,6 +164,44 @@ describe("Pi harness invoked-call admission", () => {
     } finally { await repo.close(PI_CONTEXT); }
   });
 
+  it("stops queued execution between Pi beginAbort and signalAbort", async () => {
+    const state = await batch(["Bash", "Agent"]);
+    const pendingCommit = deferred();
+    const abortReachedCommit = deferred();
+    const originalRequestAbort = state.lane.requestAbort.bind(state.lane);
+    const originalCommand = state.lane.command.bind(state.lane);
+    state.lane.requestAbort = (...args) => {
+      state.lane.command = (...commandArgs) => {
+        // The first command inside requestOperationAbort occurs *after*
+        // beginAbort, but before the commit materializes signalAbort.
+        state.lane.command = originalCommand;
+        abortReachedCommit.resolve();
+        return pendingCommit.promise.then(() => originalCommand(...commandArgs));
+      };
+      return originalRequestAbort(...args);
+    };
+    try {
+      await wait(() => expect(state.events).toContain(enter(0)));
+      const cancelling = state.harness.abort();
+      await abortReachedCommit.promise;
+      state.blockers[0].resolve();
+      await wait(() => expect(state.events).toContain(exit(0)));
+      // Let the wrapper's finally release admission before checking. The
+      // delayed Pi commit has not signalled abort at this point.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(state.lane.activeDrive.gate.signal.aborted).toBe(false);
+      expect(state.events).not.toContain(enter(1));
+      pendingCommit.resolve();
+      await cancelling;
+      await state.run;
+      expect(state.events).not.toContain(enter(1));
+    } finally {
+      pendingCommit.resolve();
+      state.lane.command = originalCommand;
+      await state.finish();
+    }
+  });
+
   it("never executes a queued call after the run is cancelled", async () => {
     const state = await batch(["Bash", "Agent"]);
     try {
@@ -160,11 +222,39 @@ describe("Pi harness invoked-call admission", () => {
       state.blockers[0].resolve();
       await state.run;
       expect(state.events).not.toContain(enter(1));
+      const results = (await state.session.buildContext()).messages.filter((message) => message.role === "toolResult");
+      expect(results.find((message) => message.toolCallId === "call-1")).toMatchObject({
+        isError: true,
+        content: [{ type: "text", text: "Child turn ended awaiting a parent reply." }],
+      });
     } finally { await state.finish(); }
   });
 });
 
 describe("run-local gate cancellation and hand-off", () => {
+  it("defaults unknown and MCP-named tools to exclusive without a marker", () => {
+    for (const name of ["Unknown", "AgentManage", "Monitor", "RunHistory", "SessionHistory", "McpTool"]) {
+      expect(isSharedTool({ name })).toBe(false);
+    }
+    for (const name of ["Agent", "Read", "Glob", "Grep", "WebFetch", "WebSearch", "ReadSkill"]) {
+      expect(isSharedTool({ name })).toBe(true);
+      expect(isSharedTool({ name, executionMode: "sequential" })).toBe(false);
+    }
+  });
+
+  it("rejects every queued waiter on stop even without Pi aborting its signal", async () => {
+    const gate = createToolExecutionGate();
+    const release = await gate.acquire(false);
+    const pending = [gate.acquire(true), gate.acquire(false)];
+    gate.stop();
+    await Promise.all(pending.map((waiter) => expect(waiter).rejects.toThrow("aborted")));
+    await expect(gate.acquire(true)).rejects.toThrow("aborted");
+    release();
+    gate.resume();
+    const next = await gate.acquire(true);
+    next();
+  });
+
   it("removes aborted waiters and releases a failed or timed-out execution", async () => {
     const gate = createToolExecutionGate();
     const release = await gate.acquire(false);

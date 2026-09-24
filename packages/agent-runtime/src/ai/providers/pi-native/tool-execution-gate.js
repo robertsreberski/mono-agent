@@ -4,7 +4,6 @@
 // MCP tools, and tools carrying a sequential marker are exclusive by default.
 const SHARED_TOOLS = new Set([
   "Agent", "Read", "Glob", "Grep", "WebFetch", "WebSearch", "ReadSkill",
-  "RunHistory", "SessionHistory",
 ]);
 
 /** @param {{name?: string, executionMode?: string}} tool */
@@ -16,19 +15,19 @@ export function isSharedTool(tool) {
 export function createToolExecutionGate() {
   let active = 0;
   let exclusive = false;
-  /** @type {Array<{shared: boolean, resolve: (release: () => void) => void, signal?: AbortSignal, onAbort: () => void}>} */
+  let stopped = false;
+  /** @type {Array<{shared: boolean, resolve: (release: () => void) => void, reject: (error: Error) => void, signal?: AbortSignal, onAbort: () => void}>} */
   const pending = [];
 
   const drain = () => {
-    while (pending.length && !exclusive) {
+    while (pending.length && !exclusive && !stopped) {
       const next = pending[0];
       if (!next.shared && active > 0) break;
       pending.shift();
       next.signal?.removeEventListener("abort", next.onAbort);
       // An abort that raced with admission must not enter the tool.
       if (next.signal?.aborted) {
-        // The waiter checks its signal immediately after admission.
-        next.resolve(() => {});
+        next.reject(new Error("tool execution aborted"));
         continue;
       }
       active += 1;
@@ -47,11 +46,11 @@ export function createToolExecutionGate() {
 
   /** @param {boolean} shared @param {AbortSignal} [signal] */
   const acquire = (shared, signal) => {
-    if (signal?.aborted) return Promise.reject(new Error("tool execution aborted"));
+    if (stopped || signal?.aborted) return Promise.reject(new Error("tool execution aborted"));
     return new Promise((resolve, reject) => {
       /** @type {any} */
       const waiter = {
-        shared, signal, resolve,
+        shared, signal, resolve, reject,
         onAbort: () => {
           const index = pending.indexOf(waiter);
           if (index < 0) return;
@@ -66,5 +65,15 @@ export function createToolExecutionGate() {
       drain();
     });
   };
-  return { acquire };
+  const stop = () => {
+    stopped = true;
+    for (const waiter of pending.splice(0)) {
+      waiter.signal?.removeEventListener("abort", waiter.onAbort);
+      waiter.reject(new Error("tool execution aborted"));
+    }
+  };
+  // Only call after Pi has accepted a new run. The previous batch must already
+  // have settled; do not reopen admission during abort or close.
+  const resume = () => { stopped = false; };
+  return { acquire, stop, resume };
 }
