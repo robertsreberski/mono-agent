@@ -1147,7 +1147,7 @@ describe("pi-native AgentHarness bridge", () => {
     }
   });
 
-  it("serializes a Pi 0.85 batch when any offered tool requires sequential execution", async () => {
+  it("serializes invoked Bash calls while preserving source-ordered results", async () => {
     const root = mkdtempSync(join(tmpdir(), "pi-native-sequential-tools-"));
     try {
       const model = setup();
@@ -1178,8 +1178,8 @@ describe("pi-native AgentHarness bridge", () => {
           : `end:${block.tool_use_id}`);
       expect(lifecycle).toEqual([
         "start:bash-1",
+        "start:bash-2", // Pi publishes intent before the second call enters the gate.
         "end:bash-1",
-        "start:bash-2",
         "end:bash-2",
       ]);
       expect(blocks.filter((block) => block.type === "tool_result")).toEqual([

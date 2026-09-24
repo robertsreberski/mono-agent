@@ -103,7 +103,7 @@ State exactly what you want back ("return a bullet list of file:line and a one-l
  */
 function toolDescription(subagents, definitions, ceiling, instancesEnabled) {
   const maxConcurrent = positiveInt(subagents.maxConcurrent, DEFAULT_MAX_CONCURRENT);
-  const parallel = `\n\nIssue several Agent calls in ONE message to run them in parallel (up to ${maxConcurrent} at a time). Subagents run concurrently and independently.`;
+  const parallel = `\n\nSeveral Agent calls in ONE message can overlap (up to ${maxConcurrent} at a time). An invoked stateful, mutating, MCP, or unknown tool in that message is an exclusive barrier: later calls wait until its result settles. For long commands, use background process jobs when available rather than holding the batch behind a foreground command.`;
   const named = definitions.length === 0
     ? ""
     : `\n\nAvailable subagents:\n${definitions.map((d) => `- ${d.name}: ${d.description}`).join("\n")}\n- ${GENERAL_PURPOSE_SUBAGENT}: read-only researcher inheriting the main model. Used when \`name\` is omitted.`;
@@ -333,10 +333,8 @@ export function createAgentTool(subagents, context = {}, continuation) {
     label: "Agent",
     description: toolDescription(subagents, definitions, ceiling, persistentExposure) + (persistentExposure ? "\n\nA child is stateless by default: it answers once and holds nothing afterwards, which is right for most delegations. Set persist: true only when you will actually continue this child with AgentManage — corrections, follow-up questions, a multi-step assignment — because a persistent instance keeps its transcript and one of this conversation’s live instance slots until you close it; close it as soon as the follow-up is done." : "") + (persistentExposure ? " background: true detaches the child (it currently requires persist: true) and returns a durable started receipt; this exact conversation wakes when the child settles or asks you a question. Reserve it for sustained work that outlives a reply, not for a short question whose answer you need now. Do not poll or replay." : ""),
     parameters,
-    // MUST stay undefined. Agent-only batches can overlap when the offered tool
-    // set contains no sequential tool. Pi 0.85 exposes only a global harness
-    // mode, however, so offering Bash/Write/MCP/etc. serializes Agent calls too;
-    // see the documented provider limitation rather than marking Agent itself.
+    // Agent is shareable in safe-parallel mode even when exclusive tools are
+    // offered; the harness gate serializes those tools only when invoked.
     executionMode: undefined,
     /**
      * @param {string} toolCallId

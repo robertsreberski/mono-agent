@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Let `Agent` and read-only calls overlap when exclusive tools are merely offered.
+  Invoked stateful, MCP, and unknown tools remain exclusive FIFO barriers;
+  `piToolExecutionMode: "sequential"` still serializes every call.
+
 - Let BuJo capture attach host-checked fact, preference, and verified lesson labels
   in its existing extraction call. Drop unsupported labels without losing a memory;
   keep tool outcomes category-only and leave automatic recall unchanged.
