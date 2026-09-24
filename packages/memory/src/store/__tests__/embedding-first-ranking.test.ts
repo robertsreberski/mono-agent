@@ -73,6 +73,14 @@ describe("embedding-first recall ranking", () => {
     expect(result.get("dutch")!).toBeGreaterThan(result.get("italian")!);
   });
 
+  it("matches decomposed and composed diacritics as the same name", () => {
+    const decomposed = "When does Ju\u0308rgen move to Leipzig?";
+    const anchors = queryAnchors(decomposed, []);
+    expect(anchors.has("jurgen")).toBe(true);
+    expect(anchorCoverage(anchors, "J\u00fcrgen Wei\u00df zieht nach Leipzig.")).toBe(1);
+    expect(anchorCoverage(queryAnchors("When does J\u00fcrgen move?", []), "Ju\u0308rgen moves in May.")).toBe(1);
+  });
+
   it("anchors lower-case query names that records spell as proper nouns", () => {
     const records = ["Yesterday Sam Okafor drove a blue hatchback.", "The car wash opens at nine."];
     expect([...queryAnchors("what car does sam okafor drive", records)].sort()).toEqual(["okafor", "sam"]);

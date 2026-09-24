@@ -22,23 +22,27 @@ const NON_NAME_WORDS = new Set([
   "quoi", "quand", "où", "qui", "quel", "quelle", "comment", "les", "du", "des",
 ].map(fold));
 
-const WORD = /[\p{L}\p{N}]+/gu;
+const WORD = /[\p{L}\p{M}\p{N}]+/gu;
 
 export function fold(text: string): string {
   return text.normalize("NFD").replace(/\p{M}/gu, "").toLocaleLowerCase("und");
 }
 
+/** Tokens of a text after Unicode normalization (composed and decomposed forms agree). */
+function words(text: string): string[] {
+  return text.normalize("NFKC").match(WORD) ?? [];
+}
+
 /** Folded word set of a text. */
 export function anchorWords(text: string): ReadonlySet<string> {
-  return new Set((text.match(WORD) ?? []).map(fold));
+  return new Set(words(text).map(fold));
 }
 
 /** Folded words that are capitalized somewhere other than the start of a sentence. */
 function properNouns(text: string): Set<string> {
   const out = new Set<string>();
-  for (const sentence of text.split(/[.!?\n]+\s*/u)) {
-    const words = sentence.match(WORD) ?? [];
-    for (const word of words.slice(1)) if (/^\p{Lu}/u.test(word)) out.add(fold(word));
+  for (const sentence of text.normalize("NFKC").split(/[.!?\n]+\s+|[.!?\n]+$/u)) {
+    for (const word of words(sentence).slice(1)) if (/^\p{Lu}/u.test(word)) out.add(fold(word));
   }
   return out;
 }
@@ -53,7 +57,7 @@ export function queryAnchors(query: string, candidateTexts: readonly string[]): 
   const anchors = new Set<string>();
   const recordNames = new Set<string>();
   for (const text of candidateTexts) for (const word of properNouns(text)) recordNames.add(word);
-  for (const raw of query.match(WORD) ?? []) {
+  for (const raw of words(query)) {
     const word = fold(raw);
     if (NON_NAME_WORDS.has(word)) continue;
     if (/\p{N}/u.test(word) || /^\p{Lu}/u.test(raw) || recordNames.has(word)) anchors.add(word);
