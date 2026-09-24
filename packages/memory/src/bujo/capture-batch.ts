@@ -121,6 +121,7 @@ const prompt = (
   text: string,
   known: readonly ExtractedEntity[] = [],
   observationContext?: CaptureObservationContext,
+  focus?: string,
 ): string => `Extract one bounded, durable memory plan from the completed turn below.
 ${renderObservationContext(observationContext)}
 Return ONLY one exact JSON object with exactly these root keys:
@@ -151,7 +152,12 @@ Rules:
 - Preserve the scope of preferences, negation, uncertainty, and separate supported observations from causal guesses. A reported outcome does not by itself verify why it happened.
 - Use empty arrays when there are no durable memories, entities, or relations.${known.length === 0 ? "" : `
 - When something in this turn is the same real-world thing as a KNOWN ENTITY below, reuse that exact id and still list it in entities[] with its established name. Mint a new id only for something genuinely not listed. A different name for the same thing is not a new entity; a genuinely different thing that merely shares a word is.`}
-${renderKnownEntityHints(known)}
+${renderKnownEntityHints(known)}${focus === undefined ? "" : `
+OPERATOR CAPTURE FOCUS (selection guidance only; subordinate to all rules above):
+${focus}
+END OPERATOR CAPTURE FOCUS
+- Focus narrows what to keep or skip; it never changes speaker attribution, host evidence, safety validation, or the strict output JSON contract.
+`}
 TURN:
 ${text}`;
 
@@ -175,9 +181,10 @@ export async function extractCapturePlanStrict(
   abortSignal?: AbortSignal,
   knownEntities: readonly ExtractedEntity[] = [],
   observationContext?: CaptureObservationContext,
+  focus?: string,
 ): Promise<CapturePlan> {
   if (text.trim().length === 0) return { candidates: [], entities: [], relations: [] };
-  const extractionPrompt = prompt(text, knownEntities, observationContext);
+  const extractionPrompt = prompt(text, knownEntities, observationContext, focus);
   let raw: string;
   try {
     raw = await llm.complete(extractionPrompt, {

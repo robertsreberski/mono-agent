@@ -158,6 +158,7 @@ export class BujoMemoryStore implements MemoryStore {
   private readonly maxBytes: number;
   private readonly clock: () => Date;
   private readonly llm?: LlmComplete;
+  private readonly captureSettings?: BujoOptions["capture"];
   private readonly _tier!: BujoTier;
   private readonly logger: BujoLogger;
   private readonly backgroundDrainTimeoutMs: number;
@@ -202,6 +203,19 @@ export class BujoMemoryStore implements MemoryStore {
     let tier = options.tier ?? derivedTier;
     // Pure validation precedes every filesystem/lease side effect.
     assertTierPrerequisites(tier, options);
+    if (options.capture !== undefined && (tier !== "bujo" || options.readOnly === true)) {
+      throw new Error("memory-bujo: capture settings require a writable bujo tier.");
+    }
+    if (options.capture?.focus !== undefined && (
+      options.capture.focus !== options.capture.focus.trim()
+      || options.capture.focus.length === 0 || Buffer.byteLength(options.capture.focus, "utf8") > 2048
+      || /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(options.capture.focus.replaceAll("\n", ""))
+      || /(?:^|\n)(?:END )?OPERATOR CAPTURE FOCUS\b/iu.test(options.capture.focus)
+    )) throw new Error("memory-bujo: capture focus must be bounded safe text.");
+    if (options.capture?.only !== undefined && (
+      options.capture.only.length > 3 || new Set(options.capture.only).size !== options.capture.only.length
+      || options.capture.only.some((kind) => kind !== "fact" && kind !== "preference" && kind !== "lesson")
+    )) throw new Error("memory-bujo: capture only must be a unique subset of fact, preference, lesson.");
     if (options.allowFtsFallback === true && (
       options.readOnly !== true
       || options.embeddings !== undefined
@@ -229,6 +243,10 @@ export class BujoMemoryStore implements MemoryStore {
     this.clock = options.clock ?? (() => new Date());
     this.logger = options.logger ?? { warn: () => {} };
     if (options.llm !== undefined) this.llm = this.instrumentLlm(options.llm);
+    this.captureSettings = options.capture === undefined ? undefined : {
+      ...(options.capture.focus === undefined ? {} : { focus: options.capture.focus }),
+      ...(options.capture.only === undefined ? {} : { only: [...options.capture.only] }),
+    };
     let opened: MemoryDb | undefined;
     try {
       if (!this.readOnly) cleanupReplayProjectionTemporaryArtifacts(this.root);
@@ -807,6 +825,7 @@ export class BujoMemoryStore implements MemoryStore {
         abortSignal,
         captureRetentionKey: intakeId,
         conversationId: turn.conversationId,
+        ...(this.captureSettings === undefined ? {} : { captureSettings: this.captureSettings }),
         ...(turn.captureSpeakerKind === undefined ? {} : { captureSpeakerKind: turn.captureSpeakerKind }),
         ...(turn.captureEvidence === undefined ? {} : { captureEvidence: turn.captureEvidence }),
         canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,

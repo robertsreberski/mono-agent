@@ -14,6 +14,10 @@
   Invoked stateful, MCP, and unknown tools remain exclusive FIFO barriers;
   `piToolExecutionMode: "sequential"` still serializes every call.
 
+- Let BuJo capture narrow automatic memories with bounded operator guidance and
+  an optional host-validated fact/preference/lesson kind filter. Unset keeps the
+  existing capture behavior; explicit `Remember` writes are unaffected.
+
 - Let BuJo capture attach host-checked fact, preference, and verified lesson labels
   in its existing extraction call. Drop unsupported labels without losing a memory;
   keep tool outcomes category-only and leave automatic recall unchanged.

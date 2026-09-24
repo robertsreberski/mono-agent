@@ -335,6 +335,8 @@ export interface MonoAgentConfig {
     readonly path: string;
     readonly maxBytes: number;
     readonly writeMode: MemoryWriteMode;
+    /** Optional operator focus and host-enforced kind filter for automatic BuJo capture only. */
+    readonly capture?: { readonly focus?: string; readonly only?: readonly ("fact" | "preference" | "lesson")[] };
     /** Embedding provider for semantic memory recall; keyword fallback when unset. */
     readonly embeddings?: MemoryEmbeddingsConfig;
     /** LLM for bujo capture and effective tier selection. */

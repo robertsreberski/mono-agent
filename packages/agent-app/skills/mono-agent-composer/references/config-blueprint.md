@@ -137,6 +137,10 @@ effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired i
       // For agent-host, use: "model": "openai-codex:gpt-5.6-sol"; omit endpoint.
       // agent-host also accepts "trace" (default true) and "timeoutMs" (default 60000).
     },
+    // Optional BuJo capture filters (only with writeMode: capture):
+    // "capture": { "focus": "Keep durable coding preferences; skip CI status.", "only": ["preference", "lesson"] },
+    // focus guides extraction (≤2048 UTF-8 bytes); only keeps host-accepted labels of those kinds.
+    // Unset leaves capture unchanged; neither setting filters explicit Remember writes.
     // Bujo auto-scheduler — override the default or disable it.
     // Consolidation runs in-app; no external cron or launchd needed.
     "consolidation": { "enabled": true, "cron": "0 */2 * * *" }, // default: every two hours

@@ -182,6 +182,7 @@ describe("createConfiguredMemory — bujo mode", () => {
         identityPath: join(dir, "IDENTITY.md"),
         memoryRoot,
         llm: { provider: "agent-host", model: "openai-codex:gpt-5.5" },
+        capture: { focus: "Keep durable fictional coding preferences.", only: ["preference", "lesson"] },
       }),
       { memoryRuntime: runtime },
     ) as unknown as {
@@ -204,6 +205,8 @@ describe("createConfiguredMemory — bujo mode", () => {
     await store.flush();
 
     expect(calls).toHaveLength(1);
+    expect(String(calls[0]?.messages[0]?.content)).toContain("OPERATOR CAPTURE FOCUS");
+    expect(String(calls[0]?.messages[0]?.content)).toContain("Keep durable fictional coding preferences.");
     expect(calls[0]?.outputSchema).toMatchObject({
       type: "object",
       additionalProperties: false,
@@ -582,6 +585,7 @@ function bujoConfig(input: {
   readonly memoryRoot: string;
   readonly embeddings?: NonNullable<MonoAgentConfig["memory"]>["embeddings"];
   readonly llm?: NonNullable<MonoAgentConfig["memory"]>["llm"];
+  readonly capture?: NonNullable<MonoAgentConfig["memory"]>["capture"];
 }): MonoAgentConfig {
   return {
     runtime: {
@@ -594,8 +598,9 @@ function bujoConfig(input: {
     memory: {
       mode: "bujo",
       path: input.memoryRoot,
-      writeMode: "disabled",
+      writeMode: input.capture === undefined ? "disabled" : "capture",
       maxBytes: 8_000,
+      ...(input.capture === undefined ? {} : { capture: input.capture }),
       embeddings: input.embeddings ?? { provider: "ollama", model: "nomic-embed-text:v1.5" },
       ...(input.llm === undefined ? {} : { llm: input.llm }),
     },

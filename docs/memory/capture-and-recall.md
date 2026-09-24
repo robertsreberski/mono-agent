@@ -212,6 +212,33 @@ or tier downshift.
 { "memory": { "mode": "bujo", "writeMode": "capture" } }
 ```
 
+An agent can optionally narrow automatic capture with `memory.capture.focus` (up to
+2048 UTF-8 bytes of operator-written guidance, inside a delimited extraction-prompt
+section) and `memory.capture.only` (a subset of `fact`, `preference`, `lesson`).
+For example, a fictional coding agent might use:
+
+```json
+{
+  "memory": {
+    "mode": "bujo", "writeMode": "capture", "path": "./.mono-agent/memory",
+    "embeddings": { "provider": "ollama", "model": "nomic-embed-text:v1.5", "dim": 768 },
+    "llm": { "provider": "agent-host", "model": "openai-codex:gpt-5.6-terra" },
+    "capture": {
+      "focus": "Keep durable coding preferences and lessons; skip PR and CI status.",
+      "only": ["preference", "lesson"]
+    }
+  }
+}
+```
+
+`focus` guides selection, but cannot override the strict JSON contract, attribution
+or host safety checks. `only` is deterministic: after host label validation and
+reconciliation, capture stores a memory only if one accepted label has an allowed
+kind; unrelated graph nodes are also dropped. An empty `only` list suppresses
+all automatic capture; unset preserves existing capture behavior. These settings
+require BuJo capture mode, and never affect explicit `Remember` writes or the
+compact host audit of admitted turns.
+
 :::caution
 The capture pipeline never replaces the user's successful provider answer. An LLM/embedding timeout emits a memory warning, leaves the admitted turn pending, and retries it durably; only exhaustion moves it to a dead letter. Raise the in-app per-call timeout — `memory.llm.timeoutMs`, **default `60000`** — for a slow model; see [Validation & CLI](/memory/validation-and-cli/#the-memory-llm-timeout).
 :::

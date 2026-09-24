@@ -886,6 +886,10 @@ function setMemoryTierSchema(root: Record<string, JsonSchema>): void {
       },
     }),
     {
+      if: propertyPresentSchema("capture"),
+      then: { properties: { mode: { const: "bujo" }, writeMode: { const: "capture" } }, required: ["mode", "writeMode"] },
+    },
+    {
       if: {
         properties: {
           backend: { const: "bujo" },
@@ -1178,6 +1182,13 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
     schema.enum = MEMORY_MODES;
   } else if (field.jsonPath === "memory.writeMode") {
     schema.enum = MEMORY_WRITE_MODES;
+  } else if (field.jsonPath === "memory.capture.focus") {
+    schema.minLength = 1;
+    schema.maxLength = 2048;
+  } else if (field.jsonPath === "memory.capture.only") {
+    schema.maxItems = 3;
+    schema.uniqueItems = true;
+    schema.items = { type: "string", enum: ["fact", "preference", "lesson"] };
   } else if (field.jsonPath === "memory.embeddings.provider") {
     schema.enum = MEMORY_EMBEDDINGS_PROVIDERS;
   } else if (field.jsonPath === "memory.llm.provider") {
@@ -1339,7 +1350,7 @@ function inferType(id: string): ConfigReferenceType {
     return "boolean";
   }
   if (id === "tools.web.search.maxRequestsPerRun") return "integer";
-  if (id === "cron.preflight") return "string[]";
+  if (id === "cron.preflight" || id === "memory.capture.only") return "string[]";
   if (id.endsWith("Models") || id.endsWith("Tools") || id.endsWith("Servers") || id.endsWith("Roots") || id.endsWith("allowlist") || id.endsWith("denyWrite") || id.endsWith("selectedSkills") || id.endsWith("Ids") || id.endsWith("Aliases")) {
     return "string[]";
   }
@@ -1524,6 +1535,8 @@ function exampleFor(id: string): SettingsJsonValue {
     "memory.embeddings.model": "nomic-embed-text:v1.5",
     "memory.llm.provider": "agent-host",
     "memory.llm.model": "openai-codex:gpt-5.6-terra",
+    "memory.capture.focus": "Keep durable coding preferences and verified lessons; skip PR and CI status.",
+    "memory.capture.only": ["preference", "lesson"],
     "sandbox.mode": "native",
     "traceability.sourceId": "my-agent",
     "traceability.sourceLabel": "My Agent",
@@ -1580,6 +1593,8 @@ function exampleFor(id: string): SettingsJsonValue {
 }
 
 function descriptionFor(id: string): string {
+  if (id === "memory.capture.focus") return "Operator guidance (at most 2048 UTF-8 bytes) narrows BuJo capture extraction; it cannot override host safety or the strict JSON contract. Requires mode bujo and writeMode capture.";
+  if (id === "memory.capture.only") return "Keep automatic capture memories only when a host-accepted label matches one of these kinds. An empty array drops all automatic captures; unset preserves current behavior. Remember writes are unaffected. Requires mode bujo and writeMode capture.";
   if (id === "providers.piNative.cacheRetention") return "Anthropic Messages cache retention (short or long; default long). Short opts out. JSON > long; the resolved value overrides ambient PI_CACHE_RETENTION. Long requires model support: 1h writes cost 2× normal input, reads 0.1×; short writes cost 1.25×. No guaranteed hit.";
   if (id === "providers.piNative.promptCacheDiagnostics") return "Emit metadata-only prompt-cache request fingerprints into run artifacts; never prompt text, tool arguments, cache keys, endpoints or credentials.";
   const section = id.split(".")[0] ?? "config";

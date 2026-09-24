@@ -634,6 +634,41 @@
             "capture"
           ]
         },
+        "capture": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "focus": {
+              "description": "Operator guidance (at most 2048 UTF-8 bytes) narrows BuJo capture extraction; it cannot override host safety or the strict JSON contract. Requires mode bujo and writeMode capture.",
+              "examples": [
+                "Keep durable coding preferences and verified lessons; skip PR and CI status."
+              ],
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
+            },
+            "only": {
+              "description": "Keep automatic capture memories only when a host-accepted label matches one of these kinds. An empty array drops all automatic captures; unset preserves current behavior. Remember writes are unaffected. Requires mode bujo and writeMode capture.",
+              "examples": [
+                [
+                  "preference",
+                  "lesson"
+                ]
+              ],
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "fact",
+                  "preference",
+                  "lesson"
+                ]
+              },
+              "maxItems": 3,
+              "uniqueItems": true
+            }
+          }
+        },
         "embeddings": {
           "type": "object",
           "additionalProperties": false,
@@ -977,6 +1012,30 @@
                 ]
               }
             }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "capture": {}
+            },
+            "required": [
+              "capture"
+            ]
+          },
+          "then": {
+            "properties": {
+              "mode": {
+                "const": "bujo"
+              },
+              "writeMode": {
+                "const": "capture"
+              }
+            },
+            "required": [
+              "mode",
+              "writeMode"
+            ]
           }
         },
         {

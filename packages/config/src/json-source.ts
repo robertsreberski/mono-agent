@@ -210,6 +210,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly path?: string;
     readonly maxBytes?: number;
     readonly writeMode?: MemoryWriteMode;
+    readonly capture?: { readonly focus?: string; readonly only?: readonly string[] };
     readonly supermemory?: MonoAgentMemorySupermemoryJson;
     readonly embeddings?: MonoAgentMemoryEmbeddingsJson;
     readonly llm?: MonoAgentMemoryLlmJson;

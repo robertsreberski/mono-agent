@@ -172,7 +172,10 @@ individual labels while retaining the memory. A fact needs support in the retain
 sentence; user-stated facts and preferences additionally require host-observed human
 turn evidence. Unidentified speakers' preferences are conversation-scoped, and a
 verified lesson requires a host-observed failed tool category followed by a successful
-retry. Tool outcomes exposed to extraction contain only bounded fixed categories,
+retry. Optional `capture.focus` (operator guidance) narrows extraction selection;
+`capture.only` filters curated capture to host-accepted label kinds after final
+reconcile text validation, including its graph. Unset leaves capture unchanged;
+explicit `Remember` writes are unaffected. Tool outcomes exposed to extraction contain only bounded fixed categories,
 never arguments, outputs, paths, URLs or raw error messages. Automatic recall does
 not yet use labels. UPDATE retains labels only when text is unchanged unless
 replacements are supplied; SUPERSEDE does not copy them by default. Lite and
