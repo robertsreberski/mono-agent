@@ -1,7 +1,9 @@
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { TraceSourceMemoryHealth } from "@mono-agent/observability";
+import { configuredEmbeddingIdentity } from "@mono-agent/memory/search";
 
 import { loadAppCoreConfig } from "./app-config.js";
+import { legacyEmbeddingModelOption } from "./memory-embedding-identity.js";
 import {
   traceMemoryHealthFromBujo,
   unknownBujoMemoryHealth,
@@ -114,7 +116,8 @@ export async function computeMemoryHealth(controller: MemoryHealthControllerPort
       ...(memory.embeddings === undefined
         ? {}
         : {
-            configuredEmbeddingModel: `${memory.embeddings.provider}:${memory.embeddings.model}`,
+            configuredEmbeddingModel: configuredEmbeddingIdentity(memory.embeddings),
+            ...legacyEmbeddingModelOption(memory.embeddings),
             configuredDimension: memory.embeddings.dim ?? 768,
           }),
     }));

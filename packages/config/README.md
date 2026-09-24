@@ -336,6 +336,7 @@ EffortLevel
 LoadMonoAgentConfigInput
 MAX_AGENT_NAME_LENGTH
 MEMORY_BACKENDS
+MEMORY_EMBEDDINGS_INSTRUCTIONS
 MEMORY_EMBEDDINGS_PROVIDERS
 MEMORY_LLM_JSON_PATHS
 MEMORY_LLM_PROVIDERS
@@ -346,6 +347,7 @@ MemoryBackend
 MemoryConsolidationConfig
 MemoryEmbeddingsCircuitBreakerConfig
 MemoryEmbeddingsConfig
+MemoryEmbeddingsInstructions
 MemoryEmbeddingsProvider
 MemoryLlmConfig
 MemoryLlmProvider

@@ -91,6 +91,9 @@ describe("memory benchmark", () => {
     });
     expect(report.gates.checks.providerEligibleDirectFactCaseCount).toBe(true);
     expect(report.gates.checks.providerEligibleDirectFactCoverage).toBe(true);
+    expect(report.gates.checks.namesDatesFalseRecallRate).toBe(true);
+    expect(report.gates.checks.namesDatesNegativeAbstentionRate).toBe(true);
+    expect(report.calibrations.namesDates.cases).toBe(14);
   });
 
   it("adapts opt-in LongMemEval session ids and LoCoMo dialogue evidence", async () => {
@@ -300,6 +303,22 @@ describe("memory benchmark", () => {
       passed: false,
       checks: { providerEligibleDirectFactCoverage: false },
     });
+    // Names/dates negatives gate automatic abstention: no false recall.
+    const providerOk = {
+      eligibleDirectFact: { cases: 6, coverage: 1 },
+      unsupported: { cases: 2, abstentionRate: 1 },
+    };
+    expect(memoryBenchmarkGateResults(base, { passed: true }, providerOk, {
+      falseRecallRate: 0.1,
+      negativeAbstentionRate: 0.75,
+    })).toMatchObject({
+      passed: false,
+      checks: { namesDatesFalseRecallRate: false, namesDatesNegativeAbstentionRate: false },
+    });
+    expect(memoryBenchmarkGateResults(base, { passed: true }, providerOk, {
+      falseRecallRate: 0,
+      negativeAbstentionRate: 1,
+    }).passed).toBe(true);
     // Unsupported relational/paraphrase behavior remains informational. Zero
     // unsupported coverage or abstention cannot make the eligible contract fail.
     expect(memoryBenchmarkGateResults(base, { passed: true }, {

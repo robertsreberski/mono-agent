@@ -74,6 +74,7 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `memory.embeddings.circuitBreaker.failureThreshold` | `integer` | `--` | 3 | `3` | Configures embeddings.circuitBreaker.failureThreshold for the memory section. |
 | `memory.embeddings.dim` | `integer` | `--` | unset | `1` | Configures embeddings.dim for the memory section. |
 | `memory.embeddings.endpoint` | `string` | `--` | unset | `example` | Provider service root. LM Studio uses <root>/v1/embeddings and defaults to http://localhost:1234. |
+| `memory.embeddings.instructions` | `string` | `--` | auto | `auto` | Query/document instruction preset: auto (per model when an index is built; an existing index keeps its prefixes), search, none, query, or qwen3. Changing it requires the stopped-agent memory rebuild. |
 | `memory.embeddings.model` | `string` | `--` | unset | `nomic-embed-text:v1.5` | Configures embeddings.model for the memory section. |
 | `memory.embeddings.provider` | `string` | `--` | unset | `ollama` | Embedding service used by Journal/BuJo memory: ollama, lmstudio, or openai. |
 | `memory.embeddings.timeoutMs` | `integer` | `--` | 10000 | `10000` | Configures embeddings.timeoutMs for the memory section. |

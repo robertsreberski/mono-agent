@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Add `memory.embeddings.instructions` so each embedding model gets the
+  query/document prefixes it was trained for (`bge-m3` none, Snowflake Arctic
+  Embed 2 `query: `, Qwen3 its instruction; nomic and other models keep
+  `search_query:`/`search_document:`). The default `auto` never forces a
+  rebuild: an existing index keeps its prefixes until the next stopped-agent
+  `mono-agent memory rebuild`, which adopts the model preset.
+
+- Rank memory recall by embedding similarity. Shared generic words no longer
+  push a record to the top; only exact names, numbers and dates add a small,
+  accent-insensitive boost. Explicit `MemoryRecall` keeps the backend order,
+  and lexical-only recall is unchanged.
+
 - Add labelled fact sheets and scoped guidance to explicit `MemoryRecall`, plus
   read-only `memory labels` and `memory lessons --propose` operator views. Remote
   recall backends and ordinary dated hits remain unchanged.

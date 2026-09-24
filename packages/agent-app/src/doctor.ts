@@ -17,6 +17,7 @@ import {
   getBuiltinProviders as getPiBuiltinProviders,
 } from "@earendil-works/pi-ai/providers/all";
 import { validateCronExpression } from "@mono-agent/cron-adapter";
+import { effectiveEmbeddingIdentity } from "@mono-agent/memory/search";
 import {
   classifyContinuationMcpServerTransport,
   isStdioMcpServerSpec,
@@ -1201,11 +1202,11 @@ async function managedMemoryIdentityStatus(
     };
   }
 
+  const active = manifest.active;
   const configuredModel = memory.embeddings === undefined
     ? undefined
-    : `${memory.embeddings.provider}:${memory.embeddings.model}`;
+    : effectiveEmbeddingIdentity(memory.embeddings, active.embeddingModel);
   const configuredDimension = memory.embeddings === undefined ? undefined : memory.embeddings.dim ?? 768;
-  const active = manifest.active;
   if (active.tier === memory.mode
     && active.embeddingModel === configuredModel
     && active.dimension === configuredDimension) {

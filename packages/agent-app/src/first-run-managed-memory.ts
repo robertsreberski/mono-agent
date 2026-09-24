@@ -2,6 +2,8 @@ import type { Stats } from "node:fs";
 import { link, lstat, mkdir, mkdtemp, open, readdir, realpath, rmdir, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
+import { configuredEmbeddingIdentity } from "@mono-agent/memory/search";
+
 import { probeMemoryEmbeddingSelection } from "./memory-embedding-service.js";
 import type { WizardPlan } from "./wizard/answers.js";
 
@@ -442,7 +444,11 @@ function managedMemoryConfiguration(plan: WizardPlan): {
     model,
     ...(endpoint === undefined || endpoint.length === 0 ? {} : { endpoint }),
     ...(apiKeyEnv === undefined || apiKeyEnv.length === 0 ? {} : { apiKeyEnv }),
-    embeddingId: `${provider}:${model}`,
+    embeddingId: configuredEmbeddingIdentity({
+      provider,
+      model,
+      ...(memory.embeddings?.instructions === undefined ? {} : { instructions: memory.embeddings.instructions }),
+    }),
     dimension,
   };
 }

@@ -5,6 +5,7 @@ import {
   CORE_CONFIG_FIELD_IDS,
   EFFORT_LEVELS,
   MEMORY_BACKENDS,
+  MEMORY_EMBEDDINGS_INSTRUCTIONS,
   MEMORY_EMBEDDINGS_PROVIDERS,
   MEMORY_LLM_PROVIDERS,
   MEMORY_MODES,
@@ -1191,6 +1192,8 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
     schema.items = { type: "string", enum: ["fact", "preference", "lesson"] };
   } else if (field.jsonPath === "memory.embeddings.provider") {
     schema.enum = MEMORY_EMBEDDINGS_PROVIDERS;
+  } else if (field.jsonPath === "memory.embeddings.instructions") {
+    schema.enum = MEMORY_EMBEDDINGS_INSTRUCTIONS;
   } else if (field.jsonPath === "memory.llm.provider") {
     schema.enum = MEMORY_LLM_PROVIDERS;
   } else if (field.jsonPath === "sandbox.mode") {
@@ -1418,6 +1421,7 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "memory.maxBytes": 64_000,
     "memory.writeMode": "disabled",
     "memory.embeddings.timeoutMs": 10_000,
+    "memory.embeddings.instructions": "auto",
     "memory.embeddings.circuitBreaker.failureThreshold": 3,
     "memory.embeddings.circuitBreaker.cooldownMs": 30_000,
     "memory.llm.trace": true,
@@ -1668,6 +1672,9 @@ function descriptionFor(id: string): string {
   }
   if (id === "memory.embeddings.provider") {
     return "Embedding service used by Journal/BuJo memory: ollama, lmstudio, or openai.";
+  }
+  if (id === "memory.embeddings.instructions") {
+    return "Query/document instruction preset: auto (per model when an index is built; an existing index keeps its prefixes), search, none, query, or qwen3. Changing it requires the stopped-agent memory rebuild.";
   }
   if (id === "memory.embeddings.endpoint") {
     return "Provider service root. LM Studio uses <root>/v1/embeddings and defaults to http://localhost:1234.";

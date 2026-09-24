@@ -93,6 +93,11 @@ export interface BujoMemoryHealthOptions {
   readonly root: string;
   readonly mode: BujoTier;
   readonly configuredEmbeddingModel?: string;
+  /**
+   * Also accepted: the identity of an index built before embedding instruction
+   * presets, which keeps its historical prefixes until a deliberate rebuild.
+   */
+  readonly configuredLegacyEmbeddingModel?: string;
   readonly configuredDimension?: number;
   readonly now?: Date;
   /** Internal periodic budget; omitted strict callers retain three attempts. */
@@ -370,8 +375,7 @@ function applyDbObservation(
   }
   if (descriptor === undefined && observation.metadata !== undefined) {
     if (observation.metadata.tier !== options.mode
-      || (options.configuredEmbeddingModel !== undefined
-        && observation.metadata.embeddingModel !== options.configuredEmbeddingModel)
+      || !configuredModelAccepts(options, observation.metadata.embeddingModel)
       || (options.configuredDimension !== undefined
         && observation.metadata.dimension !== options.configuredDimension)) {
       issues.add("configured_identity_mismatch");
@@ -383,7 +387,11 @@ function applyDbObservation(
     || state.relationOrphans !== 0 || state.associationOrphans !== 0) {
     issues.add("orphaned_rows");
   }
-  const expectedModel = descriptor?.embeddingModel ?? options.configuredEmbeddingModel;
+  const expectedModel = descriptor?.embeddingModel
+    ?? (options.configuredLegacyEmbeddingModel !== undefined
+      && observation.metadata?.embeddingModel === options.configuredLegacyEmbeddingModel
+      ? options.configuredLegacyEmbeddingModel
+      : options.configuredEmbeddingModel);
   const expectedDimension = descriptor?.dimension ?? options.configuredDimension;
   const invalidCoverage = options.mode === "lite"
     ? state.vectors !== 0
@@ -415,8 +423,7 @@ function inspectConfiguredIdentity(
   issues: Set<MemoryHealthIssueCode>,
 ): void {
   if (active.tier !== options.mode
-    || (options.configuredEmbeddingModel !== undefined
-      && active.embeddingModel !== options.configuredEmbeddingModel)
+    || !configuredModelAccepts(options, active.embeddingModel)
     || (options.configuredDimension !== undefined && active.dimension !== options.configuredDimension)) {
     issues.add("configured_identity_mismatch");
   }
@@ -768,11 +775,20 @@ function errorCode(error: unknown): string | undefined {
   }
 }
 
+function configuredModelAccepts(options: BujoMemoryHealthOptions, actual: string | undefined): boolean {
+  return options.configuredEmbeddingModel === undefined
+    || actual === options.configuredEmbeddingModel
+    || (options.configuredLegacyEmbeddingModel !== undefined && actual === options.configuredLegacyEmbeddingModel);
+}
+
 function assertOptions(options: BujoMemoryHealthOptions): void {
   if (typeof options.root !== "string" || options.root.length === 0
     || (options.mode !== "lite" && options.mode !== "journal" && options.mode !== "bujo")
     || (options.configuredEmbeddingModel !== undefined
       && (typeof options.configuredEmbeddingModel !== "string" || options.configuredEmbeddingModel.length === 0))
+    || (options.configuredLegacyEmbeddingModel !== undefined
+      && (typeof options.configuredLegacyEmbeddingModel !== "string"
+        || options.configuredLegacyEmbeddingModel.length === 0))
     || (options.configuredDimension !== undefined
       && (!Number.isInteger(options.configuredDimension) || options.configuredDimension <= 0))
     || (options.maxStabilityAttempts !== undefined

@@ -67,6 +67,7 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "memory.embeddings.apiKeyEnv": "string",
   "memory.embeddings.dim": "integer",
   "memory.embeddings.timeoutMs": "integer",
+  "memory.embeddings.instructions": "string",
   "memory.embeddings.circuitBreaker.failureThreshold": "integer",
   "memory.embeddings.circuitBreaker.cooldownMs": "integer",
   "memory.llm.provider": "string",

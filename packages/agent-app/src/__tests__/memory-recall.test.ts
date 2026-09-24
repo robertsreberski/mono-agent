@@ -21,7 +21,6 @@ import {
   createMemoryEmbeddingProvider,
   createMemoryRecallServer,
   createRecallStore,
-  rankExplicitHits,
   resolveMemoryRecallSettings,
 } from "../memory-recall.js";
 import type { MemoryRecallBujoSettings, MemoryRecallSettings } from "../memory-recall.js";
@@ -617,23 +616,6 @@ function deterministicEmbeddings(id: string, dim: number): EmbeddingProvider {
     }),
   };
 }
-
-describe("explicit-only coverage scoring", () => {
-  it.each([
-    ["When is Morgan's birth date and age?", "Morgan's birth date is 17 May", "Morgan's age is uncertain"],
-    ["Quando è la data di nascita di Morgan?", "La data di nascita di Morgan è maggio", "Morgan ha avuto un raffreddore"],
-    ["Wat is de geboortedatum van Morgan?", "De geboortedatum van Morgan is mei", "Morgan heeft een verkoudheid"],
-  ])("distinguishes multi-term coverage without changing original backend hits: %s", (query, complete, partial) => {
-    const hits = [
-      { score: 0.99, record: { id: "partial", text: partial } },
-      { score: 0.98, record: { id: "complete", text: complete } },
-    ];
-    const ranked = rankExplicitHits(query, hits);
-    expect(ranked[0]?.record.id).toBe("complete");
-    expect(ranked[0]!.score).toBeGreaterThan(ranked[1]!.score);
-    expect(hits[0]?.score).toBe(0.99);
-  });
-});
 
 describe("backend-agnostic recall server", () => {
   it("names all ambiguous identities and ranks current facts ahead of older history with a visible cap", () => {

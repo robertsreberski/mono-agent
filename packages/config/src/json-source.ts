@@ -7,7 +7,7 @@ import type { SettingsJson, SettingsJsonValue } from "@mono-agent/agent-contract
 import type { PiTransport } from "@mono-agent/runtime-adapter";
 
 import { assertNoRetiredMonoAgentConfig, MonoAgentConfigError } from "./config.js";
-import type { MemoryBackend, MemoryEmbeddingsProvider, MemoryLlmProvider, MemoryMode, MemoryWriteMode } from "./types.js";
+import type { MemoryBackend, MemoryEmbeddingsInstructions, MemoryEmbeddingsProvider, MemoryLlmProvider, MemoryMode, MemoryWriteMode } from "./types.js";
 
 /** JSON form of one canonical runtime fallback route. */
 export type MonoAgentRuntimeFallbackJson = {
@@ -39,6 +39,7 @@ export type MonoAgentMemoryEmbeddingsJson = {
   readonly apiKeyEnv?: string;
   readonly dim?: number;
   readonly timeoutMs?: number;
+  readonly instructions?: MemoryEmbeddingsInstructions;
   readonly circuitBreaker?: MonoAgentMemoryEmbeddingsCircuitBreakerJson;
 };
 

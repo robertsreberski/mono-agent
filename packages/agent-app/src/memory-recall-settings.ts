@@ -18,6 +18,8 @@ export interface MemoryRecallEmbeddings {
   readonly dim?: number;
   /** Per-call embeddings timeout in ms; mirrors the host default when unset. */
   readonly timeoutMs?: number;
+  /** Embedding instruction preset; absent means per-model `auto`. */
+  readonly instructions?: "auto" | "search" | "none" | "query" | "qwen3";
   /** Circuit-breaker overrides; unset fields fall back to the breaker defaults. */
   readonly circuitBreaker?: MemoryRecallEmbeddingsCircuitBreaker;
 }
@@ -78,6 +80,7 @@ export function resolveMemoryRecallSettings(
       ...(embeddings.apiKey === undefined ? {} : { apiKey: embeddings.apiKey }),
       ...(embeddings.dim === undefined ? {} : { dim: embeddings.dim }),
       ...(embeddings.timeoutMs === undefined ? {} : { timeoutMs: embeddings.timeoutMs }),
+      ...(embeddings.instructions === undefined ? {} : { instructions: embeddings.instructions }),
       ...(embeddings.circuitBreaker === undefined ? {} : { circuitBreaker: embeddings.circuitBreaker }),
     },
   };

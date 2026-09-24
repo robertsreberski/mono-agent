@@ -655,6 +655,11 @@ writeIndex
 ```text
 CircuitBreakerEmbeddingOptions
 CircuitBreakerEmbeddingProvider
+EMBEDDING_INSTRUCTION_PRESETS
+EmbeddingIdentityConfig
+EmbeddingInstructionPreset
+EmbeddingInstructionsSetting
+EmbeddingPrefixes
 EmbeddingProvider
 EmbeddingProviderConfig
 EmbeddingProviderKind
@@ -663,8 +668,17 @@ MemorySearchError
 MemorySearchErrorCode
 OllamaEmbeddingProvider
 OpenAIEmbeddingProvider
+adoptEmbeddingIndexIdentity
+configuredEmbeddingIdentity
 createCircuitBreakerEmbeddingProvider
 createEmbeddingProvider
+effectiveEmbeddingIdentity
+embeddingIdentity
+embeddingPrefixesForIdentity
+isEmbeddingInstructionsSetting
+legacyEmbeddingIdentity
+modelInstructionPreset
+resolveEmbeddingInstructionPreset
 ```
 
 **`@mono-agent/memory/store`**

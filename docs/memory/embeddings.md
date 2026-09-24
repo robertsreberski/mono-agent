@@ -45,7 +45,8 @@ work inside its bounded background curation queue rather than delaying the chann
 | `endpoint` | string | no | Absolute HTTP(S) service root. It may include a path, but not credentials, a query, or a fragment. Defaults to `http://localhost:11434` (Ollama), `http://localhost:1234` (LM Studio), or `https://api.openai.com/v1` (OpenAI). |
 | `apiKeyEnv` | string | OpenAI; optional LM Studio | Name of the env var holding the API key (preferred). LM Studio is keyless when omitted. |
 | `apiKey` | string | OpenAI; optional LM Studio | Inline key (prefer `apiKeyEnv`; keep secret values out of config). |
-| `dim` | number | yes | Output dimension; must match the model (768 for `nomic-embed-text:v1.5`, 1536 for `text-embedding-3-small`). |
+| `dim` | number | yes | Output dimension; must match the model (768 for `nomic-embed-text:v1.5`, 1024 for `bge-m3`, 1536 for `text-embedding-3-small`). |
+| `instructions` | `"auto"` \| `"search"` \| `"none"` \| `"query"` \| `"qwen3"` | no | Query/document instruction preset (default `auto`). See [Instruction presets](#instruction-presets). |
 
 :::caution
 The `model` and `dim` must agree with the actual model. A mismatched `dim` corrupts the
@@ -56,6 +57,29 @@ declares `apiKeyEnv`, that variable must contain a non-empty value: validation r
 `waiting` and guided readiness does not silently retry keyless when the declared variable
 is missing.
 :::
+
+## Instruction presets
+
+Embedding models are trained with different query/document prefixes. Memory sends the
+preset that matches the model:
+
+| Preset | Query text | Document text | `auto` selects it for |
+| --- | --- | --- | --- |
+| `search` | `search_query: <query>` | `search_document: <text>` | `nomic-embed-text*` and every model not listed below |
+| `none` | `<query>` | `<text>` | `bge-m3` |
+| `query` | `query: <query>` | `<text>` | `snowflake-arctic-embed2`, `snowflake-arctic-embed-{m,l}-v2.0` |
+| `qwen3` | `Instruct: Given a question, retrieve memory notes that answer it` + newline + `Query:<query>` | `<text>` | `qwen3-embedding*` |
+
+The preset is part of the index identity: a non-`search` preset appends
+`#instructions=<preset>` to the provider/model identity, so vectors built with different
+prefixes are never mixed. `search` keeps the historical `provider:model` identity.
+
+Upgrading never forces a rebuild. With the default `auto`, an index built before presets
+existed (managed, or a manifest-free legacy `memory.db` whose vectors all carry the
+legacy identity) keeps serving with its original `search` prefixes; the next deliberate
+`mono-agent memory rebuild` adopts the model's preset. Setting `instructions` explicitly
+is a configuration change like a model change: it requires the stopped-agent rebuild when
+it differs from the active index.
 
 ## Guided Journal/BuJo setup
 
@@ -211,7 +235,9 @@ capability metadata and the real `/api/embed` response. LM Studio checks the typ
 dimension to equal config. OpenAI keeps its credential/config validation and is not offered
 as the guided local-memory choice. See [memory validation and CLI operations](/memory/validation-and-cli/).
 
-Changing the configured provider, model, or dimension changes the managed index identity.
-Stop the agent, edit config, run `mono-agent memory rebuild --json`, validate, then restart;
+Changing the configured provider, model, dimension, or explicit `instructions` changes the
+managed index identity. Switching models is a stopped-agent operation (the agent does not
+re-embed in the background): stop the agent, edit `model`/`dim` (and optionally
+`instructions`), run `mono-agent memory rebuild --json`, validate, then restart;
 never relabel an existing generation by hand. See the safe rebuild procedure in
 [safe index-generation rebuild and rollback](/memory/validation-and-cli/#safe-index-generations-rebuild-and-rollback).
