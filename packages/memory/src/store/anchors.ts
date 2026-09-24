@@ -22,7 +22,10 @@ const NON_NAME_WORDS = new Set([
   "quoi", "quand", "où", "qui", "quel", "quelle", "comment", "les", "du", "des",
 ].map(fold));
 
-const WORD = /[\p{L}\p{M}\p{N}]+/gu;
+// Whole numbers, dates, times and numeric identifiers stay one token
+// (`1988-11-02`, `17/05/1990`, `08:30`, `4471`) so an anchor never matches a
+// component number of a different date. Other words are letter/number runs.
+const WORD = /\p{N}+(?:[-/.:]\p{N}+)*|[\p{L}\p{M}\p{N}]+/gu;
 
 export function fold(text: string): string {
   return text.normalize("NFD").replace(/\p{M}/gu, "").toLocaleLowerCase("und");
@@ -48,7 +51,7 @@ function properNouns(text: string): Set<string> {
 }
 
 /**
- * Query anchors: words with a digit (numbers, years, date parts), capitalized
+ * Query anchors: whole numbers, dates and numeric identifiers, capitalized
  * query words that are not question/imperative words, and query words that the
  * candidate records spell as proper nouns (so lower-case queries still anchor
  * names).

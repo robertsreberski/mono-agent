@@ -66,6 +66,21 @@ describe("embedding-first recall ranking", () => {
     expect(result.get("dated")! - result.get("other")!).toBeCloseTo(0.9 * 0.15, 2);
   });
 
+  it("matches whole dates and numeric identifiers, not their component numbers", async () => {
+    const exact = note("exact", "Taylor Brooks was born on 1988-11-02.");
+    const sibling = note("sibling", "Riley Brooks was born on 1988-12-02.");
+    const result = await scores(
+      [exact, sibling],
+      { [exact.text]: 0.7, [sibling.text]: 0.7 },
+      "who was born on 1988-11-02?",
+    );
+    expect(result.get("exact")! - result.get("sibling")!).toBeCloseTo(0.9 * 0.15, 2);
+    const anchors = queryAnchors("Was invoice 4471 paid on 17/05/2026?", []);
+    expect([...anchors].sort()).toEqual(["17/05/2026", "4471"]);
+    expect(anchorCoverage(anchors, "Invoice 4471 was paid on 17/05/2026.")).toBe(1);
+    expect(anchorCoverage(anchors, "Invoice 44 was paid on 17/05/2025 for 71 items.")).toBe(0);
+  });
+
   it("matches names across accents and in multilingual records", async () => {
     const dutch = note("dutch", "Zoë de Vries viert haar verjaardag op 12 maart.");
     const italian = note("italian", "Il compleanno di Luca Bianchi è il 3 luglio.");
@@ -85,6 +100,7 @@ describe("embedding-first recall ranking", () => {
     const records = ["Yesterday Sam Okafor drove a blue hatchback.", "The car wash opens at nine."];
     expect([...queryAnchors("what car does sam okafor drive", records)].sort()).toEqual(["okafor", "sam"]);
     expect([...queryAnchors("When was Morgan born on 17 May?", [])].sort()).toEqual(["17", "may", "morgan"]);
+    expect([...queryAnchors("When was Morgan born on 1990-05-17?", [])].sort()).toEqual(["1990-05-17", "morgan"]);
     expect(anchorCoverage(new Set(["zoe", "12"]), "Zoë viert op 12 maart.")).toBe(1);
   });
 
