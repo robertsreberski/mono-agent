@@ -1,7 +1,7 @@
 import type { MemoryStatus, MemoryType } from "../store/index.js";
 
 import type { Bullet } from "./types.js";
-import { labelsOf } from "./labels.js";
+import { labelsOf, readableLabelsOf, encodeMemoryLabel } from "./labels.js";
 
 const MARKERS: Record<string, { type: MemoryType; status: MemoryStatus }> = {
   "[ ]": { type: "task", status: "open" },
@@ -75,7 +75,6 @@ export function parseBullet(line: string): Bullet | undefined {
     refs: fields.refs === undefined || fields.refs.length === 0 ? [] : fields.refs.split(","),
     ...(fields.due !== undefined ? { dueAt: fields.due } : {}),
   };
-  labelsOf(bullet);
   return bullet;
 }
 
@@ -120,11 +119,7 @@ function parseMeta(meta: string): Record<string, string> {
     if (eq === -1) continue;
     const key = pair.slice(0, eq);
     const value = pair.slice(eq + 1);
-    if (key === "refs" && out.refs !== undefined
-      && (out.refs.includes("label:") || value.includes("label:"))) {
-      throw new Error("memory-bujo: duplicate labelled refs metadata.");
-    }
-    out[key] = value;
+    out[key] = key === "refs" && out.refs !== undefined ? `${out.refs},${value}` : value;
   }
   return out;
 }
@@ -172,5 +167,20 @@ export function parseDailyFile(content: string): DailyFile & { bullets: Bullet[]
 }
 
 export function serializeDailyFile(file: DailyFile): string {
-  return file.lines.map((l) => (l.bullet ? serializeBullet(l.bullet) : l.raw)).join("\n");
+  return file.lines.map((line) => {
+    if (line.bullet === undefined) return line.raw;
+    try { labelsOf(line.bullet); }
+    catch {
+      // Unchanged damaged source is readable, not silently repaired. Forgetting its
+      // line removes invalid labels while preserving ordinary and healthy refs.
+      if (JSON.stringify(parseBullet(line.raw)) === JSON.stringify(line.bullet)) return line.raw;
+      if (line.bullet.status === "invalidated" || line.bullet.status === "dropped") {
+        return serializeBullet({ ...line.bullet, refs: [
+          ...line.bullet.refs.filter((ref) => !ref.startsWith("label:")),
+          ...readableLabelsOf(line.bullet).map(encodeMemoryLabel),
+        ] });
+      }
+    }
+    return serializeBullet(line.bullet);
+  }).join("\n");
 }

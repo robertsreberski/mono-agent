@@ -46,6 +46,7 @@ export type CanonicalGraphParityIssueCode = CanonicalGraphIssueCode
 export interface CanonicalGraphParityIssue {
   readonly code: CanonicalGraphParityIssueCode;
   readonly line?: number;
+  readonly file?: string;
 }
 
 export interface CanonicalGraphMutationState {
@@ -150,6 +151,10 @@ export function auditCanonicalGraphParity(
       return inProgressResult(tier, { ...mutationAfter.state, sourceChanged: true });
     }
 
+    if (canonicalAfter.invalidLabels.length > 0) {
+      return { ...invalidResult(tier, { code: "canonical-read-failed" }),
+        issues: canonicalAfter.invalidLabels.map(({ file, line }) => ({ code: "canonical-read-failed" as const, file, line })) };
+    }
     const expected = canonicalAfter.graph;
 
     const entities = compareEntities(expected.entities, active.entities);

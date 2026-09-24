@@ -515,7 +515,7 @@ function planSupersede(
     isInsight: candidate.isInsight,
     createdAt: effectiveAt.toISOString(),
     refs: [],
-  }, deps.labelsForAction?.("supersede", candidate, beforeOld) ?? labelsOf(beforeOld));
+  }, deps.labelsForAction?.("supersede", candidate, beforeOld) ?? []);
   const record = recordFor(bullet, deps.root, effectiveAt);
   const newSourceFile = record.source.file!;
   return {

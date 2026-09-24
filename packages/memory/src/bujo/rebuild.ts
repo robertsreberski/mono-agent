@@ -20,7 +20,7 @@ import type {
 import type { EmbeddingProvider } from "../search/index.js";
 
 import { normalizedContentHash } from "./daily.js";
-import { labelsOf } from "./labels.js";
+import { labelsOf, readableLabelsOf } from "./labels.js";
 import type { IndexedMemoryLabel } from "../store/db-labels.js";
 import { isRememberedMemoryId } from "./canonical-lookup.js";
 import { parseDailyFile } from "./grammar.js";
@@ -146,7 +146,7 @@ export async function rebuildFromMarkdown(root: string, db: MemoryDb): Promise<{
     if (source === undefined) return [];
     const snapshot = readCanonicalFileSnapshot(root, source);
     const bullet = parseDailyFile(snapshot?.content ?? "").bullets.find((item) => item.id === record.id);
-    return (bullet === undefined ? [] : labelsOf(bullet).map((label, ordinal) => ({ memoryId: record.id, ordinal, label })));
+    return (bullet === undefined ? [] : readableLabelsOf(bullet).map((label, ordinal) => ({ memoryId: record.id, ordinal, label })));
   }));
 
   // Ingest entity graph — db.rebuild already wiped the entity tables, so start fresh.
@@ -247,6 +247,7 @@ interface SourceSnapshot {
 interface BuildPlan {
   readonly records: readonly MemoryRecord[];
   readonly labels: readonly IndexedMemoryLabel[];
+  readonly invalidLabels: readonly { readonly file: string; readonly line: number }[];
   readonly contentHashes: ReadonlyMap<string, string>;
   readonly graph: CanonicalGraphProjection;
   readonly replay: ReplayProjectionV1;
@@ -265,6 +266,7 @@ export interface CanonicalGraphAuditSourceSnapshot {
   readonly fingerprint: string;
   readonly graph: CanonicalGraphProjection;
   readonly labels: readonly IndexedMemoryLabel[];
+  readonly invalidLabels: readonly { readonly file: string; readonly line: number }[];
 }
 
 /** Read the same identity-stable canonical daily+graph projection used by safe rebuild. */
@@ -273,14 +275,14 @@ export function readCanonicalGraphAuditSourceSnapshot(
   tier: BujoTier,
 ): CanonicalGraphAuditSourceSnapshot {
   if (tier !== "bujo") {
-    return { fingerprint: `ignored:${tier}`, graph: emptyCanonicalGraphProjection(), labels: [] };
+    return { fingerprint: `ignored:${tier}`, graph: emptyCanonicalGraphProjection(), labels: [], invalidLabels: [] };
   }
   const snapshot = snapshotCanonicalSources(root, tier);
   // This surface audits only graph projection. Replay absence is independently
   // owned by strict index health and must not turn an otherwise exact graph
   // comparison into a graph parse failure.
   const plan = buildPlan(snapshot, tier, emptyReplayProjection());
-  return { fingerprint: snapshot.fingerprint, graph: plan.graph, labels: plan.labels };
+  return { fingerprint: snapshot.fingerprint, graph: plan.graph, labels: plan.labels, invalidLabels: plan.invalidLabels };
 }
 
 /** One canonical daily source file, exactly as the rebuild planner reads it. */
@@ -1264,7 +1266,8 @@ function buildPlan(
   reuseAuditProjection = false,
 ): BuildPlan {
   const rawRecords: MemoryRecord[] = [];
-  const labelsAtSource = new Map<string, ReturnType<typeof labelsOf>>();
+  const labelsAtSource = new Map<string, ReturnType<typeof readableLabelsOf>>();
+  const invalidLabels: { file: string; line: number }[] = [];
   let skippedUnstructuredRecords = 0;
   const missingIdentityLocations: string[] = [];
   const legacySourceLocations: string[] = [];
@@ -1294,7 +1297,11 @@ function buildPlan(
         throw new Error(`memory-rebuild: invalid memory timestamp at ${source.relativePath}:${line.lineNumber}.`);
       }
       rawRecords.push(toRecord(line.bullet, source.relativePath, line.lineNumber));
-      labelsAtSource.set(`${source.relativePath}\0${line.lineNumber}`, labelsOf(line.bullet));
+      if (tier === "bujo") {
+        try { labelsOf(line.bullet); }
+        catch { invalidLabels.push({ file: source.relativePath, line: line.lineNumber }); }
+        labelsAtSource.set(`${source.relativePath}\0${line.lineNumber}`, readableLabelsOf(line.bullet));
+      }
     }
   }
 
@@ -1368,6 +1375,7 @@ function buildPlan(
   return {
     records: [...records.values()],
     labels,
+    invalidLabels,
     contentHashes,
     graph,
     replay,

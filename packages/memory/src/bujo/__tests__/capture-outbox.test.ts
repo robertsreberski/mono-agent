@@ -13,6 +13,8 @@ import {
 } from "../capture-outbox.js";
 import { appendBullet, dailyFilePath, rewriteBullet } from "../daily.js";
 import { parseDailyFile, serializeBullet } from "../grammar.js";
+import { labelsOf, withMemoryLabels } from "../labels.js";
+import { auditCanonicalGraphParity } from "../graph-parity.js";
 import { appendEntity, appendGraphBatch, readGraph } from "../graph.js";
 import { readCanonicalFileSnapshot } from "../path-safety.js";
 import {
@@ -244,6 +246,26 @@ describe("capture outbox", () => {
     } finally {
       db.close();
     }
+  });
+
+  it("replays labelled ADD after interruption with exact SQLite label parity", () => {
+    const root = tempRoot();
+    const added = withMemoryLabels(bullet("LABELLED-ADD", "Morgan prefers concise project notes."), [
+      { v: 1, kind: "preference", scope: "project:fictional-project", attribution: "user-stated" },
+    ]);
+    const file = relative(root, dailyFilePath(root, NOW));
+    writeCaptureIntent(root, [{ candidateIndex: 0, kind: "add", id: added.id,
+      after: { file, bullet: added }, record: memoryRecord(added, file), vector: [1, 0], threads: [] }],
+    {}, NOW.toISOString());
+    const db = openMemoryDb({ path: join(root, "memory.db"),
+      embeddings: noCallEmbeddings("test:label-replay"), dim: 2 });
+    try {
+      // Crash after the daily publication but before its SQLite projection.
+      appendBullet(root, added, NOW);
+      expect(replayCaptureOutbox(root, db)).toHaveLength(1);
+      expect(db.guidanceForScope("project:fictional-project")[0]?.label).toEqual(labelsOf(added)[0]);
+      expect(auditCanonicalGraphParity(root, db).labels).toMatchObject({ missing: 0, extra: 0, matched: 1 });
+    } finally { db.close(); }
   });
 
   it("treats a completed intent as a replay receipt and never reapplies its mutable payload", () => {

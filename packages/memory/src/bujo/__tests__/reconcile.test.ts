@@ -128,7 +128,7 @@ function dailyContent(root: string): string {
 }
 
 describe("reconcile", () => {
-  it("clears labels on changed UPDATE and carries them as history on SUPERSEDE", async () => {
+  it("clears labels on changed UPDATE and keeps only history on SUPERSEDE", async () => {
     const label: MemoryLabel = { v: 1, kind: "fact", entityId: "person:morgan", key: "preferred_name",
       value: { type: "text", text: "Morgan" }, attribution: "user-stated" };
     const root = newRoot();
@@ -155,11 +155,30 @@ describe("reconcile", () => {
     const replacementId = actions[0]?.kind === "supersede" ? actions[0].newId : "";
     expect(replacementId).not.toBe("");
     expect(db.labelsForEntity("person:morgan").map((hit) => [hit.memoryId, hit.active])).toEqual([
-      [replacementId, true], ["OLD1", false], ["UPD1", true],
+      ["OLD1", false], ["UPD1", true],
     ]);
-    expect(parseDailyFile(dailyContent(root)).bullets.find((item) => item.id === replacementId)?.refs)
-      .toEqual([encodeMemoryLabel(label)]);
+    expect(parseDailyFile(dailyContent(root)).bullets.find((item) => item.id === replacementId)?.refs).toEqual([]);
   });
+  it("retains unchanged UPDATE labels and explicitly replaces SUPERSEDE labels", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    const label: MemoryLabel = { v: 1, kind: "preference", scope: "agent", attribution: "user-stated" };
+    const replacement: MemoryLabel = { v: 1, kind: "lesson", scope: "agent", verified: true };
+    const text = "Morgan prefers concise technical reports";
+    await seed(db, root, "OLD1", text, { labels: [label] });
+    await reconcile([{ type: "note", text, salience: 0.7, isInsight: false }], makeDeps(db, root,
+      fakeLlm([["CLASSIFY", `{"action":"update","targetId":"OLD1","text":"${text}"}`]])));
+    expect(db.guidanceForScope("agent").map((hit) => hit.label)).toEqual([label]);
+    const actions = await reconcile([{ type: "note", text: "Morgan prefers detailed reports", salience: 0.7,
+      isInsight: false }], makeDeps(db, root,
+      fakeLlm([["CLASSIFY", '{"action":"supersede","targetId":"OLD1","text":"Morgan prefers detailed technical reports"}']]),
+      { labelsForAction: (action) => action === "supersede" ? [replacement] : [] }));
+    const newId = actions[0]?.kind === "supersede" ? actions[0].newId : "";
+    expect(newId).not.toBe("");
+    expect(db.guidanceForScope("agent").map((hit) => [hit.memoryId, hit.label, hit.active]))
+      .toEqual([[newId, replacement, true], ["OLD1", label, false]]);
+  });
+
   it("case 1 — novel candidate (no similar) → ADD", async () => {
     const root = newRoot();
     const db = openDb(root);

@@ -1,5 +1,5 @@
 import type { MemoryLabel } from "../bujo/labels.js";
-import { assertMemoryLabelDate, assertMemoryLabelEntity, assertMemoryLabelScope, validateMemoryLabel } from "../bujo/labels.js";
+import { assertMemoryLabelDate, assertMemoryLabelEntity, assertMemoryLabelScope, canonicalMemoryLabel, validateMemoryLabel } from "../bujo/labels.js";
 import { MemoryDbGraph } from "./db-graph.js";
 
 export interface IndexedMemoryLabel {
@@ -33,7 +33,7 @@ export class MemoryDbLabels extends MemoryDbGraph {
       labels.forEach((input, ordinal) => {
         const label = validateMemoryLabel(input);
         insert.run(memoryId, ordinal, label.kind, label.kind === "fact" ? label.entityId : null,
-          label.kind === "fact" ? null : label.scope, JSON.stringify(label));
+          label.kind === "fact" ? null : label.scope, canonicalMemoryLabel(label));
       });
     })();
   }
@@ -48,12 +48,13 @@ export class MemoryDbLabels extends MemoryDbGraph {
         if (!hasMemory.get(row.memoryId)) throw new Error("memory-store: label projection has no memory endpoint.");
         const label = validateMemoryLabel(row.label);
         insert.run(row.memoryId, row.ordinal, label.kind, label.kind === "fact" ? label.entityId : null,
-          label.kind === "fact" ? null : label.scope, JSON.stringify(label));
+          label.kind === "fact" ? null : label.scope, canonicalMemoryLabel(label));
       }
     })();
   }
 
   labelProjection(): readonly IndexedMemoryLabel[] {
+    if (!this.tableExists("memory_labels")) return [];
     const rows = this.db.prepare(`SELECT memory_id AS memoryId, ordinal, payload FROM memory_labels
       ORDER BY memory_id COLLATE BINARY, ordinal`).all() as Array<{ memoryId: string; ordinal: number; payload: string }>;
     return rows.map((row) => ({ memoryId: row.memoryId, ordinal: row.ordinal,
@@ -89,6 +90,7 @@ export class MemoryDbLabels extends MemoryDbGraph {
   }
 
   private labelHits(predicate: string, argument: string): MemoryLabelHit[] {
+    if (!this.tableExists("memory_labels")) return [];
     const rows = this.db.prepare(`SELECT l.memory_id AS memoryId, l.ordinal, l.payload,
       m.text, m.status, m.source_file AS sourceFile, m.created_at AS createdAt
       FROM memory_labels l JOIN memories m ON m.id = l.memory_id WHERE l.${predicate}

@@ -2,13 +2,16 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import BetterSqlite3 from "better-sqlite3";
 import { openMemoryDb } from "../../store/index.js";
 import { appendBullet, rewriteBullet } from "../daily.js";
+import { createBujoMemoryStore } from "../store.js";
 import { parseBullet, serializeBullet } from "../grammar.js";
 import { encodeMemoryLabel, labelsOf, withMemoryLabels, type MemoryLabel } from "../labels.js";
 import { rebuildFromMarkdown, safeRebuildMemoryIndex } from "../rebuild.js";
 import { auditCanonicalGraphParity } from "../graph-parity.js";
 import type { Bullet } from "../types.js";
+import { fakeEmbeddings } from "./helpers.js";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -41,8 +44,8 @@ describe("labels on canonical bullets", () => {
     for (const ref of ["label:v2:a", "label:v1:!", "label:v1:e30", `${encodeMemoryLabel(birthday)}x`]) {
       expect(() => serializeBullet({ ...valid, refs: [ref] })).toThrow(/invalid label/u);
     }
-    expect(() => parseBullet(serializeBullet(valid).replace("refs=existing-reference",
-      "refs=label:v1:bad refs=existing-reference"))).toThrow(/label/u);
+    expect(parseBullet(serializeBullet(valid).replace("refs=existing-reference",
+      "refs=label:v1:bad refs=existing-reference"))?.text).toBe(valid.text);
     expect(() => encodeMemoryLabel({ ...birthday, value: { type: "date", date: "1990-02-30" } })).toThrow();
     expect(() => encodeMemoryLabel({ ...birthday, attribution: "claimed" } as unknown as MemoryLabel)).toThrow();
     expect(() => encodeMemoryLabel({ ...birthday, mystery: true } as unknown as MemoryLabel)).toThrow();
@@ -86,6 +89,52 @@ describe("labels on canonical bullets", () => {
     } finally { db.close(); }
   });
 
+  it("retains healthy labels beside a malformed ref, supports append/rebuild and forgetting its line", async () => {
+    const dir = root();
+    const path = join(dir, "daily", "2026-07-11.md");
+    appendBullet(dir, withMemoryLabels(bullet("B1"), [birthday, preference]), when);
+    writeFileSync(path, readFileSync(path, "utf8").replace(encodeMemoryLabel(preference), "label:v1:bad"));
+    const store = createBujoMemoryStore({ root: dir, clock: () => when });
+    try {
+      await store.remember("fictional-conversation", "Morgan keeps concise notes.");
+    } finally { await store.close(); }
+    const db = openMemoryDb({ path: join(dir, "rebuild.db") });
+    try {
+      await rebuildFromMarkdown(dir, db);
+      expect(db.labelsForEntity("person:morgan")).toHaveLength(1);
+      expect(db.guidanceForScope("project:fictional-project")).toEqual([]);
+      expect(auditCanonicalGraphParity(dir, db).issues).toEqual([
+        { code: "canonical-read-failed", file: "daily/2026-07-11.md", line: 3 },
+      ]);
+      expect(rewriteBullet(dir, "daily/2026-07-11.md", "B1", { status: "dropped" })).toBe(true);
+      await rebuildFromMarkdown(dir, db);
+      expect(db.labelsForEntity("person:morgan")[0]?.active).toBe(false);
+      expect(readFileSync(path, "utf8")).not.toContain("label:v1:bad");
+      expect(auditCanonicalGraphParity(dir, db).issues).toEqual([]);
+    } finally { db.close(); }
+  });
+
+  it("stores canonical JSON and commits label row changes to the logical digest", async () => {
+    const dir = root();
+    const unordered = { kind: "preference", attribution: "user-stated", scope: "agent", v: 1 } as MemoryLabel;
+    appendBullet(dir, withMemoryLabels(bullet("B1"), [unordered]), when);
+    const path = join(dir, "memory.db");
+    const db = openMemoryDb({ path });
+    try {
+      await rebuildFromMarkdown(dir, db);
+      const digest = db.logicalIntegrityDigest();
+      db.replaceMemoryLabels("B1", [lesson]);
+      expect(db.logicalIntegrityDigest()).not.toBe(digest);
+      db.replaceMemoryLabels("B1", [unordered]);
+      expect(db.logicalIntegrityDigest()).toBe(digest);
+    } finally { db.close(); }
+    const raw = new BetterSqlite3(path, { readonly: true });
+    try {
+      expect((raw.prepare("SELECT payload FROM memory_labels WHERE memory_id = 'B1'").get() as { payload: string }).payload)
+        .toBe('{"attribution":"user-stated","kind":"preference","scope":"agent","v":1}');
+    } finally { raw.close(); }
+  });
+
   it("sorts mixed Unicode memory ids in SQLite UTF-8 byte order", async () => {
     const dir = root();
     appendBullet(dir, withMemoryLabels(bullet("A\u{10000}"), [preference]), when);
@@ -108,11 +157,50 @@ describe("labels on canonical bullets", () => {
       writeFileSync(path, readFileSync(path, "utf8").replace(encodeMemoryLabel(birthday), "label:v1:bad"));
       const audit = auditCanonicalGraphParity(dir, db);
       expect(audit.status).toBe("invalid");
-      expect(audit.issues).toEqual([{ code: "canonical-read-failed" }]);
+      expect(audit.issues).toEqual([{ code: "canonical-read-failed", file: "daily/2026-07-11.md", line: 3 }]);
     } finally { db.close(); }
   });
 
-  it("rebuilds a legacy daily file without rewriting bytes and reports malformed labels", async () => {
+  it("safely rebuilds a BuJo source with malformed labels while auditing the line", async () => {
+    const dir = root();
+    const store = createBujoMemoryStore({ root: dir, tier: "bujo", clock: () => when,
+      embeddings: fakeEmbeddings(8), dim: 8,
+      llm: { id: "unused", complete: async () => "[]" } });
+    try { await store.remember("fictional-conversation", "Morgan keeps concise notes."); }
+    finally { await store.close(); }
+    const path = join(dir, "daily", "2026-07-11.md");
+    writeFileSync(path, readFileSync(path, "utf8").replace("refs=", "refs=label:v1:bad,"));
+    const reopened = createBujoMemoryStore({ root: dir, tier: "bujo", clock: () => when,
+      embeddings: fakeEmbeddings(8), dim: 8, llm: { id: "unused", complete: async () => "[]" } });
+    try { await reopened.remember("fictional-conversation", "Morgan prefers clear notes."); }
+    finally { await reopened.close(); }
+    const result = await safeRebuildMemoryIndex({ root: dir, tier: "bujo", embeddings: fakeEmbeddings(8), dim: 8 });
+    const db = openMemoryDb({ path: result.active, readOnly: true });
+    try {
+      expect(db.count()).toBe(2);
+      expect(db.labelProjection()).toEqual([]);
+      expect(auditCanonicalGraphParity(dir, db).issues).toEqual([
+        { code: "canonical-read-failed", file: "daily/2026-07-11.md", line: 3 },
+      ]);
+    } finally { db.close(); }
+  });
+
+  it("ignores valid and malformed label refs on Journal rebuild", async () => {
+    const dir = root();
+    appendBullet(dir, withMemoryLabels(bullet("B1"), [preference]), when);
+    appendBullet(dir, bullet("B2", "Morgan prefers short messages."), when);
+    const path = join(dir, "daily", "2026-07-11.md");
+    writeFileSync(path, readFileSync(path, "utf8").replace("refs=existing-reference", "refs=label:v1:bad"));
+    const result = await safeRebuildMemoryIndex({ root: dir, tier: "journal", embeddings: fakeEmbeddings(8), dim: 8 });
+    const db = openMemoryDb({ path: result.active, readOnly: true });
+    try {
+      expect(db.labelProjection()).toEqual([]);
+      expect(db.guidanceForScope("project:fictional-project")).toEqual([]);
+      expect(auditCanonicalGraphParity(dir, db, { tier: "journal" }).status).toBe("match");
+    } finally { db.close(); }
+  });
+
+  it("rebuilds a legacy daily file byte-identically and ignores labels outside BuJo", async () => {
     const dir = root();
     mkdirSync(join(dir, "daily"));
     const path = join(dir, "daily", "2026-07-11.md");
@@ -123,6 +211,9 @@ describe("labels on canonical bullets", () => {
     const db = openMemoryDb({ path: result.active });
     try { expect(db.labelProjection()).toEqual([]); } finally { db.close(); }
     writeFileSync(path, source.replace("refs=existing-reference", "refs=label:v1:bad"));
-    await expect(safeRebuildMemoryIndex({ root: dir, tier: "lite" })).rejects.toThrow(/label/u);
+    const upgraded = await safeRebuildMemoryIndex({ root: dir, tier: "lite" });
+    const lite = openMemoryDb({ path: upgraded.active, readOnly: true });
+    try { expect(lite.labelProjection()).toEqual([]); } finally { lite.close(); }
+    expect(readFileSync(path, "utf8")).toContain("label:v1:bad");
   });
 });

@@ -73,6 +73,27 @@ export function validateMemoryLabel(value: unknown): MemoryLabel {
   } else return fail();
   return value as unknown as MemoryLabel;
 }
+export function canonicalMemoryLabel(label: MemoryLabel): string {
+  return canonical(validateMemoryLabel(label));
+}
+
+/** Read damaged canonical refs without losing the enclosing bullet or healthy labels. */
+export function readableLabelsOf(bullet: Pick<Bullet, "refs">): readonly MemoryLabel[] {
+  const seen = new Set<string>();
+  const labels: MemoryLabel[] = [];
+  for (const ref of bullet.refs) {
+    if (!ref.startsWith("label:")) continue;
+    try {
+      const [label] = labelsOf({ refs: [ref] });
+      if (label !== undefined && !seen.has(ref) && labels.length < 8) {
+        seen.add(ref);
+        labels.push(label);
+      }
+    } catch { /* The audit diagnoses invalid source refs; reads retain the bullet. */ }
+  }
+  return labels;
+}
+
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (object(value)) return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
