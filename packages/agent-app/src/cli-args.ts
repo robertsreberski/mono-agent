@@ -497,7 +497,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       case "--limit": {
         const raw = requireValue(rest, ++i, flag);
         const parsed = Number(raw);
-        const maximum = cmd === "continuations" ? 500 : positionals[0] === "curate" ? 4096 : 100;
+        const maximum = cmd === "continuations" ? 500 : positionals[0] === "curate" ? 8192 : 100;
         if (!Number.isInteger(parsed) || parsed < 1 || parsed > maximum) {
           throw new Error(`--limit must be an integer between 1 and ${String(maximum)}.`);
         }

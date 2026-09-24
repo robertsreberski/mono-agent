@@ -13,6 +13,11 @@ function seed(path: string, id: string, text: string) {
     createdAt: "2026-07-12T10:00:00.000Z", refs: [] }, new Date("2026-07-12T10:00:00.000Z"));
 }
 describe("curation preparation", () => {
+  it("allows 8192 selected lines but refuses 8193", () => {
+    const path = root();
+    expect(inspectCurateSource(path, 8192).lines).toEqual([]);
+    expect(() => inspectCurateSource(path, 8193)).toThrow(/invalid limit/u);
+  });
   it("reads bounded canonical live lines in order and estimates without a model call", () => {
     const path = root(); seed(path, "fictional-a", "Morgan completed the example."); seed(path, "fictional-b", "The demo status is transient.");
     const snapshot = inspectCurateSource(path, 1);
@@ -65,6 +70,42 @@ describe("curation preparation", () => {
 });
 
 describe("durable curation apply", { timeout: 20_000 }, () => {
+  it("accepts unrelated live captures and status changes but rejects changed selected lines before backup", async () => {
+    const { mkdirSync, realpathSync, readdirSync } = await import("node:fs");
+    const { createHash } = await import("node:crypto");
+    const { initializeReplayProjection, readBujoCanonicalSourceFingerprint } = await import("../replay-projection.js");
+    const { safeRebuildMemoryIndex } = await import("../rebuild.js");
+    const { rewriteBullet, readBullet } = await import("../daily.js");
+    const { fakeEmbeddings } = await import("./helpers.js");
+    const { applyExplicitMemoryCurate } = await import("../explicit-curate.js");
+    const parent = root(); const path = join(parent, "memory"); mkdirSync(path, { mode: 0o700 });
+    initializeReplayProjection(path);
+    seed(path, "fictional-a", "Generic example advice.");
+    seed(path, "fictional-b", "Morgan wrote a demo note.");
+    const embeddings = fakeEmbeddings(16);
+    await safeRebuildMemoryIndex({ root: path, tier: "bujo", embeddings, dim: 16 });
+    const originalFingerprint = readBujoCanonicalSourceFingerprint(path);
+    const source = inspectCurateSource(path).lines[0]!;
+    const proposals = [{ source, action: "drop" as const, reason: "generic-advice" as const, accepted: true }];
+    const options = { root: path, proposals, expectedRootFingerprint: createHash("sha256").update(realpathSync(path)).digest("hex"),
+      expectedSourceFingerprint: originalFingerprint, planDigest: createHash("sha256").update("stale-unrelated-plan").digest("hex"),
+      embeddings, dimension: 16 };
+    rewriteBullet(path, "daily/2026-07-12.md", "fictional-b", { status: "done" });
+    seed(path, "fictional-c", "An unrelated later capture.");
+    const liveFingerprint = readBujoCanonicalSourceFingerprint(path);
+    expect(liveFingerprint).not.toBe(originalFingerprint);
+    rewriteBullet(path, source.file, source.id, { status: "done" });
+    await expect(applyExplicitMemoryCurate(options)).rejects.toMatchObject({ code: "apply_failed" });
+    expect(readdirSync(parent).filter((name) => name.includes("curate-backup"))).toEqual([]);
+    rewriteBullet(path, source.file, source.id, { status: "open" });
+    expect(readBujoCanonicalSourceFingerprint(path)).toBe(liveFingerprint);
+    const applied = await applyExplicitMemoryCurate(options);
+    expect(applied.status).toBe("applied");
+    const { readDurableRootSwapBackup, MEMORY_CURATE_SWAP_OPERATION } = await import("../durable-root-swap.js");
+    expect(readDurableRootSwapBackup(applied.backupPath, MEMORY_CURATE_SWAP_OPERATION).manifest.sourceFingerprint).toBe(liveFingerprint);
+    expect(readBullet(path, "daily/2026-07-12.md", "fictional-b")?.status).toBe("done");
+    expect(readBullet(path, "daily/2026-07-12.md", "fictional-c")?.text).toBe("An unrelated later capture.");
+  });
   it("rewrites, adds labels and restores the verified backup", async () => {
     const { createHash } = await import("node:crypto");
     const { mkdirSync, realpathSync } = await import("node:fs");
@@ -262,5 +303,19 @@ describe("curate merge identity safety", () => {
     appendGraphBatch(path, { entities: [{ id: "person:morgan-alias", name: "Morgan", type: "person", createdAt: at }],
       relations: [{ src: "person:morgan", dst: "person:morgan-alias", relation: "collaborates", createdAt: at }] });
     expect(() => previewCurateMutations(path, [proposal])).toThrow(/self-relation/u);
+  });
+  it("tolerates a self-relation that already exists in the legacy graph", async () => {
+    const { appendGraphBatch } = await import("../graph.js");
+    const { previewCurateMutations } = await import("../curate.js");
+    const at = "2026-07-12T10:00:00.000Z";
+    const path = root(); seed(path, "fictional-a", "Morgan reviewed the fictional plan.");
+    appendGraphBatch(path, { entities: [
+      { id: "person:morgan", name: "Morgan", type: "person", createdAt: at },
+      { id: "person:morgan-dup", name: "Morgan", type: "person", createdAt: at },
+    ], relations: [{ src: "person:morgan", dst: "person:morgan", relation: "mentions", createdAt: at }] });
+    expect(() => previewCurateMutations(path, [])).not.toThrow();
+    const source = inspectCurateSource(path).lines[0]!;
+    expect(() => previewCurateMutations(path, [{ source, action: "merge", accepted: true,
+      mergeEntity: { from: "person:morgan-dup", to: "person:morgan" } }])).not.toThrow();
   });
 });

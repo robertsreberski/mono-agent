@@ -282,6 +282,8 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
       "adopt-replay is an explicit stopped-agent, SSH-safe BuJo trust-on-first-use",
       "operation. It returns metadata only and requires rebuild before restart.",
       "forget uses an explicit, content-free plan plus a full owner-private backup;",
+      "curate prepare selects at most 8192 lines (120 by default); apply checks only",
+      "accepted source lines against the live store and requires a stopped agent.",
       "apply and restore require the configured agent to be stopped.",
       "export writes a portable canonical bundle and does not require stopping the",
       "agent; import merges one into this store and does require a stopped agent.",

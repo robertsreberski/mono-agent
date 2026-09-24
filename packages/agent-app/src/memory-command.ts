@@ -58,7 +58,7 @@ const REPLAY_ADOPTION_SCHEMA_VERSION = 1;
 const MEMORY_FORGET_SCHEMA_VERSION = 1;
 const MAX_FORGET_IDS = 32;
 const MAX_FORGET_PLAN_BYTES = 1024 * 1024;
-const MAX_CURATE_PLAN_BYTES = 8 * 1024 * 1024;
+const MAX_CURATE_PLAN_BYTES = 16 * 1024 * 1024;
 const MEMORY_ID_RE = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/u;
 const FTS_FALLBACK_MEMORY_SEARCH_CODES = new Set<MemorySearchErrorCode>([
   "embedding_circuit_open",
@@ -2908,8 +2908,8 @@ function parseCuratePlan(value: unknown): CuratePlan {
     || !isSha256(value.sourceFingerprint) || typeof value.model !== "string" || value.model.length > 160
     || typeof value.createdAt !== "string" || !isCanonicalIso(value.createdAt)
     || !isSha256(value.planDigest)
-    || !Array.isArray(value.proposals) || value.proposals.length > 4096
-    || !Array.isArray(value.discarded) || value.discarded.length > 8192
+    || !Array.isArray(value.proposals) || value.proposals.length > 8192
+    || !Array.isArray(value.discarded) || value.discarded.length > 16384
     || value.discarded.some((entry: unknown) => !isObject(entry) || !hasExactKeys(entry, ["id", "reason"])
       || typeof entry.id !== "string" || (entry.id !== "unbound" && !MEMORY_ID_RE.test(entry.id))
       || !["unknown-id", "duplicate-id", "invalid-proposal", "missing-proposal", "invalid-preview"].includes(String(entry.reason)))) {
@@ -2920,7 +2920,7 @@ function parseCuratePlan(value: unknown): CuratePlan {
   for (const proposal of bujo) {
     if (!isObject(proposal) || !(["action", "accepted", "source"].every((key) => Object.hasOwn(proposal, key)) && Object.keys(proposal).every((key) => ["action", "accepted", "source", "reason", "text", "labels", "mergeEntity"].includes(key)))) throw new Error("invalid proposal shape");
     const source = proposal.source;
-    if (!isObject(source) || !hasExactKeys(source, ["id", "file", "line", "text", "textHash", "createdAt", "refs"])) throw new Error("invalid proposal source");
+    if (!isObject(source) || !hasExactKeys(source, ["id", "file", "line", "text", "textHash", "createdAt", "status", "refs"])) throw new Error("invalid proposal source");
     if (ids.has(source.id as string)) throw new Error("duplicate proposal id");
     ids.add(source.id as string);
   }
@@ -2959,7 +2959,6 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       const llm = input.curateLlm
         ?? await (await import("./configured-agent.js")).createConfiguredCurationLlm(context.config, input.model);
       const suggested = await bujo.proposeCurate(snapshot, llm, memory.capture);
-      if (snapshot.fingerprint !== bujo.readBujoCanonicalSourceFingerprint(root)) throw new Error("source changed while preparing");
       const proposals: CurateProposal[] = [];
       const discarded: CurateDiscard[] = [...suggested.discarded];
       // Common case costs one canonical preview; bisect only a rejected group.
@@ -2974,7 +2973,6 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
         }
       };
       admit(suggested.proposals);
-      if (snapshot.fingerprint !== bujo.readBujoCanonicalSourceFingerprint(root)) throw new Error("source changed while preparing");
       const planPath = await canonicalProspectivePath(resolve(context.cwd, input.planPath!));
       if (isSameOrUnderDirectory(root, planPath)) throw new Error("plan cannot be inside memory root");
       const payload = { schemaVersion: 1, operation: "curate", rootFingerprint: memoryRootFingerprint(root),
@@ -3071,9 +3069,24 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       review_failed: "Curation review failed without changing the memory store.",
     };
     const code = Object.hasOwn(messages, status) ? status : "apply_failed";
+    // Only literal tool-owned diagnostics are safe to expose: a model/provider
+    // error may impersonate the prefix and include private memory text.
+    const safeCurateReasons = new Set([
+      "memory-curate: invalid limit", "memory-curate: duplicate canonical id", "memory-curate: source changed",
+      "memory-curate: invalid proposal", "memory-curate: unsupported retrospective label",
+      "memory-curate: prompt exceeds bound", "memory-curate: response exceeds bound",
+      "memory-curate: invalid response envelope", "memory-curate: ambiguous entity merge",
+      "memory-curate: conflicting entity merge", "memory-curate: merge creates self-relation",
+      "memory-curate: duplicate or missing source", "memory-curate: stale source line",
+      "memory-curate: content-addressed Remember lines cannot be rewritten in place",
+      "memory-curate: unsupported attribution rewrite", "memory-curate: unsupported date rewrite",
+      "memory-curate: label refers to an unknown entity",
+    ]);
+    const reason = (operation === "prepare" || operation === "review") && error instanceof Error
+      && safeCurateReasons.has(error.message) ? error.message : undefined;
     write(input.json, { operation: `curate-${operation ?? "unknown"}`, status: "failed", code: `curate_${code}`,
-      ...(backupPath === undefined ? {} : { backupPath }) },
-      () => `${messages[code]}${backupPath === undefined ? "" : ` Backup: ${backupPath}.`}\n`);
+      ...(reason === undefined ? {} : { reason }), ...(backupPath === undefined ? {} : { backupPath }) },
+      () => `${messages[code]}${reason === undefined ? "" : ` ${reason}`}${backupPath === undefined ? "" : ` Backup: ${backupPath}.`}\n`);
     return 1;
   }
 }

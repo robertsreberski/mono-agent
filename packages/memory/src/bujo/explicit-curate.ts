@@ -40,7 +40,7 @@ import {
 import { readBujoCanonicalSourceFingerprint } from "./replay-projection.js";
 
 const SCHEMA_VERSION = 1;
-const MAX_PROPOSALS = 4096;
+const MAX_PROPOSALS = 8192;
 
 /** Explicit curate is one instance of the shared durable root-swap protocol. */
 const CURATE_OPERATION = MEMORY_CURATE_SWAP_OPERATION;
@@ -148,10 +148,10 @@ export async function applyExplicitMemoryCurate(
     db = openMemoryDb({ path: dbPath, embeddings: options.embeddings, dim: options.dimension });
     recoverDurableMutationState(root, db, "bujo", assertCanonicalGraphRepairBaseParity);
     db.checkpoint();
-    if (readBujoCanonicalSourceFingerprint(root) !== options.expectedSourceFingerprint) {
-      throw new Error("stale plan");
-    }
+    // The plan fingerprint identifies its preparation snapshot, not the live store.
+    // Only selected source lines must still match; merge constraints are checked on the current graph.
     previewCurateMutations(root, options.proposals);
+    const currentSourceFingerprint = readBujoCanonicalSourceFingerprint(root);
     db.close();
     db = undefined;
     cleanupSqliteCoordination(dbPath);
@@ -161,7 +161,7 @@ export async function applyExplicitMemoryCurate(
       dbPath,
       operation: CURATE_OPERATION,
       expectedRootFingerprint: options.expectedRootFingerprint,
-      expectedSourceFingerprint: options.expectedSourceFingerprint,
+      expectedSourceFingerprint: currentSourceFingerprint,
       planDigest: options.planDigest,
       dimension: options.dimension,
     });
@@ -182,7 +182,7 @@ export async function applyExplicitMemoryCurate(
     await options.hooks?.afterTransactionDurable?.();
 
     db = openMemoryDb({ path: dbPath, embeddings: options.embeddings, dim: options.dimension });
-    const result = await applyCurateMutations(root, db, options.proposals, options.expectedSourceFingerprint, options.now ?? (() => new Date()));
+    const result = await applyCurateMutations(root, db, options.proposals, currentSourceFingerprint, options.now ?? (() => new Date()));
     db.checkpoint();
     db.close();
     db = undefined;
