@@ -124,12 +124,12 @@ const prompt = (
 ): string => `Extract one bounded, durable memory plan from the completed turn below.
 ${renderObservationContext(observationContext)}
 Return ONLY one exact JSON object with exactly these root keys:
-{"memories":[{"type":"note","text":"one atomic sentence","salience":0.8,"isInsight":false,"entityIds":["person:morgan"],"labels":[{"v":1,"kind":"fact","entityId":"person:morgan","key":"birth_date","value":{"type":"date","date":"1990-05-17"},"attribution":"user-stated"}]}],"entities":[{"id":"person:name","name":"display name","type":"person"},{"id":"project:example","name":"example project","type":"project"}],"relations":[{"src":"person:name","dst":"project:example","relation":"works on"}]}
+{"memories":[{"type":"note","text":"Morgan was born on May 17, 1990.","salience":0.8,"isInsight":false,"entityIds":["person:morgan"],"labels":[{"v":1,"kind":"fact","entityId":"person:morgan","key":"birth_date","value":{"type":"date","date":"1990-05-17"},"attribution":"user-stated"}]}],"entities":[{"id":"person:morgan","name":"Morgan","type":"person"},{"id":"project:example","name":"example project","type":"project"}],"relations":[{"src":"person:morgan","dst":"project:example","relation":"works on"}]}
 
 Rules:
 - At most ${MAX_CAPTURE_MEMORIES} memories, ${MAX_CAPTURE_ENTITIES} entities, and ${MAX_CAPTURE_RELATIONS} relations.
 - Omit chit-chat and transient tool output.
-- All three root arrays are required, even when empty. Every shown object field is required; emit no other fields.
+- All three root arrays are required, even when empty. Other than optional memory labels, every shown object field is required; emit no other fields.
 - Every memory has type, text, salience, isInsight, entityIds, and optional labels ([] when none). Labels are L1 fact, preference, or lesson objects; do not invent claims or speaker/tool authority. type is task, event, or note; isInsight is boolean.
 - A fact label's value must occur in its memory sentence (including an unambiguous written civil date). A preference requires an outer human request; assistant recap or scheduled/webhook trigger is not a human request. A verified lesson requires a host-observed failed tool category followed by a successful retry in the HOST-OBSERVED TOOL OUTCOMES block; absence of that block means no verified lesson. Keep the existing speaker and relative-date rules below.
 - salience MUST be a finite JSON number from 0 to 1 inclusive, such as 0.8. Never use a 0-10, 0-100, or percentage scale.

@@ -94,6 +94,35 @@ describe("host-validated capture labels", () => {
     }) })).rejects.toThrow(/labels structure/u);
   });
 
+  it("supersedes with an explicit replacement label and leaves the old label as history", async () => {
+    const root = mkdtempSync(join(tmpdir(), "capture-labelled-supersede-"));
+    const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(8), dim: 8 });
+    const firstText = "Morgan was born May 17, 1990.";
+    const correctedText = "Morgan was born May 18, 1990.";
+    const corrected = { ...fact, value: { type: "date", date: "1990-05-18" } };
+    let nextId = 0;
+    try {
+      for (const [text, label, decision] of [
+        [firstText, fact, ""], [correctedText, corrected, "supersede"],
+      ] as const) {
+        const output = await captureTurnStrict(`User: ${text}\nAssistant: Noted.`, {
+          db, root, llm: { id: "fake", complete: async (_prompt, options) => {
+            if (options?.label === "capture:extract") return JSON.stringify({ memories: [
+              { type: "note", text, salience: 0.8, isInsight: false, entityIds: [], labels: [label] },
+            ], entities: [], relations: [] });
+            return JSON.stringify([{ index: 0, action: decision, targetId: "LABEL-0", text }]);
+          } }, nextId: () => `LABEL-${nextId++}`, now: () => at,
+          conversationId: "conv-1", captureSpeakerKind: "human-turn", captureEvidence: evidence(text),
+          canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
+        });
+        expect(output.actions[0]?.kind).toBe(decision || "add");
+      }
+      expect(db.labelsForEntity("person:morgan").map((hit) => [hit.memoryId, hit.active, hit.label]))
+        .toEqual([["LABEL-0", false, fact], ["LABEL-1", true, corrected]]);
+      expect(auditCanonicalGraphParity(root, db).labels.matched).toBe(2);
+    } finally { db.close(); }
+  });
+
   it("writes one validated label with its canonical bullet and restores parity on rebuild", async () => {
     const root = mkdtempSync(join(tmpdir(), "capture-labels-integration-"));
     const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(8), dim: 8 });
