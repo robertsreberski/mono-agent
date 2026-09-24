@@ -2068,6 +2068,12 @@ describe("memory curate review safety", () => {
     expect(result.code, result.stderr).toBe(0);
     expect(JSON.parse(result.stdout).status).toBe("no-op");
     expect(bujoMemory.inspectCurateSource(memoryRoot).lines[0]!.text).toBe("Generic example advice.");
+    const keepPayload = { ...plan, proposals: [{ source: plan.proposals[0]!.source, action: "keep", accepted: true }] };
+    const keepDigest = createHash("sha256").update(JSON.stringify({ ...keepPayload,
+      proposals: keepPayload.proposals.map(({ accepted: _accepted, ...immutable }) => immutable) })).digest("hex");
+    await writeFile(planPath, JSON.stringify({ ...keepPayload, planDigest: keepDigest }));
+    expect(JSON.parse((await invoke(["memory", "curate", "apply", "--plan", planPath, "--json"])).stdout).status).toBe("no-op");
+    expect((await readdir(join(memoryRoot, ".."))).some((name) => name.includes("curate-backup"))).toBe(false);
     const mergePayload = { ...plan, proposals: [{ source: plan.proposals[0]!.source, action: "merge",
       mergeEntity: { from: "person:morgan-alias", to: "person:morgan" }, accepted: false }] };
     const mergeDigest = createHash("sha256").update(JSON.stringify({ ...mergePayload,

@@ -2996,14 +2996,14 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       // The package checks freshness under the writer lease. An interrupted root-swap
       // must be allowed through this CLI gate even when mutation changed the source:
       // only its matching durable transaction can restore the pre-apply tree.
-      if (plan.proposals.every((item) => !item.accepted)) {
+      if (plan.proposals.every((item) => !item.accepted || item.action === "keep")) {
         write(input.json, { operation: "curate-apply", status: "no-op" }, () => "No proposals accepted; memory unchanged.\n");
         return 0;
       }
       await assertNoLiveConfiguredAgent(context.configPath, await memoryRegistryDirs(context));
       const settings = previewRecallSettings(context.config);
       if (settings?.embeddings === undefined) throw new Error("embeddings required");
-      const selected = plan.proposals.filter((proposal) => proposal.accepted);
+      const selected = plan.proposals.filter((proposal) => proposal.accepted && proposal.action !== "keep");
       const { createMemoryEmbeddingProvider } = await loadMemoryRecallModule();
       const embeddings = await createMemoryEmbeddingProvider(settings.embeddings);
       try {
