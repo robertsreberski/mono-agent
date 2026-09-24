@@ -2075,6 +2075,12 @@ describe("memory curate review safety", () => {
       expect(refused.code).toBe(1);
       expect(JSON.parse(refused.stdout).code).toBe("curate_review_failed");
     }
+    const invalid = { ...plan, proposals: [{ ...plan.proposals[0]!, source: { ...plan.proposals[0]!.source, status: "invalidated" } }] };
+    const invalidDigest = createHash("sha256").update(JSON.stringify({ ...invalid,
+      proposals: invalid.proposals.map(({ accepted: _accepted, ...immutable }) => immutable) })).digest("hex");
+    await writeFile(planPath, JSON.stringify({ ...invalid, planDigest: invalidDigest }));
+    const diagnostic = await invoke(["memory", "curate", "review", "--plan", planPath, "--json"]);
+    expect(JSON.parse(diagnostic.stdout).reason).toBe("memory-curate: invalid proposal");
     await writeFile(planPath, untampered);
     expect((await invoke(["memory", "curate", "review", "--plan", planPath, "--reject", "id:fictional-a"])).code).toBe(0);
     const result = await invoke(["memory", "curate", "apply", "--plan", planPath, "--json"]);
@@ -2202,6 +2208,28 @@ describe("curate private plan bound", () => {
 });
 
 describe("curate paid-run isolation", () => {
+  it("explains tool-owned preparation failures without exposing provider errors", async () => {
+    const memoryRoot = join(await tempDir(), "memory"); await mkdir(memoryRoot, { recursive: true });
+    bujoMemory.appendBullet(memoryRoot, { id: "fictional-a", type: "note", status: "open", text: "Morgan's demo note.",
+      salience: 0.5, isInsight: false, createdAt: "2026-07-12T10:00:00.000Z", refs: [] },
+    new Date("2026-07-12T10:00:00.000Z"));
+    const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
+      embeddings: { provider: "ollama", model: "test-embed", dim: 8 }, llm: { provider: "ollama", model: "test-capture" } } });
+    const prepare = (complete: () => Promise<string>, json: boolean) => captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runMemoryCommand({
+      cwd: dir, env: {}, positionals: ["curate", "prepare"], planPath: join(dir, "plan.json"), json, strict: false,
+      curateLlm: { id: "fake", complete },
+    }))));
+    const own = await prepare(async () => "{}", false);
+    expect(own.code).toBe(1);
+    expect(own.stdout).toContain("memory-curate: invalid response envelope");
+    const ownJson = await prepare(async () => "{}", true);
+    expect(JSON.parse(ownJson.stdout).reason).toBe("memory-curate: invalid response envelope");
+    const external = await prepare(async () => { throw new Error("provider failed with private text"); }, false);
+    expect(external.stdout).not.toContain("private text");
+    expect(external.stdout).toContain("Curation preparation failed");
+    const spoofed = await prepare(async () => { throw new Error("memory-curate: secret private text"); }, true);
+    expect(JSON.parse(spoofed.stdout).reason).toBeUndefined();
+  });
   it("records individual invalid model proposals without losing valid siblings", async () => {
     const memoryRoot = join(await tempDir(), "memory"); await mkdir(memoryRoot, { recursive: true });
     for (const [index, text] of ["Generic example advice.", "Morgan used Maple as an alias.", "Morgan used another alias."].entries()) {

@@ -3069,9 +3069,24 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       review_failed: "Curation review failed without changing the memory store.",
     };
     const code = Object.hasOwn(messages, status) ? status : "apply_failed";
+    // Only literal tool-owned diagnostics are safe to expose: a model/provider
+    // error may impersonate the prefix and include private memory text.
+    const safeCurateReasons = new Set([
+      "memory-curate: invalid limit", "memory-curate: duplicate canonical id", "memory-curate: source changed",
+      "memory-curate: invalid proposal", "memory-curate: unsupported retrospective label",
+      "memory-curate: prompt exceeds bound", "memory-curate: response exceeds bound",
+      "memory-curate: invalid response envelope", "memory-curate: ambiguous entity merge",
+      "memory-curate: conflicting entity merge", "memory-curate: merge creates self-relation",
+      "memory-curate: duplicate or missing source", "memory-curate: stale source line",
+      "memory-curate: content-addressed Remember lines cannot be rewritten in place",
+      "memory-curate: unsupported attribution rewrite", "memory-curate: unsupported date rewrite",
+      "memory-curate: label refers to an unknown entity",
+    ]);
+    const reason = (operation === "prepare" || operation === "review") && error instanceof Error
+      && safeCurateReasons.has(error.message) ? error.message : undefined;
     write(input.json, { operation: `curate-${operation ?? "unknown"}`, status: "failed", code: `curate_${code}`,
-      ...(backupPath === undefined ? {} : { backupPath }) },
-      () => `${messages[code]}${backupPath === undefined ? "" : ` Backup: ${backupPath}.`}\n`);
+      ...(reason === undefined ? {} : { reason }), ...(backupPath === undefined ? {} : { backupPath }) },
+      () => `${messages[code]}${reason === undefined ? "" : ` ${reason}`}${backupPath === undefined ? "" : ` Backup: ${backupPath}.`}\n`);
     return 1;
   }
 }
