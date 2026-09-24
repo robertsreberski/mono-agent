@@ -15,6 +15,15 @@ export interface MemoryBlock {
  */
 export type MemoryCaptureSpeakerKind = "human-turn" | "trigger" | "unknown";
 
+export interface MemoryCaptureEvidence {
+  /** Host-owned outer message (not parsed from model-visible captureText). */
+  readonly userText: string;
+  /** Stable host-derived opaque sender token; absent when no sender id was verified. */
+  readonly senderToken?: string;
+  readonly toolOutcomes: readonly { readonly category: "read" | "write" | "edit" | "execute" | "search";
+    readonly outcome: "failed" | "succeeded" }[];
+}
+
 export interface MemoryCompletedTurn {
   readonly runId: string;
   readonly conversationId: string;
@@ -29,6 +38,7 @@ export interface MemoryCompletedTurn {
    * proof of assertions in the turn or of any third-party quoted content.
    */
   readonly captureSpeakerKind?: MemoryCaptureSpeakerKind;
+  readonly captureEvidence?: MemoryCaptureEvidence;
 }
 
 export type MemoryCompletedTurnAdmissionStatus = "admitted" | "duplicate";

@@ -806,6 +806,9 @@ export class BujoMemoryStore implements MemoryStore {
         now: () => new Date(admittedAt),
         abortSignal,
         captureRetentionKey: intakeId,
+        conversationId: turn.conversationId,
+        ...(turn.captureSpeakerKind === undefined ? {} : { captureSpeakerKind: turn.captureSpeakerKind }),
+        ...(turn.captureEvidence === undefined ? {} : { captureEvidence: turn.captureEvidence }),
         canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
       });
       return "captured";

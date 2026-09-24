@@ -167,12 +167,21 @@ and reports its file and line in audit; new writes reject invalid labels. Only `
 and `dropped` statuses make labels inactive; other statuses remain live. Internal
 `MemoryDb.labelsForEntity(entityId, asOfDate?)` returns fact labels, history,
 and conflicts; `guidanceForScope(scope)` returns preferences and lessons.
-Neither capture nor recall writes or renders labels yet. UPDATE retains labels
-only when text is unchanged unless replacements are supplied; SUPERSEDE does not
-copy labels without explicit replacements. Lite and Journal ignore labels. Older
-versions cannot safely replay pending label-changing UPDATE intents after downgrade;
-finish pending writes before downgrading. No extra file or separate fact authority
-is involved.
+BuJo capture can attach labels in its existing extraction call, dropping unsupported
+individual labels while retaining the memory. A fact needs support in the retained
+sentence; user-stated facts and preferences additionally require host-observed human
+turn evidence. Unidentified speakers' preferences are conversation-scoped, and a
+verified lesson requires a host-observed failed tool category followed by a successful
+retry. Tool outcomes exposed to extraction contain only bounded fixed categories,
+never arguments, outputs, paths, URLs or raw error messages. Automatic recall does
+not yet use labels. UPDATE retains labels only when text is unchanged unless
+replacements are supplied; SUPERSEDE does not copy them by default. Lite and
+Journal ignore labels. Older
+versions cannot safely replay pending label-changing UPDATE intents or read
+pending capture intake records containing `captureEvidence` after downgrade; drain
+pending intake before downgrading. Sender scope tokens are unsalted, local-only
+hashes of host sender ids; do not export them as cross-channel identity. No extra
+file or separate fact authority is involved.
 
 ### Explicit remember writes
 

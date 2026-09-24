@@ -1,4 +1,5 @@
 import { extractCapturePlanStrict } from "./capture-batch.js";
+import { captureLabels } from "./capture-labels.js";
 import {
   replayCaptureIntent,
   writeCaptureIntent,
@@ -51,9 +52,13 @@ async function captureTurnUnlocked(
   const observedAt = deps.now();
   const extraction = await extractCapturePlanStrict(text, deps.llm, deps.abortSignal, knownEntities, {
     observedAt: observedAt.toISOString(),
+    ...(deps.captureSpeakerKind === undefined ? {} : { captureSpeakerKind: deps.captureSpeakerKind }),
+    ...(deps.captureEvidence === undefined ? {} : { captureEvidence: deps.captureEvidence }),
+    ...(deps.conversationId === undefined ? {} : { conversationId: deps.conversationId }),
   });
   deps.abortSignal?.throwIfAborted();
   const createdAt = observedAt.toISOString();
+  const labelContext = { ...deps, entityNames: new Map(extraction.entities.map((entity) => [entity.id, entity.name])) };
   let intentHandle: CaptureIntentHandle | undefined;
   let preparedActions: readonly CaptureIntentAction[] = [];
   await reconcileBatch(extraction.candidates, {
@@ -62,6 +67,8 @@ async function captureTurnUnlocked(
     // cannot observe a later wall clock or reinterpret relative-time anchors.
     now: () => observedAt,
     strictModelOutput: true,
+    labelsForAction: (_action, candidate, _previous, finalText) => candidate.labels === undefined ? undefined
+      : captureLabels(candidate.labels, finalText ?? candidate.text, labelContext),
     // Once the intent exists it is the single commit owner. Writing the same
     // records directly here and then replaying the intent would duplicate the
     // SQLite/canonical transaction without improving durability.

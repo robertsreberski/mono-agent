@@ -1,4 +1,5 @@
 import type { MemoryType } from "../store/index.js";
+import type { MemoryLabel } from "./labels.js";
 
 export interface CandidateMemory {
   readonly type: MemoryType;          // task | event | note
@@ -7,6 +8,7 @@ export interface CandidateMemory {
   readonly isInsight: boolean;
   /** Candidate-specific canonical entity ids emitted by batched BuJo capture. */
   readonly entityIds?: readonly string[];
+  readonly labels?: readonly MemoryLabel[];
 }
 
 export const MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS = 160;

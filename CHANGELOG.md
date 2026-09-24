@@ -2,12 +2,16 @@
 
 ## Unreleased
 
+- Let BuJo capture attach host-checked fact, preference, and verified lesson labels
+  in its existing extraction call. Drop unsupported labels without losing a memory;
+  keep tool outcomes category-only and leave automatic recall unchanged.
+
 - Fix the web console's Compact button for configured agents and explain when a
   selected model cannot compact the conversation's existing session.
 - Add validated fact, preference, and lesson labels to BuJo daily bullets with
   rebuildable SQLite lookups. Older readers treat them as ordinary refs; memory
-  capture and automatic recall do not yet write or use labels. Changed-text
-  updates and supersedes need explicit replacement labels; malformed source labels
+  automatic recall does not yet use labels. Changed-text updates and supersedes
+  need explicit replacement labels; malformed source labels
   leave their bullets readable and appear with locations in audit.
 
 - Add optional, host-verified speaker provenance to completed-turn memory

@@ -1680,6 +1680,8 @@ export class MonoAgentHarness implements AgentHarness {
             runId,
             ...(runSource.source === undefined ? {} : { source: runSource.source }),
             captureSpeakerKind: request.captureSpeakerKind ?? "unknown",
+            trustedUserText: completedTurn.userMemoryText,
+            toolOutcomes: turnContinuityCollector.captureToolOutcomes(),
             ...(request.sender === undefined ? {} : { sender: request.sender }),
             emit,
           },

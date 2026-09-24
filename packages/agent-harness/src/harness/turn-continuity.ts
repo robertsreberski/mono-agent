@@ -1,4 +1,4 @@
-import { isChannelUserCancelReason, type AgentMessageSender } from "@mono-agent/agent-contracts";
+import { isChannelUserCancelReason, type AgentMessageSender, type MemoryCaptureEvidence } from "@mono-agent/agent-contracts";
 import type { RuntimeEventLike } from "@mono-agent/observability";
 import type {
   RuntimeToolLifecycleEvent,
@@ -178,6 +178,17 @@ interface TurnContinuityLiveInput {
   readonly receivedAt: string;
 }
 
+function captureToolCategory(name: string): MemoryCaptureEvidence["toolOutcomes"][number]["category"] | undefined {
+  switch (name) {
+    case "Read": return "read";
+    case "Write": return "write";
+    case "Edit": return "edit";
+    case "Exec": case "Bash": return "execute";
+    case "WebSearch": case "WebFetch": return "search";
+    default: return undefined;
+  }
+}
+
 export class UncommittedTurnCollector {
   private readonly nativeEvents = new WeakSet<object>();
   private readonly admittedLifecycles = new WeakMap<object, { call: CapturedToolCall; release: () => void; settled: Promise<void> }>();
@@ -206,6 +217,14 @@ export class UncommittedTurnCollector {
   private partialAssistantOmittedBytes = 0;
   private partialAssistantOmittedEvents = 0;
   private readonly calls = new Map<string, CapturedToolCall>();
+  private readonly captureOutcomes: MemoryCaptureEvidence["toolOutcomes"][number][] = [];
+  private captureOutcomesOverflow = false;
+
+  /** Only host-observed, allowlisted category/state pairs; no lifecycle payloads. */
+  captureToolOutcomes(): MemoryCaptureEvidence["toolOutcomes"] {
+    return this.captureOutcomesOverflow || !this.captureOutcomes.some((item) => item.outcome === "failed")
+      ? [] : [...this.captureOutcomes];
+  }
   private readonly pendingLifecycleWrites = new Set<Promise<unknown>>();
 
   observeRuntimeEvent(event: RuntimeEventLike): boolean {
@@ -351,6 +370,7 @@ export class UncommittedTurnCollector {
       };
     } else {
       const payload = boundedToolHistoryPayload(event.content ?? null, TOOL_HISTORY_RESULT_MAX_BYTES);
+      const hadInvocation = call.invocation !== undefined;
       if (call.invocation === undefined) {
         const synthetic = boundedToolHistoryPayload(
           { synthetic: true, reason: "result_observed_before_invocation" },
@@ -362,6 +382,12 @@ export class UncommittedTurnCollector {
         };
       }
       if (event.toolName !== undefined) call.toolName = boundedText(event.toolName, ID_MAX_BYTES);
+      const category = captureToolCategory(call.toolName);
+      if (hadInvocation && category !== undefined && call.result === undefined
+        && ["success", "error", "exit_nonzero", "timeout"].includes(event.state)) {
+        if (this.captureOutcomes.length >= 16) this.captureOutcomesOverflow = true;
+        else this.captureOutcomes.push({ category, outcome: event.state === "success" ? "succeeded" : "failed" });
+      }
       call.result = {
         content: parseBoundedJson(payload.json),
         state: event.state,

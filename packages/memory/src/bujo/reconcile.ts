@@ -1,4 +1,5 @@
 import { relative } from "node:path";
+import type { MemoryCaptureEvidence, MemoryCaptureSpeakerKind } from "@mono-agent/agent-contracts";
 
 import type { MemoryDb, MemoryRecord, SimilarHit } from "../store/index.js";
 
@@ -54,9 +55,12 @@ export interface ReconcileDeps {
   /** Run-owned capture plans remain replayable until durable intake resolution. */
   readonly captureRetentionKey?: string;
   readonly canonicalGraphRepairGuard?: CanonicalGraphRepairGuard;
-  /** Internal, host-supplied label decision; capture never supplies labels in L1. */
+  readonly captureSpeakerKind?: MemoryCaptureSpeakerKind;
+  readonly captureEvidence?: MemoryCaptureEvidence;
+  readonly conversationId?: string;
+  /** Internal, host-validated label decision; undefined uses L1 retention defaults. */
   readonly labelsForAction?: (action: "add" | "update" | "supersede", candidate: CandidateMemory,
-    previous?: Bullet) => readonly MemoryLabel[] | undefined;
+    previous?: Bullet, finalText?: string) => readonly MemoryLabel[] | undefined;
 }
 
 const VALID_ACTIONS = new Set(["add", "update", "supersede", "noop"]);
@@ -384,7 +388,7 @@ function planAddWithoutIndex(
     isInsight: candidate.isInsight,
     createdAt: now.toISOString(),
     refs: [],
-  }, deps.labelsForAction?.("add", candidate) ?? []);
+  }, deps.labelsForAction?.("add", candidate, undefined, candidate.text) ?? []);
   const record = recordFor(bullet, deps.root, now);
   const file = record.source.file!;
   const threads = similar.flatMap((hit) => {
@@ -472,7 +476,7 @@ function planUpdate(
   const mergedText = decision.text ?? candidate.text;
   // A changed sentence cannot silently keep claims it may no longer support.
   const after: Bullet = withMemoryLabels({ ...before, text: mergedText },
-    deps.labelsForAction?.("update", candidate, before)
+    deps.labelsForAction?.("update", candidate, before, mergedText)
       ?? (mergedText === before.text ? labelsOf(before) : []));
   return {
     action: { kind: "update", id: targetId },
@@ -515,7 +519,7 @@ function planSupersede(
     isInsight: candidate.isInsight,
     createdAt: effectiveAt.toISOString(),
     refs: [],
-  }, deps.labelsForAction?.("supersede", candidate, beforeOld) ?? []);
+  }, deps.labelsForAction?.("supersede", candidate, beforeOld, decision.text ?? candidate.text) ?? []);
   const record = recordFor(bullet, deps.root, effectiveAt);
   const newSourceFile = record.source.file!;
   return {
