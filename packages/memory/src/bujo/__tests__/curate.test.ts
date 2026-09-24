@@ -263,4 +263,18 @@ describe("curate merge identity safety", () => {
       relations: [{ src: "person:morgan", dst: "person:morgan-alias", relation: "collaborates", createdAt: at }] });
     expect(() => previewCurateMutations(path, [proposal])).toThrow(/self-relation/u);
   });
+  it("tolerates a self-relation that already exists in the legacy graph", async () => {
+    const { appendGraphBatch } = await import("../graph.js");
+    const { previewCurateMutations } = await import("../curate.js");
+    const at = "2026-07-12T10:00:00.000Z";
+    const path = root(); seed(path, "fictional-a", "Morgan reviewed the fictional plan.");
+    appendGraphBatch(path, { entities: [
+      { id: "person:morgan", name: "Morgan", type: "person", createdAt: at },
+      { id: "person:morgan-dup", name: "Morgan", type: "person", createdAt: at },
+    ], relations: [{ src: "person:morgan", dst: "person:morgan", relation: "mentions", createdAt: at }] });
+    expect(() => previewCurateMutations(path, [])).not.toThrow();
+    const source = inspectCurateSource(path).lines[0]!;
+    expect(() => previewCurateMutations(path, [{ source, action: "merge", accepted: true,
+      mergeEntity: { from: "person:morgan-dup", to: "person:morgan" } }])).not.toThrow();
+  });
 });

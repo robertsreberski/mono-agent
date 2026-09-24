@@ -202,7 +202,10 @@ function mergePairs(root: string, proposals: readonly CurateProposal[]): Map<str
     pairs.set(from, to);
   }
   for (const relation of graph.relations) {
-    if ((pairs.get(relation.src) ?? relation.src) === (pairs.get(relation.dst) ?? relation.dst)) throw new Error("memory-curate: merge creates self-relation");
+    // Only a merge may not collapse a relation onto one entity; a relation that was already
+    // self-referential in the legacy graph is left untouched.
+    if (relation.src !== relation.dst
+      && (pairs.get(relation.src) ?? relation.src) === (pairs.get(relation.dst) ?? relation.dst)) throw new Error("memory-curate: merge creates self-relation");
   }
   return pairs;
 }
