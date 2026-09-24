@@ -106,6 +106,40 @@ const PROVIDER_AUTOMATIC_CASES = [
   ),
 ];
 
+// Names/dates/multilingual retrieval calibration (fictional people only). It
+// runs in its own disposable store and is informational: it reports how the
+// configured provider ranks exact names, dates and numbers against generic
+// shared-word traps, and whether automatic recall abstains on negatives.
+const NAMES_DATES_RECORDS = [
+  record("nd-morgan-born", "Morgan Reyes was born on 1990-05-17."),
+  record("nd-taylor-born", "Taylor Brooks was born on 1988-11-02."),
+  record("nd-morgan-party", "Morgan planned the birthday party playlist for the team offsite."),
+  record("nd-zoe-birthday", "Zoë de Vries viert haar verjaardag op 12 maart."),
+  record("nd-luca-birthday", "Il compleanno di Luca Bianchi è il 3 luglio."),
+  record("nd-jurgen-move", "Jürgen Weiß zieht am 2027-02-01 nach Leipzig."),
+  record("nd-invoice", "Invoice 4471 for the garden service was paid in August."),
+  record("nd-morgan-color", "Morgan selected teal as the dashboard color."),
+  record("nd-color-trap", "The dashboard color review compared dashboard color palettes and color contrast."),
+  record("nd-sam-car", "Sam Okafor drives a blue hatchback."),
+];
+
+const NAMES_DATES_CASES = [
+  testCase("name-date", "When was Morgan born?", ["nd-morgan-born"]),
+  testCase("name-date", "When was Taylor Brooks born?", ["nd-taylor-born"]),
+  testCase("date-anchor", "Who was born on 1988-11-02?", ["nd-taylor-born"]),
+  testCase("multilingual-name", "When is Zoe's birthday?", ["nd-zoe-birthday"]),
+  testCase("multilingual-name", "Quando è il compleanno di Luca?", ["nd-luca-birthday"]),
+  testCase("multilingual-name", "When is Luca's birthday?", ["nd-luca-birthday"]),
+  testCase("multilingual-name", "When does Jürgen move to Leipzig?", ["nd-jurgen-move"]),
+  testCase("number-anchor", "Was invoice 4471 paid?", ["nd-invoice"]),
+  testCase("generic-word-trap", "What dashboard color did Morgan select?", ["nd-morgan-color"]),
+  testCase("lowercase-name", "what car does sam okafor drive", ["nd-sam-car"]),
+  testCase("negative", "When was Riley born?", []),
+  testCase("negative", "What is Morgan's shoe size?", []),
+  testCase("negative", "What did invoice 9912 cover?", []),
+  testCase("negative", "Which dashboard font did Taylor choose?", []),
+];
+
 // Regression distribution captured from the default nomic provider: a direct
 // answer is followed by semantically adjacent records with deceptively high
 // absolute scores. Synthetic scores exercise policy calibration separately
@@ -252,6 +286,7 @@ export async function runMemoryBenchmark(options = {}) {
     const policyCalibration = policyCalibrationMetrics(policyResults);
     const storageBytes = await directoryBytes(root);
     const providerAutomaticRecall = await runProviderAutomaticRecallCalibration(options);
+    const namesDates = suite === "fast" ? await runNamesDatesCalibration(options) : undefined;
     // Fixed capture/graph calibration is intentionally separate from provider
     // retrieval quality, latency, and cost. It uses its own disposable stores,
     // deterministic providers, and counters so it cannot improve or pollute the
@@ -298,6 +333,7 @@ export async function runMemoryBenchmark(options = {}) {
       },
       calibrations: {
         providerAutomaticRecall,
+        ...(namesDates === undefined ? {} : { namesDates }),
         ...(memoryCleanup === undefined ? {} : { memoryCleanup }),
       },
       gates: combineBenchmarkGates(primaryGates, memoryCleanup),
@@ -528,6 +564,50 @@ async function runProviderAutomaticRecallCalibration(options) {
   }
 }
 
+async function runNamesDatesCalibration(options) {
+  const root = await mkdtemp(join(tmpdir(), "mono-agent-memory-names-dates-"));
+  const metrics = { embeddingCalls: 0, embeddedTexts: 0, embeddingInputTokens: 0 };
+  const provider = await embeddingProvider(options.provider ?? "deterministic", options, metrics);
+  const dim = options.dim ?? provider.dim;
+  const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: provider, dim });
+  try {
+    await db.upsertMany(NAMES_DATES_RECORDS, { batchSize: 32 });
+    const results = [];
+    for (const item of NAMES_DATES_CASES) {
+      const hits = await db.recall(item.query, { topK: AUTO_RECALL_BACKEND_HITS, trackAccess: false });
+      results.push({
+        item,
+        hits,
+        automatic: selectAutomaticRecallHits(hits, { query: item.query }),
+        staleIds: new Set(),
+      });
+    }
+    const quality = qualityMetrics(results);
+    return {
+      provider: options.provider ?? "deterministic",
+      disposableStore: true,
+      cases: results.length,
+      recallAt1: quality.recallAt1,
+      recallAt5: quality.recallAt5,
+      mrr: quality.mrr,
+      automaticAnswerCoverage: quality.automaticAnswerCoverage,
+      falseRecallRate: quality.falseRecallRate,
+      negativeAbstentionRate: quality.abstentionRate,
+      perCase: results.map(({ item, hits, automatic }) => ({
+        category: item.category,
+        query: item.query,
+        expected: item.relevantIds,
+        top: hits.slice(0, 3).map((hit) => ({ id: hit.record.id, score: Number(hit.score.toFixed(4)) })),
+        automatic: automatic.map((hit) => hit.record.id),
+      })),
+      embeddings: { calls: metrics.embeddingCalls, texts: metrics.embeddedTexts },
+    };
+  } finally {
+    db.close();
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
 function aggregateStoreAudits(audits) {
   const live = sum(audits.map((audit) => audit.counts.live));
   const redundant = sum(audits.map((audit) => audit.duplicates.redundantRecords));
@@ -569,7 +649,8 @@ async function embeddingProvider(kind, options, metrics) {
 function embedDeterministic(text, dim) {
   const vector = new Array(dim).fill(0);
   const stripped = text.replace(/^search_(query|document):\s*/u, "");
-  for (const raw of stripped.toLowerCase().split(/[^a-z0-9-]+/u)) {
+  const folded = stripped.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+  for (const raw of folded.split(/[^\p{L}\p{N}-]+/u)) {
     if (!raw) continue;
     const token = canonicalToken(raw);
     vector[hash(token) % dim] += 1;
@@ -584,6 +665,9 @@ function canonicalToken(token) {
     rollouts: "deployment", rollout: "deployment", shipped: "deployment", shipping: "deployment",
     leads: "led", leading: "led", selected: "select", preferred: "select", preference: "select",
     scheduled: "leave", leaves: "leave", launch: "launchdate", date: "launchdate",
+    // A tiny multilingual lexicon stands in for a multilingual model.
+    verjaardag: "birthday", compleanno: "birthday", geburtstag: "birthday",
+    zieht: "move", nach: "to", quando: "when",
   };
   return aliases[token] ?? token;
 }
@@ -792,6 +876,9 @@ function render(report) {
     `stale ${(q.staleRecallRate * 100).toFixed(2)}%  false ${(q.falseRecallRate * 100).toFixed(2)}%  abstention ${(q.abstentionRate * 100).toFixed(1)}%`,
     `missing-attribute abstention ${(q.missingAttributeAbstentionRate * 100).toFixed(1)}%  out-of-domain abstention ${(q.outOfDomainAbstentionRate * 100).toFixed(1)}%`,
     `synthetic policy calibration ${report.policyCalibration.passed ? "PASS" : "FAIL"} (${report.policyCalibration.cases} separate case(s))`,
+    ...(report.calibrations.namesDates === undefined ? [] : [
+      `names/dates Recall@1/5 ${(report.calibrations.namesDates.recallAt1 * 100).toFixed(1)}% / ${(report.calibrations.namesDates.recallAt5 * 100).toFixed(1)}%  MRR ${report.calibrations.namesDates.mrr.toFixed(3)}  auto coverage ${(report.calibrations.namesDates.automaticAnswerCoverage * 100).toFixed(1)}%  false ${(report.calibrations.namesDates.falseRecallRate * 100).toFixed(1)}%  negative abstention ${(report.calibrations.namesDates.negativeAbstentionRate * 100).toFixed(1)}% (${report.calibrations.namesDates.cases} informational cases)`,
+    ]),
     `provider-backed eligible direct-fact coverage ${(providerAutomatic.eligibleDirectFact.coverage * 100).toFixed(1)}% (${providerAutomatic.eligibleDirectFact.cases} cases)  unsupported abstention ${(providerAutomatic.unsupported.abstentionRate * 100).toFixed(1)}% (${providerAutomatic.unsupported.cases} informational cases)`,
     `context ${e.contextBytes.total} B  search p50/p95 ${e.searchLatencyMs.p50.toFixed(3)}/${e.searchLatencyMs.p95.toFixed(3)} ms`,
     `index ${e.indexingLatencyMs.total.toFixed(3)} ms  storage ${e.storageBytes} B  embeddings ${e.embeddings.calls} calls/${e.embeddings.texts} texts, ${e.embeddings.inputTokens} tokens, $${e.embeddings.costUsd.toFixed(6)}`,
