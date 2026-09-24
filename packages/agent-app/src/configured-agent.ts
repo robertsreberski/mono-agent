@@ -1485,6 +1485,22 @@ async function createConfiguredAgentHarnessInternal(
   }
 }
 
+// Deliberately inventory the explicit forwarding boundary. Adding even an
+// optional harness capability must force a review of this wrapper.
+const ownedHarnessKeys = {
+  compactConversation: true,
+  liveInputOwnership: true,
+  run: true,
+  offerLiveInput: true,
+  submit: true,
+  cancel: true,
+  resetConversation: true,
+  appendVerbatimTurn: true,
+  importContext: true,
+  dispose: true,
+} satisfies Record<keyof AgentHarness, true>;
+void ownedHarnessKeys;
+
 function harnessWithAgentRootOwnership(
   harness: AgentHarness,
   ownership: AgentRootOwnership,
@@ -1492,6 +1508,9 @@ function harnessWithAgentRootOwnership(
   let disposePromise: Promise<void> | undefined;
   return {
     ...(harness.liveInputOwnership === undefined ? {} : { liveInputOwnership: harness.liveInputOwnership }),
+    ...(harness.compactConversation === undefined
+      ? {}
+      : { compactConversation: harness.compactConversation.bind(harness) }),
     run: harness.run.bind(harness),
     ...(harness.submit === undefined ? {} : { submit: harness.submit.bind(harness) }),
     ...(harness.offerLiveInput === undefined
