@@ -2079,6 +2079,19 @@ describe("memory curate review safety", () => {
     expect(result.code, result.stderr).toBe(0);
     expect(JSON.parse(result.stdout).status).toBe("no-op");
     expect(bujoMemory.inspectCurateSource(memoryRoot).lines[0]!.text).toBe("Generic example advice.");
+    for (const [proposed, tampered] of [
+      [{ action: "rewrite", text: "Generic example instruction." }, { text: "Changed without approval." }],
+      [{ action: "merge", mergeEntity: { from: "person:alias", to: "person:morgan" } },
+        { mergeEntity: { from: "person:alias", to: "person:other" } }],
+    ] as const) {
+      const candidate = { ...plan, proposals: [{ source: plan.proposals[0]!.source, ...proposed, accepted: true }] };
+      const digest = createHash("sha256").update(JSON.stringify({ ...candidate,
+        proposals: candidate.proposals.map(({ accepted: _accepted, ...immutable }) => immutable) })).digest("hex");
+      await writeFile(planPath, JSON.stringify({ ...candidate, planDigest: digest, proposals: [{ ...candidate.proposals[0], ...tampered }] }));
+      const denied = await invoke(["memory", "curate", "apply", "--plan", planPath, "--json"]);
+      expect(JSON.parse(denied.stdout).code).toBe("curate_apply_failed");
+    }
+    expect((await readdir(join(memoryRoot, ".."))).some((name) => name.includes("curate-backup"))).toBe(false);
     const keepPayload = { ...plan, proposals: [{ source: plan.proposals[0]!.source, action: "keep", accepted: true }] };
     const keepDigest = createHash("sha256").update(JSON.stringify({ ...keepPayload,
       proposals: keepPayload.proposals.map(({ accepted: _accepted, ...immutable }) => immutable) })).digest("hex");
@@ -2125,6 +2138,15 @@ describe("curate crash recovery CLI", { timeout: 30_000 }, () => {
       expect(JSON.parse(refused.stdout).code).toBe("curate_apply_failed");
       expect(bujoMemory.readBujoCanonicalSourceFingerprint(memoryRoot)).toBe(payload.sourceFingerprint);
     } finally { await competing.close(); }
+    const stalePayload = { ...payload, sourceFingerprint: "0".repeat(64) };
+    const staleDigest = createHash("sha256").update(JSON.stringify({ ...stalePayload,
+      proposals: stalePayload.proposals.map(({ accepted: _accepted, ...immutable }) => immutable) })).digest("hex");
+    await writeFile(planPath, JSON.stringify({ ...stalePayload, planDigest: staleDigest }));
+    const stale = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "curate", "apply", "--plan", planPath, "--json"]))));
+    expect(JSON.parse(stale.stdout).code).toBe("curate_apply_failed");
+    expect((await readdir(join(memoryRoot, ".."))).some((name) => name.includes("curate-backup"))).toBe(false);
+    await writeFile(planPath, JSON.stringify({ ...payload, planDigest }));
     await expect(bujoMemory.applyExplicitMemoryCurate({ root: memoryRoot, proposals: [proposal],
       expectedRootFingerprint: rootFingerprint, expectedSourceFingerprint: payload.sourceFingerprint,
       planDigest: selectedDigest, embeddings, dimension: 8,
