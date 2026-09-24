@@ -29,6 +29,10 @@ export const MEMORY_BENCHMARK_GATES = Object.freeze({
   falseRecallRate: 0.05,
   providerEligibleDirectFactCaseCount: 1,
   providerEligibleDirectFactCoverage: 1,
+  // Names/dates negatives share a name, number or generic words with stored
+  // records; automatic recall must never inject them.
+  namesDatesFalseRecallRate: 0,
+  namesDatesNegativeAbstentionRate: 1,
 });
 
 const FAST_RECORDS = [
@@ -107,9 +111,10 @@ const PROVIDER_AUTOMATIC_CASES = [
 ];
 
 // Names/dates/multilingual retrieval calibration (fictional people only). It
-// runs in its own disposable store and is informational: it reports how the
+// runs in its own disposable store. Ranking metrics are informational (how the
 // configured provider ranks exact names, dates and numbers against generic
-// shared-word traps, and whether automatic recall abstains on negatives.
+// shared-word traps); automatic recall on the negatives is gated: no false
+// recall and full abstention.
 const NAMES_DATES_RECORDS = [
   record("nd-morgan-born", "Morgan Reyes was born on 1990-05-17."),
   record("nd-taylor-born", "Taylor Brooks was born on 1988-11-02."),
@@ -296,6 +301,7 @@ export async function runMemoryBenchmark(options = {}) {
       quality,
       policyCalibration,
       providerAutomaticRecall,
+      namesDates,
     );
     const recordCount = fixture.groups.reduce((total, group) => total + group.records.length, 0);
     const aggregateAudit = aggregateStoreAudits(audits);
@@ -445,6 +451,7 @@ export function memoryBenchmarkGateResults(
   quality,
   policyCalibration = { passed: true },
   providerAutomaticRecall = {},
+  namesDates,
 ) {
   const checks = {
     recallAt5: quality.recallAt5 >= MEMORY_BENCHMARK_GATES.recallAt5,
@@ -471,6 +478,11 @@ export function memoryBenchmarkGateResults(
     providerEligibleDirectFactCoverage:
       (providerAutomaticRecall.eligibleDirectFact?.coverage ?? 0)
         >= MEMORY_BENCHMARK_GATES.providerEligibleDirectFactCoverage,
+    // Only the fast suite runs the names/dates calibration.
+    namesDatesFalseRecallRate: namesDates === undefined
+      || namesDates.falseRecallRate <= MEMORY_BENCHMARK_GATES.namesDatesFalseRecallRate,
+    namesDatesNegativeAbstentionRate: namesDates === undefined
+      || namesDates.negativeAbstentionRate >= MEMORY_BENCHMARK_GATES.namesDatesNegativeAbstentionRate,
   };
   return { passed: Object.values(checks).every(Boolean), checks, thresholds: MEMORY_BENCHMARK_GATES };
 }
@@ -880,7 +892,7 @@ function render(report) {
     `missing-attribute abstention ${(q.missingAttributeAbstentionRate * 100).toFixed(1)}%  out-of-domain abstention ${(q.outOfDomainAbstentionRate * 100).toFixed(1)}%`,
     `synthetic policy calibration ${report.policyCalibration.passed ? "PASS" : "FAIL"} (${report.policyCalibration.cases} separate case(s))`,
     ...(report.calibrations.namesDates === undefined ? [] : [
-      `names/dates Recall@1/5 ${(report.calibrations.namesDates.recallAt1 * 100).toFixed(1)}% / ${(report.calibrations.namesDates.recallAt5 * 100).toFixed(1)}%  MRR ${report.calibrations.namesDates.mrr.toFixed(3)}  auto coverage ${(report.calibrations.namesDates.automaticAnswerCoverage * 100).toFixed(1)}%  false ${(report.calibrations.namesDates.falseRecallRate * 100).toFixed(1)}%  negative abstention ${(report.calibrations.namesDates.negativeAbstentionRate * 100).toFixed(1)}% (${report.calibrations.namesDates.cases} informational cases)`,
+      `names/dates Recall@1/5 ${(report.calibrations.namesDates.recallAt1 * 100).toFixed(1)}% / ${(report.calibrations.namesDates.recallAt5 * 100).toFixed(1)}%  MRR ${report.calibrations.namesDates.mrr.toFixed(3)}  auto coverage ${(report.calibrations.namesDates.automaticAnswerCoverage * 100).toFixed(1)}%  false ${(report.calibrations.namesDates.falseRecallRate * 100).toFixed(1)}%  negative abstention ${(report.calibrations.namesDates.negativeAbstentionRate * 100).toFixed(1)}% (${report.calibrations.namesDates.cases} cases; negatives gated)`,
     ]),
     `provider-backed eligible direct-fact coverage ${(providerAutomatic.eligibleDirectFact.coverage * 100).toFixed(1)}% (${providerAutomatic.eligibleDirectFact.cases} cases)  unsupported abstention ${(providerAutomatic.unsupported.abstentionRate * 100).toFixed(1)}% (${providerAutomatic.unsupported.cases} informational cases)`,
     `context ${e.contextBytes.total} B  search p50/p95 ${e.searchLatencyMs.p50.toFixed(3)}/${e.searchLatencyMs.p95.toFixed(3)} ms`,
