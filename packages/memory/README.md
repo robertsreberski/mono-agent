@@ -491,6 +491,7 @@ AUTO_RECALL_MAX_BYTES
 AUTO_RECALL_MAX_HITS
 AUTO_RECALL_MIN_SCORE
 AUTO_RECALL_RELATIVE_SCORE
+ApplyExplicitMemoryCurateOptions
 ApplyExplicitMemoryForgetOptions
 ApplyMemoryBundleImportOptions
 BUJO_MEMORY_HEALTH_SCHEMA_VERSION
@@ -522,9 +523,15 @@ CompletedTurnIntakeAudit
 CompletedTurnIntakeInspection
 CompletedTurnIntakeItem
 CompletedTurnIntakeSnapshot
+CurateAction
+CurateLine
+CurateProposal
+CurateReason
+CurateSnapshot
 DEFAULT_MEMORY_FORGET_BACKUP_MAX_AGE_DAYS
 DEFAULT_MEMORY_FORGET_BACKUP_MAX_COUNT
 ExplicitForgetPreview
+ExplicitMemoryCurateError
 ExplicitMemoryForgetApplyResult
 ExplicitMemoryForgetError
 ExplicitMemoryForgetErrorCode
@@ -591,6 +598,7 @@ MigrateResult
 PrepareMemoryBundleImportOptions
 ReconcileAction
 ReconcileDeps
+RestoreExplicitMemoryCurateOptions
 RestoreExplicitMemoryForgetOptions
 RestoreMemoryBundleImportOptions
 SafeMemoryIndexOptions
@@ -600,6 +608,7 @@ adoptLegacyReplayProjection
 appendAssociation
 appendBullet
 appendGraphBatch
+applyExplicitMemoryCurate
 applyExplicitMemoryForget
 applyMemoryBundleImport
 auditBujoMemoryHealth
@@ -610,11 +619,13 @@ composeRecallBlock
 createBujoMemoryStore
 createIdFactory
 createOllamaLlm
+curateEstimate
 dailyFilePath
 exportMemoryBundle
 extractCapturePlanStrict
 findCanonicalMemoryBullet
 inspectCompletedTurnIntake
+inspectCurateSource
 isConversationRelativeQuery
 migrate
 normalizeMemoryText
@@ -624,6 +635,8 @@ parseDailyFile
 parseMemoryExportBundleManifest
 prepareMemoryBundleImport
 previewCanonicalExplicitForgetMemories
+previewCurateMutations
+proposeCurate
 pruneExplicitMemoryForgetBackups
 readBujoCanonicalSourceFingerprint
 readBujoRuntimeSnapshot
@@ -635,8 +648,10 @@ reconcileBatch
 renderKnownEntityHints
 resolveActiveMemoryDbPath
 resolveCompletedTurnIntake
+resolveExplicitMemoryCurateRoot
 resolveExplicitMemoryForgetRoot
 resolveMemoryBundleImportRoot
+restoreExplicitMemoryCurate
 restoreExplicitMemoryForget
 restoreMemoryBundleImport
 retryCompletedTurnIntake
@@ -646,6 +661,7 @@ selectAutomaticRecallHits
 selectKnownEntityHints
 serializeBullet
 serializeDailyFile
+validateCurateProposal
 writeFutureLog
 writeIndex
 ```
