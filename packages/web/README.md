@@ -118,7 +118,11 @@ full-width, header-coloured band covers the safe-area inset: WebKit's
 `LocalFrameView::fixedContainerEdges` probes the top midpoint at y=4 for a
 fixed/sticky box spanning at least 90% of the viewport. Recognising this edge
 hides the installed console's soft scroll-edge blur (or colours the hard pocket
-on iPad), without covering header content or using layout space. The band
+on iPad), without covering header content or using layout space. On a full-screen
+installed iPad with a nonzero top inset, the Dashboard, Project and conversation
+headers add up to 40px of top clearance so their content sits below the iPadOS 27
+hard pocket's measured ~64pt blur; the error toast clears it too. iPhone, browser
+tabs and inset-zero Stage Manager windows keep their original layout. The band
 follows the active theme instead of a system strip whose colour iOS samples
 once and caches until relaunch. iOS reads the status-bar style when the app is
 added to the Home Screen: an older install must be removed and added again.

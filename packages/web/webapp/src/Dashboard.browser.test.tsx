@@ -164,6 +164,7 @@ afterEach(async () => {
   cleanup();
   document.querySelectorAll(".status-bar-surface, #root").forEach((element) => element.remove());
   document.documentElement.style.removeProperty("--status-bar-inset");
+  document.documentElement.style.removeProperty("--top-edge-clearance");
   await commands.emulateColorScheme(null);
   await persistence.clearAll();
   localStorage.clear();
@@ -644,5 +645,36 @@ describe.each(statusBarViewports)("status-bar surface on $name", (viewport) => {
       await commands.emulateColorScheme(scheme);
       expectStatusBarSurface(surface);
     }
+  });
+});
+
+const ipadClearanceShots = import.meta.env.VITE_IPAD_CLEARANCE_SHOTS as string | undefined;
+describe("installed iPad header clearance (Chromium simulation)", () => {
+  it.each(["light", "dark"] as const)("keeps %s dashboard and conversation content below the blur", async (scheme) => {
+    await page.viewport(1366, 1024);
+    await commands.emulateColorScheme(scheme);
+    document.documentElement.style.setProperty("--status-bar-inset", "32px");
+    // Chromium is a browser tab: override the single media-gated property with
+    // the same expression used by the installed iPad rule, not the header CSS.
+    document.documentElement.style.setProperty("--top-edge-clearance", "min(40px, calc(var(--status-bar-inset) * 100))");
+    openConsole();
+    expect(await screen.findByRole("button", { name: "Open Alpha thread" })).toBeVisible();
+    const sampler = document.querySelector<HTMLElement>(".status-bar-surface")!;
+    expect(sampler.getBoundingClientRect().height).toBe(32);
+    expect(sampler.getBoundingClientRect().top).toBe(0);
+    const dashboard = document.querySelector<HTMLElement>(".dashboard-header")!;
+    expect(getComputedStyle(dashboard).paddingTop).toBe("72px");
+    for (const child of dashboard.querySelectorAll<HTMLElement>(".eyebrow, button")) {
+      expect(child.getBoundingClientRect().top).toBeGreaterThanOrEqual(72);
+    }
+    if (ipadClearanceShots) await page.elementLocator(document.querySelector<HTMLElement>(".app-shell")!).screenshot({ path: `${ipadClearanceShots}/simulated-installed-ipad-1366x1024-${scheme}-dashboard.png` });
+    await userEvent.click(screen.getByRole("button", { name: "Open Alpha thread" }));
+    expect(await screen.findByText("Alpha transcript")).toBeVisible();
+    const header = document.querySelector<HTMLElement>(".chat-header")!;
+    expect(getComputedStyle(header).paddingTop).toBe("72px");
+    for (const child of header.querySelectorAll<HTMLElement>(".eyebrow, button")) {
+      if (child.getClientRects().length > 0) expect(child.getBoundingClientRect().top).toBeGreaterThanOrEqual(72);
+    }
+    if (ipadClearanceShots) await page.elementLocator(document.querySelector<HTMLElement>(".app-shell")!).screenshot({ path: `${ipadClearanceShots}/simulated-installed-ipad-1366x1024-${scheme}-conversation.png` });
   });
 });
