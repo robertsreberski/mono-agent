@@ -171,9 +171,12 @@ function mergePairs(root: string, proposals: readonly CurateProposal[]): Map<str
     const { from, to } = proposal.mergeEntity!;
     const source = entities.get(from); const target = entities.get(to);
     if (!source || !target || source.type === undefined || target.type === undefined || source.type !== target.type
-      || normalizeName(source.name) !== normalizeName(target.name) || pairs.has(from) || pairs.has(to)
-      || [...pairs.values()].includes(from) || [...pairs.values()].includes(to)
+      || normalizeName(source.name) !== normalizeName(target.name)
       || !proposal.source.text.toLowerCase().includes(source.name.toLowerCase())) throw new Error("memory-curate: ambiguous entity merge");
+    if (pairs.get(from) === to) continue; // Repeated confirmation of this exact pair changes nothing.
+    if (pairs.has(from) || pairs.has(to) || [...pairs.values()].includes(from) || [...pairs.values()].includes(to)) {
+      throw new Error("memory-curate: conflicting entity merge");
+    }
     pairs.set(from, to);
   }
   for (const relation of graph.relations) {

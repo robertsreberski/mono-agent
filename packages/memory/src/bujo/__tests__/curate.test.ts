@@ -221,6 +221,23 @@ describe("curate preview label capacity", () => {
 });
 
 describe("curate merge identity safety", () => {
+  it("treats repeated confirmation of one exact merge as a no-op, but rejects conflicting targets", async () => {
+    const { appendGraphBatch } = await import("../graph.js");
+    const { previewCurateMutations } = await import("../curate.js");
+    const path = root(); seed(path, "fictional-a", "Morgan used an alias."); seed(path, "fictional-b", "Morgan used an alias again.");
+    const at = "2026-07-12T10:00:00.000Z";
+    appendGraphBatch(path, { entities: [
+      { id: "person:morgan", name: "Morgan", type: "person", createdAt: at },
+      { id: "person:morgan-alias", name: "Morgan", type: "person", createdAt: at },
+      { id: "person:morgan-other", name: "Morgan", type: "person", createdAt: at },
+    ] });
+    const [first, second] = inspectCurateSource(path).lines;
+    const pair = { from: "person:morgan-alias", to: "person:morgan" };
+    const a = { source: first!, action: "merge" as const, accepted: true, mergeEntity: pair };
+    const b = { source: second!, action: "merge" as const, accepted: true, mergeEntity: pair };
+    expect(() => previewCurateMutations(path, [a, b])).not.toThrow();
+    expect(() => previewCurateMutations(path, [a, { ...b, mergeEntity: { ...pair, to: "person:morgan-other" } }])).toThrow(/conflicting/u);
+  });
   it("rejects same-prefix cross-type identities and self-relations before backup", async () => {
     const { appendGraphBatch } = await import("../graph.js");
     const { previewCurateMutations } = await import("../curate.js");
