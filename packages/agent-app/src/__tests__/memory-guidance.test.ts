@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { MemoryDb } from "@mono-agent/memory/store";
 type MemoryLabelHit = ReturnType<MemoryDb["labelsForEntity"]>[number];
-import { formatMemoryBackground, type LabelRecallStore } from "../memory-guidance.js";
+import { formatMemoryBackground as formatBlock, type LabelRecallStore } from "../memory-guidance.js";
+const formatMemoryBackground = (...args: Parameters<typeof formatBlock>) => formatBlock(...args)?.content || undefined;
 import { MemoryRetrievalService, type SharedRecallStore } from "../memory-retrieval.js";
 
 const token = "a".repeat(32);
@@ -25,10 +26,11 @@ function store(rows: MemoryLabelHit[], facts: MemoryLabelHit[] = []): LabelRecal
   return {
     guidanceForScope(scope) { return rows.filter((row) => row.label.kind !== "fact" && row.label.scope === scope); },
     labelsForEntity() { return facts; },
-    listMemoryEntities() { return [{ id: "person:morgan", name: "Morgan", createdAt: "2026-09-06T00:00:00Z" }]; },
+    findMemoryEntitiesByNames(names) { return names.includes("morgan")
+      ? [{ id: "person:morgan", name: "Morgan", createdAt: "2026-09-06T00:00:00Z" }] : []; },
   };
 }
-const options = { senderToken: token, hostDate: "2026-09-24", projectId: "current" };
+const options = { senderToken: token, hostDate: "2026-09-24" };
 
 describe("automatic labelled background", () => {
   it("injects only relevant live guidance for this speaker/conversation/project", () => {
@@ -56,6 +58,8 @@ describe("automatic labelled background", () => {
     const person = store([], [fact("birth", "2000-02-29")]);
     expect(formatMemoryBackground(person, "Morgan", "current", { hostDate: "2024-02-28" }, [])).toContain("age 23");
     expect(formatMemoryBackground(person, "Morgan", "current", { hostDate: "2024-02-29" }, [])).toContain("age 24");
+    expect(formatMemoryBackground(person, "Morgan", "current", { hostDate: "2025-02-28" }, [])).toContain("age 24");
+    expect(formatMemoryBackground(person, "Morgan", "current", { hostDate: "2025-03-01" }, [])).toContain("age 25");
     expect(formatMemoryBackground(person, "Morgan", "current", { hostDate: "2026-09-24" }, [])).toContain("age 26");
     const conflict = formatMemoryBackground(store([], [fact("one", "1990-05-17", true), fact("two", "1991-05-17", true)]),
       "Morgan", "current", { hostDate: "2026-09-24" }, []);
@@ -71,7 +75,7 @@ describe("automatic labelled background", () => {
     expect(formatMemoryBackground(store([yes, no]), "Check the concise note", "current", options, relevant)).toBeUndefined();
     const duplicated: LabelRecallStore = {
       guidanceForScope: () => [], labelsForEntity: () => [fact("birth", "1990-05-17")],
-      listMemoryEntities: () => [
+      findMemoryEntitiesByNames: () => [
         { id: "person:morgan", name: "Morgan", createdAt: "2026-09-06T00:00:00Z" },
         { id: "person:morgan-two", name: "Mórgan", createdAt: "2026-09-06T00:00:00Z" },
       ],
@@ -80,6 +84,36 @@ describe("automatic labelled background", () => {
     expect(formatMemoryBackground(duplicated, "person:morgan", "current", options, [])).toContain("age 36");
     expect(formatMemoryBackground({ guidanceForScope: () => [], labelsForEntity: () => [fact("birth", "1990-05-17")] },
       "person:morgan", "current", options, [])).toContain("age 36");
+  });
+
+  it("ignores non-person graph rows and uncapitalized short names", () => {
+    const names: string[][] = [];
+    const local: LabelRecallStore = {
+      guidanceForScope: () => [], labelsForEntity: (id) => {
+        expect(id).toBe("person:morgan"); return [fact("birth", "1990-05-17")];
+      },
+      findMemoryEntitiesByNames: (candidates) => {
+        names.push([...candidates]);
+        return [{ id: "project:fictional", name: "Morgan", createdAt: "2026-09-06T00:00:00Z" },
+          { id: "person:morgan", name: "Morgan", createdAt: "2026-09-06T00:00:00Z" }];
+      },
+    };
+    expect(formatMemoryBackground(local, "Morgan", "conv", options, [])).toContain("age 36");
+    expect(names[0]).toContain("morgan");
+    expect(formatMemoryBackground(store([], [fact("birth", "1990-05-17")]), "mark may morgan", "conv", options, [])).toBeUndefined();
+    expect(formatMemoryBackground(store([], [fact("birth", "1990-05-17")]), "Morgan", "conv", options, [])).toContain("age 36");
+  });
+
+  it("uses an atomic section budget without orphan headings or partial lines", () => {
+    const rows = [preference("agent", "A lengthy concise fictional preference for the current report.", "long"),
+      preference("agent", "Be brief.", "short")];
+    const scored = rows.map((row) => ({ score: 0.9, record: { id: row.memoryId, text: row.text } }));
+    const result = formatBlock(store(rows), "brief report", "conv", options, scored, 120);
+    expect(result?.content).toContain("Be brief.");
+    expect(result?.content).not.toContain("lengthy");
+    expect(result?.truncated).toBe(true);
+    expect(Buffer.byteLength(result?.content ?? "", "utf8")).toBeLessThanOrEqual(120);
+    expect(formatBlock(store(rows), "brief report", "conv", options, scored, 40)?.content).toBe("");
   });
 
   it("keeps the direct-fact gate and remote-store shape unchanged", async () => {
@@ -94,5 +128,48 @@ describe("automatic labelled background", () => {
     expect(block?.content).toContain("Memory (background — not direct evidence)");
     expect(block?.content).toContain("age 36");
     expect(block?.content).not.toContain("likes blue sky");
+  });
+
+  it("preserves byte-identical ordinary recall when a label lookup fails", async () => {
+    const base: SharedRecallStore = { async load() { return undefined; }, async close() {},
+      async recall() { return [{ score: 0.95, record: { id: "direct", text: "Morgan selected cobalt as the launch color." } }]; },
+    };
+    const options = { hostDate: "2026-09-24" };
+    const ordinary = await new MemoryRetrievalService(base).load("conv", "What launch color did Morgan select?", options);
+    const broken: SharedRecallStore = { ...base, guidanceForScope() { throw new Error("label DB temporarily unavailable"); },
+      labelsForEntity() { return []; } };
+    const protectedBlock = await new MemoryRetrievalService(broken).load("conv", "What launch color did Morgan select?", options);
+    expect(protectedBlock).toEqual(ordinary);
+    expect(ordinary?.content).toContain("cobalt");
+  });
+
+  it("counts background against the configured recall budget and marks omitted lines truncated", async () => {
+    const base: SharedRecallStore = { async load() { return undefined; }, async close() {},
+      async recall() { return [{ score: 0.95, record: { id: "direct", text: "Morgan selected cobalt as the launch color." } }]; },
+    };
+    const query = "What launch color did Morgan select?";
+    const ordinary = await new MemoryRetrievalService(base, { maxBytes: 100 }).load("conv", query, options);
+    const labelled: SharedRecallStore = { ...base,
+      guidanceForScope: () => [preference("agent", "A useful but long background preference about concise notes.", "direct")],
+      labelsForEntity: () => [],
+    };
+    const full = await new MemoryRetrievalService(labelled, { maxBytes: 512 }).load("conv", query, options);
+    const fullOrdinary = await new MemoryRetrievalService(base, { maxBytes: 512 }).load("conv", query, options);
+    expect(full?.content.startsWith(`${fullOrdinary?.content}\n\n`)).toBe(true);
+    expect(full?.content).toContain("Working preferences & lessons");
+    const block = await new MemoryRetrievalService(labelled, { maxBytes: 100 }).load("conv", query, options);
+    expect(block?.content).toBe(ordinary?.content);
+    expect(block?.truncated).toBe(true);
+    expect(Buffer.byteLength(block?.content ?? "", "utf8")).toBeLessThanOrEqual(100);
+  });
+
+  it("does not conceal degraded recall with a person card", async () => {
+    const degraded: SharedRecallStore = { ...store([], [fact("birth", "1990-05-17")]),
+      async load() { return undefined; }, async close() {}, async recall() { return []; },
+      async recallWithOutcome() { return { hits: [], retrievalMode: "lexical_only" as const,
+        degradation: { code: "embedding_unavailable" as const } }; },
+    };
+    await expect(new MemoryRetrievalService(degraded).load("conv", "Morgan", options))
+      .rejects.toThrow(/semantic memory retrieval is unavailable/iu);
   });
 });

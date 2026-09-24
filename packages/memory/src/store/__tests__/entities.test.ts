@@ -3,6 +3,18 @@ import { openMemoryDb } from "../db.js";
 import { fakeEmbeddings } from "./helpers.js";
 
 describe("entity repository", () => {
+  it("finds only exact folded person names with a bounded SQL lookup", () => {
+    const db = openMemoryDb({ path: ":memory:" });
+    const date = "2026-09-06T00:00:00.000Z";
+    db.upsertEntity({ id: "person:morgan", name: "Mórgan", createdAt: date });
+    db.upsertEntity({ id: "project:fictional", name: "Mórgan", createdAt: date });
+    db.upsertEntity({ id: "person:morgan-two", name: "Morgan Two", createdAt: date });
+    expect(db.findEntitiesByNames(["morgan"]).map((entity) => entity.id)).toEqual(["person:morgan"]);
+    expect(db.findEntitiesByNames(["morg"]).map((entity) => entity.id)).toEqual([]);
+    expect(db.findEntitiesByNames(["morgan two"]).map((entity) => entity.id)).toEqual(["person:morgan-two"]);
+    expect(() => db.findEntitiesByNames(Array(49).fill("morgan"))).toThrow(/bounds/iu);
+    db.close();
+  });
   it("upserts entities idempotently and reads them back", () => {
     const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(8), dim: 8 });
     db.upsertEntity({ id: "person:morgan", name: "Morgan", type: "person", createdAt: "2026-06-15T09:00:00.000Z" });

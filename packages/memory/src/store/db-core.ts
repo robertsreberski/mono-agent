@@ -74,6 +74,8 @@ export class MemoryDbCore {
     // SQLITE_BUSY. open.test.ts pins this
     // invariant — if an upgrade ever drops the default, the test fails and we set it explicitly here.
     loadVec(this.db);
+    this.db.function("mono_agent_fold_entity_name", { deterministic: true }, (name: string) =>
+      name.normalize("NFD").replace(/\p{M}/gu, "").toLocaleLowerCase("und"));
     this.db.function(
       "mono_agent_is_canonical_daily_source",
       { deterministic: true },

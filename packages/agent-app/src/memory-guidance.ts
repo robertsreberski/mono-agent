@@ -1,24 +1,35 @@
 import type { MemoryLoadOptions } from "@mono-agent/agent-contracts";
 import type { EntityRecord, MemoryDb } from "@mono-agent/memory/store";
-
-type MemoryLabelHit = ReturnType<MemoryDb["labelsForEntity"]>[number];
 import type { MemoryRecallHit } from "./memory-recall.js";
 
+type MemoryLabelHit = ReturnType<MemoryDb["labelsForEntity"]>[number];
 export interface LabelRecallStore {
   labelsForEntity?(id: string, date?: string): readonly MemoryLabelHit[];
   guidanceForScope?(scope: string): readonly MemoryLabelHit[];
-  listMemoryEntities?(limit?: number, offset?: number): readonly EntityRecord[];
+  findMemoryEntitiesByNames?(names: readonly string[]): readonly EntityRecord[];
 }
 
 const MAX_BACKGROUND_BYTES = 1024;
 const GUIDANCE_FLOOR = 0.35;
+const PERSON_ID = /^person:[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const scopeId = (value: string): boolean => /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,95}$/u.test(value);
 const safeLine = (text: string): string => text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").replace(/\s+/gu, " ").trim();
 const fold = (text: string): string => text.normalize("NFD").replace(/\p{M}/gu, "").toLocaleLowerCase("und");
-const containsName = (query: string, name: string): boolean => {
-  const escaped = fold(name).replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-  return new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`, "u").test(fold(query));
-};
+
+/** Only name-sized, bounded query tokens reach SQLite; names are exact, never aliases. */
+function entityNamesInQuery(query: string): string[] {
+  const tokens = [...query.matchAll(/[\p{L}\p{M}\p{N}]+/gu)].map(([word]) => word);
+  const names = new Set<string>();
+  for (let i = 0; i < tokens.length && names.size < 48; i++) {
+    const first = tokens[i]!;
+    if (!/^\p{Lu}/u.test(first)) continue;
+    for (let count = 1; count <= 3 && i + count <= tokens.length && names.size < 48; count++) {
+      const candidate = tokens.slice(i, i + count).join(" ");
+      if ((count > 1 || [...first].length >= 3) && candidate.length <= 160) names.add(fold(candidate));
+    }
+  }
+  return [...names];
+}
 
 function ageAt(birth: string, date: string): number | undefined {
   const [year, month, day] = birth.split("-").map(Number);
@@ -35,19 +46,20 @@ export function formatMemoryBackground(
   conversationId: string,
   options: MemoryLoadOptions,
   hits: readonly MemoryRecallHit[],
-): string | undefined {
+  byteBudget = MAX_BACKGROUND_BYTES,
+): { readonly content: string; readonly truncated: boolean } | undefined {
   if (store.guidanceForScope === undefined || store.labelsForEntity === undefined) return undefined;
   const date = options.hostDate;
   if (date === undefined || !/^\d{4}-\d{2}-\d{2}$/u.test(date)) return undefined;
   const scopes = ["agent"];
   if (scopeId(conversationId)) scopes.push(`conversation:${conversationId}`);
   if (options.senderToken !== undefined && /^[a-f0-9]{32}$/u.test(options.senderToken)) scopes.push(`user:${options.senderToken}`);
-  if (options.projectId !== undefined && scopeId(options.projectId)) scopes.push(`project:${options.projectId}`);
+  // No project scope: the harness has no host-confirmed active project id.
   const scores = new Map(hits.map((hit) => [hit.record.id, hit.score]));
   const applicable = scopes.flatMap((scope) => store.guidanceForScope!(scope))
     .filter((hit) => hit.active && (hit.label.kind === "preference" || (hit.label.kind === "lesson" && hit.label.verified))
       && (scores.get(hit.memoryId) ?? 0) >= GUIDANCE_FLOOR);
-  // If equally scoped instructions disagree about the same action, leave both out.
+  // Abstain on opposite statements about an otherwise identical action, across scopes too.
   const normalized = (text: string): string => fold(text).replace(/\b(?:not|never|don't)\b/gu, "").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
   const contradictory = new Set<string>();
   for (const hit of applicable) {
@@ -58,28 +70,21 @@ export function formatMemoryBackground(
   }
   const guidance = applicable.filter((hit) => !contradictory.has(hit.memoryId))
     .sort((a, b) => (scores.get(b.memoryId) ?? 0) - (scores.get(a.memoryId) ?? 0) || a.memoryId.localeCompare(b.memoryId))
-    .filter((hit, index, all) => all.findIndex((other) => other.text === hit.text) === index)
-    .slice(0, 3);
-  const sections: string[] = [];
-  if (guidance.length > 0) sections.push("Working preferences & lessons:", ...guidance.map((hit) => `- ${safeLine(hit.text)}`));
+    .filter((hit, index, all) => all.findIndex((other) => other.text === hit.text) === index);
 
   const entities: Array<{ id: string; name: string }> = [];
-  if (store.listMemoryEntities !== undefined) {
-    // Page rather than load the whole graph. Name matching is exact; aliases are deliberately excluded.
-    for (let offset = 0; ; offset += 100) {
-      const page = store.listMemoryEntities(100, offset);
-      for (const entity of page) if (containsName(query, entity.name) || containsName(query, entity.id)) {
-        entities.push({ id: entity.id, name: entity.name });
-      }
-      if (page.length < 100) break;
-    }
+  for (const entity of store.findMemoryEntitiesByNames?.(entityNamesInQuery(query)) ?? []) {
+    if (PERSON_ID.test(entity.id) && entity.id.length <= 96) entities.push({ id: entity.id, name: entity.name });
   }
   for (const id of query.match(/\bperson:[a-z0-9]+(?:-[a-z0-9]+)*\b/gu) ?? []) {
-    if (!entities.some((entity) => entity.id === id)) entities.push({ id, name: id });
+    if (id.length <= 96 && PERSON_ID.test(id) && !entities.some((entity) => entity.id === id)) {
+      entities.push({ id, name: id });
+    }
   }
-  const ambiguous = new Set(entities.filter((entity) => !containsName(query, entity.id)
-    && entities.some((other) => other !== entity
-    && other.id !== entity.id && fold(other.name) === fold(entity.name))).map((entity) => entity.id));
+  const explicitIds = new Set(query.match(/\bperson:[a-z0-9]+(?:-[a-z0-9]+)*\b/gu) ?? []);
+  const ambiguous = new Set(entities.filter((entity) => !explicitIds.has(entity.id)
+    && entities.some((other) => other.id !== entity.id && fold(other.name) === fold(entity.name)))
+    .map((entity) => entity.id));
   const cards: string[] = [];
   for (const entity of entities.filter((entry) => !ambiguous.has(entry.id)).slice(0, 3)) {
     const facts = store.labelsForEntity(entity.id, date).filter((hit) => hit.label.kind === "fact" && hit.active
@@ -106,13 +111,21 @@ export function formatMemoryBackground(
     }
     if (parts.length > 0) cards.push(`${safeLine(entity.name)}: ${parts.join("; ")}`);
   }
-  if (cards.length > 0) sections.push("Person card:", ...cards.map((card) => `- ${card}`));
-  if (sections.length === 0) return undefined;
-  const lines = ["## Memory (background — not direct evidence)", ...sections];
-  const selected: string[] = [lines[0]!];
-  for (const line of lines.slice(1)) {
-    if (Buffer.byteLength([...selected, line].join("\n"), "utf8") > MAX_BACKGROUND_BYTES) break;
-    selected.push(line);
+
+  const selected = ["## Memory (background — not direct evidence)"];
+  const limit = Math.max(0, Math.min(MAX_BACKGROUND_BYTES, byteBudget));
+  let truncated = guidance.length > 3 || entities.length > 3;
+  function addSection(title: string, lines: readonly string[]): void {
+    let added = false;
+    for (const line of lines) {
+      const next = [...selected, ...(added ? [] : [title]), `- ${line}`];
+      if (Buffer.byteLength(next.join("\n"), "utf8") > limit) { truncated = true; continue; }
+      selected.splice(0, selected.length, ...next);
+      added = true;
+    }
   }
-  return selected.length > 1 ? selected.join("\n") : undefined;
+  addSection("Working preferences & lessons:", guidance.slice(0, 3).map((hit) => safeLine(hit.text)));
+  addSection("Person card:", cards);
+  return selected.length > 1 ? { content: selected.join("\n"), truncated }
+    : truncated ? { content: "", truncated: true } : undefined;
 }

@@ -2257,16 +2257,21 @@ describe("AgentHarness", () => {
       call("two", "success");
       return { text: "A retry succeeded after the failed execution." };
     });
-    await createAgentHarness({ identityPath, runtime: runtime.runtime, model,
+    const harness = createAgentHarness({ identityPath, runtime: runtime.runtime, model,
       memoryWriteMode: "capture", memory: { load: async () => undefined,
         persistCompletedTurn: async (turn) => {
           admissions.push(turn);
           return { id: turn.runId, runId: turn.runId, conversationId: turn.conversationId,
             source: "test", bytesWritten: 0, admissionStatus: "admitted" as const };
-        } } }).run({ conversationId: "conv-1", userMessage: "Please check the task.",
+        } } });
+    await harness.run({ conversationId: "conv-1", userMessage: "Please check the task.",
       captureSpeakerKind: "human-turn", metadata: { source: "web" }, sender: { id: "fictional-sender" },
       abortSignal: new AbortController().signal });
     expect(admissions[0]?.captureEvidence?.ownerTurn).toBe(true);
+    await harness.run({ conversationId: "slack:fictional", userMessage: "Please check the task.",
+      captureSpeakerKind: "human-turn", metadata: { slack: {} }, sender: { id: "fictional-sender" },
+      abortSignal: new AbortController().signal });
+    expect(admissions[1]?.captureEvidence?.ownerTurn).toBeUndefined();
     expect(admissions[0]?.captureEvidence?.toolOutcomes).toEqual([
       { category: "execute", outcome: "failed" }, { category: "execute", outcome: "succeeded" },
     ]);
@@ -2294,6 +2299,12 @@ describe("AgentHarness", () => {
     await harness.run({ conversationId: "conv-2", userMessage: "Trigger event.", captureSpeakerKind: "trigger",
       metadata: { source: "webhook" }, sender: { id: "fictional-sender" }, abortSignal: new AbortController().signal });
     expect(reads[1]?.senderToken).toBeUndefined();
+    const disabled = createFakeRuntime(async () => ({ text: "No memory." }));
+    await createAgentHarness({ identityPath, runtime: disabled.runtime, model }).run({
+      conversationId: "conv-3", userMessage: "Morgan", captureSpeakerKind: "human-turn",
+      abortSignal: new AbortController().signal,
+    });
+    expect(JSON.stringify(disabled.calls)).not.toContain("Memory (background");
   });
 
   it("never admits webhook trigger text as capture evidence", async () => {

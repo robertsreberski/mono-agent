@@ -178,9 +178,12 @@ reconcile text validation, including its graph. Unset leaves capture unchanged;
 explicit `Remember` writes are unaffected. Tool outcomes exposed to extraction contain only bounded fixed categories,
 never arguments, outputs, paths, URLs or raw error messages. App-owned automatic
 recall can append up to three relevant, scoped live preferences/verified lessons
-and up to three exact-name person cards as a separate background block. Person
-cards show attribution/recorded date, omit conflicting values, and derive age
-from the host observation date rather than storing it. The conservative direct-fact
+and up to three exact-name person cards as a separate background block. Project
+scope is not injected until the host supplies a verified active project. Global
+agent preferences require a host-confirmed owner/operator turn; other identified
+speakers get user scope. Person cards show attribution/recorded date, omit
+conflicting values, and derive age from the UTC host observation date rather
+than storing it. The conservative direct-fact
 gate and ordinary recall hits do not change. UPDATE retains labels only when text is unchanged unless
 replacements are supplied; SUPERSEDE does not copy them by default. Lite and
 Journal ignore labels. Older

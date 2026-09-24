@@ -415,9 +415,9 @@ export class BujoMemoryStore implements MemoryStore {
     return this.db.guidanceForScope(scope);
   }
 
-  listMemoryEntities(limit = 50, offset = 0) {
-    this.assertOpen("listMemoryEntities");
-    return this.db.listEntities(limit, offset);
+  findMemoryEntitiesByNames(names: readonly string[]) {
+    this.assertOpen("findMemoryEntitiesByNames");
+    return this.db.findEntitiesByNames(names);
   }
 
   /** Query-based hybrid recall (text + score). Used by the MCP and any deliberate recall surface. */
