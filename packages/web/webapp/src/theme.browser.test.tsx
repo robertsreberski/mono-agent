@@ -186,6 +186,7 @@ afterEach(async () => {
   await page.viewport(414, 896);
   delete document.documentElement.dataset.consoleTheme;
   document.documentElement.style.removeProperty("--status-bar-inset");
+  document.documentElement.style.removeProperty("--top-edge-clearance");
   document.title = "";
   document.head.querySelectorAll('meta[name="theme-color"]').forEach((meta) => meta.remove());
   document.body.replaceChildren();
@@ -273,5 +274,58 @@ describe.each(VIEWPORTS)("header chrome at $name viewport", (viewport) => {
     expect(document.title).toBe("before");
     expect(initialLightMeta.content).toBe(initialLight);
     expect(initialDarkMeta.content).toBe(initialDark);
+  });
+});
+
+// Chromium's browser-tab context cannot emulate a Home Screen display-mode.
+// Override the *one* media-gated property with the production expression for
+// installed iPad cases; leave it untouched for excluded phone/tab cases.
+describe.each([
+  { name: "installed iPad", width: 1366, height: 1024, inset: 32, installed: true, padding: 72, floor: 72 },
+  { name: "inset-zero iPad window", width: 1366, height: 1024, inset: 0, installed: true, padding: 10, floor: 10 },
+  { name: "iPhone portrait", width: 390, height: 844, inset: 47, installed: false, padding: 47, floor: 47 },
+  { name: "iPhone landscape", width: 844, height: 390, inset: 0, installed: false, padding: 7, floor: 7 },
+  { name: "desktop browser tab", width: 1440, height: 900, inset: 0, installed: false, padding: 10, floor: 10 },
+  { name: "browser tab with inset", width: 1440, height: 900, inset: 32, installed: false, padding: 32, floor: 32 },
+] as const)("top-edge clearance on $name", (scenario) => {
+  it("clears header content and the toast without shifting excluded layouts", async () => {
+    await page.viewport(scenario.width, scenario.height);
+    const html = document.documentElement;
+    html.style.setProperty("--status-bar-inset", `${scenario.inset}px`);
+    if (scenario.installed) {
+      html.style.setProperty("--top-edge-clearance", "min(40px, calc(var(--status-bar-inset) * 100))");
+    }
+    const initialDocument = new DOMParser().parseFromString(indexHtml, "text/html");
+    const strip = initialDocument.querySelector(".status-bar-surface")!;
+    const root = document.createElement("div");
+    root.id = "root";
+    root.innerHTML = `<div class="app-shell">
+      <div class="dashboard-panel"><div class="dashboard"><header class="dashboard-header">
+        <div class="dashboard-title-block"><span class="eyebrow">Console</span><strong>Agent</strong></div>
+        <button>New conversation</button></header></div></div>
+      <div class="chat-region"><div class="chat-panel"><header class="chat-header">
+        <div class="chat-title-block"><span class="eyebrow">Conversation</span><button>Title</button></div>
+        <button>Options</button></header></div></div></div>
+      <div class="project-page" style="position:absolute;top:0;width:340px;height:100%"><header class="project-header"><button class="project-back">Back</button>
+        <button>Project actions</button></header></div><div class="console-error"><button>Retry</button></div>`;
+    document.body.append(strip, root);
+    const sampler = strip.getBoundingClientRect();
+    expect(sampler.top).toBe(0);
+    expect(sampler.height).toBe(scenario.inset);
+    // Same fixed y=4 edge geometry as the iPhone soft-pocket fix.
+    if (scenario.inset >= 5) expect(sampler.bottom).toBeGreaterThan(4);
+    for (const selector of [".dashboard-header", ".chat-header", ".project-header"]) {
+      const header = document.querySelector<HTMLElement>(selector)!;
+      const computed = getComputedStyle(header);
+      const top = scenario.width <= 900 ? (scenario.installed ? scenario.padding : Math.max(7, scenario.inset)) : scenario.padding;
+      expect(computed.paddingTop).toBe(`${top}px`);
+      expect(header.getBoundingClientRect().top).toBe(0);
+      for (const content of header.querySelectorAll<HTMLElement>("button, .eyebrow")) {
+        expect(content.getBoundingClientRect().top).toBeGreaterThanOrEqual(scenario.floor);
+      }
+    }
+    const toast = document.querySelector<HTMLElement>(".console-error")!;
+    expect(toast.getBoundingClientRect().top).toBe(Math.max(12, scenario.inset + (scenario.installed && scenario.inset > 0 ? 40 : 0)));
+    if (!scenario.installed) expect(getComputedStyle(html).getPropertyValue("--top-edge-clearance").trim()).toBe("0px");
   });
 });

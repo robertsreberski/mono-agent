@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep installed full-screen iPad console header content and error notices below
+  iPadOS 27's hard top-edge blur. iPhone and inset-zero windows retain their layout.
+
 - Let native `subagents.timeoutMs` and profile timeouts reach four hours; reserve
   settlement time inside detached job deadlines. Resume the same persistent
   transcript with an ordinary `AgentManage` message after a certified settled
