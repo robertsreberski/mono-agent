@@ -177,9 +177,11 @@ never arguments, outputs, paths, URLs or raw error messages. Automatic recall do
 not yet use labels. UPDATE retains labels only when text is unchanged unless
 replacements are supplied; SUPERSEDE does not copy them by default. Lite and
 Journal ignore labels. Older
-versions cannot safely replay pending label-changing UPDATE intents after downgrade;
-finish pending writes before downgrading. No extra file or separate fact authority
-is involved.
+versions cannot safely replay pending label-changing UPDATE intents or read
+pending capture intake records containing `captureEvidence` after downgrade; drain
+pending intake before downgrading. Sender scope tokens are unsalted, local-only
+hashes of host sender ids; do not export them as cross-channel identity. No extra
+file or separate fact authority is involved.
 
 ### Explicit remember writes
 

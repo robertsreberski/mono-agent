@@ -45,10 +45,58 @@ describe("host-validated capture labels", () => {
     expect((await extract("Morgan was born May 17, 1990.", [fact], {
       captureSpeakerKind: "human-turn", captureEvidence: evidence("Morgan said hello."),
     })).candidates[0]?.labels).toEqual([{ ...fact, attribution: "assistant-inferred" }]);
-    expect((await extract("Morgan was born 05/06/1990.", [fact], trusted)).candidates[0]?.labels).toBeUndefined();
+    const ambiguous = { ...fact, value: { type: "date", date: "1990-06-05" } };
+    expect((await extract("Morgan was born 05/06/1990.", [ambiguous], trusted)).candidates[0]?.labels).toBeUndefined();
     expect((await extract("Morgan was born 17/05/1990.", [fact], trusted)).candidates[0]?.labels).toEqual([fact]);
     expect((await extract("Morgan was born May 17, 1990.", [fact, { ...fact, value: { type: "date", date: "1990-02-30" } }], trusted))
       .candidates[0]?.labels).toEqual([fact]);
+  });
+
+  it("supports Italian, Dutch and Polish preferences, months and numeric separators", async () => {
+    const cases = [
+      { text: "Morgan è nata il 17 maggio 1990.", preference: "Morgan preferisce risposte concise." },
+      { text: "Morgan is geboren op 17 mei 1990.", preference: "Morgan wil beknopte antwoorden." },
+      { text: "Morgan urodziła się 17 maja 1990.", preference: "Morgan chce zwięzłe odpowiedzi." },
+    ];
+    for (const item of cases) {
+      const context = { captureSpeakerKind: "human-turn" as const, conversationId: "conv-1",
+        captureEvidence: evidence(item.preference) };
+      expect((await extract(item.preference, [preference], context)).candidates[0]?.labels)
+        .toEqual([{ ...preference, scope: "conversation:conv-1" }]);
+      expect((await extract(item.text, [fact], { ...context, captureEvidence: evidence(`I was born ${item.text}`) }))
+        .candidates[0]?.labels).toEqual([fact]);
+    }
+    expect((await extract("Morgan was born 17.05.1990.", [fact], {})).candidates[0]?.labels)
+      .toEqual([{ ...fact, attribution: "assistant-inferred" }]);
+    expect((await extract("Morgan was born 17-05-1990.", [fact], {})).candidates[0]?.labels)
+      .toEqual([{ ...fact, attribution: "assistant-inferred" }]);
+  });
+
+  it("matches diacritics, slug tokens and display names, but user-stated needs only the value in user text", async () => {
+    const named = { ...fact, entityId: "person:fictional-alias" };
+    const label = { v: 1, kind: "fact", entityId: "person:fictional-alias", key: "preferred_name",
+      value: { type: "text", text: "Élodie" }, attribution: "user-stated" };
+    const human = { observedAt: at.toISOString(), captureSpeakerKind: "human-turn" as const,
+      captureEvidence: evidence("I prefer to be called Elodie."), conversationId: "conv-1" };
+    const plan = await extractCapturePlanStrict("User: I prefer to be called Elodie.", {
+      id: "display", complete: async () => JSON.stringify({
+        memories: [{ type: "note", text: "Morgan prefers the name Elodie.", salience: 0.8,
+          isInsight: false, entityIds: [named.entityId], labels: [label] }],
+        entities: [{ id: named.entityId, name: "Morgan", type: "person" }], relations: [],
+      }),
+    }, undefined, [], human);
+    expect(plan.candidates[0]?.labels).toEqual([label]);
+    const slugLabel = { ...fact, entityId: "person:marie-smith" };
+    expect((await extract("Marie was born May 17, 1990.", [slugLabel], {})).candidates[0]?.labels)
+      .toEqual([{ ...slugLabel, attribution: "assistant-inferred" }]);
+  });
+
+  it("downgrades document and unsupported first-party attribution rather than trusting the model", async () => {
+    const context = { captureSpeakerKind: "human-turn" as const, captureEvidence: evidence("Hello there.") };
+    expect((await extract("Morgan was born May 17, 1990.", [{ ...fact, attribution: "document" }], context))
+      .candidates[0]?.labels).toEqual([{ ...fact, attribution: "assistant-inferred" }]);
+    expect((await extract("Morgan was born May 17, 1990.", [{ ...fact, attribution: "unknown" }], context))
+      .candidates[0]?.labels).toEqual([{ ...fact, attribution: "unknown" }]);
   });
 
   it("forces unidentified human preferences to conversation scope and drops trigger preferences", async () => {
@@ -58,11 +106,24 @@ describe("host-validated capture labels", () => {
       captureEvidence: evidence(user) };
     expect((await extract(sentence, [preference], context)).candidates[0]?.labels)
       .toEqual([{ ...preference, scope: "conversation:conv-1" }]);
+    expect((await extract("Taylor prefers concise project notes.", [preference], {
+      ...context, captureEvidence: evidence("Taylor prefers concise project notes."),
+    })).candidates[0]?.labels).toEqual([{ ...preference, scope: "conversation:conv-1" }]);
+    expect((await extract("Taylor prefers lengthy essays.", [preference], {
+      ...context, captureEvidence: evidence("Taylor prefers concise project notes."),
+    })).candidates[0]?.labels).toBeUndefined();
     expect((await extract(sentence, [preference], { ...context,
       captureEvidence: evidence(user, { senderToken: "a".repeat(32) }) })).candidates[0]?.labels)
       .toEqual([{ ...preference, scope: `user:${"a".repeat(32)}` }]);
     expect((await extract(sentence, [preference], { ...context, captureSpeakerKind: "trigger" })).candidates[0]?.labels)
       .toBeUndefined();
+    const token = "a".repeat(32);
+    const addressed = { ...context, captureEvidence: evidence("You should keep concise notes.", { senderToken: token }) };
+    expect((await extract("Morgan keeps concise notes.", [preference], addressed)).candidates[0]?.labels)
+      .toEqual([{ ...preference, scope: `user:${token}` }]);
+    const explicitAgent = { ...context, captureEvidence: evidence("The assistant should keep concise notes.", { senderToken: token }) };
+    expect((await extract("Morgan keeps concise notes.", [preference], explicitAgent)).candidates[0]?.labels)
+      .toEqual([preference]);
   });
 
   it("keeps only a uniquely host-proven successful retry; malformed label never drops the memory", async () => {
@@ -81,6 +142,26 @@ describe("host-validated capture labels", () => {
       { category: "execute", outcome: "failed" }, { category: "execute", outcome: "failed" },
       { category: "execute", outcome: "succeeded" },
     ] }) })).candidates[0]?.labels).toBeUndefined();
+  });
+
+  it("bounds lessons to one per proven retry and forces scope unless user names a project", async () => {
+    const context = { observedAt: at.toISOString(), captureSpeakerKind: "human-turn" as const,
+      captureEvidence: evidence("Please fix the fictional project.", { toolOutcomes: [
+        { category: "execute", outcome: "failed" }, { category: "execute", outcome: "succeeded" },
+      ] }) };
+    const plan = await extractCapturePlanStrict("User: Please fix the fictional project.", {
+      id: "multi-lessons", complete: async () => JSON.stringify({ memories: [
+        { type: "note", text: "A retry resolved the failed operation.", salience: 0.8, isInsight: false,
+          entityIds: [], labels: [{ ...lesson, scope: "project:fictional-project" }] },
+        { type: "note", text: "Another retry fixed the earlier problem.", salience: 0.7, isInsight: false,
+          entityIds: [], labels: [{ ...lesson, scope: "user:someone" }] },
+      ], entities: [], relations: [] }),
+    }, undefined, [], context);
+    expect(plan.candidates[0]?.labels).toEqual([{ ...lesson, scope: "project:fictional-project" }]);
+    expect(plan.candidates[1]?.labels).toBeUndefined();
+    expect((await extract("A retry succeeded after a failure.", [{ ...lesson, scope: "user:someone" }], {
+      captureEvidence: context.captureEvidence,
+    })).candidates[0]?.labels).toEqual([lesson]);
   });
 
   it("drops a fact whose supported value was clamped away and rejects malformed label array structure", async () => {
@@ -119,6 +200,22 @@ describe("host-validated capture labels", () => {
       }
       expect(db.labelsForEntity("person:morgan").map((hit) => [hit.memoryId, hit.active, hit.label]))
         .toEqual([["LABEL-0", false, fact], ["LABEL-1", true, corrected]]);
+      expect(auditCanonicalGraphParity(root, db).labels.matched).toBe(2);
+      const candidateText = "Morgan was born May 19, 1990.";
+      const finalText = "Morgan was born May 20, 1990.";
+      const offered = { ...fact, value: { type: "date", date: "1990-05-19" } };
+      const changed = await captureTurnStrict(`User: ${candidateText}\nAssistant: Noted.`, {
+        db, root, llm: { id: "fake-final-text", complete: async (_prompt, options) => options?.label === "capture:extract"
+          ? JSON.stringify({ memories: [{ type: "note", text: candidateText, salience: 0.8,
+            isInsight: false, entityIds: [], labels: [offered] }], entities: [], relations: [] })
+          : JSON.stringify([{ index: 0, action: "supersede", targetId: "LABEL-1", text: finalText }]) },
+        nextId: () => `LABEL-${nextId++}`, now: () => at, conversationId: "conv-1",
+        captureSpeakerKind: "human-turn", captureEvidence: evidence(candidateText),
+        canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
+      });
+      expect(changed.actions[0]?.kind).toBe("supersede");
+      expect(db.get("LABEL-2")?.text).toBe(finalText);
+      expect(db.labelProjection().map((entry) => entry.memoryId)).toEqual(["LABEL-0", "LABEL-1"]);
       expect(auditCanonicalGraphParity(root, db).labels.matched).toBe(2);
     } finally { db.close(); }
   });

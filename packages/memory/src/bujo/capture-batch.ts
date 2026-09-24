@@ -8,7 +8,7 @@ import { renderKnownEntityHints } from "./entity-reuse.js";
 import { MAX_MODEL_JSON_CHARS, parseJsonExact } from "./json.js";
 import type { LlmComplete } from "./llm.js";
 import type { MemoryCaptureEvidence, MemoryCaptureSpeakerKind } from "@mono-agent/agent-contracts";
-import { captureLabels } from "./capture-labels.js";
+import { captureLabels, verifiedRetryCount, type CaptureLabelContext } from "./capture-labels.js";
 import { MemoryModelError, MemoryModelOutputError } from "./model-error.js";
 
 export const MAX_CAPTURE_MEMORIES = 8;
@@ -220,10 +220,13 @@ export async function extractCapturePlanStrict(
     if (relationKeys.has(key)) throw outputError("capture-extract", "relations must be unique");
     relationKeys.add(key);
   }
-  const parsedCandidates = parsed.memories.map((value, index) => strictCandidate(value, index, entityIds, observationContext));
+  const entityNames = new Map(entities.map((entity) => [entity.id, entity.name]));
+  const labelContext = { ...observationContext, entityNames };
+  const parsedCandidates = parsed.memories.map((value, index) => strictCandidate(value, index, entityIds, labelContext));
   const candidates: CandidateMemory[] = [];
   const clampedTokenSets: string[][] = [];
   const fullTokenSets: string[][] = [];
+  let lessonBudget = verifiedRetryCount(observationContext?.captureEvidence);
   for (const { candidate, fullText } of parsedCandidates) {
     const tokens = candidateTokens(candidate.text);
     const fullTokens = candidateTokens(fullText);
@@ -239,7 +242,14 @@ export async function extractCapturePlanStrict(
       }
       continue;
     }
-    candidates.push(candidate);
+    const labels = candidate.labels?.filter((label) => {
+      if (label.kind !== "lesson") return true;
+      if (lessonBudget === 0) return false;
+      lessonBudget -= 1;
+      return true;
+    });
+    const { labels: _unfiltered, ...unlabelled } = candidate;
+    candidates.push({ ...unlabelled, ...(labels === undefined || labels.length === 0 ? {} : { labels }) });
     clampedTokenSets.push(tokens);
     fullTokenSets.push(fullTokens);
   }
@@ -268,7 +278,7 @@ function strictCandidate(
   value: unknown,
   index: number,
   entityIds: ReadonlySet<string>,
-  context: CaptureObservationContext | undefined,
+  context: CaptureLabelContext,
 ): { candidate: CandidateMemory; fullText: string } {
   if (!isRecord(value) || !hasExactKeys(value, ["type", "text", "salience", "isInsight", "entityIds"], ["labels"])) {
     throw outputError("capture-extract", `memory ${index} has missing or unknown fields`);
@@ -297,7 +307,7 @@ function strictCandidate(
   if (value.labels !== undefined && (!Array.isArray(value.labels) || value.labels.length > 32)) {
     throw outputError("capture-extract", `memory ${index} labels structure is invalid`);
   }
-  const labels = captureLabels((value.labels ?? []) as readonly unknown[], text, context ?? {});
+  const labels = captureLabels((value.labels ?? []) as readonly unknown[], text, context);
   return {
     candidate: { type: value.type, text, salience: value.salience, isInsight: value.isInsight, entityIds: associated,
       ...(labels.length === 0 ? {} : { labels }) },
