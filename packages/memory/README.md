@@ -152,6 +152,28 @@ compatibility-hidden, or control/format-bearing payloads abstain instead of
 being normalized into evidence. Distinct schedule payload representations also
 abstain rather than invoking calendar or time-zone interpretation.
 
+### BuJo memory labels
+
+A BuJo daily bullet may carry up to eight validated `label:v1:<base64url>` refs
+inside its existing `<!--mem ... refs=...-->` metadata comment. The encoded
+canonical JSON has one kind: `fact` (person entity, typed key/value, optional
+civil-date validity, attribution), `preference` (scope and attribution), or
+`lesson` (scope and host-verified success boolean). The readable sentence remains
+the bullet's text; daily Markdown is canonical, and SQLite `memory_labels` is a
+rebuildable cache. Old versions parse the labelled line normally and ignore the
+refs as ordinary refs; they neither interpret nor enforce labels. A newer reader
+keeps the bullet when a label is malformed, omits the invalid label from the index,
+and reports its file and line in audit; new writes reject invalid labels. Only `invalidated`
+and `dropped` statuses make labels inactive; other statuses remain live. Internal
+`MemoryDb.labelsForEntity(entityId, asOfDate?)` returns fact labels, history,
+and conflicts; `guidanceForScope(scope)` returns preferences and lessons.
+Neither capture nor recall writes or renders labels yet. UPDATE retains labels
+only when text is unchanged unless replacements are supplied; SUPERSEDE does not
+copy labels without explicit replacements. Lite and Journal ignore labels. Older
+versions cannot safely replay pending label-changing UPDATE intents after downgrade;
+finish pending writes before downgrading. No extra file or separate fact authority
+is involved.
+
 ### Explicit remember writes
 
 `BujoMemoryStore.remember(conversationId, text)` durably stores one explicitly

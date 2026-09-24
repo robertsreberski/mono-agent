@@ -26,6 +26,7 @@ import {
 import { pruneExplicitMemoryForgetBackups } from "../forget-backup-retention.js";
 import { readManagedIndexManifest, resolveActiveMemoryDbPath } from "../generations.js";
 import { serializeBullet } from "../grammar.js";
+import { encodeMemoryLabel } from "../labels.js";
 import { readCanonicalMergeSnapshot, safeRebuildMemoryIndex } from "../rebuild.js";
 import { readBujoCanonicalSourceFingerprint } from "../replay-projection.js";
 
@@ -96,6 +97,19 @@ async function applyBundle(
 }
 
 describe("memory bundle import", { timeout: 60_000 }, () => {
+  it("exports and imports labels with their ordinary canonical bullet", async () => {
+    const label = { v: 1, kind: "preference", scope: "project:fictional-project",
+      attribution: "user-stated" } as const;
+    const source = await createBujoFixture({ prefix: "bundle-label-source",
+      bullets: [{ id: "LABEL-A", text: "Prefer short reports.", refs: [encodeMemoryLabel(label)] }] });
+    const destination = await destinationStore();
+    const bundlePath = await bundleFrom(source);
+    await applyBundle(destination, bundlePath);
+    const db = openMemoryDb({ path: resolveActiveMemoryDbPath(destination.root), readOnly: true, dim: destination.dim });
+    try {
+      expect(db.guidanceForScope("project:fictional-project").map((hit) => hit.label)).toEqual([label]);
+    } finally { db.close(); }
+  });
   it("merges a bundle into a populated destination and rebuilds a healthy index", async () => {
     const source = await sourceStore();
     const destination = await destinationStore();

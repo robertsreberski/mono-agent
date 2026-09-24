@@ -1,6 +1,7 @@
 import type { MemoryStatus, MemoryType } from "../store/index.js";
 
 import type { Bullet } from "./types.js";
+import { labelsOf, readableLabelsOf, encodeMemoryLabel } from "./labels.js";
 
 const MARKERS: Record<string, { type: MemoryType; status: MemoryStatus }> = {
   "[ ]": { type: "task", status: "open" },
@@ -78,6 +79,7 @@ export function parseBullet(line: string): Bullet | undefined {
 }
 
 export function serializeBullet(bullet: Bullet): string {
+  labelsOf(bullet);
   if (/[\r\n\p{Zl}\p{Zp}]/u.test(bullet.text) || bullet.text.includes("<!--mem")) {
     throw new Error("memory-bujo: bullet text must not contain a newline or the '<!--mem' delimiter.");
   }
@@ -115,7 +117,9 @@ function parseMeta(meta: string): Record<string, string> {
   for (const pair of meta.trim().split(/\s+/u)) {
     const eq = pair.indexOf("=");
     if (eq === -1) continue;
-    out[pair.slice(0, eq)] = pair.slice(eq + 1);
+    const key = pair.slice(0, eq);
+    const value = pair.slice(eq + 1);
+    out[key] = key === "refs" && out.refs !== undefined ? `${out.refs},${value}` : value;
   }
   return out;
 }
@@ -136,7 +140,9 @@ export function parseDailyFile(content: string): DailyFile & { bullets: Bullet[]
   for (let i = 0; i < rawLines.length; i += 1) {
     const raw = rawLines[i] ?? "";
     const lineNumber = i + 1;
-    const bullet = parseBullet(raw);
+    let bullet: Bullet | undefined;
+    try { bullet = parseBullet(raw); }
+    catch (error) { throw new Error(`memory-bujo: invalid label at line ${lineNumber}.`, { cause: error }); }
     if (bullet !== undefined) {
       lines.push({ raw, lineNumber, bullet });
       continue;
@@ -145,7 +151,9 @@ export function parseDailyFile(content: string): DailyFile & { bullets: Bullet[]
     const next = rawLines[i + 1];
     if (next !== undefined) {
       const splitRaw = `${raw}\n${next}`;
-      const splitBullet = parseBullet(splitRaw);
+      let splitBullet: Bullet | undefined;
+      try { splitBullet = parseBullet(splitRaw); }
+      catch (error) { throw new Error(`memory-bujo: invalid label at line ${lineNumber}.`, { cause: error }); }
       if (splitBullet !== undefined) {
         lines.push({ raw: splitRaw, lineNumber, bullet: splitBullet });
         i += 1;
@@ -158,6 +166,28 @@ export function parseDailyFile(content: string): DailyFile & { bullets: Bullet[]
   return { lines, bullets: lines.flatMap((l) => (l.bullet ? [l.bullet] : [])) };
 }
 
+export function hasDuplicateLabelRefsMetadata(raw: string): boolean {
+  const refs = [...raw.matchAll(/(?:^|\s)refs=(\S*)/gu)].map((match) => match[1] ?? "");
+  return refs.length > 1 && refs.some((value) => value.includes("label:"));
+}
+
 export function serializeDailyFile(file: DailyFile): string {
-  return file.lines.map((l) => (l.bullet ? serializeBullet(l.bullet) : l.raw)).join("\n");
+  return file.lines.map((line) => {
+    if (line.bullet === undefined) return line.raw;
+    let damaged = hasDuplicateLabelRefsMetadata(line.raw);
+    try { labelsOf(line.bullet); }
+    catch { damaged = true; }
+    if (damaged) {
+      // Unchanged damaged source is readable, not silently repaired. Forgetting its
+      // line removes invalid labels while preserving ordinary and healthy refs.
+      if (JSON.stringify(parseBullet(line.raw)) === JSON.stringify(line.bullet)) return line.raw;
+      if (line.bullet.status === "invalidated" || line.bullet.status === "dropped") {
+        return serializeBullet({ ...line.bullet, refs: [
+          ...line.bullet.refs.filter((ref) => !ref.startsWith("label:")),
+          ...readableLabelsOf(line.bullet).map(encodeMemoryLabel),
+        ] });
+      }
+    }
+    return serializeBullet(line.bullet);
+  }).join("\n");
 }

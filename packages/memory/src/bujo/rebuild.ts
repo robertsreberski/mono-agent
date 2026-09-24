@@ -20,8 +20,10 @@ import type {
 import type { EmbeddingProvider } from "../search/index.js";
 
 import { normalizedContentHash } from "./daily.js";
+import { labelsOf, readableLabelsOf } from "./labels.js";
+import type { IndexedMemoryLabel } from "../store/db-labels.js";
 import { isRememberedMemoryId } from "./canonical-lookup.js";
-import { parseDailyFile } from "./grammar.js";
+import { hasDuplicateLabelRefsMetadata, parseDailyFile } from "./grammar.js";
 import {
   emptyCanonicalGraphProjection,
   isLegacyHostObservation,
@@ -139,6 +141,13 @@ export async function rebuildFromMarkdown(root: string, db: MemoryDb): Promise<{
     });
   }
   const result = await db.rebuild(records);
+  db.replaceLabelProjection(records.flatMap((record) => {
+    const source = record.source.file;
+    if (source === undefined) return [];
+    const snapshot = readCanonicalFileSnapshot(root, source);
+    const bullet = parseDailyFile(snapshot?.content ?? "").bullets.find((item) => item.id === record.id);
+    return (bullet === undefined ? [] : readableLabelsOf(bullet).map((label, ordinal) => ({ memoryId: record.id, ordinal, label })));
+  }));
 
   // Ingest entity graph — db.rebuild already wiped the entity tables, so start fresh.
   // No LLM: graph.jsonl is the canonical source written by captureTurnStrict.
@@ -237,6 +246,8 @@ interface SourceSnapshot {
 
 interface BuildPlan {
   readonly records: readonly MemoryRecord[];
+  readonly labels: readonly IndexedMemoryLabel[];
+  readonly invalidLabels: readonly { readonly file: string; readonly line: number }[];
   readonly contentHashes: ReadonlyMap<string, string>;
   readonly graph: CanonicalGraphProjection;
   readonly replay: ReplayProjectionV1;
@@ -254,6 +265,8 @@ interface BuildPlan {
 export interface CanonicalGraphAuditSourceSnapshot {
   readonly fingerprint: string;
   readonly graph: CanonicalGraphProjection;
+  readonly labels: readonly IndexedMemoryLabel[];
+  readonly invalidLabels: readonly { readonly file: string; readonly line: number }[];
 }
 
 /** Read the same identity-stable canonical daily+graph projection used by safe rebuild. */
@@ -262,13 +275,14 @@ export function readCanonicalGraphAuditSourceSnapshot(
   tier: BujoTier,
 ): CanonicalGraphAuditSourceSnapshot {
   if (tier !== "bujo") {
-    return { fingerprint: `ignored:${tier}`, graph: emptyCanonicalGraphProjection() };
+    return { fingerprint: `ignored:${tier}`, graph: emptyCanonicalGraphProjection(), labels: [], invalidLabels: [] };
   }
   const snapshot = snapshotCanonicalSources(root, tier);
   // This surface audits only graph projection. Replay absence is independently
   // owned by strict index health and must not turn an otherwise exact graph
   // comparison into a graph parse failure.
-  return { fingerprint: snapshot.fingerprint, graph: buildPlan(snapshot, tier, emptyReplayProjection()).graph };
+  const plan = buildPlan(snapshot, tier, emptyReplayProjection());
+  return { fingerprint: snapshot.fingerprint, graph: plan.graph, labels: plan.labels, invalidLabels: plan.invalidLabels };
 }
 
 /** One canonical daily source file, exactly as the rebuild planner reads it. */
@@ -816,6 +830,7 @@ async function safeRebuildMemoryIndexWithLease(
     let stagedReplayIntegrity: string | undefined;
     try {
       await db.rebuild(plan.records);
+      db.replaceLabelProjection(plan.labels);
       const planRecordsById = new Map(plan.records.map((record) => [record.id, record]));
       for (const [contentHash, memoryId] of plan.contentHashes) {
         const record = planRecordsById.get(memoryId);
@@ -1251,12 +1266,16 @@ function buildPlan(
   reuseAuditProjection = false,
 ): BuildPlan {
   const rawRecords: MemoryRecord[] = [];
+  const labelsAtSource = new Map<string, ReturnType<typeof readableLabelsOf>>();
+  const invalidLabels: { file: string; line: number }[] = [];
   let skippedUnstructuredRecords = 0;
   const missingIdentityLocations: string[] = [];
   const legacySourceLocations: string[] = [];
   for (const source of snapshot.daily) {
     const content = source.bytes.toString("utf8");
-    const parsed = parseDailyFile(content);
+    let parsed: ReturnType<typeof parseDailyFile>;
+    try { parsed = parseDailyFile(content); }
+    catch (error) { throw new Error(`memory-rebuild: invalid label in ${source.relativePath}`, { cause: error }); }
     for (const line of parsed.lines) {
       if (line.bullet === undefined) {
         if (line.raw.includes("<!--mem")) {
@@ -1278,6 +1297,13 @@ function buildPlan(
         throw new Error(`memory-rebuild: invalid memory timestamp at ${source.relativePath}:${line.lineNumber}.`);
       }
       rawRecords.push(toRecord(line.bullet, source.relativePath, line.lineNumber));
+      if (tier === "bujo") {
+        let invalid = hasDuplicateLabelRefsMetadata(line.raw);
+        try { labelsOf(line.bullet); }
+        catch { invalid = true; }
+        if (invalid) invalidLabels.push({ file: source.relativePath, line: line.lineNumber });
+        labelsAtSource.set(`${source.relativePath}\0${line.lineNumber}`, readableLabelsOf(line.bullet));
+      }
     }
   }
 
@@ -1345,8 +1371,13 @@ function buildPlan(
   if (accountedSourceItems !== parsedSourceItems) {
     throw new Error(`memory-rebuild: source accounting mismatch (${accountedSourceItems}/${parsedSourceItems}).`);
   }
+  const labels = [...records.values()].flatMap((record) =>
+    (labelsAtSource.get(`${record.source.file}\0${record.source.line}`) ?? [])
+      .map((label, ordinal) => ({ memoryId: record.id, ordinal, label })));
   return {
     records: [...records.values()],
+    labels,
+    invalidLabels,
     contentHashes,
     graph,
     replay,
@@ -1511,6 +1542,14 @@ function buildPlanParityError(
 ): string | undefined {
   const memoryParityError = buildPlanCanonicalMemoryParityError(db, tier, plan, options);
   if (memoryParityError !== undefined) return memoryParityError;
+  const pendingLabels = options.pendingMemoryIds ?? new Set<string>();
+  const labelSignature = (entry: IndexedMemoryLabel): string =>
+    `${entry.memoryId}\0${entry.ordinal}\0${JSON.stringify(entry.label)}`;
+  const expectedLabels = plan.labels.filter((entry) => !pendingLabels.has(entry.memoryId)).map(labelSignature).sort();
+  const actualLabels = db.labelProjection().filter((entry) => !pendingLabels.has(entry.memoryId)).map(labelSignature).sort();
+  if (JSON.stringify(expectedLabels) !== JSON.stringify(actualLabels)) {
+    return "memory-rebuild: candidate label projection mismatch.";
+  }
   const state = db.validationSnapshot();
   const memoryInventory = db.allMemories();
   const actualMemoryById = new Map(memoryInventory.map((record) => [record.id, record]));

@@ -615,9 +615,9 @@ function deterministicEmbeddings(id: string, dim: number): EmbeddingProvider {
 
 describe("explicit-only coverage scoring", () => {
   it.each([
-    ["When is Ambra's birth date and age?", "Ambra's birth date is 24 January", "Ambra's age is uncertain"],
-    ["Quando è la data di nascita di Ambra?", "La data di nascita di Ambra è gennaio", "Ambra ha avuto un raffreddore"],
-    ["Wat is de geboortedatum van Ambra?", "De geboortedatum van Ambra is januari", "Ambra heeft een verkoudheid"],
+    ["When is Morgan's birth date and age?", "Morgan's birth date is 17 May", "Morgan's age is uncertain"],
+    ["Quando è la data di nascita di Morgan?", "La data di nascita di Morgan è maggio", "Morgan ha avuto un raffreddore"],
+    ["Wat is de geboortedatum van Morgan?", "De geboortedatum van Morgan is mei", "Morgan heeft een verkoudheid"],
   ])("distinguishes multi-term coverage without changing original backend hits: %s", (query, complete, partial) => {
     const hits = [
       { score: 0.99, record: { id: "partial", text: partial } },
@@ -633,8 +633,8 @@ describe("explicit-only coverage scoring", () => {
 describe("backend-agnostic recall server", () => {
   it("renders source and validity dates on direct or graph-expanded records when supplied", async () => {
     const store = {
-      recall: async () => [{ score: 0.9, record: { id: "a", text: "Ambra was born in January" } }],
-      expandGraph: async () => [{ score: 0.9, record: { id: "b", text: "Ambra birth date", createdAt: "2026-09-20T00:00:00.000Z", validFrom: "2026-01-24T00:00:00.000Z" } }],
+      recall: async () => [{ score: 0.9, record: { id: "a", text: "Morgan was born in May" } }],
+      expandGraph: async () => [{ score: 0.9, record: { id: "b", text: "Morgan birth date", createdAt: "2026-09-20T00:00:00.000Z", validFrom: "1990-05-17T00:00:00.000Z" } }],
       close: async () => {},
     };
     const server = createMemoryRecallServer(store);
@@ -642,9 +642,9 @@ describe("backend-agnostic recall server", () => {
     const [ct, st] = InMemoryTransport.createLinkedPair();
     await server.connect(st); await client.connect(ct);
     try {
-      const result = await client.callTool({ name: "MemoryRecall", arguments: { query: "Ambra birth date" } });
+      const result = await client.callTool({ name: "MemoryRecall", arguments: { query: "Morgan birth date" } });
       expect(result.content).toEqual([expect.objectContaining({ text: expect.stringContaining("recorded 2026-09-20T00:00:00.000Z") })]);
-      expect(result.structuredContent).toMatchObject({ hits: [{ id: "b", createdAt: "2026-09-20T00:00:00.000Z", validFrom: "2026-01-24T00:00:00.000Z" }] });
+      expect(result.structuredContent).toMatchObject({ hits: [{ id: "b", createdAt: "2026-09-20T00:00:00.000Z", validFrom: "1990-05-17T00:00:00.000Z" }] });
     } finally { await client.close(); await server.close(); }
   });
 

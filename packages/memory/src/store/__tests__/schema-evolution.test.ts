@@ -1,4 +1,6 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { safeRebuildMemoryIndex } from "../../bujo/rebuild.js";
+import { serializeBullet } from "../../bujo/grammar.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -88,6 +90,15 @@ const CUMULATIVE_SCHEMA_BASELINE_DDL = [
     PRIMARY KEY(memory_id, entity_id)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_memory_entities_entity ON memory_entities(entity_id)`,
+  `CREATE TABLE IF NOT EXISTS memory_labels (
+    memory_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('fact','preference','lesson')),
+    entity_id TEXT,
+    scope TEXT,
+    payload TEXT NOT NULL,
+    PRIMARY KEY(memory_id, ordinal)
+  )`,
   `CREATE TABLE IF NOT EXISTS content_hashes (
     content_hash TEXT PRIMARY KEY,
     memory_id TEXT NOT NULL,
@@ -153,6 +164,31 @@ function quoteIdentifier(value: string): string {
 }
 
 describe("memory schema evolution", () => {
+  it("reads a prior label-free baseline read-only and safely rebuilds after upgrade", async () => {
+    const root = mkdtempSync(join(tmpdir(), "memory-prior-labels-"));
+    const path = join(root, "memory.db");
+    withRawDb(path, (db) => {
+      for (const statement of CUMULATIVE_SCHEMA_BASELINE_DDL.filter((sql) => !sql.includes("memory_labels"))) {
+        db.exec(statement.replace(`float[${DIMENSION}]`, "float[768]"));
+      }
+    });
+    const old = openMemoryDb({ path, readOnly: true });
+    try {
+      expect(old.labelProjection()).toEqual([]);
+      expect(old.labelsForEntity("person:morgan")).toEqual([]);
+      expect(old.guidanceForScope("agent")).toEqual([]);
+    } finally { old.close(); }
+    mkdirSync(join(root, "daily"));
+    writeFileSync(join(root, "daily", "2026-07-11.md"), `# 2026-07-11\n\n${serializeBullet({
+      id: "B1", type: "note", status: "open", text: "Morgan prefers concise notes.", salience: 0.5,
+      isInsight: false, createdAt: "2026-07-11T09:00:00.000Z", refs: [],
+    })}\n`);
+    const result = await safeRebuildMemoryIndex({ root, tier: "lite" });
+    const rebuilt = openMemoryDb({ path: result.active, readOnly: true });
+    try { expect(rebuilt.labelProjection()).toEqual([]); expect(rebuilt.count()).toBe(1); }
+    finally { rebuilt.close(); }
+  });
+
   it("represents every table, converges on first open, and remains idempotent", () => {
     const root = mkdtempSync(join(tmpdir(), "memory-schema-evolution-"));
     const baselinePath = join(root, "baseline.db");

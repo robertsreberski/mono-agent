@@ -11,6 +11,7 @@ import { auditBujoMemoryHealth } from "../audit.js";
 import { writeCaptureIntent } from "../capture-outbox.js";
 import { parseDailyFile } from "../grammar.js";
 import { createIdFactory } from "../ids.js";
+import { encodeMemoryLabel, labelsOf, type MemoryLabel } from "../labels.js";
 import { migrate } from "../migrate.js";
 import { assertCanonicalGraphRepairBaseParity, safeRebuildMemoryIndex } from "../rebuild.js";
 import { reconcile, reconcileBatch, type ReconcileDeps } from "../reconcile.js";
@@ -75,7 +76,7 @@ async function seed(
   root: string,
   id: string,
   text: string,
-  opts: { type?: Bullet["type"]; salience?: number; isInsight?: boolean } = {},
+  opts: { type?: Bullet["type"]; salience?: number; isInsight?: boolean; labels?: readonly MemoryLabel[] } = {}, 
 ): Promise<void> {
   const type = opts.type ?? "note";
   const bullet: Bullet = {
@@ -86,7 +87,7 @@ async function seed(
     salience: opts.salience ?? 0.5,
     isInsight: opts.isInsight ?? false,
     createdAt: FIXED.toISOString(),
-    refs: [],
+    refs: (opts.labels ?? []).map(encodeMemoryLabel),
   };
   appendBullet(root, bullet, FIXED);
   const record: MemoryRecord = {
@@ -102,6 +103,7 @@ async function seed(
     source: { file: relative(root, dailyFilePath(root, FIXED)) },
   };
   await db.upsert(record);
+  db.replaceMemoryLabels(id, labelsOf(bullet));
 }
 
 function makeDeps(
@@ -126,6 +128,57 @@ function dailyContent(root: string): string {
 }
 
 describe("reconcile", () => {
+  it("clears labels on changed UPDATE and keeps only history on SUPERSEDE", async () => {
+    const label: MemoryLabel = { v: 1, kind: "fact", entityId: "person:morgan", key: "preferred_name",
+      value: { type: "text", text: "Morgan" }, attribution: "user-stated" };
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "UPD1", "Morgan prefers concise technical reports", { labels: [label] });
+    const changed = "Morgan prefers concise technical status reports";
+    const update = fakeLlm([["CLASSIFY", `{"action":"update","targetId":"UPD1","text":"${changed}"}`]]);
+    await reconcile([{ type: "note", text: "Morgan prefers concise status reports", salience: 0.7,
+      isInsight: false }], makeDeps(db, root, update));
+    expect(db.labelsForEntity("person:morgan")).toEqual([]);
+    expect(parseDailyFile(dailyContent(root)).bullets.find((item) => item.id === "UPD1")?.refs).toEqual([]);
+    const replaced: MemoryLabel = { ...label, value: { type: "text", text: "M" } };
+    const replacementUpdate = fakeLlm([["CLASSIFY", `{"action":"update","targetId":"UPD1","text":"Morgan prefers concise weekly status reports"}`]]);
+    await reconcile([{ type: "note", text: "Morgan prefers weekly status reports", salience: 0.7,
+      isInsight: false }], makeDeps(db, root, replacementUpdate,
+      { labelsForAction: () => [replaced] }));
+    expect(db.labelsForEntity("person:morgan").map((hit) => hit.label)).toEqual([replaced]);
+
+    await seed(db, root, "OLD1", "Morgan prefers monthly concise status reports", { labels: [label] });
+    const newText = "Morgan prefers monthly detailed status reports";
+    const supersede = fakeLlm([["CLASSIFY", `{"action":"supersede","targetId":"OLD1","text":"${newText}"}`]]);
+    const actions = await reconcile([{ type: "note", text: "Morgan prefers monthly detailed reports", salience: 0.7,
+      isInsight: false }], makeDeps(db, root, supersede));
+    const replacementId = actions[0]?.kind === "supersede" ? actions[0].newId : "";
+    expect(replacementId).not.toBe("");
+    expect(db.labelsForEntity("person:morgan").map((hit) => [hit.memoryId, hit.active])).toEqual([
+      ["OLD1", false], ["UPD1", true],
+    ]);
+    expect(parseDailyFile(dailyContent(root)).bullets.find((item) => item.id === replacementId)?.refs).toEqual([]);
+  });
+  it("retains unchanged UPDATE labels and explicitly replaces SUPERSEDE labels", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    const label: MemoryLabel = { v: 1, kind: "preference", scope: "agent", attribution: "user-stated" };
+    const replacement: MemoryLabel = { v: 1, kind: "lesson", scope: "agent", verified: true };
+    const text = "Morgan prefers concise technical reports";
+    await seed(db, root, "OLD1", text, { labels: [label] });
+    await reconcile([{ type: "note", text, salience: 0.7, isInsight: false }], makeDeps(db, root,
+      fakeLlm([["CLASSIFY", `{"action":"update","targetId":"OLD1","text":"${text}"}`]])));
+    expect(db.guidanceForScope("agent").map((hit) => hit.label)).toEqual([label]);
+    const actions = await reconcile([{ type: "note", text: "Morgan prefers detailed reports", salience: 0.7,
+      isInsight: false }], makeDeps(db, root,
+      fakeLlm([["CLASSIFY", '{"action":"supersede","targetId":"OLD1","text":"Morgan prefers detailed technical reports"}']]),
+      { labelsForAction: (action) => action === "supersede" ? [replacement] : [] }));
+    const newId = actions[0]?.kind === "supersede" ? actions[0].newId : "";
+    expect(newId).not.toBe("");
+    expect(db.guidanceForScope("agent").map((hit) => [hit.memoryId, hit.label, hit.active]))
+      .toEqual([[newId, replacement, true], ["OLD1", label, false]]);
+  });
+
   it("case 1 — novel candidate (no similar) → ADD", async () => {
     const root = newRoot();
     const db = openDb(root);
@@ -617,11 +670,11 @@ describe("reconcile", () => {
 
 describe("reconcileBatch", () => {
   it.each([
-    "Ambra is 7.5 months old", "Ambra ha 7,5 mesi", "Ambra is 7,5 maanden oud",
+    "Morgan is 7.5 months old", "Morgan ha 7,5 mesi", "Morgan is 7,5 maanden oud",
   ])("converts a time-sensitive UPDATE to a new dated ADD without rewriting the original: %s", async (text) => {
     const root = newRoot();
     const db = openDb(root);
-    await seed(db, root, "OLD-AGE", "Ambra is 6 months old");
+    await seed(db, root, "OLD-AGE", "Morgan is 6 months old");
     const oldSource = dailyContent(root);
     db.findSimilarMany = async () => [[{ record: db.get("OLD-AGE")!, distance: 0.1 }]];
     const candidate: CandidateMemory = { type: "note", text, salience: 0.8, isInsight: false };
@@ -636,16 +689,16 @@ describe("reconcileBatch", () => {
     }));
     expect(actions).toEqual([{ kind: "add", id: "AGE-NEW" }]);
     expect(dailyContent(root)).toBe(oldSource);
-    expect(db.get("OLD-AGE")?.text).toBe("Ambra is 6 months old");
+    expect(db.get("OLD-AGE")?.text).toBe("Morgan is 6 months old");
     expect(db.get("AGE-NEW")?.createdAt).toBe(nextDay.toISOString());
     expect(readFileSync(dailyFilePath(root, nextDay), "utf8")).toContain(text);
   });
   it("plans the same run-derived ADD identity on a deferred snapshot retry", async () => {
     const root = newRoot();
     const db = openDb(root);
-    await seed(db, root, "AGE-OLD", "Ambra is 6 months old");
+    await seed(db, root, "AGE-OLD", "Morgan is 6 months old");
     db.findSimilarMany = async () => [[{ record: db.get("AGE-OLD")!, distance: 0.1 }]];
-    const candidate: CandidateMemory = { type: "note", text: "Ambra is 7.5 months old", salience: 0.8, isInsight: false };
+    const candidate: CandidateMemory = { type: "note", text: "Morgan is 7.5 months old", salience: 0.8, isInsight: false };
     const llm: ReconcileDeps["llm"] = { id: "stable", complete: async () => JSON.stringify([
       { index: 0, action: "update", targetId: "AGE-OLD", text: candidate.text },
     ]) };
@@ -658,7 +711,7 @@ describe("reconcileBatch", () => {
     expect(await reconcileBatch([candidate], deps)).toEqual([{ kind: "add", id: "AGE-RUN-00" }]);
     expect(intents).toHaveLength(2);
     expect(intents[0]).toBe(intents[1]);
-    expect(db.get("AGE-OLD")?.text).toBe("Ambra is 6 months old");
+    expect(db.get("AGE-OLD")?.text).toBe("Morgan is 6 months old");
     expect(db.get("AGE-RUN-00")).toBeUndefined();
   });
 
