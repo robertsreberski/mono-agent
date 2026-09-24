@@ -15,10 +15,11 @@
 - Add config-declared local `PeerAgent` calls with named ACP threads, foreground
   replies, and optional durable background wakes on wake-capable turns. Reject
   replayed handoffs and peer cycles; recover lost or exhausted sessions only
-  on a new explicit send, without imposing a sandbox on any turn. Relay peer
-  AskUser forms to the calling agent for bounded answer or decline, with
-  exact-origin question and continuation wakes and no replay on restart. Show
-  peer questions as readable fields and choices in Slack, Telegram and web job
+  on a new explicit send, without imposing a sandbox on any turn.
+- Relay a peer's AskUser forms to the calling `PeerAgent` agent, which answers
+  or declines them with bounded `answer`/`decline` actions and exact-origin
+  question and continuation wakes, never replayed on restart. Show peer
+  questions as readable fields and choices in Slack, Telegram and web job
   cards, edit those cards in place when a question is answered, expires or is
   interrupted, and cancel turns whose question can no longer be delivered.
 
