@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -9,7 +9,7 @@ import { rootFingerprint } from "../durable-root-swap.js";
 import { applyExplicitMemoryForget, restoreExplicitMemoryForget } from "../explicit-forget.js";
 import { auditCanonicalGraphParity } from "../graph-parity.js";
 import { createBujoMemoryStore } from "../store.js";
-import { appendFactLines, deriveFactId, readFactLedgerStrict, type FactClaim, type FactSource, type FactSupersede } from "../fact-ledger.js";
+import { appendFactLines, deriveFactId, FACT_LEDGER_FILE, FACT_MARKER_FILE, readFactLedgerStrict, type FactClaim, type FactSource, type FactSupersede } from "../fact-ledger.js";
 import { readManagedIndexManifest, resolveActiveMemoryDbPath } from "../generations.js";
 import { safeRebuildMemoryIndex } from "../rebuild.js";
 import { readBujoCanonicalSourceFingerprint } from "../replay-projection.js";
@@ -39,18 +39,30 @@ describe("offline typed fact projection", () => {
     appendFactLines(fixture.root, [first, { v: 1, kind: "fact-source", factId: first.factId,
       sourceMemoryId: "B-2", sourceTextSha256: hash(SECOND), attribution: "document", recordedAt: first.recordedAt }]);
     await safeRebuildMemoryIndex({ root: fixture.root, tier: "bujo", embeddings: fixture.embeddings, dim: fixture.dim });
-    let finalBackup: string | undefined;
+    const originalLedger = readFileSync(join(fixture.root, FACT_LEDGER_FILE));
+    const originalMarker = readFileSync(join(fixture.root, FACT_MARKER_FILE));
+    let lastBackup: string | undefined;
     for (const [id, supported] of [["B-1", true], ["B-2", false]] as const) {
       const result = await applyExplicitMemoryForget({ root: fixture.root, ids: [id],
         expectedRootFingerprint: rootFingerprint(realpathSync(fixture.root)),
         expectedSourceFingerprint: readBujoCanonicalSourceFingerprint(fixture.root),
         planDigest: hash(`forget:${id}`), embeddings: fixture.embeddings, dimension: fixture.dim });
+      lastBackup = result.backupPath;
       expect(readFactLedgerStrict(join(result.backupPath, "snapshot")).lines).toHaveLength(2);
       expect(readFactLedgerStrict(fixture.root).lines).toHaveLength(2);
       const db = openMemoryDb({ path: resolveActiveMemoryDbPath(fixture.root), readOnly: true });
       try { expect(db.activeFactClaims()[0]).toMatchObject({ active: supported }); }
       finally { db.close(); }
     }
+    expect(lastBackup).toBeDefined();
+    const restored = await restoreExplicitMemoryForget({ root: fixture.root, backupPath: lastBackup!,
+      expectedRootFingerprint: rootFingerprint(realpathSync(fixture.root)) });
+    expect(restored.status).toBe("restored");
+    expect(readFileSync(join(fixture.root, FACT_LEDGER_FILE))).toEqual(originalLedger);
+    expect(readFileSync(join(fixture.root, FACT_MARKER_FILE))).toEqual(originalMarker);
+    const db = openMemoryDb({ path: resolveActiveMemoryDbPath(fixture.root), readOnly: true });
+    try { expect(db.activeFactClaims()[0]).toMatchObject({ active: true, supportingMemoryIds: ["B-2"] }); }
+    finally { db.close(); }
   });
 
   it("detects missing/extra SQLite rows without trusting the index and rebuilds offline", async () => {
