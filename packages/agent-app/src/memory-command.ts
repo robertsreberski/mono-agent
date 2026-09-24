@@ -2888,7 +2888,7 @@ function parseCuratePlan(value: unknown): CuratePlan {
   const bujo = value.proposals as CurateProposal[];
   const ids = new Set<string>();
   for (const proposal of bujo) {
-    if (!isObject(proposal) || !(["action", "accepted", "source"].every((key) => Object.hasOwn(proposal, key)) && Object.keys(proposal).every((key) => ["action", "accepted", "source", "reason", "text", "labels"].includes(key)))) throw new Error("invalid proposal shape");
+    if (!isObject(proposal) || !(["action", "accepted", "source"].every((key) => Object.hasOwn(proposal, key)) && Object.keys(proposal).every((key) => ["action", "accepted", "source", "reason", "text", "labels", "mergeEntity"].includes(key)))) throw new Error("invalid proposal shape");
     const source = proposal.source;
     if (!isObject(source) || !hasExactKeys(source, ["id", "file", "line", "text", "textHash", "createdAt", "refs"])) throw new Error("invalid proposal source");
     if (ids.has(source.id as string)) throw new Error("duplicate proposal id");
@@ -2906,18 +2906,22 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
   }
   try {
     const bujo = await loadBujoModule();
-    const root = bujo.resolveExplicitMemoryForgetRoot(resolve(context.cwd, memory.path));
+    const root = bujo.resolveExplicitMemoryCurateRoot(resolve(context.cwd, memory.path));
     if (operation === "prepare") {
       const snapshot = bujo.inspectCurateSource(root, input.limit ?? 120);
       const estimate = bujo.curateEstimate(snapshot);
       const model = input.model ?? memory.llm?.model;
       if (model === undefined) throw new Error("memory LLM not configured");
-      write(input.json, { operation: "curate-prepare", status: "estimated", model, estimate },
-        () => `Curate estimate: ${estimate.lines} lines, ${estimate.calls} calls, ~${estimate.inputTokens} input / ~${estimate.outputTokens} output tokens; cost unknown.\n`);
-      if (input.dryRun) return 0;
+      const estimateText = `Curate estimate: ${estimate.lines} lines, ${estimate.calls} calls, ~${estimate.inputTokens} input / ~${estimate.outputTokens} output tokens; cost unknown.\n`;
+      if (input.dryRun) {
+        write(input.json, { operation: "curate-prepare", status: "estimated", model, estimate }, () => estimateText);
+        return 0;
+      }
+      process.stderr.write(estimateText);
       const { createConfiguredCurationLlm } = await import("./configured-agent.js");
       const llm = await createConfiguredCurationLlm(context.config, input.model);
       const proposals = await bujo.proposeCurate(snapshot, llm, memory.capture);
+      bujo.previewCurateMutations(root, proposals);
       if (snapshot.fingerprint !== bujo.readBujoCanonicalSourceFingerprint(root)) throw new Error("source changed while preparing");
       const planPath = await canonicalProspectivePath(resolve(context.cwd,
         input.planPath ?? join(dirname(root), `.${basename(root)}-curate-plan-${Date.now().toString(36)}.json`)));
@@ -2947,8 +2951,8 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
         if (selectors.some((selector) => !plan.proposals.some((proposal) => matches(selector, proposal)))) throw new Error("review selector matched no proposals");
         if (selectors.length > 0) {
           const updated = { ...plan, proposals: plan.proposals.map((proposal) => ({ ...proposal,
-            accepted: accept.some((selector) => matches(selector, proposal)) ? true
-              : reject.some((selector) => matches(selector, proposal)) ? false : proposal.accepted })) };
+            accepted: reject.some((selector) => matches(selector, proposal)) ? false
+              : accept.some((selector) => matches(selector, proposal)) ? true : proposal.accepted })) };
           const temp = `${planPath}.${process.pid.toString(36)}.tmp`;
           await writePrivateJsonExclusive(temp, updated);
           await rename(temp, planPath);
@@ -2973,9 +2977,38 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
         write(input.json, { operation: "curate-apply", status: "no-op" }, () => "No proposals accepted; memory unchanged.\n");
         return 0;
       }
-      throw new Error("curate apply is not available until the durable mutation path is complete");
+      await assertNoLiveConfiguredAgent(context.configPath, await memoryRegistryDirs(context));
+      const settings = previewRecallSettings(context.config);
+      if (settings?.embeddings === undefined) throw new Error("embeddings required");
+      const selected = plan.proposals.filter((proposal) => proposal.accepted);
+      const { createMemoryEmbeddingProvider } = await loadMemoryRecallModule();
+      const embeddings = await createMemoryEmbeddingProvider(settings.embeddings);
+      try {
+        const result = await bujo.applyExplicitMemoryCurate({ root, proposals: selected,
+          expectedRootFingerprint: plan.rootFingerprint, expectedSourceFingerprint: plan.sourceFingerprint,
+          planDigest: createHash("sha256").update(JSON.stringify({ ...plan, proposals: selected })).digest("hex"),
+          embeddings, dimension: settings.embeddings.dim ?? 768 });
+        write(input.json, { operation: "curate-apply", status: "applied", count: result.changed, backupPath: result.backupPath },
+          () => `Curated ${result.changed} memory lines; restore backup: ${result.backupPath}.\n`);
+        return 0;
+      } catch (error) {
+        if (error instanceof bujo.ExplicitMemoryCurateError && error.code === "apply_recovery_failed") {
+          process.stderr.write(ui.errorLine(`Memory curate recovery failed; keep the agent stopped and restore backup: ${error.backupPath ?? "unknown"}.`));
+          return 1;
+        }
+        if (error instanceof bujo.ExplicitMemoryCurateError && error.code === "apply_failed_recovered") {
+          process.stderr.write(ui.errorLine("Memory curate failed; the complete pre-apply backup was restored."));
+          return 1;
+        }
+        throw error;
+      }
     }
-    throw new Error("curate restore is not available until the durable mutation path is complete");
+    await assertNoLiveConfiguredAgent(context.configPath, await memoryRegistryDirs(context));
+    const result = await bujo.restoreExplicitMemoryCurate({ root, backupPath: resolve(context.cwd, input.backupPath!),
+      expectedRootFingerprint: memoryRootFingerprint(root) });
+    write(input.json, { operation: "curate-restore", status: result.status, backupPath: result.backupPath },
+      () => `Memory restored from ${result.backupPath}.\n`);
+    return 0;
   } catch {
     process.stderr.write(ui.errorLine("Memory curation failed without changing the store; check the plan and agent state."));
     return 1;

@@ -2007,3 +2007,54 @@ async function failingEmbeddingServer(beforeFailure: () => Promise<void>): Promi
     }),
   };
 }
+
+describe("memory curate operator CLI", () => {
+  it("parses bounded prepare and category review flags without widening other commands", () => {
+    expect(parseCliArgs(["memory", "curate", "prepare", "--model", "openai-codex:gpt-6-sol", "--limit", "400", "--dry-run"]))
+      .toMatchObject({ positionals: ["curate", "prepare"], model: "openai-codex:gpt-6-sol", limit: 400, dryRun: true });
+    expect(parseCliArgs(["memory", "curate", "review", "--plan", "plan.json", "--accept", "drop:generic-advice,label:*", "--reject", "id:fictional-a"]))
+      .toMatchObject({ curateAccept: "drop:generic-advice,label:*", curateReject: "id:fictional-a" });
+    expect(() => parseCliArgs(["memory", "forget", "prepare", "--model", "openai-codex:gpt-6-sol"])).toThrow(/--model/u);
+  });
+  it("estimates without creating a plan or calling a model", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    await mkdir(memoryRoot, { recursive: true });
+    bujoMemory.appendBullet(memoryRoot, { id: "fictional-a", type: "note", status: "open",
+      text: "Morgan completed the example.", salience: 0.5, isInsight: false,
+      createdAt: "2026-07-12T10:00:00.000Z", refs: [] }, new Date("2026-07-12T10:00:00.000Z"));
+    const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
+      embeddings: { provider: "ollama", model: "test-embed", dim: 8 }, llm: { provider: "ollama", model: "test-capture" } } });
+    const plan = join(dir, "plan.json");
+    const result = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli([
+      "memory", "curate", "prepare", "--plan", plan, "--dry-run", "--json",
+    ]))));
+    expect(result.code, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ status: "estimated", estimate: { lines: 1, calls: 1, cost: "unknown" } });
+    await expect(stat(plan)).rejects.toThrow();
+  });
+});
+
+describe("memory curate review safety", () => {
+  it("accepts categories in one review step and leaves reject-all apply inert", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    await mkdir(memoryRoot, { recursive: true });
+    bujoMemory.appendBullet(memoryRoot, { id: "fictional-a", type: "note", status: "open",
+      text: "Generic example advice.", salience: 0.5, isInsight: false,
+      createdAt: "2026-07-12T10:00:00.000Z", refs: [] }, new Date("2026-07-12T10:00:00.000Z"));
+    const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
+      embeddings: { provider: "ollama", model: "test-embed", dim: 8 }, llm: { provider: "ollama", model: "test-capture" } } });
+    const planPath = join(dir, "curation-plan.json");
+    const plan = { schemaVersion: 1, operation: "curate", rootFingerprint: createHash("sha256").update(await realpath(memoryRoot)).digest("hex"),
+      sourceFingerprint: bujoMemory.readBujoCanonicalSourceFingerprint(memoryRoot), model: "fake", createdAt: "2026-07-12T10:00:00.000Z",
+      proposals: [{ source: bujoMemory.inspectCurateSource(memoryRoot).lines[0]!, action: "drop", reason: "generic-advice", accepted: false }] };
+    await writeFile(planPath, JSON.stringify(plan), { mode: 0o600 });
+    const invoke = (args: string[]) => captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(args))));
+    expect((await invoke(["memory", "curate", "review", "--plan", planPath, "--accept", "drop:generic-advice", "--json"])).code).toBe(0);
+    expect(JSON.parse(await readFile(planPath, "utf8")).proposals[0].accepted).toBe(true);
+    expect((await invoke(["memory", "curate", "review", "--plan", planPath, "--reject", "id:fictional-a"])).code).toBe(0);
+    const result = await invoke(["memory", "curate", "apply", "--plan", planPath, "--json"]);
+    expect(result.code, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout).status).toBe("no-op");
+    expect(bujoMemory.inspectCurateSource(memoryRoot).lines[0]!.text).toBe("Generic example advice.");
+  });
+});

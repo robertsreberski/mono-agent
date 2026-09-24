@@ -14,6 +14,10 @@
   accent-insensitive boost. Explicit `MemoryRecall` keeps the backend order,
   and lexical-only recall is unchanged.
 
+- Add reviewed `memory curate` plans for one-time BuJo cleanup, including bounded
+  model proposals, category acceptance, stopped-store backup and restore. No
+  proposals are applied automatically; unsupported legacy authority is rejected.
+
 - Add labelled fact sheets and scoped guidance to explicit `MemoryRecall`, plus
   read-only `memory labels` and `memory lessons --propose` operator views. Remote
   recall backends and ordinary dated hits remain unchanged.

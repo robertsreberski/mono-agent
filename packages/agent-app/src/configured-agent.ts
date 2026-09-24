@@ -2110,6 +2110,8 @@ export async function createConfiguredCurationLlm(config: MonoAgentConfig, model
   const llmConfig = modelOverride === undefined ? configured! : {
     provider: modelOverride.startsWith("ollama:") ? "ollama" as const : "agent-host" as const,
     model: modelOverride.startsWith("ollama:") ? modelOverride.slice(7) : modelOverride,
+    ...(modelOverride.startsWith("ollama:") && configured?.provider === "ollama" && configured.endpoint !== undefined
+      ? { endpoint: configured.endpoint } : {}),
   };
   const llm = configuredMemoryLlm(bujo, config, llmConfig, undefined, undefined, undefined, undefined);
   if (llm === undefined) throw new Error("memory-curate: memory.llm is not configured");

@@ -105,7 +105,15 @@ export const MEMORY_CAPTURE_CLOCK_REPAIR_SWAP_OPERATION: DurableRootSwapOperatio
 };
 
 /** Every operation whose sibling backups share the retention sweep. */
+export const MEMORY_CURATE_SWAP_OPERATION: DurableRootSwapOperation = {
+  label: "memory-curate",
+  backupOperation: "memory-curate-backup",
+  transactionOperation: "memory-curate",
+  backupInfix: "curate-backup",
+};
+
 export const MANAGED_SWAP_OPERATIONS: readonly DurableRootSwapOperation[] = [
+  MEMORY_CURATE_SWAP_OPERATION,
   MEMORY_FORGET_SWAP_OPERATION,
   MEMORY_IMPORT_SWAP_OPERATION,
   MEMORY_CAPTURE_CLOCK_REPAIR_SWAP_OPERATION,

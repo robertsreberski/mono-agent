@@ -39,3 +39,116 @@ describe("curation preparation", () => {
     await expect(proposeCurate(snapshot, { id: "fake", complete: async () => JSON.stringify([{ id: "outside", action: "keep" }, { id: "fictional-b", action: "keep" }]) })).rejects.toThrow();
   });
 });
+
+describe("durable curation apply", { timeout: 20_000 }, () => {
+  it("rewrites, adds labels and restores the verified backup", async () => {
+    const { createHash } = await import("node:crypto");
+    const { mkdirSync, realpathSync } = await import("node:fs");
+    const { initializeReplayProjection, readBujoCanonicalSourceFingerprint } = await import("../replay-projection.js");
+    const { safeRebuildMemoryIndex } = await import("../rebuild.js");
+    const { fakeEmbeddings } = await import("./helpers.js");
+    const { applyExplicitMemoryCurate, restoreExplicitMemoryCurate } = await import("../explicit-curate.js");
+    const { resolveActiveMemoryDbPath, acquireMemoryWriterLease } = await import("../generations.js");
+    const { openMemoryDb } = await import("../../store/index.js");
+    const parent = root(); const path = join(parent, "memory"); mkdirSync(path, { mode: 0o700 });
+    initializeReplayProjection(path);
+    seed(path, "fictional-a", "Morgan's alias is Maple.");
+    const { appendGraphBatch } = await import("../graph.js");
+    appendGraphBatch(path, { entities: [{ id: "person:morgan", name: "Morgan", type: "person", createdAt: "2026-07-12T10:00:00.000Z" }] });
+    const embeddings = fakeEmbeddings(16);
+    await safeRebuildMemoryIndex({ root: path, tier: "bujo", embeddings, dim: 16 });
+    const source = inspectCurateSource(path).lines[0]!;
+    const fingerprint = createHash("sha256").update(realpathSync(path)).digest("hex");
+    const proposals = [{ source, action: "label" as const, accepted: true, labels: [{ v: 1 as const, kind: "fact" as const,
+      entityId: "person:morgan", key: "preferred_name", value: { type: "text" as const, text: "Maple" }, attribution: "unknown" as const }] }];
+    const competing = acquireMemoryWriterLease(path);
+    try {
+      await expect(applyExplicitMemoryCurate({ root: path, proposals, expectedRootFingerprint: fingerprint,
+        expectedSourceFingerprint: readBujoCanonicalSourceFingerprint(path), planDigest: createHash("sha256").update("competing-plan").digest("hex"),
+        embeddings, dimension: 16 })).rejects.toMatchObject({ code: "apply_failed" });
+    } finally { competing.release(); }
+    const applied = await applyExplicitMemoryCurate({ root: path, proposals, expectedRootFingerprint: fingerprint,
+      expectedSourceFingerprint: readBujoCanonicalSourceFingerprint(path), planDigest: createHash("sha256").update("fictional-plan").digest("hex"),
+      embeddings, dimension: 16 });
+    const db = openMemoryDb({ path: resolveActiveMemoryDbPath(path), readOnly: true, dim: 16 });
+    try { expect(db.get("fictional-a")?.text).toBe(source.text); } finally { db.close(); }
+    expect(applied.status).toBe("applied");
+    expect(await restoreExplicitMemoryCurate({ root: path, backupPath: applied.backupPath, expectedRootFingerprint: fingerprint })).toMatchObject({ status: "restored" });
+    expect(inspectCurateSource(path).lines[0]?.refs).toEqual([]);
+  });
+});
+
+describe("curate canonical rewrites", { timeout: 20_000 }, () => {
+  it("merges graph references and fact-label entity IDs with rebuild parity", async () => {
+    const { mkdirSync, realpathSync } = await import("node:fs");
+    const { createHash } = await import("node:crypto");
+    const { appendGraphBatch, readCanonicalGraphStrictSnapshot } = await import("../graph.js");
+    const { initializeReplayProjection, readBujoCanonicalSourceFingerprint } = await import("../replay-projection.js");
+    const { safeRebuildMemoryIndex } = await import("../rebuild.js");
+    const { fakeEmbeddings } = await import("./helpers.js");
+    const { applyExplicitMemoryCurate } = await import("../explicit-curate.js");
+    const { auditCanonicalGraphParity } = await import("../graph-parity.js");
+    const { openMemoryDb } = await import("../../store/index.js");
+    const { resolveActiveMemoryDbPath } = await import("../generations.js");
+    const { encodeMemoryLabel } = await import("../labels.js");
+    const { rewriteBullet } = await import("../daily.js");
+    const parent = root(); const path = join(parent, "memory"); mkdirSync(path, { mode: 0o700 });
+    initializeReplayProjection(path);
+    seed(path, "fictional-a", "Morgan uses Maple as an example alias.");
+    const line = inspectCurateSource(path).lines[0]!;
+    rewriteBullet(path, line.file, line.id, { refs: [encodeMemoryLabel({ v: 1, kind: "fact", entityId: "person:morgan-duplicate",
+      key: "preferred_name", value: { type: "text", text: "Maple" }, attribution: "unknown" })] });
+    const at = "2026-07-12T10:00:00.000Z";
+    appendGraphBatch(path, { entities: [
+      { id: "person:morgan", name: "Morgan", type: "person", createdAt: at },
+      { id: "person:morgan-duplicate", name: "Morgan", type: "person", createdAt: at },
+      { id: "project:demo", name: "Demo", type: "project", createdAt: at },
+    ], relations: [{ src: "person:morgan-duplicate", dst: "project:demo", relation: "works on", createdAt: at }],
+    associations: [{ memoryId: "fictional-a", entityId: "person:morgan-duplicate", provenance: "capture", createdAt: at }] });
+    const embeddings = fakeEmbeddings(16);
+    await safeRebuildMemoryIndex({ root: path, tier: "bujo", embeddings, dim: 16 });
+    const source = inspectCurateSource(path).lines[0]!;
+    const applied = await applyExplicitMemoryCurate({ root: path, proposals: [{ source, action: "merge", accepted: true,
+      mergeEntity: { from: "person:morgan-duplicate", to: "person:morgan" } }],
+      expectedRootFingerprint: createHash("sha256").update(realpathSync(path)).digest("hex"),
+      expectedSourceFingerprint: readBujoCanonicalSourceFingerprint(path), planDigest: createHash("sha256").update("graph-plan").digest("hex"),
+      embeddings, dimension: 16 });
+    expect(applied.status).toBe("applied");
+    const graph = readCanonicalGraphStrictSnapshot(path).records;
+    expect(graph.entities.map(({ id }) => id)).not.toContain("person:morgan-duplicate");
+    expect(graph.associations).toEqual(expect.arrayContaining([expect.objectContaining({ entityId: "person:morgan" })]));
+    expect(inspectCurateSource(path).lines[0]?.refs.join(" ")).not.toContain("morgan-duplicate");
+    const db = openMemoryDb({ path: resolveActiveMemoryDbPath(path), readOnly: true, dim: 16 });
+    try { expect(auditCanonicalGraphParity(path, db).status).toBe("match"); } finally { db.close(); }
+  });
+});
+
+describe("curate selection", { timeout: 20_000 }, () => {
+  it("forgets selected lines and rewrites date only from the recorded source date", async () => {
+    const { mkdirSync, realpathSync } = await import("node:fs");
+    const { createHash } = await import("node:crypto");
+    const { initializeReplayProjection, readBujoCanonicalSourceFingerprint } = await import("../replay-projection.js");
+    const { safeRebuildMemoryIndex } = await import("../rebuild.js");
+    const { fakeEmbeddings } = await import("./helpers.js");
+    const { applyExplicitMemoryCurate } = await import("../explicit-curate.js");
+    const { openMemoryDb } = await import("../../store/index.js");
+    const { resolveActiveMemoryDbPath } = await import("../generations.js");
+    const parent = root(); const path = join(parent, "memory"); mkdirSync(path, { mode: 0o700 });
+    initializeReplayProjection(path);
+    seed(path, "fictional-a", "Generic advice to be removed.");
+    seed(path, "fictional-b", "Morgan visited yesterday.");
+    const embeddings = fakeEmbeddings(16);
+    await safeRebuildMemoryIndex({ root: path, tier: "bujo", embeddings, dim: 16 });
+    const [first, second] = inspectCurateSource(path).lines;
+    const applied = await applyExplicitMemoryCurate({ root: path, proposals: [
+      { source: first!, action: "drop", reason: "generic-advice", accepted: true },
+      { source: second!, action: "rewrite", text: "Morgan visited on 2026-07-11.", accepted: true },
+    ], expectedRootFingerprint: createHash("sha256").update(realpathSync(path)).digest("hex"),
+    expectedSourceFingerprint: readBujoCanonicalSourceFingerprint(path), planDigest: createHash("sha256").update("drop-plan").digest("hex"),
+    embeddings, dimension: 16 });
+    expect(applied.changed).toBe(2);
+    const db = openMemoryDb({ path: resolveActiveMemoryDbPath(path), readOnly: true, dim: 16 });
+    try { expect(db.get("fictional-a")?.status).toBe("dropped"); expect(db.get("fictional-b")?.text).toBe("Morgan visited on 2026-07-11."); }
+    finally { db.close(); }
+  });
+});

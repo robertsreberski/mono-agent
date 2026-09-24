@@ -110,7 +110,7 @@ The normal write and read paths are:
 | --- | --- |
 | `src/store/` | SQLite schema, FTS5/sqlite-vec indexes, graph projection, ranking, and low-level database maintenance. |
 | `src/search/` | Ollama, LM Studio, and OpenAI embedding clients plus the embedding circuit breaker. |
-| `src/bujo/` | Lite/Journal/BuJo tiers, canonical Markdown, durable intake, capture/reconciliation, recall composition, health, rebuild, rollback, and explicit forget/recovery. Rebuild source validation and SQLite writer fencing are isolated in `rebuild-source-validation.ts` and `rebuild-sqlite-safety.ts`. |
+| `src/bujo/` | Lite/Journal/BuJo tiers, canonical Markdown, durable intake, capture/reconciliation, recall composition, health, rebuild, rollback, and explicit forget/curate recovery. Rebuild source validation and SQLite writer fencing are isolated in `rebuild-source-validation.ts` and `rebuild-sqlite-safety.ts`. |
 
 Run config-aware maintenance through `mono-agent memory <subcommand>` from the
 agent folder. The retired `memory-bujo` executable is no longer packaged.

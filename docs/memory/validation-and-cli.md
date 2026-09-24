@@ -57,6 +57,15 @@ mono-agent memory rollback --json
 # index whose replay-owned SQLite state predates the canonical sidecar
 mono-agent memory adopt-replay --json
 
+# One-time BuJo cleanup: estimate without model calls, then generate a private plan
+mono-agent memory curate prepare --limit 120 --dry-run
+mono-agent memory curate prepare --model openai-codex:gpt-6-sol --plan ./curate-plan.json
+mono-agent memory curate review --plan ./curate-plan.json --accept drop:generic-advice,label:*
+mono-agent stop
+mono-agent memory curate apply --plan ./curate-plan.json --json
+# Only while no intervening store write has occurred
+mono-agent memory curate restore --backup /path/returned/by/apply
+
 # Explicit, reversible removal of selected BuJo memories
 mono-agent memory forget prepare --ids-file ./forget-ids.txt --reason noise_cleanup --plan ./forget-plan.json --json
 mono-agent stop
@@ -83,6 +92,12 @@ reports local chronology as supported or disabled when `recallTool.enabled` is
 false. A restrictive policy that mentions `MemoryJournal` while its memory
 capability is absent also reports that mismatch; no state is represented as
 a successful empty journal.
+
+### Reviewed one-time BuJo curation
+
+`memory curate prepare` reads at most 4096 selected live canonical lines (120 by default), adds bounded adjacent-line and exact-name graph hints **from the same store only**, and sends batches of 12 to the configured memory LLM or an explicit `--model provider:model` override. `--dry-run` reports estimated calls/tokens without calling the model or writing a plan. Monetary cost is `unknown` when there is no trustworthy price. A successful prepare creates a new owner-private 0600 JSON plan outside the memory root containing original lines, proposals and source/root fingerprints; treat it as private memory data. Recheck the proposal count and examples with `review` before making changes. Proposal defaults are rejected; `review --accept drop:generic-advice,label:*` flips matching booleans in one step, `--reject id:<id>` wins over a matching category, and manual editing of `accepted` is supported. Model output cannot authorize user attribution, a verified lesson, a legacy preference scope or identity; malformed/unsupported suggestions abort preparation or application rather than being partially accepted.
+
+Stop the agent before `apply`. A rejected-all plan is a no-op; otherwise apply rechecks the selected canonical lines and fingerprints, takes a durable verified root backup, uses forget semantics for drops, keeps/clears/replaces labels with rewrites, and reprojects from canonical daily/graph sources after accepted same-type exact-name entity merges. It seals only after safe rebuild and health/parity checks; any failed transaction restores the original tree. `restore --backup` requires the exact post-apply tree and refuses intervening changes. A backup is root-bound and participates in the same managed retention budget as other stopped-store backups. This is a one-time operator operation, not an automatic capture or background agent task. No external conversation or second memory store is used as context; configured `capture.focus/only` only narrow selection.
 
 ### Reversible explicit BuJo forget plans
 
