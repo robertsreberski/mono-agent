@@ -404,6 +404,22 @@ export class BujoMemoryStore implements MemoryStore {
     ));
   }
 
+  /** Optional read-only labelled recall; canonical daily lines remain the authority. */
+  labelsForEntity(entityId: string, asOfDate?: string) {
+    this.assertOpen("labelsForEntity");
+    return this.db.labelsForEntity(entityId, asOfDate);
+  }
+
+  guidanceForScope(scope: string) {
+    this.assertOpen("guidanceForScope");
+    return this.db.guidanceForScope(scope);
+  }
+
+  listMemoryEntities(limit = 50, offset = 0) {
+    this.assertOpen("listMemoryEntities");
+    return this.db.listEntities(limit, offset);
+  }
+
   /** Query-based hybrid recall (text + score). Used by the MCP and any deliberate recall surface. */
   async recall(query: string, options: { topK?: number; trackAccess?: boolean } = {}): Promise<RecallHit[]> {
     this.assertOpen("recall");

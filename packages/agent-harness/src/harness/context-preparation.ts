@@ -14,6 +14,8 @@ import type { SkillsCache } from "../skills/index.js";
 import { AgentHarnessError } from "./error.js";
 import { representedContinuityToolRecordIds } from "./turn-continuity.js";
 import { sessionContextBlock } from "./session-context.js";
+import { memorySenderToken } from "./memory-persistence.js";
+import { runSourceFromRequest } from "./request-routing.js";
 import { errorMessageText } from "./value-utils.js";
 import { buildToolHistoryProjection } from "../tool-history-projection.js";
 
@@ -44,7 +46,7 @@ export async function prepareHarnessContext(
     // Recall rides on the current user message on every turn. It remains outside
     // stable system instructions and never enters canonical history replay.
     const memory = request.continuation === undefined
-      ? await loadHarnessMemory(options, request.conversationId, request.userMessage, contextOptions.turnId, emit)
+      ? await loadHarnessMemory(options, request, contextOptions.turnId, emit)
       : undefined;
     const selectedSkills = await loadHarnessSkills(options, skillsCache);
     const peerCaller = await options.verifiedPeerCallerFor?.({ request });
@@ -240,14 +242,20 @@ export async function loadHarnessHistory(
 
 async function loadHarnessMemory(
   options: AgentHarnessOptions,
-  conversationId: string,
-  query: string,
+  request: AgentHarnessRequest,
   turnId: string,
   emit?: (event: RuntimeEventLike) => void,
 ): Promise<ContextBlockInput | undefined> {
     let block;
     try {
-      block = await options.memory?.load(conversationId, query, { turnId });
+      const senderToken = request.captureSpeakerKind === "human-turn"
+        ? memorySenderToken(runSourceFromRequest(request).source, request.sender)
+        : undefined;
+      block = await options.memory?.load(request.conversationId, request.userMessage, {
+        turnId,
+        hostDate: (options.now?.() ?? new Date()).toISOString().slice(0, 10),
+        ...(senderToken === undefined ? {} : { senderToken }),
+      });
     } catch (error) {
       // A slow or failing memory backend (e.g. embeddings timeout / circuit
       // breaker open) must never block or fail the turn — degrade to empty

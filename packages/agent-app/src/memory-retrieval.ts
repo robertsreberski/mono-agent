@@ -20,6 +20,7 @@ import {
   type JournalBrowseSnapshot,
 } from "@mono-agent/memory/bujo";
 
+import { formatMemoryBackground, type LabelRecallStore } from "./memory-guidance.js";
 import {
   createMemoryRecallServer,
   MEMORY_RECALL_MCP_SERVER_NAME,
@@ -28,7 +29,7 @@ import {
   type RecallCapableStore,
 } from "./memory-recall.js";
 
-export interface SharedRecallStore extends MemoryStore, RecallCapableStore {
+export interface SharedRecallStore extends MemoryStore, RecallCapableStore, LabelRecallStore {
   /** Local-tier chronology. External recall backends intentionally omit it. */
   tier?(): "lite" | "journal" | "bujo";
   browseJournal?(input: JournalBrowseInput): Promise<JournalBrowseSnapshot>;
@@ -181,15 +182,18 @@ export class MemoryRetrievalService implements MemoryStore {
         }
       }
       const hits = selectAutomaticRecallHits(outcome.hits, { query: evidenceQuery });
-      if (hits.length === 0) {
+      const background = formatMemoryBackground(this.store, evidenceQuery, conversationId, options, outcome.hits);
+      if (hits.length === 0 && background === undefined) {
         if (outcome.degradation?.code === "embedding_unavailable") {
           throw new Error("Semantic memory retrieval is unavailable; lexical-only recall found no eligible automatic evidence.");
         }
         return undefined;
       }
-      const block = formatRecallBlock(hits, this.source, this.maxBytes, outcome.degradation);
-      this.recordServed(turnId, hits);
-      return block;
+      const block = hits.length > 0 ? formatRecallBlock(hits, this.source, this.maxBytes, outcome.degradation) : undefined;
+      if (hits.length > 0) this.recordServed(turnId, hits);
+      return { kind: "markdown", source: this.source,
+        content: [block?.content, background].filter((text) => text !== undefined).join("\n\n"),
+        truncated: block?.truncated ?? false };
     } finally {
       if (ephemeral) this.releaseTurn(turnId);
     }

@@ -59,6 +59,12 @@ export interface MemoryCompletedTurnResult {
 export interface MemoryLoadOptions {
   /** Stable id for one provider turn, used only to deduplicate reads within that turn. */
   readonly turnId?: string;
+  /** Host-stamped token matching capture's identified human speaker; never model text. */
+  readonly senderToken?: string;
+  /** Host observation date (UTC, matching capture's ISO timestamp). */
+  readonly hostDate?: string;
+  /** Present only when the host knows the active project. */
+  readonly projectId?: string;
 }
 
 export interface MemoryStore {

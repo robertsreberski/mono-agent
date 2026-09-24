@@ -176,8 +176,12 @@ retry. Optional `capture.focus` (operator guidance) narrows extraction selection
 `capture.only` filters curated capture to host-accepted label kinds after final
 reconcile text validation, including its graph. Unset leaves capture unchanged;
 explicit `Remember` writes are unaffected. Tool outcomes exposed to extraction contain only bounded fixed categories,
-never arguments, outputs, paths, URLs or raw error messages. Automatic recall does
-not yet use labels. UPDATE retains labels only when text is unchanged unless
+never arguments, outputs, paths, URLs or raw error messages. App-owned automatic
+recall can append up to three relevant, scoped live preferences/verified lessons
+and up to three exact-name person cards as a separate background block. Person
+cards show attribution/recorded date, omit conflicting values, and derive age
+from the host observation date rather than storing it. The conservative direct-fact
+gate and ordinary recall hits do not change. UPDATE retains labels only when text is unchanged unless
 replacements are supplied; SUPERSEDE does not copy them by default. Lite and
 Journal ignore labels. Older
 versions cannot safely replay pending label-changing UPDATE intents or read
