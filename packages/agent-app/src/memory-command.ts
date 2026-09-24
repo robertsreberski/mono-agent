@@ -2982,7 +2982,8 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
               : accept.some((selector) => matches(selector, proposal)) ? true : proposal.accepted })) };
           const temp = `${planPath}.${process.pid.toString(36)}.tmp`;
           await writePrivateJsonExclusive(temp, updated, MAX_CURATE_PLAN_BYTES);
-          await rename(temp, planPath);
+          try { await rename(temp, planPath); }
+          catch (error) { await unlink(temp).catch(() => {}); throw error; }
           await fsyncParentDirectory(planPath);
           const { curateAccept: _accept, curateReject: _reject, ...remainder } = input;
           return await runMemoryCurate(context, rest, remainder);
