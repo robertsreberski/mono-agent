@@ -40,7 +40,7 @@ import {
 import { readBujoCanonicalSourceFingerprint } from "./replay-projection.js";
 
 const SCHEMA_VERSION = 1;
-const MAX_PROPOSALS = 4096;
+const MAX_PROPOSALS = 8192;
 
 /** Explicit curate is one instance of the shared durable root-swap protocol. */
 const CURATE_OPERATION = MEMORY_CURATE_SWAP_OPERATION;

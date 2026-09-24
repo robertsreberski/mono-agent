@@ -13,6 +13,11 @@ function seed(path: string, id: string, text: string) {
     createdAt: "2026-07-12T10:00:00.000Z", refs: [] }, new Date("2026-07-12T10:00:00.000Z"));
 }
 describe("curation preparation", () => {
+  it("allows 8192 selected lines but refuses 8193", () => {
+    const path = root();
+    expect(inspectCurateSource(path, 8192).lines).toEqual([]);
+    expect(() => inspectCurateSource(path, 8193)).toThrow(/invalid limit/u);
+  });
   it("reads bounded canonical live lines in order and estimates without a model call", () => {
     const path = root(); seed(path, "fictional-a", "Morgan completed the example."); seed(path, "fictional-b", "The demo status is transient.");
     const snapshot = inspectCurateSource(path, 1);

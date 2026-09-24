@@ -58,7 +58,7 @@ const REPLAY_ADOPTION_SCHEMA_VERSION = 1;
 const MEMORY_FORGET_SCHEMA_VERSION = 1;
 const MAX_FORGET_IDS = 32;
 const MAX_FORGET_PLAN_BYTES = 1024 * 1024;
-const MAX_CURATE_PLAN_BYTES = 8 * 1024 * 1024;
+const MAX_CURATE_PLAN_BYTES = 16 * 1024 * 1024;
 const MEMORY_ID_RE = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/u;
 const FTS_FALLBACK_MEMORY_SEARCH_CODES = new Set<MemorySearchErrorCode>([
   "embedding_circuit_open",
@@ -2908,8 +2908,8 @@ function parseCuratePlan(value: unknown): CuratePlan {
     || !isSha256(value.sourceFingerprint) || typeof value.model !== "string" || value.model.length > 160
     || typeof value.createdAt !== "string" || !isCanonicalIso(value.createdAt)
     || !isSha256(value.planDigest)
-    || !Array.isArray(value.proposals) || value.proposals.length > 4096
-    || !Array.isArray(value.discarded) || value.discarded.length > 8192
+    || !Array.isArray(value.proposals) || value.proposals.length > 8192
+    || !Array.isArray(value.discarded) || value.discarded.length > 16384
     || value.discarded.some((entry: unknown) => !isObject(entry) || !hasExactKeys(entry, ["id", "reason"])
       || typeof entry.id !== "string" || (entry.id !== "unbound" && !MEMORY_ID_RE.test(entry.id))
       || !["unknown-id", "duplicate-id", "invalid-proposal", "missing-proposal", "invalid-preview"].includes(String(entry.reason)))) {

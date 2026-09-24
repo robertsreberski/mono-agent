@@ -13,7 +13,7 @@ import { validateMemoryLabel, labelsOf, withMemoryLabels, type MemoryLabel } fro
 import type { LlmComplete } from "./llm.js";
 import type { Bullet } from "./types.js";
 
-const MAX_LINES = 4096;
+const MAX_LINES = 8192;
 const BATCH = 12;
 const MAX_TEXT = 1200;
 const ACTIONS = ["keep", "drop", "rewrite", "label", "merge"] as const;
