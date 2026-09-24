@@ -2877,13 +2877,19 @@ interface CuratePlan {
   readonly model: string;
   readonly createdAt: string;
   readonly proposals: readonly CurateProposal[];
+  readonly planDigest: string;
+}
+
+function curatePlanDigest(plan: Omit<CuratePlan, "planDigest">): string {
+  return createHash("sha256").update(JSON.stringify({ ...plan, proposals: plan.proposals.map(({ accepted: _accepted, ...immutable }) => immutable) })).digest("hex");
 }
 
 function parseCuratePlan(value: unknown): CuratePlan {
-  if (!isObject(value) || !hasExactKeys(value, ["schemaVersion", "operation", "rootFingerprint", "sourceFingerprint", "model", "createdAt", "proposals"])
+  if (!isObject(value) || !hasExactKeys(value, ["schemaVersion", "operation", "rootFingerprint", "sourceFingerprint", "model", "createdAt", "proposals", "planDigest"])
     || value.schemaVersion !== 1 || value.operation !== "curate" || !isSha256(value.rootFingerprint)
     || !isSha256(value.sourceFingerprint) || typeof value.model !== "string" || value.model.length > 160
     || typeof value.createdAt !== "string" || !isCanonicalIso(value.createdAt)
+    || !isSha256(value.planDigest)
     || !Array.isArray(value.proposals) || value.proposals.length > 4096) throw new Error("invalid curate plan");
   const bujo = value.proposals as CurateProposal[];
   const ids = new Set<string>();
@@ -2894,7 +2900,10 @@ function parseCuratePlan(value: unknown): CuratePlan {
     if (ids.has(source.id as string)) throw new Error("duplicate proposal id");
     ids.add(source.id as string);
   }
-  return value as unknown as CuratePlan;
+  const parsed = value as unknown as CuratePlan;
+  const { planDigest, ...payload } = parsed;
+  if (curatePlanDigest(payload) !== planDigest) throw new Error("curate plan checksum mismatch");
+  return parsed;
 }
 
 async function runMemoryCurate(context: MemoryCommandContext, rest: readonly string[], input: RunMemoryCommandInput): Promise<number> {
@@ -2926,8 +2935,9 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       const planPath = await canonicalProspectivePath(resolve(context.cwd,
         input.planPath ?? join(dirname(root), `.${basename(root)}-curate-plan-${Date.now().toString(36)}.json`)));
       if (isSameOrUnderDirectory(root, planPath)) throw new Error("plan cannot be inside memory root");
-      const plan: CuratePlan = { schemaVersion: 1, operation: "curate", rootFingerprint: memoryRootFingerprint(root),
-        sourceFingerprint: snapshot.fingerprint, model, createdAt: new Date().toISOString(), proposals };
+      const payload = { schemaVersion: 1, operation: "curate", rootFingerprint: memoryRootFingerprint(root),
+        sourceFingerprint: snapshot.fingerprint, model, createdAt: new Date().toISOString(), proposals } as const;
+      const plan: CuratePlan = { ...payload, planDigest: curatePlanDigest(payload) };
       await writePrivateJsonExclusive(planPath, plan);
       write(input.json, { operation: "curate-prepare", status: "prepared", planPath, count: proposals.length },
         () => `Curate plan prepared: ${proposals.length} proposals at ${planPath}. Review before applying.\n`);
@@ -2972,7 +2982,9 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
           () => `Curate review: ${JSON.stringify(counts)}\nExamples: ${JSON.stringify(plan.proposals.slice(0, 5).map(({ source, action, reason, accepted }) => ({ id: source.id, action, reason, accepted })))}\nUse --accept drop:generic-advice,label:* or --reject id:<id>; review the private plan before applying.\n`);
         return 0;
       }
-      if (plan.sourceFingerprint !== bujo.readBujoCanonicalSourceFingerprint(root)) throw new Error("stale curate plan");
+      // The package checks freshness under the writer lease. An interrupted root-swap
+      // must be allowed through this CLI gate even when mutation changed the source:
+      // only its matching durable transaction can restore the pre-apply tree.
       if (plan.proposals.every((item) => !item.accepted)) {
         write(input.json, { operation: "curate-apply", status: "no-op" }, () => "No proposals accepted; memory unchanged.\n");
         return 0;
@@ -2986,20 +2998,12 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       try {
         const result = await bujo.applyExplicitMemoryCurate({ root, proposals: selected,
           expectedRootFingerprint: plan.rootFingerprint, expectedSourceFingerprint: plan.sourceFingerprint,
-          planDigest: createHash("sha256").update(JSON.stringify({ ...plan, proposals: selected })).digest("hex"),
+          planDigest: createHash("sha256").update(JSON.stringify({ planDigest: plan.planDigest, selected })).digest("hex"),
           embeddings, dimension: settings.embeddings.dim ?? 768 });
         write(input.json, { operation: "curate-apply", status: "applied", count: result.changed, backupPath: result.backupPath },
           () => `Curated ${result.changed} memory lines; restore backup: ${result.backupPath}.\n`);
         return 0;
       } catch (error) {
-        if (error instanceof bujo.ExplicitMemoryCurateError && error.code === "apply_recovery_failed") {
-          process.stderr.write(ui.errorLine(`Memory curate recovery failed; keep the agent stopped and restore backup: ${error.backupPath ?? "unknown"}.`));
-          return 1;
-        }
-        if (error instanceof bujo.ExplicitMemoryCurateError && error.code === "apply_failed_recovered") {
-          process.stderr.write(ui.errorLine("Memory curate failed; the complete pre-apply backup was restored."));
-          return 1;
-        }
         throw error;
       }
     }
@@ -3009,8 +3013,24 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
     write(input.json, { operation: "curate-restore", status: result.status, backupPath: result.backupPath },
       () => `Memory restored from ${result.backupPath}.\n`);
     return 0;
-  } catch {
-    process.stderr.write(ui.errorLine("Memory curation failed without changing the store; check the plan and agent state."));
+  } catch (error) {
+    const status = error instanceof Error && error.name === "ExplicitMemoryCurateError" && "code" in error
+      ? String(error.code) : operation === "prepare" ? "prepare_failed" : operation === "review" ? "review_failed"
+        : operation === "restore" ? "restore_failed" : "apply_failed";
+    const backupPath = error instanceof Error && "backupPath" in error && typeof error.backupPath === "string"
+      ? error.backupPath : undefined;
+    const messages: Readonly<Record<string, string>> = {
+      apply_failed: "Curation was refused before a recoverable backup was available.",
+      apply_failed_recovered: "Curation failed; the complete pre-apply backup was restored.",
+      apply_recovery_failed: "Curation recovery could not be verified; keep the agent stopped and restore the reported backup.",
+      restore_failed: "Curation restore was refused; the current store was not intentionally overwritten.",
+      prepare_failed: "Curation preparation failed without changing the memory store.",
+      review_failed: "Curation review failed without changing the memory store.",
+    };
+    const code = Object.hasOwn(messages, status) ? status : "apply_failed";
+    write(input.json, { operation: `curate-${operation ?? "unknown"}`, status: "failed", code: `curate_${code}`,
+      ...(backupPath === undefined ? {} : { backupPath }) },
+      () => `${messages[code]}${backupPath === undefined ? "" : ` Backup: ${backupPath}.`}\n`);
     return 1;
   }
 }
