@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Let `Bash` and `Exec` use a `workdir` under the configured
+  `tools.filesystem` roots when the sandbox is off, matching the file tools.
+  Workdirs outside every allowed root, or symlinks escaping one, stay denied.
+
 - Keep installed full-screen iPad console header content and error notices below
   iPadOS 27's hard top-edge blur. iPhone and inset-zero windows retain their layout.
 
