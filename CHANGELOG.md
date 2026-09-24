@@ -17,6 +17,9 @@
 - Add reviewed `memory curate` plans for one-time BuJo cleanup, including bounded
   model proposals, category acceptance, stopped-store backup and restore. No
   proposals are applied automatically; unsupported legacy authority is rejected.
+- Let `memory curate` process up to 8192 lines in a 16 MiB private plan and
+  apply accepted lines despite unrelated live captures. Report safe preparation
+  and review errors; changed selected lines still refuse apply before backup.
 
 - Add labelled fact sheets and scoped guidance to explicit `MemoryRecall`, plus
   read-only `memory labels` and `memory lessons --propose` operator views. Remote

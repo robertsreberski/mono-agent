@@ -2208,6 +2208,27 @@ describe("curate private plan bound", () => {
 });
 
 describe("curate paid-run isolation", () => {
+  it("prepares a plan when an unrelated capture arrives during model work", async () => {
+    const memoryRoot = join(await tempDir(), "memory"); await mkdir(memoryRoot, { recursive: true });
+    const at = new Date("2026-07-12T10:00:00.000Z");
+    const bullet = (id: string) => ({ id, type: "note" as const, status: "open" as const,
+      text: "Morgan's fictional example.", salience: 0.5, isInsight: false, createdAt: at.toISOString(), refs: [] });
+    bujoMemory.appendBullet(memoryRoot, bullet("fictional-a"), at);
+    const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
+      embeddings: { provider: "ollama", model: "test-embed", dim: 8 }, llm: { provider: "ollama", model: "test-capture" } } });
+    const planPath = join(dir, "curate-plan.json");
+    const prepared = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runMemoryCommand({
+      cwd: dir, env: {}, positionals: ["curate", "prepare"], planPath, json: true, strict: false,
+      curateLlm: { id: "fake", complete: async () => {
+        bujoMemory.appendBullet(memoryRoot, bullet("fictional-b"), at);
+        return JSON.stringify([{ id: "fictional-a", action: "drop", reason: "generic-advice" }]);
+      } },
+    }))));
+    expect(prepared.code, prepared.stderr).toBe(0);
+    const plan = JSON.parse(await readFile(planPath, "utf8"));
+    expect(plan.proposals.map((proposal: { source: { id: string } }) => proposal.source.id)).toEqual(["fictional-a"]);
+    expect(plan.sourceFingerprint).not.toBe(bujoMemory.readBujoCanonicalSourceFingerprint(memoryRoot));
+  });
   it("explains tool-owned preparation failures without exposing provider errors", async () => {
     const memoryRoot = join(await tempDir(), "memory"); await mkdir(memoryRoot, { recursive: true });
     bujoMemory.appendBullet(memoryRoot, { id: "fictional-a", type: "note", status: "open", text: "Morgan's demo note.",
