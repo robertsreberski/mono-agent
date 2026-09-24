@@ -222,8 +222,12 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
     ? `${baseDescription} When a rephrased targeted search loses relevant candidates, use original-query mode deliberately to inspect the current logical turn's unchanged automatic lookup question; this does not broaden automatic memory injection.`
     : baseDescription;
   const limitSchema = z.number().int().min(1).max(50).optional().describe("Max results (default 8).");
-  const labelArgs = { kind: z.enum(["fact", "preference", "lesson"]).optional(),
-    about: z.string().trim().min(1).max(160).optional() };
+  const labelArgs = {
+    kind: z.enum(["fact", "preference", "lesson"]).optional()
+      .describe("Filter labelled fact-sheet/guidance sections only, not ordinary dated hits. Available for local BuJo memory; ignored by remote stores."),
+    about: z.string().trim().min(1).max(160).optional()
+      .describe("Exact person entity ID or name for the local BuJo fact sheet. Ambiguous names show entity IDs; use an ID to disambiguate. Guidance is empty in about mode. Ordinary hits stay unchanged; remote stores ignore this option."),
+  };
   type ToolArgs =
     | { readonly query: string; readonly useOriginalQuery?: false; readonly limit?: number; readonly kind?: LabelKind; readonly about?: string }
     | { readonly useOriginalQuery: true; readonly limit?: number; readonly kind?: LabelKind; readonly about?: string };
@@ -330,8 +334,10 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
     } catch { /* A bad label cannot discard the normal dated hits. */ }
     const sectionPrefix = sections?.text ? `${sections.text}\n\n` : "";
     const sectionFields = sections === undefined ? {} : {
-      ...(sections.factSheet === undefined ? {} : { factSheet: sections.factSheet }),
-      ...(sections.preferencesAndLessons === undefined ? {} : { preferencesAndLessons: sections.preferencesAndLessons }),
+      ...(sections.factSheet === undefined ? {} : { factSheet: sections.factSheet,
+        factSheetTruncated: sections.factSheetTruncated ?? false }),
+      ...(sections.preferencesAndLessons === undefined ? {} : { preferencesAndLessons: sections.preferencesAndLessons,
+        preferencesAndLessonsTruncated: sections.preferencesAndLessonsTruncated ?? false }),
     };
     const degraded = degradation?.code === "embedding_unavailable";
     if (hits.length === 0) {

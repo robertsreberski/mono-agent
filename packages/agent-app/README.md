@@ -726,7 +726,9 @@ because they do not own that per-turn lookup. Optional `kind` (`fact`, `preferen
 `lesson`) filters labelled sections without changing the ordinary dated hits;
 `about` selects one exact person entity ID/name. Local BuJo results prepend a
 fact sheet with attribution, date, current/historical state and conflicts, plus
-scoped preferences and verified lessons. Remote stores without labels keep their
+scoped preferences and verified lessons. Ambiguous names display entity IDs;
+`factSheetTruncated` and `preferencesAndLessonsTruncated` flag capped views.
+An explicit `about` focuses on facts, not guidance. Remote stores without labels keep their
 existing response shape. The CLI `mono-agent memory labels [--kind k] [--about
 entity] [--scope s] [--json]` lists indexed labels including history, and
 `mono-agent memory lessons --propose` prints source-linked snippets to copy

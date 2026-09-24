@@ -61,7 +61,6 @@ export function resolveMemoryEntities(store: LabelRecallStore, query: string, ab
       entities.push({ id, name: id });
     }
   }
-  if (about && entities.length !== 1) return [];
   // Preserve every bounded SQL match until ambiguity is checked by the caller.
   return entities;
 }

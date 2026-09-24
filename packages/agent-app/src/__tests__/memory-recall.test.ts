@@ -25,6 +25,7 @@ import {
   resolveMemoryRecallSettings,
 } from "../memory-recall.js";
 import type { MemoryRecallBujoSettings, MemoryRecallSettings } from "../memory-recall.js";
+import { readLabelSections } from "../memory-label-sections.js";
 
 let dir: string;
 
@@ -247,8 +248,12 @@ describe("MemoryRecall MCP tool (FTS, hermetic)", () => {
         required: ["query"],
         properties: { query: expect.any(Object), limit: expect.any(Object) },
       });
-      expect((tools.tools[0]?.inputSchema as { properties?: Record<string, unknown> }).properties)
-        .not.toHaveProperty("useOriginalQuery");
+      const properties = (tools.tools[0]?.inputSchema as {
+        properties?: Record<string, { description?: string }>
+      }).properties;
+      expect(properties).not.toHaveProperty("useOriginalQuery");
+      expect(properties?.kind?.description).toContain("local BuJo memory");
+      expect(properties?.about?.description).toContain("Guidance is empty in about mode");
       for (const query of [
         "What did you send in the last message?",
         "What was your previous reply?",
@@ -631,6 +636,48 @@ describe("explicit-only coverage scoring", () => {
 });
 
 describe("backend-agnostic recall server", () => {
+  it("names all ambiguous identities and ranks current facts ahead of older history with a visible cap", () => {
+    const entities = [{ id: "person:morgan", name: "Morgan", createdAt: "2026-09-06T00:00:00.000Z" },
+      { id: "person:morgan-two", name: "Mórgan", createdAt: "2026-09-06T00:00:00.000Z" }];
+    const store = {
+      findMemoryEntitiesByNames: (names: readonly string[]) => names.includes("morgan") ? entities : [],
+      labelsForEntity: (id: string) => Array.from({ length: 14 }, (_, index) => ({
+        memoryId: `${id}-${index}`, ordinal: 0, text: "Morgan was born 1990-05-17.",
+        status: index === 13 ? "open" : "invalidated", active: index === 13,
+        currentAt: index === 13, conflict: false, createdAt: `2026-09-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`,
+        label: { v: 1 as const, kind: "fact" as const, entityId: id, key: "birth_date",
+          value: { type: "date" as const, date: "1990-05-17" }, attribution: "user-stated" as const },
+      })),
+      guidanceForScope: () => [],
+    };
+    const result = readLabelSections(store, { query: "Morgan", about: "Morgan", kind: "fact" }, { hostDate: "2026-09-24" });
+    expect(result?.text).toContain("Ambiguous name — 2 entities, specify an entity id");
+    expect(result?.text).toContain("[person:morgan]");
+    expect(result?.text).toContain("[person:morgan-two]");
+    expect(result?.factSheet?.[0]).toMatchObject({ entityId: "person:morgan", current: true });
+    expect(result?.factSheetTruncated).toBe(true);
+    expect(result?.text).toContain("Fact sheet truncated");
+    const exact = readLabelSections(store, { query: "Morgan", about: "person:morgan", kind: "fact" }, { hostDate: "2026-09-24" });
+    expect(exact?.factSheet?.every((entry) => entry.entityId === "person:morgan")).toBe(true);
+  });
+
+  it("serves this speaker before the conversation and agent under a bounded guidance cap", () => {
+    const token = "a".repeat(32);
+    const store = {
+      labelsForEntity: () => [],
+      guidanceForScope: (scope: string) => Array.from({ length: 5 }, (_, index) => ({
+        memoryId: `${scope}-${index}`, ordinal: 0, text: `Guidance ${index} for ${scope}.`,
+        status: "open", active: true, conflict: false, createdAt: "2026-09-06T00:00:00.000Z",
+        label: { v: 1 as const, kind: "preference" as const, scope, attribution: "user-stated" as const },
+      })),
+    };
+    const result = readLabelSections(store, { query: "notes", kind: "preference" },
+      { conversationId: "conv", senderToken: token, hostDate: "2026-09-24" });
+    expect(result?.preferencesAndLessons?.[0]?.scope).toBe(`user:${token}`);
+    expect(result?.preferencesAndLessons?.[5]?.scope).toBe("conversation:conv");
+    expect(result?.preferencesAndLessonsTruncated).toBe(true);
+    expect(result?.text).toContain("Preferences & lessons truncated");
+  });
   it("prepends labelled fact/history/conflicts and scoped guidance in both modes without filtering ordinary hits", async () => {
     const birth = (id: string, active: boolean) => ({ memoryId: id, ordinal: 0,
       text: "Morgan was born 1990-05-17.", status: active ? "open" : "invalidated", active,
