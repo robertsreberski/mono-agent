@@ -8,6 +8,7 @@ import {
   readdir,
   realpath,
   stat,
+  unlink,
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
@@ -56,6 +57,7 @@ const REPLAY_ADOPTION_SCHEMA_VERSION = 1;
 const MEMORY_FORGET_SCHEMA_VERSION = 1;
 const MAX_FORGET_IDS = 32;
 const MAX_FORGET_PLAN_BYTES = 1024 * 1024;
+const MAX_CURATE_PLAN_BYTES = 8 * 1024 * 1024;
 const MEMORY_ID_RE = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/u;
 const FTS_FALLBACK_MEMORY_SEARCH_CODES = new Set<MemorySearchErrorCode>([
   "embedding_circuit_open",
@@ -1335,22 +1337,28 @@ async function readMemoryForgetPlan(path: string): Promise<MemoryForgetPlan> {
   return { ...payload, planDigest: value.planDigest };
 }
 
-async function writePrivateJsonExclusive(path: string, value: unknown): Promise<void> {
+async function writePrivateJsonExclusive(path: string, value: unknown, maxBytes = MAX_FORGET_PLAN_BYTES): Promise<void> {
+  const serialized = `${JSON.stringify(value, null, 2)}\n`;
+  if (Buffer.byteLength(serialized, "utf8") > maxBytes) throw new Error("private plan exceeds size limit");
   const handle = await openFile(
     path,
     constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
     0o600,
   );
   try {
-    await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+    await handle.writeFile(serialized, "utf8");
     await handle.sync();
     const opened = await handle.stat();
     const current = await lstat(path);
-    assertPinnedFile(opened, current, path, true, MAX_FORGET_PLAN_BYTES);
-  } finally {
+    assertPinnedFile(opened, current, path, true, maxBytes);
+  } catch (error) {
     await handle.close();
+    await unlink(path).catch(() => {});
+    throw error;
   }
-  await fsyncParentDirectory(path);
+  await handle.close();
+  try { await fsyncParentDirectory(path); }
+  catch (error) { await unlink(path).catch(() => {}); throw error; }
 }
 
 async function readPrivateJson(path: string, maxBytes: number): Promise<unknown> {
@@ -2918,6 +2926,9 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
     const root = bujo.resolveExplicitMemoryCurateRoot(resolve(context.cwd, memory.path));
     if (operation === "prepare") {
       const snapshot = bujo.inspectCurateSource(root, input.limit ?? 120);
+      if (Buffer.byteLength(JSON.stringify(snapshot.lines), "utf8") > MAX_CURATE_PLAN_BYTES / 2) {
+        throw new Error("curate source exceeds private plan bound");
+      }
       const estimate = bujo.curateEstimate(snapshot);
       const model = input.model ?? memory.llm?.model;
       if (model === undefined) throw new Error("memory LLM not configured");
@@ -2938,7 +2949,7 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       const payload = { schemaVersion: 1, operation: "curate", rootFingerprint: memoryRootFingerprint(root),
         sourceFingerprint: snapshot.fingerprint, model, createdAt: new Date().toISOString(), proposals } as const;
       const plan: CuratePlan = { ...payload, planDigest: curatePlanDigest(payload) };
-      await writePrivateJsonExclusive(planPath, plan);
+      await writePrivateJsonExclusive(planPath, plan, MAX_CURATE_PLAN_BYTES);
       write(input.json, { operation: "curate-prepare", status: "prepared", planPath, count: proposals.length },
         () => `Curate plan prepared: ${proposals.length} proposals at ${planPath}. Review before applying.\n`);
       return 0;
@@ -2947,7 +2958,7 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       const planPath = resolve(context.cwd, input.planPath!);
       const safePath = await canonicalProspectivePath(planPath);
       if (isSameOrUnderDirectory(root, safePath)) throw new Error("plan cannot be inside memory root");
-      const plan = parseCuratePlan(await readPrivateJson(planPath, 8 * 1024 * 1024));
+      const plan = parseCuratePlan(await readPrivateJson(planPath, MAX_CURATE_PLAN_BYTES));
       for (const item of plan.proposals) bujo.validateCurateProposal(item);
       if (plan.rootFingerprint !== memoryRootFingerprint(root)) throw new Error("plan belongs to another root");
       if (operation === "review") {
@@ -2964,7 +2975,7 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
             accepted: reject.some((selector) => matches(selector, proposal)) ? false
               : accept.some((selector) => matches(selector, proposal)) ? true : proposal.accepted })) };
           const temp = `${planPath}.${process.pid.toString(36)}.tmp`;
-          await writePrivateJsonExclusive(temp, updated);
+          await writePrivateJsonExclusive(temp, updated, MAX_CURATE_PLAN_BYTES);
           await rename(temp, planPath);
           await fsyncParentDirectory(planPath);
           const { curateAccept: _accept, curateReject: _reject, ...remainder } = input;
