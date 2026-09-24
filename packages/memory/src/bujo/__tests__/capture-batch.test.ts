@@ -16,8 +16,8 @@ describe("extractCapturePlanStrict intra-turn precision", () => {
   it("instructs fake extraction to retain user facts instead of assistant restatements or invented doubt", async () => {
     const prompts: string[] = [];
     for (const [turn, expected] of [
-      ["User: Morgan was born on 24 January 2026.\nAssistant: Morgan was born on 24 January 2026.", ["User reported Morgan was born on 24 January 2026."]],
-      ["Scheduled task trigger (not a user message; trigger text omitted):\nAssistant: Previously Morgan was born on 24 January 2026.", []],
+      ["User: Morgan was born on 17 May 2026.\nAssistant: Morgan was born on 17 May 2026.", ["User reported Morgan was born on 17 May 2026."]],
+      ["Scheduled task trigger (not a user message; trigger text omitted):\nAssistant: Previously Morgan was born on 17 May 2026.", []],
       ["User: How do I dress for rain?\nAssistant: Wear a raincoat.", []],
     ] as const) {
       const plan = await extractCapturePlanStrict(turn, {
@@ -37,7 +37,7 @@ describe("extractCapturePlanStrict intra-turn precision", () => {
   it("instructs anchored absolute dates rather than persistent relative claims", async () => {
     const prompts: string[] = [];
     for (const [text, stored] of [
-      ["User: Ambra is 7.5 months old.", "User reported Ambra was 7.5 months old as of 2026-09-08."],
+      ["User: Morgan is 7.5 months old.", "User reported Morgan was 7.5 months old as of 2026-09-08."],
       ["User: The meeting is tomorrow.", "User reported the meeting is on 2026-09-09."],
       ["User: The meeting is next Friday.", "User reported the meeting is next Friday (said on 2026-09-08)."],
     ] as const) {
