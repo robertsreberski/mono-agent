@@ -1,4 +1,5 @@
 import { types as nodeUtilTypes } from "node:util";
+import type { MemoryCaptureSpeakerKind } from "./memory.js";
 
 export {
   createLogRedactor,
@@ -48,6 +49,7 @@ export type {
 } from "./process-jobs.js";
 export type {
   MemoryBlock,
+  MemoryCaptureSpeakerKind,
   MemoryCompletedTurn,
   MemoryCompletedTurnAdmissionStatus,
   MemoryCompletedTurnResult,
@@ -554,6 +556,11 @@ export type AgentLiveInputOwnership =
   | { readonly status: "closed"; readonly reason: "closed" | "unsupported" };
 
 export interface AgentRequestBase {
+  /**
+   * Host-stamped provenance for memory capture. Never copy this from a request
+   * body, channel payload or metadata.source; an absent value is unknown.
+   */
+  readonly captureSpeakerKind?: MemoryCaptureSpeakerKind;
   /** Never serialized into metadata, history, or prompts. */
   readonly onLiveInputOwnership?: (event: AgentLiveInputOwnership) => void;
   readonly conversationId: string;

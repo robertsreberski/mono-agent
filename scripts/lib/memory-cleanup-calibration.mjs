@@ -151,6 +151,8 @@ async function runCaptureCalibration(testHooks) {
       conversationId: "calibration",
       summary: "Host completed the deterministic mixed memory fixture.",
       captureText: fixture.turnText,
+      // Fixture text alone is not an authenticated outer human turn.
+      captureSpeakerKind: "unknown",
     });
     await store.flush();
     const intake = store.queueSnapshot().intake;

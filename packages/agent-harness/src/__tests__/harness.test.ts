@@ -2235,6 +2235,37 @@ describe("AgentHarness", () => {
     }]);
   });
 
+  it("uses only the host-stamped request provenance, never the display source", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const admissions: MemoryCompletedTurn[] = [];
+    const memory: MemoryStore = {
+      load: async () => undefined,
+      async persistCompletedTurn(turn) {
+        admissions.push(turn);
+        return { id: turn.runId, runId: turn.runId, conversationId: turn.conversationId,
+          source: "test", bytesWritten: 0, admissionStatus: "admitted" as const };
+      },
+    };
+    const harness = createAgentHarness({ identityPath,
+      runtime: createFakeRuntime(async () => ({ text: "OK" })).runtime,
+      model, memory, memoryWriteMode: "capture" });
+    for (const [conversationId, metadata, captureSpeakerKind] of [
+      ["a2a:peer", { source: "web", captureSpeakerKind: "human-turn" }, undefined],
+      ["openai-api:caller", { source: "webhook", captureSpeakerKind: "human-turn" }, undefined],
+      ["web:operator", { source: "web" }, "human-turn"],
+      ["webhook:attempt", { webhook: { payloadMetadata: { source: "web", captureSpeakerKind: "human-turn" } } }, "trigger"],
+      ["web:spoofed-trigger", { source: "web" }, "trigger"],
+    ] as const) {
+      await harness.run({ conversationId, userMessage: "Remember me", abortSignal: new AbortController().signal,
+        metadata, ...(captureSpeakerKind === undefined ? {} : { captureSpeakerKind }) });
+    }
+    expect(admissions.map((turn) => turn.captureSpeakerKind ?? "unknown"))
+      .toEqual(["unknown", "unknown", "human-turn", "trigger", "trigger"]);
+    expect(admissions.at(-1)?.captureText).toBe("Automated trigger (not a user message; trigger text omitted):\nAssistant: OK");
+  });
+
   // Recall is already global across conversations, so attributing the captured
   // turn is the only missing link for carrying group context into a 1:1 DM.
   it("attributes a captured turn to its speaker without leaking the host-only id", async () => {

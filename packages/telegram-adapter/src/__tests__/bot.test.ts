@@ -1273,6 +1273,7 @@ describe("createTelegramBot", () => {
       messageId: 10,
       updateId: 1,
       userId: 7,
+      captureSpeakerKind: "human-turn",
       username: "person_a",
       text: "hello agent",
       metadata: {

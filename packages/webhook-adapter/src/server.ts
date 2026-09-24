@@ -563,6 +563,7 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
           : endpoint.prompt)
         : composePromptText(endpoint.prompt, body.text),
       abortSignal: controller.signal,
+      captureSpeakerKind: "trigger",
       ...(attachment === undefined ? {} : { attachments: [attachment] }),
       metadata: {
         webhook: {

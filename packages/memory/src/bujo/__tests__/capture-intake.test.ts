@@ -63,6 +63,40 @@ function manager(
 }
 
 describe("completed-turn durable intake", () => {
+  it("keeps the legacy run commitment for unknown provenance across an upgrade retry", () => {
+    const memoryRoot = root();
+    const intake = manager(memoryRoot);
+    const first = intake.admit(turn({ runId: "before-provenance" }));
+    const before = JSON.parse(readFileSync(first.source, "utf8")) as Record<string, unknown>;
+    expect(before).not.toHaveProperty("captureSpeakerKind");
+    expect(intake.admit(turn({ runId: "before-provenance", captureSpeakerKind: "unknown" })).admissionStatus).toBe("duplicate");
+    expect(JSON.parse(readFileSync(first.source, "utf8"))).not.toHaveProperty("captureSpeakerKind");
+    expect(() => intake.admit(turn({ runId: "before-provenance", captureSpeakerKind: "human-turn" }))).toThrow(/conflicts/iu);
+    intake.abortForShutdown(false);
+  });
+
+  it("rejects a malformed provenance field before admitting a run", () => {
+    const memoryRoot = root();
+    const intake = manager(memoryRoot);
+    expect(() => intake.admit({ ...turn(), captureSpeakerKind: "user-stated" } as unknown as MemoryCompletedTurn))
+      .toThrow(/captureSpeakerKind is invalid/iu);
+    expect(inspectCompletedTurnIntake(memoryRoot, FIXED).snapshot.pending).toBe(0);
+    intake.abortForShutdown(false);
+  });
+
+  it("commits host-stamped provenance and preserves it through a dead-letter retry", async () => {
+    const memoryRoot = root();
+    const intake = manager(memoryRoot, { capture: async () => { throw new Error("retry"); }, maxAttempts: 1 });
+    const admitted = intake.admit(turn({ runId: "role-dead", captureSpeakerKind: "trigger" }));
+    expect(JSON.parse(readFileSync(admitted.source, "utf8"))).toHaveProperty("captureSpeakerKind", "trigger");
+    await intake.flush();
+    intake.finishShutdown();
+    expect(retryCompletedTurnIntake(memoryRoot).retried).toBe(1);
+    expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(true);
+    const pending = join(memoryRoot, ".capture-intake", "pending", `${admitted.id}.json`);
+    expect(JSON.parse(readFileSync(pending, "utf8"))).toHaveProperty("captureSpeakerKind", "trigger");
+  });
+
   it("treats a pre-upgrade root with no intake tree as a valid empty state", () => {
     const memoryRoot = root();
     expect(auditCompletedTurnIntake(memoryRoot, FIXED)).toMatchObject({

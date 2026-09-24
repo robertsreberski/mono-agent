@@ -376,6 +376,7 @@ export async function runBenchmark({ corpus, plan, directory, modules, providerF
             memory: {
               async load() { return undefined; },
               async persistCompletedTurn(turn) {
+                // Forward host provenance unchanged; the harness defaults fixtures to unknown.
                 hooks.admission?.(turn, tag);
                 admissionStarted = performance.now();
                 const result = await event(tag, "admission", () => store.persistCompletedTurn(turn));
@@ -625,6 +626,7 @@ async function runConversationBatchedBenchmark({ corpus, plan, directory, module
               memory: {
                 async load() { return undefined; },
                 async persistCompletedTurn(completed) {
+                  // Preserve the original host provenance across retries; never infer it from fixture text.
                   hooks.admission?.(completed, baseTag);
                   admissionStarted = performance.now();
                   const result = await event(baseTag, "admission", () => store.persistCompletedTurn(completed));

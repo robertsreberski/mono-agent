@@ -82,7 +82,17 @@ finish the durable intake before changing tiers.
 External writable `MemoryStore` implementations must implement `persistCompletedTurn`
 and own stable `runId` admission and deduplication semantics. Read-only stores may
 omit it; the harness rejects enabled writing when the method is absent. Mono-agent
-does not infer, provision, or configure an external service.
+does not infer, provision, or configure an external service. The optional
+`captureSpeakerKind` on completed turns is host-verified outer-turn provenance,
+not a label extracted from text or `metadata.source`: `human-turn`, `trigger`, or
+`unknown` (the default for legacy and direct callers). An external store must
+preserve the distinction without silently upgrading unknown/trigger assertions
+into first-party evidence. Owner-authorized operator turns, including keyless
+loopback-only clients, are treated as the human owner; automation using that
+interface is consequently attributed as the owner. A keyless non-loopback
+operator endpoint is not trusted for human attribution. Channel adapters must
+verify the sender before setting `human-turn`; a copied payload field is not
+verification. This provenance contract does not itself produce typed graph facts.
 
 ### Direct integrations
 

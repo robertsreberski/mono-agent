@@ -13,11 +13,22 @@ export interface MemoryBlock {
  * `summary` is the host's deterministic compact projection; `captureText`, when
  * present, is the complete host-approved turn text for richer extraction.
  */
+export type MemoryCaptureSpeakerKind = "human-turn" | "trigger" | "unknown";
+
 export interface MemoryCompletedTurn {
   readonly runId: string;
   readonly conversationId: string;
   readonly summary: string;
   readonly captureText?: string;
+  /**
+   * Host-verified outer-turn origin, not derived from captureText or display metadata.
+   * Omission means unknown (including legacy/direct callers). A channel may set
+   * human-turn only after verifying its own sender; operator turns count when
+   * authorized by an owner key or bound loopback-only. Automation using that
+   * owner interface is consequently attributed as the owner. This is not a
+   * proof of assertions in the turn or of any third-party quoted content.
+   */
+  readonly captureSpeakerKind?: MemoryCaptureSpeakerKind;
 }
 
 export type MemoryCompletedTurnAdmissionStatus = "admitted" | "duplicate";
