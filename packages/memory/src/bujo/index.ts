@@ -1,4 +1,6 @@
 export { createBujoMemoryStore, BujoMemoryStore } from "./store.js";
+export { inspectCurateSource, curateEstimate, proposeCurate, validateCurateProposal } from "./curate.js";
+export type { CurateLine, CurateProposal, CurateSnapshot, CurateAction, CurateReason } from "./curate.js";
 export {
   AUTO_RECALL_BACKEND_HITS,
   AUTO_RECALL_MAX_BYTES,
