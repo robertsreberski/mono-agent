@@ -2045,7 +2045,7 @@ it("does not append private progress or the UI answer to the internal stdout lan
   expect(await launched.completion).toMatchObject({ stdout: output, answer: "Separate UI report" });
 });
 
-it("propagates only detached Agent/AgentManage admitted deadlines, not foreground ones", async () => {
+it("propagates job deadlines for detached children and timer deadlines for foreground children", async () => {
   const f = await fixture({ maxRuntimeMs: 900_000 });
   const run = vi.fn(async (_r: any) => ({ text: "done" }));
   const { agent, send } = tools(f, run, { timeoutMs: 1_800_000 });
@@ -2058,11 +2058,18 @@ it("propagates only detached Agent/AgentManage admitted deadlines, not foregroun
   await done(f.service, second.details.jobId);
   const secondJob = (await f.store.get(second.details.jobId))!;
   expect(run.mock.calls[1]![0]).toMatchObject({ detached: true, deadlineAt: Date.parse(secondJob.runtimeDeadlineAt!) });
+  const beforeSend = Date.now();
   await send.execute("foreground", { id: "helper", message: "more" });
+  const afterSend = Date.now();
   expect(run.mock.calls[2]![0]).not.toHaveProperty("detached");
-  expect(run.mock.calls[2]![0]).not.toHaveProperty("deadlineAt");
+  expect(run.mock.calls[2]![0].deadlineAt).toBeGreaterThanOrEqual(beforeSend + 1_800_000);
+  expect(run.mock.calls[2]![0].deadlineAt).toBeLessThanOrEqual(afterSend + 1_800_000);
+  const beforeAgent = Date.now();
   await agent.execute("foreground-agent", { prompt: "work" });
-  expect(run.mock.calls[3]![0]).not.toHaveProperty("deadlineAt");
+  const afterAgent = Date.now();
+  expect(run.mock.calls[3]![0]).not.toHaveProperty("detached");
+  expect(run.mock.calls[3]![0].deadlineAt).toBeGreaterThanOrEqual(beforeAgent + 1_800_000);
+  expect(run.mock.calls[3]![0].deadlineAt).toBeLessThanOrEqual(afterAgent + 1_800_000);
 });
 
 it.each([
@@ -2073,7 +2080,12 @@ it.each([
   [undefined, -1, true, 1],
   [undefined, undefined, true, undefined],
   [undefined, NaN, true, undefined],
-  [900_000, 3_600_000, false, undefined],
+  [undefined, 3_600_000, false, 1_800_000],
+  [900_000, 3_600_000, false, 900_000],
+  [900_000, 30_000, false, 27_000],
+  [undefined, 30_000, false, 27_000],
+  [undefined, -1, false, 1],
+  [undefined, undefined, false, undefined],
 ] as const)("derives child command ceiling config=%s remaining=%s detached=%s", async (commandTimeoutMs, remaining, detached, expected) => {
   vi.useFakeTimers(); vi.setSystemTime(1_000_000);
   const config = resolveJsonMonoAgentConfig({ cwd: process.cwd(), json: {
@@ -2091,7 +2103,35 @@ it.each([
   const options = run.mock.calls[0]![1];
   if (expected === undefined) expect(options).not.toHaveProperty("toolLimits");
   else expect(options.toolLimits).toEqual({ bashTimeoutMs: expected });
+  const envelope = options.messages[0].content as string;
+  expect(envelope).toContain(`"foregroundTimeoutMs":${expected ?? 120_000}`);
+  expect(envelope).toContain(`<host_turn_context>`);
   expect(options).not.toHaveProperty("processJobsController");
+});
+
+it.each([
+  [undefined, 285_000],
+  [180_000, 180_000],
+] as const)("bounds a foreground child's command by its timer and command config=%s", async (configured, expected) => {
+  vi.useFakeTimers(); vi.setSystemTime(1_000_000);
+  const config = resolveJsonMonoAgentConfig({ cwd: process.cwd(), json: {
+    runtime: { model: "openai-codex:gpt-5.5" },
+    context: { identityPath: resolve(process.cwd(), "IDENTITY.md") },
+    subagents: { enabled: true, timeoutMs: 300_000, ...(configured === undefined ? {} : { commandTimeoutMs: configured }) },
+  } });
+  const run = vi.fn(async (_prompt: string, _options: any) => ({ text: "done" }));
+  const options: any = buildSubagentsOptions(config, { runtime: { run } as never, baseModel: config.runtime.model })!.subagents;
+  const request = vi.fn(options.run);
+  const tool = createAgentTool({ ...options, run: request });
+  await tool.execute("foreground", { prompt: "work" });
+  expect(request.mock.calls[0]![0]).toMatchObject({ deadlineAt: 1_300_000 });
+  expect(request.mock.calls[0]![0]).not.toHaveProperty("detached");
+  expect(run.mock.calls[0]![1].toolLimits).toEqual({ bashTimeoutMs: expected });
+  expect(run.mock.calls[0]![1].messages[0].content).toContain(`"foregroundTimeoutMs":${expected}`);
+});
+
+it("keeps the parent interactive command ceiling at 120 seconds", () => {
+  expect(formatHostCapabilities({})).toContain('"foregroundTimeoutMs":120000');
 });
 
 it("gives the child the absolute launch deadline and aborts at that deadline", async () => {

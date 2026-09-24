@@ -666,12 +666,15 @@ unavailable. Upgrade host and console together: the optional internal-only
 populated records or projections. This adds no new state directory or web
 SQLite migration; ordinary process-job retention still owns the data.
 
-Detached children can run long **foreground** Bash/Exec commands: `timeout_ms`
-is capped at the smaller of the owning job's remaining runtime at child-run
-setup and `subagents.commandTimeoutMs` (positive integer milliseconds; default
-`1800000`, or 30 minutes). Tool descriptions report this effective ceiling;
-the job's abort signal still stops commands when its deadline arrives, including
-commands started later in the turn. Raising the command ceiling does not extend
+Children can run long **foreground** Bash/Exec commands: `timeout_ms` is
+capped by `subagents.commandTimeoutMs` (positive integer milliseconds; default
+`1800000`, or 30 minutes). Detached children clamp it to the owning job's
+remaining runtime at child-run setup; foreground children clamp it to their
+remaining turn time minus a settlement reserve (10% for short turns, at most
+15 seconds). Tool descriptions and the child envelope report this effective
+ceiling; the child timer and parent abort still stop commands sooner, as does
+the detached job deadline, including for commands started later in the turn.
+Raising the command ceiling does not extend
 `subagents.timeoutMs`, profile timeouts, or `processJobs.maxRuntimeMs`.
 Both child turn timeout fields accept 1,000–14,400,000 ms (four hours). For
 attached detached children the effective timer is the smaller of that timeout

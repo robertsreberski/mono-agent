@@ -115,15 +115,17 @@ proof that a failed transcript was retained: lost/unknown continuity requires
 explicit close/create, and unavailable owners cannot be bypassed. See
 [background child lifecycle](/tools/background-process-jobs/#detached-persistent-children).
 
-For long verification inside a detached child, use foreground Bash/Exec with
-`timeout_ms`. Its ceiling is `min(remaining job runtime, subagents.commandTimeoutMs)`
-at child-run setup (command default: 30 minutes); the job deadline still applies
-throughout execution. Configure `subagents.timeoutMs` / `definitions[].timeoutMs` (1,000–14,400,000
+For long verification inside a child, use foreground Bash/Exec with
+`timeout_ms`. Its ceiling is `min(remaining budget, subagents.commandTimeoutMs)`
+at child-run setup (command default: 30 minutes): detached children use remaining
+job runtime; foreground children use remaining turn time minus a settlement
+reserve (10% for short turns, at most 15 seconds). The child timer, parent abort,
+and detached job deadline still apply throughout execution. Configure `subagents.timeoutMs` / `definitions[].timeoutMs` (1,000–14,400,000
 ms) and `processJobs.maxRuntimeMs` for the whole task too. The effective
 detached child timer reserves 10% of remaining job runtime (at most 15 seconds)
 for settlement; raise the job limit above 14,415,000 ms for a full four-hour
 child turn. A settled native-certified timeout is inspectable as `resumable:true`
 and continues on the same transcript through an ordinary `AgentManage` message,
 foreground or `background:true`, without ack. Unknown/lost or still-owned turns
-remain fenced. Child-owned background commands
-remain unsupported; foreground children and NodeRepl keep their existing caps.
+remain fenced. Child-owned background commands remain unsupported; interactive
+parent turns and NodeRepl keep their existing 120-second caps.

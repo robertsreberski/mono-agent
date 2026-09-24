@@ -153,12 +153,15 @@ or force-kill is implied. Allow both tool names. With subagents enabled,
 defaults 60 child turns. Registries and Pi transcripts survive restarts and are
 removed by `restart --clear-sessions`. Instances are conversation-scoped and
 serialized; cross-conversation reuse is unsupported. With ProcessJobs enabled,
-persistent Agent/AgentManage can detach with `background: true`. Their foreground
-Bash/Exec ceiling is the smaller of remaining job runtime at child-run setup and
-`subagents.commandTimeoutMs` (positive integer ms, default 1800000); the job
-deadline can stop commands sooner. This does not extend the whole-child
-`subagents.timeoutMs` or job budget. Child-owned background commands remain
-unsupported; foreground children and NodeRepl keep their 120-second caps.
+persistent Agent/AgentManage can detach with `background: true`. Every child's
+foreground Bash/Exec ceiling is bounded by `subagents.commandTimeoutMs` (positive
+integer ms, default 1800000): detached children clamp it to remaining job runtime
+at child-run setup; foreground children clamp it to remaining turn time minus a
+settlement reserve (10% for short turns, at most 15 seconds). The child timer,
+parent abort, and job deadline (when detached) can stop commands sooner. This
+does not extend the whole-child `subagents.timeoutMs` or job budget. Child-owned
+background commands remain unsupported; parent turns and NodeRepl keep their
+120-second caps.
 Disabling instances preserves stateless `Agent`.
 Detached recovery acknowledgement is exact-request, single-use and available
 only for proven retained context. Private registry failures are reported without

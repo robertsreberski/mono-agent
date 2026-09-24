@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Let foreground child `Bash` and `Exec` exceed 120 seconds, bounded by
+  `subagents.commandTimeoutMs` and remaining child turn time with a settlement
+  reserve. Interactive parent turns retain the 120-second cap.
+
 - Let `Agent` and read-only calls overlap when exclusive tools are merely offered.
   Invoked stateful, MCP, and unknown tools remain exclusive FIFO barriers;
   `piToolExecutionMode: "sequential"` still serializes every call.

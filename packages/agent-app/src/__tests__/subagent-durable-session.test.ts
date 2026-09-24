@@ -73,7 +73,8 @@ describe("app persistent subagent durable sessions", () => {
       const inspected = await send.execute("inspect-settled", { id: "critic", inspect: true });
       const persisted = JSON.parse(await readFile(resolve(subagentConversationRoot(resolve(root, "children"), "foreground-recovery"), "instances.json"), "utf8"))[0];
       expect(persisted.ownerLink).toBeUndefined(); expect(persisted.ownerReceipt).toBeUndefined();
-      expect(calls[0]?.ownedForegroundProcesses).toBeUndefined(); expect(calls[0]?.toolLimits).toBeUndefined();
+      expect(calls[0]?.ownedForegroundProcesses).toBeUndefined();
+      expect(calls[0]?.toolLimits).toEqual({ bashTimeoutMs: mode === "late-timeout" ? 1350 : 9000 });
       if (mode === "late-timeout") {
         expect(inspected.details.recovery).toMatchObject({ status: "ready", resumable: true,
           recovery: { reason: "timeout", continuity: "retained", certifiedTimeout: true } });
