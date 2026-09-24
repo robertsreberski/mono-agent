@@ -30,6 +30,8 @@ providers over their SDKs, so no provider CLI has to be on `PATH`.
 `Bash` and `Exec` honor an explicit `workdir` outside the session workspace when
 path policy permits it (including background process jobs). Relative workdirs
 resolve from the session cwd/workspace; an omitted workdir keeps that default.
+With the sandbox off, path policy is the workspace plus the configured
+`tools.filesystem` read and write roots, as for the file tools.
 Disallowed workdirs report `workdir_denied`, and missing workdirs report
 `workdir_not_found` instead of silently running elsewhere.
 

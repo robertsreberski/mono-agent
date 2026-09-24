@@ -1,7 +1,7 @@
 import { createToolContext, updateToolContext } from "../../agent/tools/shared/tool-context.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { encode as encodeBmp } from "bmp-ts";
@@ -560,6 +560,39 @@ describe("ai tool helpers", () => {
       .toContain("Path not allowed");
     expect(await grepToolImpl({ path: join(ownedWorktrees, "escaped"), pattern: "outside needle" }, { ctx }))
       .toContain("Path not allowed");
+  });
+
+  it("runs Bash and Exec in configured roots without a sandbox and still denies outside or symlink-escaped workdirs", async () => {
+    const workspace = tempWorkspace();
+    const ownedWorktrees = mkdtempSync(join(homedir(), ".mono-agent-owned-worktrees-"));
+    const mainCheckout = mkdtempSync(join(homedir(), ".mono-agent-main-checkout-"));
+    const unrelated = mkdtempSync(join(homedir(), ".mono-agent-unrelated-"));
+    tempDirs.push(ownedWorktrees, mainCheckout, unrelated);
+    const task = join(ownedWorktrees, "task");
+    mkdirSync(task, { recursive: true });
+    symlinkSync(unrelated, join(ownedWorktrees, "escaped"), "dir");
+
+    updateToolContext(ctx, {
+      workspace,
+      additionalReadRoots: [mainCheckout],
+      additionalWriteRoots: [ownedWorktrees],
+    });
+
+    for (const dir of [task, mainCheckout]) {
+      const expected = realpathSync(dir);
+      for (const result of [
+        await bashToolImpl({ command: "pwd -P", workdir: dir }, { ctx }),
+        await execToolImpl({ executable: "pwd", args: ["-P"], workdir: dir }, { ctx }),
+      ]) {
+        // The denial message also names the directory, so check for it first.
+        expect(result).not.toContain("not allowed");
+        expect(result.trim().split("\n")).toContain(expected);
+      }
+    }
+    for (const dir of [unrelated, join(ownedWorktrees, "escaped")]) {
+      expect(await bashToolImpl({ command: "pwd", workdir: dir }, { ctx })).toContain("Working directory not allowed");
+      expect(await execToolImpl({ executable: "pwd", workdir: dir }, { ctx })).toContain("Working directory not allowed");
+    }
   });
 
   it("uses sandbox policy roots instead of permissive default roots", async () => {

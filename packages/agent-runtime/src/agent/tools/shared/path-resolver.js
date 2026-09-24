@@ -95,8 +95,14 @@ export function isWorkdirAllowed(workdir, options) {
     return !insideProtectedRoots(Array.isArray(policy.protectedRoots) ? policy.protectedRoots : [], r)
       && insideSandboxRoots(Array.isArray(policy.readableRoots) ? policy.readableRoots : [], r);
   }
-  const { workspace, repoRoot } = configured(ctx);
-  return insideLegacyRoots([workspace, repoRoot, process.cwd(), "/tmp"], r);
+  // Without a sandbox policy, admit the same roots file tools can read: the
+  // legacy workspace roots plus operator-configured additional roots. A
+  // workdir outside all of them, or a symlink escaping an additional root,
+  // stays denied.
+  const { workspace, repoRoot, additionalReadRoots, additionalWriteRoots } = configured(ctx);
+  const additionalRoots = [...(additionalReadRoots ?? []), ...(additionalWriteRoots ?? [])];
+  return insideLegacyRoots([workspace, repoRoot, process.cwd(), "/tmp"], r)
+    || insideAdditionalRoots(additionalRoots, r);
 }
 
 /**
