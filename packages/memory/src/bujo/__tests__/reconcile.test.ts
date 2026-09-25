@@ -128,6 +128,21 @@ function dailyContent(root: string): string {
 }
 
 describe("reconcile", () => {
+  it("looks up state neighbours for project entities without querying person-only labels", async () => {
+    const root = newRoot(); const db = openDb(root);
+    await seed(db, root, "PROJECT-OLD", "Project Maple is paused.");
+    db.upsertEntity({ id: "project:maple", name: "Maple", type: "project", createdAt: FIXED.toISOString() });
+    db.associateMemory({ memoryId: "PROJECT-OLD", entityId: "project:maple", provenance: "capture", createdAt: FIXED.toISOString() });
+    db.findSimilarMany = async () => [[]];
+    let offered = "";
+    const actions = await reconcileBatch([{ type: "note", text: "Project Maple resumed.", salience: 0.8,
+      isInsight: false, entityIds: ["project:maple"] }], makeDeps(db, root, { id: "project-state",
+      complete: async (input) => { offered = input; return JSON.stringify([{ index: 0, action: "supersede",
+        targetId: "PROJECT-OLD", text: "Project Maple resumed." }]); },
+    }, { strictModelOutput: true, deferBatchCommit: true, beforeBatchCommit: () => {} }));
+    expect(offered).toContain('"sameEntityTopic":"status"');
+    expect(actions[0]?.kind).toBe("supersede");
+  });
   it("matches an entity's labelled property by key even without an overlapping topic phrase", async () => {
     const root = newRoot(); const db = openDb(root);
     const label: MemoryLabel = { v: 1, kind: "fact", entityId: "person:morgan", key: "other:favorite-color",

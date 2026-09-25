@@ -324,7 +324,8 @@ function withEntityStateNeighbours(candidate: CandidateMemory, similar: readonly
       label.kind === "fact" && label.entityId === entityId));
     if (topics.size === 0) continue;
     const keysByMemory = new Map<string, string[]>();
-    for (const hit of db.listLabels({ kind: "fact", entityId }, 200).hits) {
+    for (const hit of (entityId.startsWith("person:")
+      ? db.listLabels({ kind: "fact", entityId }, 200).hits : [])) {
       if (!hit.active || hit.label.kind !== "fact") continue;
       keysByMemory.set(hit.memoryId, [...(keysByMemory.get(hit.memoryId) ?? []), hit.label.key]);
     }
