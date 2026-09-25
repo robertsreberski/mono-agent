@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Preference and lesson background is injected only when its memory ranks in
+  the top eight hits and leads the median candidate score by `0.1`, instead of
+  whenever it clears the absolute `0.35` floor.
+
 - Person cards show an infant's age in months, weeks or days instead of
   `age 0`.
 

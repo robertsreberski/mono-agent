@@ -11,7 +11,28 @@ export interface LabelRecallStore {
 }
 
 const MAX_BACKGROUND_BYTES = 1024;
+/** Absolute floor for preference/lesson background; the relative rule below does the real work. */
 const GUIDANCE_FLOOR = 0.35;
+/**
+ * Raw embedding scores sit in a narrow provider-specific band (most unrelated
+ * lines score within ~0.1 of each other), so an absolute floor alone admits
+ * nearly every labelled line. A preference or lesson must also lead the median
+ * candidate score by this margin (when at least five candidates exist) and rank
+ * among the first GUIDANCE_MAX_RANK hits.
+ */
+export const GUIDANCE_MARGIN = 0.1;
+export const GUIDANCE_MAX_RANK = 8;
+const GUIDANCE_MIN_CANDIDATES = 5;
+
+/** Minimum score a labelled guidance line needs among these retrieved hits. */
+export function guidanceScoreFloor(scores: readonly number[]): number {
+  // Too few candidates carry no distribution; keep the absolute floor alone.
+  if (scores.length < GUIDANCE_MIN_CANDIDATES) return GUIDANCE_FLOOR;
+  const sorted = [...scores].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  const median = sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+  return Math.max(GUIDANCE_FLOOR, median + GUIDANCE_MARGIN);
+}
 const PERSON_ID = /^person:[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const scopeId = (value: string): boolean => /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,95}$/u.test(value);
 export const safeLine = (text: string): string => text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").replace(/\s+/gu, " ").trim();
@@ -152,9 +173,11 @@ export function formatMemoryBackground(
   if (date === undefined || !/^\d{4}-\d{2}-\d{2}$/u.test(date)) return undefined;
   const scopes = memoryGuidanceScopes(conversationId, options);
   const scores = new Map(hits.map((hit) => [hit.record.id, hit.score]));
+  const floor = guidanceScoreFloor(hits.map((hit) => hit.score));
+  const ranked = new Set([...hits].sort((a, b) => b.score - a.score).slice(0, GUIDANCE_MAX_RANK).map((hit) => hit.record.id));
   const applicable = scopes.flatMap((scope) => store.guidanceForScope!(scope))
     .filter((hit) => hit.active && (hit.label.kind === "preference" || (hit.label.kind === "lesson" && hit.label.verified))
-      && (scores.get(hit.memoryId) ?? 0) >= GUIDANCE_FLOOR);
+      && ranked.has(hit.memoryId) && (scores.get(hit.memoryId) ?? 0) >= floor);
   // Abstain on opposite statements about an otherwise identical action, across scopes too.
   const normalized = (text: string): string => fold(text).replace(/\b(?:not|never|don't)\b/gu, "").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
   const contradictory = new Set<string>();

@@ -20,7 +20,9 @@ const fact = (id: string, date: string, conflict = false, active = true): Memory
     value: { type: "date", date }, attribution: "user-stated" },
 });
 const hits = ["scoped", "other-user", "other-conversation", "other-project", "unverified", "inactive", "irrelevant"]
-  .map((id) => ({ score: id === "irrelevant" ? 0.1 : 0.81, record: { id, text: "Please make the relevant note concise." } }));
+  .map((id) => ({ score: id === "irrelevant" ? 0.1 : 0.81, record: { id, text: "Please make the relevant note concise." } }))
+  // Ordinary unlabelled candidates: guidance must lead their median score.
+  .concat([1, 2, 3, 4, 5].map((n) => ({ score: 0.6, record: { id: `filler-${n}`, text: "Unrelated note." } })));
 
 function store(rows: MemoryLabelHit[], facts: MemoryLabelHit[] = []): LabelRecallStore {
   return {
@@ -283,5 +285,21 @@ describe("ageAt", () => {
     expect(ageAt("2026-09-22", "2026-09-25")).toBe("age 3 days");
     expect(ageAt("2025-09-25", "2026-09-25")).toBe("age 1");
     expect(ageAt("2026-09-26", "2026-09-25")).toBeUndefined();
+  });
+});
+
+describe("guidance score floor", () => {
+  const guidance = [preference(`user:${token}`, "Keep replies short.", "pref")];
+  const background = (score: number, others: readonly number[]) => formatMemoryBackground(store(guidance), "Reply to Morgan", "current", options,
+    [{ score, record: { id: "pref", text: "Keep replies short." } },
+      ...others.map((value, n) => ({ score: value, record: { id: `other-${n}`, text: "Unrelated note." } }))]);
+
+  it("injects a preference only when it clearly leads the candidate median", () => {
+    expect(background(0.86, [0.8, 0.79, 0.78, 0.78, 0.77])).toBeUndefined();
+    expect(background(0.92, [0.8, 0.79, 0.78, 0.78, 0.77])).toContain("Keep replies short.");
+  });
+
+  it("requires the preference to rank among the top hits", () => {
+    expect(background(0.95, Array.from({ length: 9 }, () => 0.97).concat([0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]))).toBeUndefined();
   });
 });
