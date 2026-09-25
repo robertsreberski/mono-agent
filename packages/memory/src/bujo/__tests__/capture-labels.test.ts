@@ -169,6 +169,19 @@ describe("host-validated capture labels", () => {
       .candidates[0]?.labels).toEqual([{ ...fact, attribution: "unknown" }]);
   });
 
+  it("does not bind an owner turn about a relative to the owner entity", async () => {
+    const label = { v: 1, kind: "fact", entityId: "person:owner", key: "birth_date",
+      value: { type: "date", date: "1990-05-17" }, attribution: "user-stated" };
+    const text = "The user's son was born May 17, 1990.";
+    expect((await extract(text, [label], { captureSpeakerKind: "human-turn", conversationId: "acp:fictional",
+      captureEvidence: evidence("My son was born May 17, 1990.", { ownerTurn: true }) })).candidates[0]?.labels)
+      .toBeUndefined();
+    expect((await extract("The user was born May 17, 1990.", [label], {
+      captureSpeakerKind: "human-turn", conversationId: "acp:fictional",
+      captureEvidence: evidence("I was born May 17, 1990.", { ownerTurn: true }),
+    })).candidates[0]?.labels).toEqual([label]);
+  });
+
   it("binds owner-reported facts to the stable owner entity without trusting unidentified turns", async () => {
     const ownerFact = { v: 1, kind: "fact", entityId: "person:owner", key: "other:favorite-color",
       value: { type: "text", text: "blue" }, attribution: "user-stated" };

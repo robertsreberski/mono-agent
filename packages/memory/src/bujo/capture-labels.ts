@@ -20,10 +20,11 @@ export function captureLabels(raw: readonly unknown[], text: string, context: Ca
       const label = validateMemoryLabel(candidate);
       let accepted: MemoryLabel | undefined;
       if (label.kind === "fact") {
-        if (factSupported(label, text, context.entityNames)
-          || (label.entityId === "person:owner" && context.captureEvidence?.ownerTurn === true
-            && context.captureSpeakerKind === "human-turn" && /\b(?:the user|the owner|i|my)\b/iu.test(text)
-            && valueSupported(label, text))) {
+        const ownerFact = label.entityId === "person:owner";
+        if (ownerFact
+          ? context.captureEvidence?.ownerTurn === true && user !== undefined
+            && ownerFactSupported(label, text) && ownerFactSupported(label, user)
+          : factSupported(label, text, context.entityNames)) {
           const userSupported = user !== undefined && valueSupported(label, user);
           const attribution = label.attribution === "unknown" ? "unknown"
             : label.attribution === "user-stated" && userSupported ? "user-stated" : "assistant-inferred";
@@ -88,6 +89,17 @@ function preferenceSupported(text: string, user: string): boolean {
   const source = contentWords(user);
   return contentWords(text).some((word) => source.includes(word));
 }
+function ownerFactSupported(label: Extract<MemoryLabel, { kind: "fact" }>, text: string): boolean {
+  if (!valueSupported(label, text)) return false;
+  const normalized = normalize(text).replace(/[’]/gu, "'");
+  // An owner's relative is not the owner: the pronoun only establishes who
+  // reported the fact. Require the owner as the grammatical subject/possessor.
+  if (label.key !== "relationship" && /\b(?:my|the (?:user|owner)'s)\s+(?:own\s+)?(?:son|daughter|child|partner|spouse|mother|father|friend|colleague|relative)\b/iu.test(normalized)) return false;
+  return /\bi\s+(?:am|was|have|had|prefer|like|want|work|live|own|use|chose|choose|need|plan|started|stopped|do|did)\b/iu.test(normalized)
+    || /\b(?:my|the (?:user|owner)'s)\s+(?!(?:own\s+)?(?:son|daughter|child|partner|spouse|mother|father|friend|colleague|relative)\b)[a-z][a-z-]*\b/iu.test(normalized)
+    || /\bthe (?:user|owner)\s+(?:is|was|has|had|prefers|likes|wants|works|lives|owns|uses|chose|needs|plans)\b/iu.test(normalized);
+}
+
 export function factSupported(label: Extract<MemoryLabel, { kind: "fact" }>, text: string,
   names?: ReadonlyMap<string, string>): boolean {
   const slug = label.entityId.slice(label.entityId.indexOf(":") + 1);
