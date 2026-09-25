@@ -158,6 +158,17 @@ describe("strict completed-turn extraction", () => {
     expect(plan.candidates[1]!.text).toBe(sibling);
   });
 
+  it("drops a colliding host-split piece without rejecting its unrelated sibling", async () => {
+    const first = "Morgan keeps careful notes on the fictional archive.";
+    const long = `${first} ${"A separate fictional catalog entry lists books and maps. ".repeat(4)}`.trim();
+    const plan = await extractCapturePlanStrict("completed turn", {
+      id: "split-collision", complete: async () => planWithMemoryTexts([first, long,
+        "Taylor archives an unrelated fictional sketch."]),
+    });
+    expect(plan.candidates[0]?.text).toBe(first);
+    expect(plan.candidates.some((item) => item.text === "Taylor archives an unrelated fictional sketch.")).toBe(true);
+  });
+
   it("still fails the whole attempt for memories the model authored as indistinct", async () => {
     // Unchanged contract: a pre-clamp duplicate is a model-output defect, not
     // a host artifact, so it must not be silently dropped.

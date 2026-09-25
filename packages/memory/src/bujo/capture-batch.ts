@@ -1,6 +1,7 @@
 import {
   MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS,
   clampCaptureText,
+  splitCaptureSentences,
   type CandidateMemory,
 } from "./distill.js";
 import type { ExtractedEntity, ExtractedRelation } from "./entities.js";
@@ -264,8 +265,9 @@ export async function extractCapturePlanStrict(
   const candidates: CandidateMemory[] = [];
   const clampedTokenSets: string[][] = [];
   const fullTokenSets: string[][] = [];
+  const splitFlags: boolean[] = [];
   let lessonBudget = verifiedRetryCount(observationContext?.captureEvidence);
-  for (const { candidate, fullText } of parsedCandidates) {
+  for (const { candidate, fullText, hostSplit } of parsedCandidates) {
     if (candidates.length >= MAX_CAPTURE_MEMORIES) break;
     const tokens = candidateTokens(candidate.text);
     const fullTokens = candidateTokens(fullText);
@@ -276,7 +278,7 @@ export async function extractCapturePlanStrict(
       // MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS code points and differ solely in
       // a material tail such as a date. Dropping that one candidate keeps every
       // unrelated sibling instead of discarding the batch and retrying it.
-      if (indistinctFrom(fullTokenSets, fullTokens)) {
+      if (!hostSplit && indistinctFrom(fullTokenSets.filter((_tokens, index) => !splitFlags[index]), fullTokens)) {
         throw outputError("capture-extract", "memories must be distinct and non-ambiguous");
       }
       continue;
@@ -291,6 +293,7 @@ export async function extractCapturePlanStrict(
     candidates.push({ ...unlabelled, ...(labels === undefined || labels.length === 0 ? {} : { labels }) });
     clampedTokenSets.push(tokens);
     fullTokenSets.push(fullTokens);
+    splitFlags.push(hostSplit);
   }
   return { candidates, entities, relations };
 }
@@ -318,7 +321,7 @@ function strictCandidate(
   index: number,
   entityIds: ReadonlySet<string>,
   context: CaptureLabelContext,
-): Array<{ candidate: CandidateMemory; fullText: string }> {
+): Array<{ candidate: CandidateMemory; fullText: string; hostSplit: boolean }> {
   if (!isRecord(value) || !hasExactKeys(value, ["type", "text", "salience", "isInsight", "entityIds"], ["labels"])) {
     throw outputError("capture-extract", `memory ${index} has missing or unknown fields`);
   }
@@ -346,7 +349,8 @@ function strictCandidate(
   if (value.labels !== undefined && (!Array.isArray(value.labels) || value.labels.length > 32)) {
     throw outputError("capture-extract", `memory ${index} labels structure is invalid`);
   }
-  const sentences = splitCaptureSentences(fullText);
+  const sentences = [...fullText].length <= MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS
+    ? [fullText] : splitCaptureSentences(fullText);
   return sentences.map((sentence) => {
     const bounded = clampedCaptureText(sentence, `memory ${index} sentence`).text;
     // A fact in one sentence does not give the adjacent sentence the same
@@ -361,27 +365,12 @@ function strictCandidate(
     const labels = captureLabels((value.labels ?? []) as readonly unknown[], bounded, context);
     return { candidate: { type: value.type as CandidateMemory["type"], text: bounded,
       salience: value.salience as number, isInsight: value.isInsight as boolean, entityIds: specificIds,
-      ...(labels.length === 0 ? {} : { labels }) }, fullText: sentence };
+      ...(labels.length === 0 ? {} : { labels }) }, fullText: sentence, hostSplit: sentences.length > 1 };
   });
 }
 
 /** Keep sentence boundaries, not abbreviations or decimal points, within one bounded capture plan. */
-function splitCaptureSentences(text: string): string[] {
-  if ([...text].length <= MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS) return [text];
-  const parts: string[] = [];
-  let start = 0;
-  for (const match of text.matchAll(/[.!?](?=\s|$)/gu)) {
-    const end = match.index! + 1;
-    const prior = text.slice(Math.max(start, end - 8), end);
-    if (/(?:\b(?:dr|st|mr|ms|mrs|prof|e\.g|i\.e)|\b[a-z])\.$/iu.test(prior)) continue;
-    const sentence = text.slice(start, end).trim();
-    if (sentence) parts.push(sentence);
-    start = end;
-  }
-  const tail = text.slice(start).trim();
-  if (tail) parts.push(tail);
-  return parts.length > 0 ? parts : [text];
-}
+
 
 function strictEntity(value: unknown, index: number): ExtractedEntity {
   if (!isRecord(value) || !hasExactKeys(value, ["id", "name", "type"])) {
