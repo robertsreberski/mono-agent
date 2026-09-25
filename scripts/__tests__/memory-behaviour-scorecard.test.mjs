@@ -10,6 +10,8 @@ describe("fictional completed-turn memory behaviour scorecard", () => {
     expect(result.gates).toMatchObject({ falseAutomaticRecall: true, ownerBindingOfOthers: true,
       credentialStored: true, pendingTurns: true, rebuildParity: true });
     expect(result.superseded).toBe(2);
+    expect(result.categories["trigger-outcome"]).toBe(1);
+    expect(result.activeRecords).toBeGreaterThanOrEqual(5);
     expect(result.labelKinds.fact).toBeGreaterThanOrEqual(3);
     expect(result.labelKinds.preference).toBeGreaterThanOrEqual(1);
     expect(result.questions.filter((question) => question.explicitHit)).toHaveLength(3);

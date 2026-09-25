@@ -23,6 +23,8 @@ export const TURNS = [
   { user: "My colleague doubts that I live in Madrid.", memories: [candidate("The user's colleague doubts that the user lives in Madrid.", [fact("person:owner", "home_location", "Madrid")])], kind: "doubt" },
   { user: "I was born May 17, 1990.", memories: [candidate("The user was born May 17, 1990.", [{ v: 1, kind: "fact", entityId: "person:owner", key: "birth_date", value: { type: "date", date: "1990-05-17" }, attribution: "user-stated" }])], kind: "owner-date" },
   { user: "Morgan says their home is in Naples.", memories: [candidate("Morgan's home is in Naples.", [fact("person:owner", "home_location", "Naples")])], ownerTurn: false, kind: "non-owner" },
+  { user: "scheduled-demo", captureText: "Scheduled task trigger (not a user message; trigger text omitted):\nAssistant: The Maple build completed on 2026-10-11.",
+    memories: [candidate("The Maple build completed on 2026-10-11.")], kind: "trigger-outcome" },
 ];
 export const QUESTIONS = [
   { kind: "owner-positive", query: "Where does the user live?", expected: "The user lives in Braga." },
@@ -79,7 +81,7 @@ export async function runMemoryBehaviourScorecard({ turns = TURNS, questions = Q
     let turnIndex = 0;
     const llm = { id: "fixture:behaviour-script", async complete(prompt, options = {}) {
       if (options.label === "capture:extract") {
-        const turn = turns.find((item) => prompt.includes(`User: ${item.user}\nAssistant: Noted.`));
+        const turn = turns.find((item) => prompt.includes(item.captureText ?? `User: ${item.user}\nAssistant: Noted.`));
         if (!turn) throw new Error("scripted extraction turn missing");
         return JSON.stringify({ memories: turn.memories, entities: [], relations: [] });
       }
@@ -103,8 +105,9 @@ export async function runMemoryBehaviourScorecard({ turns = TURNS, questions = Q
       const start = process.cpuUsage();
       const user = turn.user;
       await store.persistCompletedTurn({ runId: `fixture-${turnIndex}`, conversationId: "acp:fictional",
-        summary: "A fictional conversation turn completed.", captureText: `User: ${user}\nAssistant: Noted.`,
-        captureSpeakerKind: "human-turn", captureEvidence: { userText: user, ...(turn.ownerTurn === false ? {} : { ownerTurn: true }), toolOutcomes: [] } });
+        summary: "A fictional conversation turn completed.", captureText: turn.captureText ?? `User: ${user}\nAssistant: Noted.`,
+        captureSpeakerKind: turn.captureText ? "trigger" : "human-turn",
+        captureEvidence: turn.captureText ? { userText: "", toolOutcomes: [] } : { userText: user, ...(turn.ownerTurn === false ? {} : { ownerTurn: true }), toolOutcomes: [] } });
       await store.flush();
       const cpu = process.cpuUsage(start);
       cpuMs.push((cpu.user + cpu.system) / 1000);

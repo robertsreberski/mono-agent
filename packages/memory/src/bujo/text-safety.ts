@@ -19,6 +19,11 @@ export function unsafeCaptureContent(text: string, source = ""): boolean {
   if ((inventedDoubt.test(text) && !inventedDoubt.test(source))
     || (/\bmay\b/u.test(text) && !/\bmay\b/u.test(source))) return true;
   if (/\b(?:\d+(?:[.,]\d+)?\s*(?:years?|months?)\s*old|aged?\s+\d+(?:[.,]\d+)?\s*(?:years?|months?))\b/iu.test(text)) return true;
+  return unsafeCredentialContext(text);
+}
+
+/** Credential-like content in a canonical line, independently of turn context. */
+export function unsafeCredentialContext(text: string): boolean {
   const credential = /\b(?:password|passphrase|passcode|pin|api[ -]?key|access[ -]?token|secret[ -]?key|credential)\b/iu;
   const login = /\b(?:login|log[ -]?in|sign[ -]?in|account|username)\b/iu;
   const identifier = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/iu;
@@ -26,6 +31,20 @@ export function unsafeCaptureContent(text: string, source = ""): boolean {
   if (credential.test(text) || token.test(text) || (login.test(text) && (identifier.test(text)
     || /\b(?:username|user\s*id|handle|email|address)\b/iu.test(text)))) return true;
   return false;
+}
+
+/** Conservative overlap guard for a candidate that merely repeats an outer-turn instruction.
+ * Only pass host-known instruction text; an omitted trigger is not recoverable. */
+export function echoesTurnInstruction(candidate: string, instruction: string): boolean {
+  const tokens = (value: string): Set<string> => new Set(
+    (value.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter((token) => token.length >= 4),
+  );
+  const proposed = tokens(candidate);
+  const original = tokens(instruction);
+  if (proposed.size < 5 || original.size < 5) return false;
+  let shared = 0;
+  for (const token of proposed) if (original.has(token)) shared++;
+  return shared >= 5 && shared / proposed.size >= 0.8;
 }
 
 /** Lone surrogates, C0 controls (tab/LF/CR excluded), DEL, and C1 controls. */

@@ -11,7 +11,7 @@ import type { LlmComplete } from "./llm.js";
 import type { MemoryCaptureEvidence, MemoryCaptureSpeakerKind } from "@mono-agent/agent-contracts";
 import { captureLabels, verifiedRetryCount, type CaptureLabelContext } from "./capture-labels.js";
 import { MemoryModelError, MemoryModelOutputError } from "./model-error.js";
-import { unsafeCaptureContent } from "./text-safety.js";
+import { echoesTurnInstruction, unsafeCaptureContent } from "./text-safety.js";
 
 export const MAX_CAPTURE_MEMORIES = 8;
 export const MAX_CAPTURE_ENTITIES = 16;
@@ -160,6 +160,7 @@ Return ONLY one exact JSON object with exactly these root keys:
 
 Rules:
 - At most ${MAX_CAPTURE_MEMORIES} memories, ${MAX_CAPTURE_ENTITIES} entities, and ${MAX_CAPTURE_RELATIONS} relations.
+- Admit only owner-stated durable facts, preferences or decisions; dated consequential state changes; outcomes actually completed or failed with evidence in this turn; and specific findings the owner requested and accepted. Discard instructions given to the agent (including scheduled task rules echoed in the Assistant reply), generic advice, assistant recaps without a durable outcome, and tool/progress chatter. For non-human triggers, require a verified outcome or dated state change; the trigger's task instructions are never facts. If the trigger body was omitted by the host, do not infer its contents from the Assistant reply.
 - Omit chit-chat and transient tool output. Use third-person narration naming the speaker; NEVER store a line beginning with first-person I/my. Do not invent meta-doubt ("unclear whether", "may", speculative suffixes) when the outer speaker did not express it. Omit request-only lines (a question/request alone is not a fact), but retain explicit durable preferences. Never store an assistant-stated age or a relative age as a fact; store an explicitly stated birth date instead, or skip. Exclude credentials and login identifiers, including email logins, usernames with passwords, tokens and keys; never mint entities from them.
 - All three root arrays are required, even when empty. Other than optional memory labels, every shown object field is required; emit no other fields.
 - Every memory has type, text, salience, isInsight, entityIds, and optional labels ([] when none). Labels are L1 fact, preference, or lesson objects; do not invent claims or speaker/tool authority. type is task, event, or note; isInsight is boolean.
@@ -267,7 +268,13 @@ export async function extractCapturePlanStrict(
   const entityNames = new Map(entities.map((entity) => [entity.id, entity.name]));
   const labelContext = { ...observationContext, entityNames };
   const parsedCandidates = output.memories.flatMap((value, index) => strictCandidate(value, index, entityIds, labelContext));
+  // The host omits scheduled/webhook trigger bodies. Compare only visible outer
+  // instructions, never fabricated prompt text or an Assistant recap.
+  const outerUser = /^User: ([^\n]*(?:\n(?!Assistant:)[^\n]*)*)/u.exec(text)?.[1] ?? "";
+  const instruction = /^(?:please|could you|can you|would you|do not|don't|always|never|run|check|summarize|write|send|ensure)\b/iu.test(outerUser.trim())
+    ? outerUser : "";
   const safeCandidates = parsedCandidates.filter(({ candidate }) => !unsafeCaptureContent(candidate.text, text)
+    && !(instruction && echoesTurnInstruction(candidate.text, instruction))
     && !(/\?\s*$/u.test(candidate.text)
       || /^\s*(?:please|can you|could you|would you)\b/iu.test(candidate.text)));
   const unsafeIds = new Set(entities.filter((entity) => unsafeCaptureContent(entity.name)

@@ -13,6 +13,25 @@ function planJson(texts: readonly string[]): string {
 }
 
 describe("extractCapturePlanStrict intra-turn precision", () => {
+  it("rejects instruction echoes without removing an independently supported outcome", async () => {
+    const turn = "User: Please check the Maple build log, summarize the Maple build log, and send the Maple build log.\nAssistant: The Maple build finished with a passing result.";
+    const plan = await extractCapturePlanStrict(turn, { id: "instruction-echo", complete: async () => planJson([
+      "Check the Maple build log, summarize the Maple build log, and send the Maple build log.",
+      "The Maple build finished with a passing result.",
+    ]) });
+    expect(plan.candidates.map(({ text }) => text)).toEqual(["The Maple build finished with a passing result."]);
+    const factual = await extractCapturePlanStrict("User: Morgan chose the Maple build log as the final artifact.\nAssistant: Noted.",
+      { id: "durable-decision", complete: async () => planJson(["Morgan chose the Maple build log as the final artifact."]) });
+    expect(factual.candidates).toHaveLength(1);
+  });
+  it("does not pretend an omitted trigger can be compared with an instruction", async () => {
+    const turn = "Scheduled task trigger (not a user message; trigger text omitted):\nAssistant: The Maple build completed on 2026-07-12.";
+    const plan = await extractCapturePlanStrict(turn, { id: "trigger-outcome", complete: async (prompt) => {
+      expect(prompt).toContain("require a verified outcome or dated state change");
+      return planJson(["The Maple build completed on 2026-07-12."]);
+    } }, undefined, [], { observedAt: "2026-07-12T10:00:00.000Z", captureSpeakerKind: "trigger" });
+    expect(plan.candidates).toHaveLength(1);
+  });
   it("preserves contact addresses, May dates and secret-named entities but drops credential identifiers", async () => {
     const memories = [
       { type: "note", text: "Morgan's contact address is morgan@example.test.", salience: 0.7,
