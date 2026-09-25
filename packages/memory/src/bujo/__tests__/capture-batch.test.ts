@@ -13,6 +13,14 @@ function planJson(texts: readonly string[]): string {
 }
 
 describe("extractCapturePlanStrict intra-turn precision", () => {
+  it("keeps durable when/how/what/why lead-ins and drops questions or imperative requests", async () => {
+    const texts = ["When Morgan moved, the project changed hands.", "How Morgan works has changed.",
+      "What Morgan chose became final.", "Why Morgan moved remains documented.",
+      "When did Morgan move?", "Please summarize the project.", "Could you check the project?"];
+    const plan = await extractCapturePlanStrict("User: Morgan discussed the project move.",
+      { id: "requests", complete: async () => planJson(texts) });
+    expect(plan.candidates.map((item) => item.text)).toEqual(texts.slice(0, 4));
+  });
   it("drops first-person, invented doubt, ages and credential identities without dropping safe siblings", async () => {
     const output = JSON.stringify({ memories: [
       ...["I visited Maple Town.", "Morgan may have moved to Maple Town.",

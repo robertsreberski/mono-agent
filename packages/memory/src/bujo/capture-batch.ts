@@ -268,7 +268,8 @@ export async function extractCapturePlanStrict(
   const labelContext = { ...observationContext, entityNames };
   const parsedCandidates = output.memories.flatMap((value, index) => strictCandidate(value, index, entityIds, labelContext));
   const safeCandidates = parsedCandidates.filter(({ candidate }) => !unsafeCaptureContent(candidate.text, text)
-    && !/^\s*(?:please|can you|could you|would you|what|how|why|when)\b/iu.test(candidate.text));
+    && !(/\?\s*$/u.test(candidate.text)
+      || /^\s*(?:please|can you|could you|would you)\b/iu.test(candidate.text)));
   const unsafeIds = new Set(entities.filter((entity) => unsafeCaptureContent(entity.name)
     || /(?:credential|password|username|login|token|secret|api-key)/iu.test(entity.id)).map((entity) => entity.id));
   // An identifier proposed only by a filtered unsafe line is not a real-world
