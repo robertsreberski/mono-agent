@@ -76,8 +76,11 @@ function explicitProject(scope: string, user: string): string | undefined {
 }
 export function safeConversationScope(id: string | undefined): string | undefined {
   if (id === undefined || id.length === 0) return undefined;
-  if (id.length <= 96 && /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u.test(id)) return `conversation:${id}`;
-  return `conversation:${createHash("sha256").update(id).digest("hex").slice(0, 32)}`;
+  if (id.length <= 96 && /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u.test(id)
+    && !id.startsWith("h_")) return `conversation:${id}`;
+  // Reserve h_ for hashed scopes: a raw h_ id is always hashed itself, so a
+  // caller cannot choose a raw id that aliases some other conversation's hash.
+  return `conversation:h_${createHash("sha256").update(id).digest("hex")}`;
 }
 function preferenceSupported(text: string, user: string): boolean {
   const contentWords = (value: string): string[] => {

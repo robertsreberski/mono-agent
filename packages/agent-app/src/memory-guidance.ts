@@ -96,7 +96,8 @@ const keyText = (key: string): string => key.replace(/^other:/u, "").replace(/[-
 export function memoryGuidanceScopes(conversationId?: string, options: MemoryLoadOptions = {}): string[] {
   const scopes = ["agent"];
   if (conversationId !== undefined && conversationId.length > 0) scopes.push(`conversation:${scopeId(conversationId)
-    ? conversationId : createHash("sha256").update(conversationId).digest("hex").slice(0, 32)}`);
+    && !conversationId.startsWith("h_") ? conversationId
+      : `h_${createHash("sha256").update(conversationId).digest("hex")}`}`);
   if (options.senderToken !== undefined && /^[a-f0-9]{32}$/u.test(options.senderToken)) scopes.push(`user:${options.senderToken}`);
   // No project scope: the harness has no host-confirmed active project id.
   return scopes;

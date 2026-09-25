@@ -202,7 +202,7 @@ describe("host-validated capture labels", () => {
       ...context, captureEvidence: evidence("I prefer concise fictional notes.", { ownerTurn: true }),
     })).candidates[0]?.labels).toEqual([preference]);
     const unknown = { ...context, captureEvidence: evidence(sentence) };
-    const expectedScope = `conversation:${createHash("sha256").update("web:fictional-thread").digest("hex").slice(0, 32)}`;
+    const expectedScope = `conversation:h_${createHash("sha256").update("web:fictional-thread").digest("hex")}`;
     expect((await extract(sentence, [preference], unknown)).candidates[0]?.labels)
       .toEqual([{ ...preference, scope: expectedScope }]);
   });
