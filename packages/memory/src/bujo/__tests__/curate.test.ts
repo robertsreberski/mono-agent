@@ -56,18 +56,31 @@ describe("curation preparation", () => {
   });
   it("retries individual failed batches once and records safe bounded reasons", async () => {
     const path = root();
-    for (let index = 0; index < 13; index++) seed(path, `fictional-${index}`, "Morgan recorded a fictional note.");
+    for (let index = 0; index < 25; index++) seed(path, `fictional-${index}`, "Morgan recorded a fictional note.");
     const snapshot = inspectCurateSource(path);
     let calls = 0;
-    const result = await proposeCurate(snapshot, { id: "fake", complete: async () => {
+    const result = await proposeCurate(snapshot, { id: "fake", complete: async (prompt) => {
       calls++;
-      if (calls <= 2) throw new Error("transport unavailable");
-      return JSON.stringify([{ id: "fictional-12", action: "keep" }]);
+      if (calls === 2 || calls === 3) throw new Error("transport unavailable");
+      return JSON.stringify((JSON.parse(prompt) as { lines: { id: string }[] }).lines.map(({ id }) => ({ id, action: "keep" })));
     } });
-    expect(calls).toBe(3);
+    expect(calls).toBe(4);
     expect(result.discarded).toHaveLength(12);
     expect(result.discarded.every(({ reason }) => reason === "model-error")).toBe(true);
-    expect(result.proposals).toHaveLength(1);
+    expect(result.proposals).toHaveLength(13);
+    let unavailableCalls = 0;
+    await expect(proposeCurate(snapshot, { id: "fake", complete: async () => {
+      unavailableCalls++; throw new Error("fetch failed");
+    } })).rejects.toThrow("memory-curate: model unavailable");
+    expect(unavailableCalls).toBe(2);
+    let consecutiveCalls = 0;
+    await expect(proposeCurate({ ...snapshot, lines: [...snapshot.lines, ...snapshot.lines.slice(0, 12)] },
+      { id: "fake", complete: async (prompt) => {
+        consecutiveCalls++;
+        if (consecutiveCalls > 1) throw new Error("model endpoint unavailable");
+        return JSON.stringify((JSON.parse(prompt) as { lines: { id: string }[] }).lines.map(({ id }) => ({ id, action: "keep" })));
+      } })).rejects.toThrow("memory-curate: model unavailable");
+    expect(consecutiveCalls).toBe(5);
     await expect(proposeCurate(snapshot, { id: "fake", complete: async () => { throw new Error("unauthorized"); } })).rejects.toThrow("unauthorized");
     let invalidCalls = 0;
     const invalid = await proposeCurate({ ...snapshot, lines: snapshot.lines.slice(0, 1) }, { id: "fake", complete: async () => {

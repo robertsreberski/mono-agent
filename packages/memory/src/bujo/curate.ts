@@ -163,13 +163,14 @@ function fatalCurateModelError(error: unknown): boolean {
   // silently turn a wholly unauthorized run into an apparently usable plan.
   const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
   const message = error instanceof Error ? error.message : "";
-  return /^(?:401|403|auth|unauthorized|forbidden|invalid_api_key)$/iu.test(code)
+  return /^(?:401|403|auth|provider_auth|unauthorized|forbidden|invalid_api_key)$/iu.test(code)
     || /\b(?:401|403|auth|unauthorized|forbidden|authentication|invalid api key|invalid_api_key|missing credentials|not configured|unknown model|unsupported model|model not found)\b/iu.test(message);
 }
 
 export async function proposeCurate(snapshot: CurateSnapshot, llm: LlmComplete, options: CuratePromptOptions = {}): Promise<CurateSuggestionResult> {
   const output: CurateProposal[] = [];
   const discarded: CurateDiscard[] = [];
+  let consecutiveModelErrorBatches = 0;
   const byId = new Map(snapshot.lines.map((line) => [line.id, line]));
   for (let offset = 0; offset < snapshot.lines.length; offset += BATCH) {
     const batch = snapshot.lines.slice(offset, offset + BATCH);
@@ -191,9 +192,21 @@ export async function proposeCurate(snapshot: CurateSnapshot, llm: LlmComplete, 
       }
     }
     if (failure !== undefined) {
+      if (failure === "model-error") {
+        consecutiveModelErrorBatches++;
+        // A dead endpoint or missing model must not produce an all-discarded,
+        // apparently successful plan. One isolated failed batch may be skipped,
+        // but two consecutive failures need operator intervention.
+        if (offset === 0 || consecutiveModelErrorBatches >= 2) {
+          throw new Error("memory-curate: model unavailable");
+        }
+      } else {
+        consecutiveModelErrorBatches = 0;
+      }
       for (const line of batch) discarded.push({ id: line.id, reason: failure });
       continue;
     }
+    consecutiveModelErrorBatches = 0;
     const seen = new Set<string>();
     for (const item of parsed as unknown[]) {
       if (item === null || typeof item !== "object" || Array.isArray(item)) {

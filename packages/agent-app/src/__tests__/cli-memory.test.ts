@@ -2247,10 +2247,12 @@ describe("curate paid-run isolation", () => {
     const ownJson = await prepare(async () => "{}", true);
     expect(JSON.parse(ownJson.stdout).discardedByReason).toEqual({ "invalid-response": 1 });
     const external = await prepare(async () => { throw new Error("provider failed with private text"); }, false);
+    expect(external.code).toBe(1);
     expect(external.stdout).not.toContain("private text");
-    expect(external.stdout).toContain("model-error");
+    expect(external.stdout).toContain("Curation preparation failed");
     const spoofed = await prepare(async () => { throw new Error("memory-curate: secret private text"); }, true);
-    expect(JSON.parse(spoofed.stdout).discardedByReason).toEqual({ "model-error": 1 });
+    expect(JSON.parse(spoofed.stdout)).toMatchObject({ status: "failed", code: "curate_prepare_failed" });
+    expect(JSON.parse(spoofed.stdout).reason).toBeUndefined();
   });
   it("records individual invalid model proposals without losing valid siblings", async () => {
     const memoryRoot = join(await tempDir(), "memory"); await mkdir(memoryRoot, { recursive: true });

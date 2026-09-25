@@ -176,7 +176,7 @@ describe("createConfiguredMemory — bujo mode", () => {
     let disposed = 0;
     const operatorRuntime = { ...runtime, disposeAllSessions: async () => { disposed++; } };
     try {
-      const llm = await createConfiguredCurationLlm(config, "openai-codex:gpt-5.5", dir, operatorRuntime);
+      const llm = await createConfiguredCurationLlm(config, "openai-codex:gpt-5.5", operatorRuntime);
       await llm.complete("Return an empty fictional proposal list.", { label: "curate:propose" });
       expect(runtime.calls).toHaveLength(1);
       expect(runtime.calls[0]!.options.model).toMatchObject({ provider: "openai-codex", model: "gpt-5.5" });
@@ -192,12 +192,28 @@ describe("createConfiguredMemory — bujo mode", () => {
     const config = bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "curate-memory"),
       llm: { provider: "agent-host", model: "openai-codex:gpt-5.5" } });
     let disposed = 0;
-    const llm = await createConfiguredCurationLlm(config, undefined, dir, {
+    const llm = await createConfiguredCurationLlm(config, undefined, {
       run: async () => { throw new Error("fictional transport failure"); },
       disposeAllSessions: async () => { disposed++; },
     });
     await expect(llm.complete("Keep a fictional note.")).rejects.toThrow("fictional transport failure");
     expect(disposed).toBe(1);
+  });
+
+  it("classifies operator credential failures using the runtime's failure kind and auth detector", async () => {
+    const dir = await tempDir();
+    const config = bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "curate-memory"),
+      llm: { provider: "agent-host", model: "openai-codex:gpt-5.5" } });
+    for (const result of [
+      { failureKind: "provider_auth", error: "Opaque provider error" },
+      { error: "No API key for provider: fictional" },
+      { error: "OAuth token refresh failed" },
+    ]) {
+      const llm = await createConfiguredCurationLlm(config, undefined, {
+        run: async () => ({ text: "", ...result }),
+      });
+      await expect(llm.complete("Keep a fictional note.")).rejects.toMatchObject({ code: "provider_auth" });
+    }
   });
 
   it("allows curation while another process owns the agent root", async () => {
@@ -213,7 +229,7 @@ describe("createConfiguredMemory — bujo mode", () => {
     `], { stdio: ["pipe", "pipe", "pipe"] });
     try {
       await Promise.race([once(child.stdout!, "data"), once(child, "exit").then(() => { throw new Error("lease holder exited early"); })]);
-      const llm = await createConfiguredCurationLlm(config, "openai-codex:gpt-5.5", dir, runtime);
+      const llm = await createConfiguredCurationLlm(config, "openai-codex:gpt-5.5", runtime);
       await llm.complete("Keep a fictional note.");
       expect(runtime.calls).toHaveLength(1);
       expect(runtime.calls[0]!.options.allowedTools).toEqual([]);

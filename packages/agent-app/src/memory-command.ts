@@ -2958,7 +2958,7 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       }
       process.stderr.write(estimateText);
       const llm = input.curateLlm
-        ?? await (await import("./configured-agent.js")).createConfiguredCurationLlm(context.config, input.model, context.cwd);
+        ?? await (await import("./configured-agent.js")).createConfiguredCurationLlm(context.config, input.model);
       const suggested = await bujo.proposeCurate(snapshot, llm, memory.capture);
       const proposals: CurateProposal[] = [];
       const discarded: CurateDiscard[] = [...suggested.discarded];
