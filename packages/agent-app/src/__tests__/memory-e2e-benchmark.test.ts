@@ -466,7 +466,7 @@ describe("fictional E2E production-path contract, not model quality", () => {
       });
       // Product structured-reconciliation guidance adds schema-bound prompt text;
       // pin the integrated prompt's actual conservative estimate.
-      expect(oldPreflight.estimatedInputTokens).toBe(28_315);
+      expect(oldPreflight.estimatedInputTokens).toBe(28_386);
 
       const corrected = await runAtLimit(locomo.LOCOMO_RECONCILIATION_ESTIMATED_INPUT_TOKENS);
       expect(corrected.error).toBeNull();

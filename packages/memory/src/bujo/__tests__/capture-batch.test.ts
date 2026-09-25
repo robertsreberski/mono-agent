@@ -55,6 +55,15 @@ describe("extractCapturePlanStrict intra-turn precision", () => {
     expect(plan.candidates.map((item) => item.text)).toEqual(["Morgan moved to Maple Town."]);
     expect(plan.entities).toEqual([]);
   });
+  it("keeps third-person reported speech that quotes the speaker in the first person", async () => {
+    const output = JSON.stringify({ memories: [
+      { type: "note", text: "Morgan said: I selected cobalt for the launch.", salience: 0.7, isInsight: false, entityIds: [] },
+      { type: "note", text: "My walk was cloudy.", salience: 0.7, isInsight: false, entityIds: [] },
+    ], entities: [], relations: [] });
+    const plan = await extractCapturePlanStrict("User: I selected cobalt for the launch.",
+      { id: "reported-speech", complete: async () => output });
+    expect(plan.candidates.map((item) => item.text)).toEqual(["Morgan said: I selected cobalt for the launch."]);
+  });
   it("instructs fake extraction to retain user facts instead of assistant restatements or invented doubt", async () => {
     const prompts: string[] = [];
     for (const [turn, expected] of [

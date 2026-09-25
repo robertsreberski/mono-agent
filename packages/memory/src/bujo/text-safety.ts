@@ -12,7 +12,9 @@
 /** Capture-specific content guard. Never apply this heuristic to explicit Remember
  * writes: the completed-turn source/speaker context is required. */
 export function unsafeCaptureContent(text: string, source = ""): boolean {
-  if (/\b(?:i|i'm|i've)\b/iu.test(text) || /^\s*my\b/iu.test(text)) return true;
+  // A stored line must not *narrate* in the first person; reported speech
+  // ("Morgan said: I …") and quoted text are third-person lines and stay.
+  if (/^\s*(?:i|i'm|i've|i'd|i'll|my)\b/iu.test(text)) return true;
   const inventedDoubt = /\b(?:unclear whether|not clear whether|possibly|unverified|cannot confirm)\b/iu;
   if ((inventedDoubt.test(text) && !inventedDoubt.test(source))
     || (/\bmay\b/u.test(text) && !/\bmay\b/u.test(source))) return true;
