@@ -927,6 +927,9 @@ mono-agent memory curate review --plan ./curate-plan.json --accept drop:generic-
 # Stop the agent before apply; keep the returned backup for a possible restore.
 mono-agent memory curate apply --plan ./curate-plan.json
 mono-agent memory curate restore --backup /path/returned/by/apply
+# Identity: list duplicate entity names, then merge ids without a model pass.
+mono-agent memory entities --duplicates --json
+mono-agent memory curate prepare --plan ./identity-plan.json --limit 0 --merge person:morgan-2=person:morgan
 mono-agent memory forget prepare --ids-file ./forget-ids.txt --reason noise_cleanup --plan ./forget-plan.json --json
 mono-agent memory forget apply --plan ./forget-plan.json --json
 mono-agent memory forget restore --backup /path/returned/by/apply --json

@@ -23,6 +23,13 @@
   full, and recovery and rebuild keep full parity checks. Per-turn capture on a
   large store drops from seconds to well under two seconds of host CPU.
 
+- Add `mono-agent memory entities --duplicates` to list entity names held by
+  several ids, with types and association counts. `memory curate prepare|review`
+  now accept operator merges (`--merge <fromId>=<toId>`, `--merge-file`,
+  `--allow-cross-type`). These may join different names, and different types
+  when allowed. They run through the same reviewed apply, backup and restore as
+  other curation. `curate prepare --limit 0` prepares merges without a model call.
+
 - On the operator's own turns, automatic recall reads a first-person question
   that names nobody else (`When was I born?`) as a question about the canonical
   owner id `person:owner` and answers from its labelled facts.

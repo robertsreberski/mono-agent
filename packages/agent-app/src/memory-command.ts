@@ -29,6 +29,7 @@ import type {
   LegacyReplayAdoptionResult,
   CurateProposal,
   CurateDiscard,
+  CurateOperatorMerge,
   MemoryBundleExportErrorCode,
   MemoryBundleImportErrorCode,
 } from "@mono-agent/memory/bujo";
@@ -60,6 +61,8 @@ const MEMORY_FORGET_SCHEMA_VERSION = 1;
 const MAX_FORGET_IDS = 32;
 const MAX_FORGET_PLAN_BYTES = 1024 * 1024;
 const MAX_CURATE_PLAN_BYTES = 16 * 1024 * 1024;
+const MAX_CURATE_MERGE_FILE_BYTES = 64 * 1024;
+const MAX_DUPLICATE_IDS_SHOWN = 12;
 const MEMORY_ID_RE = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/u;
 const FTS_FALLBACK_MEMORY_SEARCH_CODES = new Set<MemorySearchErrorCode>([
   "embedding_circuit_open",
@@ -114,6 +117,12 @@ export interface RunMemoryCommandInput {
   readonly reason?: string;
   readonly curateAccept?: string;
   readonly curateReject?: string;
+  /** Operator entity merges (`fromId=toId`) for curate prepare/review. */
+  readonly curateMerges?: readonly string[];
+  readonly curateMergeFile?: string;
+  readonly allowCrossType?: boolean;
+  /** `memory entities --duplicates`. */
+  readonly duplicates?: boolean;
   readonly model?: string;
   readonly dryRun?: boolean;
   /** Host-injected fake memory model for isolated curation preparation tests. */
@@ -250,6 +259,8 @@ export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<nu
       return await runTop(context, input);
     case "labels":
       return await runLabelInventory(context, input);
+    case "entities":
+      return await runEntityDuplicates(context, input);
     case "lessons":
       return await runLessonProposal(context, input);
     case "audit":
@@ -278,7 +289,7 @@ export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<nu
       return await runMemoryBundleImport(context, rest, input);
     default:
       process.stderr.write(ui.errorLine(`Unknown memory subcommand \`${subcommand}\`.`));
-      process.stderr.write(ui.hint("Expected stats, today, show <date>, search <query>, top, labels, lessons --propose, audit, inspect [id], retry [id], resolve <id> <reason>, rebuild, rollback, adopt-replay, forget prepare|apply|restore, export, or import prepare|apply|restore."));
+      process.stderr.write(ui.hint("Expected stats, today, show <date>, search <query>, top, labels, entities --duplicates, lessons --propose, audit, inspect [id], retry [id], resolve <id> <reason>, rebuild, rollback, adopt-replay, forget prepare|apply|restore, export, or import prepare|apply|restore."));
       return 2;
   }
 }
@@ -293,12 +304,23 @@ function memoryCommandUsageError(input: RunMemoryCommandInput): string | undefin
   if (input.strict && subcommand !== "audit") {
     return "--strict is only supported for `mono-agent memory audit`.";
   }
-  if (input.limit !== undefined && subcommand !== "stats" && subcommand !== "search" && subcommand !== "top" && !(subcommand === "curate" && rest[0] === "prepare")) {
-    return "--limit is only supported for memory stats, search, and top.";
+  if (input.limit !== undefined && subcommand !== "stats" && subcommand !== "search" && subcommand !== "top" && subcommand !== "entities" && !(subcommand === "curate" && rest[0] === "prepare")) {
+    return "--limit is only supported for memory stats, search, top, entities, and curate prepare.";
   }
+  const operatorMerges = (input.curateMerges?.length ?? 0) > 0 || input.curateMergeFile !== undefined;
+  if ((operatorMerges || input.allowCrossType === true) && !(subcommand === "curate" && (rest[0] === "prepare" || rest[0] === "review"))) {
+    return "--merge, --merge-file and --allow-cross-type require `mono-agent memory curate prepare|review`.";
+  }
+  if (input.allowCrossType === true && !operatorMerges) return "--allow-cross-type requires --merge or --merge-file.";
+  if (input.limit === 0 && !(subcommand === "curate" && rest[0] === "prepare" && operatorMerges)) {
+    return "--limit 0 is only supported for `mono-agent memory curate prepare` with operator merges.";
+  }
+  if (input.duplicates === true && subcommand !== "entities") return "--duplicates requires `mono-agent memory entities`.";
   switch (subcommand) {
     case "labels":
       return rest.length === 0 ? undefined : "Usage: mono-agent memory labels [--kind k] [--about entity] [--scope s] [--json].";
+    case "entities":
+      return rest.length === 0 && input.duplicates === true ? undefined : "Usage: mono-agent memory entities --duplicates [--limit N] [--json].";
     case "lessons":
       return rest.length === 0 && input.propose === true ? undefined : "Usage: mono-agent memory lessons --propose.";
     case "stats":
@@ -335,9 +357,9 @@ function memoryCommandUsageError(input: RunMemoryCommandInput): string | undefin
     case "curate": {
       if (rest.length !== 1) return "Usage: mono-agent memory curate prepare|review|apply|restore.";
       if (rest[0] === "prepare") return input.planPath !== undefined && input.backupPath === undefined && input.curateAccept === undefined && input.curateReject === undefined
-        ? undefined : "Usage: mono-agent memory curate prepare --plan file [--limit N] [--model provider:model] [--dry-run].";
+        ? undefined : "Usage: mono-agent memory curate prepare --plan file [--limit N] [--model provider:model] [--dry-run] [--merge from=to ...] [--merge-file file] [--allow-cross-type].";
       if (rest[0] === "review") return input.planPath !== undefined && input.backupPath === undefined && input.model === undefined && !input.dryRun
-        ? undefined : "Usage: mono-agent memory curate review --plan file [--accept category,...] [--reject category,...].";
+        ? undefined : "Usage: mono-agent memory curate review --plan file [--accept category,...] [--reject category,...] [--merge from=to ...] [--merge-file file] [--allow-cross-type].";
       if (rest[0] === "apply") return input.planPath !== undefined && input.backupPath === undefined && input.model === undefined && !input.dryRun
         ? undefined : "Usage: mono-agent memory curate apply --plan file.";
       if (rest[0] === "restore") return input.backupPath !== undefined && input.planPath === undefined && input.model === undefined && !input.dryRun
@@ -1716,6 +1738,34 @@ async function runLabelInventory(context: MemoryCommandContext, input: RunMemory
   return await readLabelIndex(context, input, "labels");
 }
 
+/**
+ * Read-only duplicate-identity report: folded names held by several entity
+ * ids, with types and association counts, so an operator can write a
+ * `curate --merge` list. Reads the canonical graph file; takes no lease.
+ */
+async function runEntityDuplicates(context: MemoryCommandContext, input: RunMemoryCommandInput): Promise<number> {
+  const memory = context.config.memory;
+  if (memory?.mode !== "bujo") {
+    write(input.json, { operation: "entities", status: "failed", code: "entities_requires_bujo" },
+      () => "Memory entities requires a configured BuJo store.\n");
+    return 1;
+  }
+  const { findDuplicateEntityNames, readGraph } = await loadBujoModule();
+  const all = findDuplicateEntityNames(readGraph(resolve(context.cwd, memory.path)));
+  const limit = input.limit ?? 20;
+  const groups = all.slice(0, limit).map((group) => ({ ...group, ids: group.ids.slice(0, MAX_DUPLICATE_IDS_SHOWN),
+    ...(group.ids.length > MAX_DUPLICATE_IDS_SHOWN ? { moreIds: group.ids.length - MAX_DUPLICATE_IDS_SHOWN } : {}) }));
+  const summary = { names: all.length, crossType: all.filter(({ types }) => types.length > 1).length,
+    ids: all.reduce((sum, { ids }) => sum + ids.length, 0) };
+  write(input.json, { operation: "entities", duplicates: groups, summary, truncated: all.length > groups.length }, () => all.length === 0
+    ? "No entity name is shared by more than one id.\n"
+    : `${summary.names} names map to more than one id (${summary.crossType} across types, ${summary.ids} ids).\n${groups.map((group) =>
+      `${safeLine(group.name)} — ${group.ids.length + (group.moreIds ?? 0)} ids, ${group.associations} associations\n${group.ids.map(({ id, type, associations }) =>
+        `  ${id} (${type ?? "untyped"}, ${associations})`).join("\n")}${group.moreIds === undefined ? "" : `\n  … ${group.moreIds} more`}`).join("\n")}\n${all.length > groups.length
+      ? `Showing ${groups.length} of ${all.length}; use --limit N or --json.\n` : ""}Merge with: mono-agent memory curate prepare --plan <file> --limit 0 --merge <fromId>=<toId> [--allow-cross-type].\n`);
+  return 0;
+}
+
 async function runLessonProposal(context: MemoryCommandContext, input: RunMemoryCommandInput): Promise<number> {
   return await readLabelIndex(context, input, "lessons");
 }
@@ -2896,15 +2946,29 @@ interface CuratePlan {
   readonly createdAt: string;
   readonly proposals: readonly CurateProposal[];
   readonly discarded: readonly CurateDiscard[];
+  /** Operator-authoritative entity merges; absent in plans without any. */
+  readonly operatorMerges?: readonly CurateOperatorMerge[];
   readonly planDigest: string;
 }
 
 function curatePlanDigest(plan: Omit<CuratePlan, "planDigest">): string {
-  return createHash("sha256").update(JSON.stringify({ ...plan, proposals: plan.proposals.map(({ accepted: _accepted, ...immutable }) => immutable) })).digest("hex");
+  return createHash("sha256").update(JSON.stringify({ ...plan, proposals: plan.proposals.map(({ accepted: _accepted, ...immutable }) => immutable),
+    ...(plan.operatorMerges === undefined ? {} : { operatorMerges: plan.operatorMerges.map(({ accepted: _accepted, ...immutable }) => immutable) }) })).digest("hex");
+}
+
+/** Operator merges from repeated `--merge` flags and an optional private merge file. */
+async function readCurateOperatorMerges(context: MemoryCommandContext, input: RunMemoryCommandInput, bujo: BujoModule): Promise<CurateOperatorMerge[]> {
+  const specs = [...(input.curateMerges ?? [])];
+  if (input.curateMergeFile !== undefined) {
+    specs.push(...(await readPinnedFile(resolve(context.cwd, input.curateMergeFile), MAX_CURATE_MERGE_FILE_BYTES, false)).split(/\r?\n/gu));
+  }
+  return bujo.parseCurateOperatorMerges(specs, input.allowCrossType === true);
 }
 
 function parseCuratePlan(value: unknown): CuratePlan {
-  if (!isObject(value) || !hasExactKeys(value, ["schemaVersion", "operation", "rootFingerprint", "sourceFingerprint", "model", "createdAt", "proposals", "discarded", "planDigest"])
+  const planKeys = ["schemaVersion", "operation", "rootFingerprint", "sourceFingerprint", "model", "createdAt", "proposals", "discarded", "planDigest"];
+  if (!isObject(value) || !(hasExactKeys(value, planKeys) || hasExactKeys(value, [...planKeys, "operatorMerges"]))
+    || (value.operatorMerges !== undefined && (!Array.isArray(value.operatorMerges) || value.operatorMerges.length > 512))
     || value.schemaVersion !== 1 || value.operation !== "curate" || !isSha256(value.rootFingerprint)
     || !isSha256(value.sourceFingerprint) || typeof value.model !== "string" || value.model.length > 160
     || typeof value.createdAt !== "string" || !isCanonicalIso(value.createdAt)
@@ -2943,13 +3007,17 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
     const bujo = await loadBujoModule();
     const root = bujo.resolveExplicitMemoryCurateRoot(resolve(context.cwd, memory.path));
     if (operation === "prepare") {
-      const snapshot = bujo.inspectCurateSource(root, input.limit ?? 120);
-      bujo.previewCurateMutations(root, []);
+      const operatorMerges = await readCurateOperatorMerges(context, input, bujo);
+      // `--limit 0` prepares only the operator merges: no line is sent to a model.
+      const modelPass = input.limit !== 0;
+      const inspected = bujo.inspectCurateSource(root, modelPass ? input.limit ?? 120 : 1);
+      const snapshot = modelPass ? inspected : { ...inspected, lines: [] };
+      bujo.previewCurateMutations(root, [], undefined, operatorMerges);
       if (Buffer.byteLength(JSON.stringify(snapshot.lines), "utf8") > MAX_CURATE_PLAN_BYTES / 2) {
         throw new Error("curate source exceeds private plan bound");
       }
       const estimate = bujo.curateEstimate(snapshot, memory.capture);
-      const model = input.model ?? memory.llm?.model;
+      const model = input.model ?? memory.llm?.model ?? (modelPass ? undefined : "none");
       if (model === undefined) throw new Error("memory LLM not configured");
       const estimateText = `Curate estimate: ${estimate.lines} lines, ${estimate.calls} calls, ~${estimate.inputTokens} input / ~${estimate.outputTokens} output tokens; cost unknown. Skipped canonical lines: ${JSON.stringify(snapshot.skipped)}.\n`;
       if (input.dryRun) {
@@ -2957,16 +3025,16 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
         return 0;
       }
       process.stderr.write(estimateText);
-      const llm = input.curateLlm
-        ?? await (await import("./configured-agent.js")).createConfiguredCurationLlm(context.config, input.model);
-      const suggested = await bujo.proposeCurate(snapshot, llm, memory.capture);
+      const suggested = modelPass ? await bujo.proposeCurate(snapshot, input.curateLlm
+        ?? await (await import("./configured-agent.js")).createConfiguredCurationLlm(context.config, input.model), memory.capture)
+        : { proposals: [], discarded: [] };
       const proposals: CurateProposal[] = [];
       const discarded: CurateDiscard[] = [...suggested.discarded];
       // Common case costs one canonical preview; bisect only a rejected group.
       // An invalid individual suggestion cannot discard the rest of a paid pass.
       const admit = (group: readonly CurateProposal[]): void => {
         if (group.length === 0) return;
-        try { bujo.previewCurateMutations(root, [...proposals, ...group]); proposals.push(...group); }
+        try { bujo.previewCurateMutations(root, [...proposals, ...group], undefined, operatorMerges); proposals.push(...group); }
         catch {
           if (group.length === 1) { discarded.push({ id: group[0]!.source.id, reason: "invalid-preview" }); return; }
           const middle = Math.floor(group.length / 2);
@@ -2977,14 +3045,15 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       const planPath = await canonicalProspectivePath(resolve(context.cwd, input.planPath!));
       if (isSameOrUnderDirectory(root, planPath)) throw new Error("plan cannot be inside memory root");
       const payload = { schemaVersion: 1, operation: "curate", rootFingerprint: memoryRootFingerprint(root),
-        sourceFingerprint: snapshot.fingerprint, model, createdAt: new Date().toISOString(), proposals, discarded } as const;
+        sourceFingerprint: snapshot.fingerprint, model, createdAt: new Date().toISOString(), proposals, discarded,
+        ...(operatorMerges.length === 0 ? {} : { operatorMerges }) } as const;
       const plan: CuratePlan = { ...payload, planDigest: curatePlanDigest(payload) };
       await writePrivateJsonExclusive(planPath, plan, MAX_CURATE_PLAN_BYTES);
       const discardedByReason = Object.fromEntries([...new Set(discarded.map(({ reason }) => reason))].map((reason) => [reason,
         discarded.filter((item) => item.reason === reason).length]));
       write(input.json, { operation: "curate-prepare", status: "prepared", planPath, count: proposals.length,
-        discarded: discarded.length, discardedByReason, skipped: snapshot.skipped },
-        () => `Curate plan prepared: ${proposals.length} proposals, ${discarded.length} discarded (${JSON.stringify(discardedByReason)}); skipped canonical lines: ${JSON.stringify(snapshot.skipped)} at ${planPath}. Review before applying.\n`);
+        operatorMerges: operatorMerges.length, discarded: discarded.length, discardedByReason, skipped: snapshot.skipped },
+        () => `Curate plan prepared: ${proposals.length} proposals, ${operatorMerges.length} operator merges, ${discarded.length} discarded (${JSON.stringify(discardedByReason)}); skipped canonical lines: ${JSON.stringify(snapshot.skipped)} at ${planPath}. Review before applying.\n`);
       return 0;
     }
     if (operation === "review" || operation === "apply") {
@@ -2993,7 +3062,27 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       if (isSameOrUnderDirectory(root, safePath)) throw new Error("plan cannot be inside memory root");
       const plan = parseCuratePlan(await readPrivateJson(planPath, MAX_CURATE_PLAN_BYTES));
       for (const item of plan.proposals) bujo.validateCurateProposal(item);
+      for (const merge of plan.operatorMerges ?? []) bujo.validateCurateOperatorMerge(merge);
       if (plan.rootFingerprint !== memoryRootFingerprint(root)) throw new Error("plan belongs to another root");
+      const replacePlan = async (updated: CuratePlan): Promise<void> => {
+        const temp = `${planPath}.${process.pid.toString(36)}.tmp`;
+        await writePrivateJsonExclusive(temp, updated, MAX_CURATE_PLAN_BYTES);
+        try { await rename(temp, planPath); }
+        catch (error) { await unlink(temp).catch(() => {}); throw error; }
+        await fsyncParentDirectory(planPath);
+      };
+      if (operation === "review" && ((input.curateMerges?.length ?? 0) > 0 || input.curateMergeFile !== undefined)) {
+        // Operator merges join the private plan as pre-accepted decisions; the
+        // same apply-time validation still guards them.
+        const added = await readCurateOperatorMerges(context, input, bujo);
+        const existing = plan.operatorMerges ?? [];
+        const merged = [...existing.filter((merge) => !added.some((next) => next.from === merge.from)), ...added];
+        bujo.previewCurateMutations(root, plan.proposals.filter(({ accepted }) => accepted), undefined, merged);
+        const { planDigest: _digest, ...payload } = { ...plan, operatorMerges: merged };
+        await replacePlan({ ...payload, planDigest: curatePlanDigest(payload) });
+        const { curateMerges: _merges, curateMergeFile: _file, allowCrossType: _cross, ...remainder } = input;
+        return await runMemoryCurate(context, rest, remainder);
+      }
       if (operation === "review") {
         const accept = input.curateAccept?.split(",") ?? [];
         const reject = input.curateReject?.split(",") ?? [];
@@ -3002,21 +3091,24 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
           || new Set(selectors).size !== selectors.length) throw new Error("invalid or duplicate review selector");
         const matches = (selector: string, proposal: CurateProposal) => selector === `id:${proposal.source.id}`
           || selector === `${proposal.action}:*` || selector === `${proposal.action}:${proposal.reason ?? "none"}`;
-        if (selectors.some((selector) => !plan.proposals.some((proposal) => matches(selector, proposal)))) throw new Error("review selector matched no proposals");
+        // Operator merges are selected as `merge:operator`, `merge:*` or `id:<fromId>`.
+        const matchesMerge = (selector: string, merge: CurateOperatorMerge) => selector === `id:${merge.from}`
+          || selector === "merge:*" || selector === "merge:operator";
+        const merges = plan.operatorMerges ?? [];
+        if (selectors.some((selector) => !plan.proposals.some((proposal) => matches(selector, proposal))
+          && !merges.some((merge) => matchesMerge(selector, merge)))) throw new Error("review selector matched no proposals");
         if (selectors.length > 0) {
-          const updated = { ...plan, proposals: plan.proposals.map((proposal) => ({ ...proposal,
-            accepted: reject.some((selector) => matches(selector, proposal)) ? false
-              : accept.some((selector) => matches(selector, proposal)) ? true : proposal.accepted })) };
-          const temp = `${planPath}.${process.pid.toString(36)}.tmp`;
-          await writePrivateJsonExclusive(temp, updated, MAX_CURATE_PLAN_BYTES);
-          try { await rename(temp, planPath); }
-          catch (error) { await unlink(temp).catch(() => {}); throw error; }
-          await fsyncParentDirectory(planPath);
+          const decide = <T extends { readonly accepted: boolean }>(item: T, test: (selector: string, item: T) => boolean): T => ({ ...item,
+            accepted: reject.some((selector) => test(selector, item)) ? false
+              : accept.some((selector) => test(selector, item)) ? true : item.accepted });
+          const updated = { ...plan, proposals: plan.proposals.map((proposal) => decide(proposal, matches)),
+            ...(plan.operatorMerges === undefined ? {} : { operatorMerges: plan.operatorMerges.map((merge) => decide(merge, matchesMerge)) }) };
+          await replacePlan(updated);
           const { curateAccept: _accept, curateReject: _reject, ...remainder } = input;
           return await runMemoryCurate(context, rest, remainder);
         }
         const counts: Record<string, { total: number; accepted: number }> = {};
-        for (const item of plan.proposals) {
+        for (const item of [...plan.proposals, ...merges.map((merge) => ({ action: "merge", reason: "operator", accepted: merge.accepted }))]) {
           const key = `${item.action}:${item.reason ?? "none"}`;
           const count = counts[key] ?? { total: 0, accepted: 0 };
           count.total++;
@@ -3024,14 +3116,16 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
           counts[key] = count;
         }
         write(input.json, { operation: "curate-review", counts, discarded: plan.discarded,
+          operatorMerges: merges.map(({ from, to, allowCrossType, accepted }) => ({ from, to, allowCrossType, accepted })).slice(0, 50),
           examples: plan.proposals.slice(0, 5).map(({ source, action, reason, accepted }) => ({ id: source.id, action, reason, accepted })) },
-          () => `Curate review: ${JSON.stringify(counts)}\nDiscarded suggestions (${plan.discarded.length}): ${JSON.stringify(plan.discarded.slice(0, 20))}${plan.discarded.length > 20 ? " (more in private plan)" : ""}\nExamples: ${JSON.stringify(plan.proposals.slice(0, 5).map(({ source, action, reason, accepted }) => ({ id: source.id, action, reason, accepted })))}\nUse --accept drop:generic-advice,label:* or --reject id:<id>; review the private plan before applying.\n`);
+          () => `Curate review: ${JSON.stringify(counts)}\nDiscarded suggestions (${plan.discarded.length}): ${JSON.stringify(plan.discarded.slice(0, 20))}${plan.discarded.length > 20 ? " (more in private plan)" : ""}\nExamples: ${JSON.stringify(plan.proposals.slice(0, 5).map(({ source, action, reason, accepted }) => ({ id: source.id, action, reason, accepted })))}${merges.length === 0 ? "" : `\nOperator merges (${merges.length}): ${merges.slice(0, 20).map(({ from, to, accepted }) => `${from} -> ${to}${accepted ? "" : " (rejected)"}`).join(", ")}${merges.length > 20 ? " (more in private plan)" : ""}`}\nUse --accept drop:generic-advice,label:* or --reject id:<id>; review the private plan before applying.\n`);
         return 0;
       }
       // The package checks freshness under the writer lease. An interrupted root-swap
       // must be allowed through this CLI gate even when mutation changed the source:
       // only its matching durable transaction can restore the pre-apply tree.
-      if (plan.proposals.every((item) => !item.accepted || item.action === "keep")) {
+      const operatorMerges = (plan.operatorMerges ?? []).filter(({ accepted }) => accepted);
+      if (plan.proposals.every((item) => !item.accepted || item.action === "keep") && operatorMerges.length === 0) {
         write(input.json, { operation: "curate-apply", status: "no-op" }, () => "No proposals accepted; memory unchanged.\n");
         return 0;
       }
@@ -3042,8 +3136,10 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       const { createMemoryEmbeddingProvider } = await loadMemoryRecallModule();
       const embeddings = await createMemoryEmbeddingProvider(settings.embeddings);
       const result = await bujo.applyExplicitMemoryCurate({ root, proposals: selected,
+        ...(operatorMerges.length === 0 ? {} : { operatorMerges }),
         expectedRootFingerprint: plan.rootFingerprint, expectedSourceFingerprint: plan.sourceFingerprint,
-        planDigest: createHash("sha256").update(JSON.stringify({ planDigest: plan.planDigest, selected })).digest("hex"),
+        planDigest: createHash("sha256").update(JSON.stringify(operatorMerges.length === 0 ? { planDigest: plan.planDigest, selected }
+          : { planDigest: plan.planDigest, selected, operatorMerges })).digest("hex"),
         embeddings, dimension: settings.embeddings.dim ?? 768 });
       write(input.json, { operation: "curate-apply", status: "applied", count: result.changed, backupPath: result.backupPath },
         () => `Curated ${result.changed} memory lines; restore backup: ${result.backupPath}.\n`);
@@ -3083,6 +3179,9 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       "memory-curate: unsupported attribution rewrite", "memory-curate: unsupported date rewrite",
       "memory-curate: label refers to an unknown entity",
       "memory-curate: selected id is not in the active index",
+      "memory-curate: invalid operator merge", "memory-curate: too many operator merges",
+      "memory-curate: operator merge refers to an unknown entity",
+      "memory-curate: cross-type merge requires --allow-cross-type",
       "memory-forget: canonical source changed after the plan was prepared.",
       "memory-forget: ids must be a non-empty set without duplicates.",
     ]);

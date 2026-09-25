@@ -262,8 +262,10 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
       "mono-agent memory [stats|today|show <date>|search <query>|top|audit|inspect [id]|retry [id]|resolve <id> <reason>|rebuild|rollback|adopt-replay]\n" +
       "mono-agent memory labels [--kind fact|preference|lesson] [--about entity] [--scope scope] [--json]\n" +
       "mono-agent memory lessons --propose [--json]\n" +
+      "mono-agent memory entities --duplicates [--limit N] [--json]\n" +
       "mono-agent memory curate prepare --plan <file> [--model provider:model] [--limit N] [--dry-run]\n" +
       "mono-agent memory curate review --plan <file> [--accept drop:generic-advice,label:*] [--reject id:<id>]\n" +
+      "                  curate prepare|review also take [--merge <fromId>=<toId>]... [--merge-file <file>] [--allow-cross-type]\n" +
       "mono-agent memory curate apply --plan <file> | curate restore --backup <dir>\n" +
       "mono-agent memory forget prepare --ids-file <file> --reason <slug> --plan <file>\n" +
       "mono-agent memory forget apply --plan <file> | forget restore --backup <dir>\n" +
@@ -284,6 +286,9 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
       "forget uses an explicit, content-free plan plus a full owner-private backup;",
       "curate prepare selects at most 8192 lines (120 by default); apply checks only",
       "accepted source lines against the live store and requires a stopped agent.",
+      "entities --duplicates is read-only: names held by several ids, with association",
+      "counts. --merge adds pre-accepted operator merges (any name; other types only",
+      "with --allow-cross-type); --limit 0 prepares merges without a model pass.",
       "apply and restore require the configured agent to be stopped.",
       "export writes a portable canonical bundle and does not require stopping the",
       "agent; import merges one into this store and does require a stopped agent.",

@@ -162,6 +162,14 @@ export interface ParsedCliArgs {
   readonly curateAccept?: string;
   /** memory curate review: comma-separated action:reason category selectors. */
   readonly curateReject?: string;
+  /** memory curate prepare/review: operator entity merges as `fromId=toId`. */
+  readonly curateMerges?: readonly string[];
+  /** memory curate prepare/review: newline-delimited `fromId=toId` operator merge file. */
+  readonly curateMergeFile?: string;
+  /** memory curate prepare/review: operator merges may join different entity types. */
+  readonly allowCrossType?: boolean;
+  /** memory entities: list folded names shared by more than one entity id. */
+  readonly duplicates?: boolean;
   /** memory forget restore: owner-private backup directory. */
   readonly backupPath?: string;
   /** `mono-agent memory export|import` bundle directory. */
@@ -219,6 +227,8 @@ const CLI_VALUE_FLAGS = new Set([
   "--ids-file",
   "--reason",
   "--plan",
+  "--merge",
+  "--merge-file",
   "--accept",
   "--reject",
   "--backup",
@@ -262,6 +272,8 @@ const CLI_BOOLEAN_FLAGS = new Set([
   "--strict",
   "--include-extras",
   "--allow-pending",
+  "--allow-cross-type",
+  "--duplicates",
   "--accept-derived-association-drift",
   "--loopback",
   "--share-tailnet",
@@ -393,6 +405,10 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let planPath: string | undefined;
   let curateAccept: string | undefined;
   let curateReject: string | undefined;
+  const curateMerges: string[] = [];
+  let curateMergeFile: string | undefined;
+  let allowCrossType = false;
+  let duplicates = false;
   let backupPath: string | undefined;
   let bundlePath: string | undefined;
   let includeExtras = false;
@@ -498,8 +514,10 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         const raw = requireValue(rest, ++i, flag);
         const parsed = Number(raw);
         const maximum = cmd === "continuations" ? 500 : positionals[0] === "curate" ? 8192 : 100;
-        if (!Number.isInteger(parsed) || parsed < 1 || parsed > maximum) {
-          throw new Error(`--limit must be an integer between 1 and ${String(maximum)}.`);
+        // `curate prepare --limit 0` prepares operator merges without a model pass.
+        const minimum = cmd === "memory" && positionals[0] === "curate" ? 0 : 1;
+        if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
+          throw new Error(`--limit must be an integer between ${String(minimum)} and ${String(maximum)}.`);
         }
         limit = parsed;
         break;
@@ -522,6 +540,18 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         break;
       case "--reject":
         curateReject = requireValue(rest, ++i, flag);
+        break;
+      case "--merge":
+        curateMerges.push(requireValue(rest, ++i, flag));
+        break;
+      case "--merge-file":
+        curateMergeFile = requireValue(rest, ++i, flag);
+        break;
+      case "--allow-cross-type":
+        allowCrossType = true;
+        break;
+      case "--duplicates":
+        duplicates = true;
         break;
       case "--backup":
         backupPath = requireValue(rest, ++i, flag);
@@ -879,6 +909,13 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     && (cmd !== "memory" || positionals[0] !== "curate" || positionals[1] !== "review")) {
     throw new Error("--accept and --reject require `mono-agent memory curate review`.");
   }
+  if ((curateMerges.length > 0 || curateMergeFile !== undefined || allowCrossType)
+    && (cmd !== "memory" || positionals[0] !== "curate" || (positionals[1] !== "prepare" && positionals[1] !== "review"))) {
+    throw new Error("--merge, --merge-file and --allow-cross-type require `mono-agent memory curate prepare|review`.");
+  }
+  if (duplicates && (cmd !== "memory" || positionals[0] !== "entities")) {
+    throw new Error("--duplicates requires `mono-agent memory entities`.");
+  }
   assertFlagCommand(model !== undefined, "--model", cmd, positionals[0] === "curate" && positionals[1] === "prepare" ? ["init", "memory"] : ["init"]);
   assertFlagCommand(fallbacks.length > 0, "--fallback", cmd, ["init"]);
   assertFlagCommand(effort !== undefined, "--effort", cmd, ["init"]);
@@ -980,6 +1017,10 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(planPath === undefined ? {} : { planPath }),
     ...(curateAccept === undefined ? {} : { curateAccept }),
     ...(curateReject === undefined ? {} : { curateReject }),
+    ...(curateMerges.length === 0 ? {} : { curateMerges }),
+    ...(curateMergeFile === undefined ? {} : { curateMergeFile }),
+    ...(allowCrossType ? { allowCrossType } : {}),
+    ...(duplicates ? { duplicates } : {}),
     ...(backupPath === undefined ? {} : { backupPath }),
     ...(bundlePath === undefined ? {} : { bundlePath }),
     ...(includeExtras ? { includeExtras } : {}),
