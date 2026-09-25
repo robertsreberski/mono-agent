@@ -17,9 +17,6 @@
   question and lead the next unrelated hit by a clear score margin. First-person
   questions on owner turns read as the owner.
 
-- Keep captured BuJo graph updates bounded to touched memories and entities after
-  startup repair, while preserving full parity checks for recovery and rebuild.
-
 - Write only the touched memories and entities to the BuJo graph index after each
   capture, Remember or migrate decision once startup repair has proven the base,
   instead of replacing the whole projection; the canonical graph is still read in
