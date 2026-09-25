@@ -388,13 +388,22 @@ function planBatchAction(
       // and hide it from recall. Keep the remembered evidence exactly as it is
       // and record the refinement as its own memory (threaded to its
       // neighbour by the shared ADD path).
-      if (isRememberedUpdateTarget(decision, deps)) return planAddWithoutIndex(candidate, similar, deps, threadThreshold);
+      if (isRememberedUpdateTarget(decision, deps)
+        || (decision.text !== undefined && [...decision.text].length > MAX_RECONCILIATION_TEXT_CODE_POINTS)) {
+        return planAddWithoutIndex(candidate, similar, deps, threadThreshold);
+      }
       if (isNewTimeSensitiveSnapshot(candidate, decision, deps)) {
-        return planSupersede(candidate, { ...decision, action: "supersede", text: decision.text ?? candidate.text }, deps);
+        return planBatchAction(candidate, { ...decision, action: "supersede", text: decision.text ?? candidate.text }, similar, deps, threadThreshold);
       }
       return planUpdate(candidate, decision, deps);
-    case "supersede":
+    case "supersede": {
+      const old = deps.db.get(decision.targetId ?? "");
+      if (old?.source.file !== undefined && labelsOf(requireCanonicalTarget(deps.root, old.source.file, old.id))
+        .some((label) => label.kind === "preference" || label.kind === "lesson")) {
+        return planAddWithoutIndex(candidate, similar, deps, threadThreshold);
+      }
       return planSupersede(candidate, decision, deps);
+    }
     default:
       throw new Error("memory-reconcile: unsupported batch action.");
   }

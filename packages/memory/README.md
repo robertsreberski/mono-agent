@@ -135,8 +135,9 @@ visible even when no lexical hit survives their own selection policy.
 
 BuJo retains a private, run-keyed extraction plan across intake retries, so a
 reconciliation failure never asks the model to extract the same turn again.
-If the capture classifier fails, the host writes novel candidates as ADDs and
-skips exact-text duplicates; embedding or durable-write failures still retry.
+Only on the final automatic intake attempt, if the capture classifier fails,
+the host writes novel candidates as ADDs and skips exact-text duplicates;
+embedding or durable-write failures still retry.
 Host-verified owner turns can bind first-person facts to `person:owner` and keep
 agent-wide preferences even without a sender id. Unidentified senders remain
 conversation-scoped, including colon-containing conversation ids (hashed for
