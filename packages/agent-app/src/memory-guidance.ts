@@ -32,12 +32,20 @@ function entityNamesInQuery(query: string): string[] {
   return [...names];
 }
 
-function ageAt(birth: string, date: string): number | undefined {
+/** Reader-facing age on `date`: years, then months under one year and weeks (or days) under one month. */
+export function ageAt(birth: string, date: string): string | undefined {
   const [year, month, day] = birth.split("-").map(Number);
   const [nowYear, nowMonth, nowDay] = date.split("-").map(Number);
   if (year === undefined || month === undefined || day === undefined || nowYear === undefined || nowMonth === undefined || nowDay === undefined) return undefined;
   const age = nowYear - year - (nowMonth < month || (nowMonth === month && nowDay < day) ? 1 : 0);
-  return age >= 0 && age <= 130 ? age : undefined;
+  if (age < 0 || age > 130) return undefined;
+  if (age >= 1) return `age ${age}`;
+  const months = (nowYear - year) * 12 + nowMonth - month - (nowDay < day ? 1 : 0);
+  if (months >= 1) return `age ${months} ${months === 1 ? "month" : "months"}`;
+  const days = Math.round((Date.UTC(nowYear, nowMonth - 1, nowDay) - Date.UTC(year, month - 1, day)) / 86_400_000);
+  if (days < 0) return undefined;
+  const weeks = Math.floor(days / 7);
+  return weeks >= 1 ? `age ${weeks} ${weeks === 1 ? "week" : "weeks"}` : `age ${days} ${days === 1 ? "day" : "days"}`;
 }
 
 type FactLabel = Extract<MemoryLabelHit["label"], { kind: "fact" }>;
@@ -203,7 +211,7 @@ export function formatMemoryBackground(
         const values = [`${factKeyLabel(key)}: ${safeLine(factValueText(value))} (${hit.label.attribution === "user-stated" ? "you said" : "document"}, recorded ${hit.createdAt.slice(0, 10)})`];
         if (key === "birth_date" && value.type === "date") {
           const age = ageAt(value.date, date);
-          if (age !== undefined) values.push(`age ${age}`);
+          if (age !== undefined) values.push(age);
         }
         if (relevant && options.ownerTurn === true) direct.push(`${safeLine(entity.name)} — ${values.join("; ")}`);
         else parts.push(...values);

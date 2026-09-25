@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { MemoryDb } from "@mono-agent/memory/store";
 type MemoryLabelHit = ReturnType<MemoryDb["labelsForEntity"]>[number];
-import { formatMemoryBackground as formatBlock, type LabelRecallStore } from "../memory-guidance.js";
+import { ageAt, formatMemoryBackground as formatBlock, type LabelRecallStore } from "../memory-guidance.js";
 const formatMemoryBackground = (...args: Parameters<typeof formatBlock>) => formatBlock(...args)?.content || undefined;
 import { MemoryRetrievalService, type SharedRecallStore } from "../memory-retrieval.js";
 
@@ -272,5 +272,16 @@ describe("label relevance and agreement", () => {
     expect(result?.facts).toBeUndefined();
     expect(result?.content).toContain("Person card:");
     expect(result?.content).toContain("home city: Lisbon");
+  });
+});
+
+describe("ageAt", () => {
+  it("renders infants in months, weeks or days, never age 0", () => {
+    expect(ageAt("2026-01-10", "2026-09-25")).toBe("age 8 months");
+    expect(ageAt("2026-08-24", "2026-09-25")).toBe("age 1 month");
+    expect(ageAt("2026-09-01", "2026-09-25")).toBe("age 3 weeks");
+    expect(ageAt("2026-09-22", "2026-09-25")).toBe("age 3 days");
+    expect(ageAt("2025-09-25", "2026-09-25")).toBe("age 1");
+    expect(ageAt("2026-09-26", "2026-09-25")).toBeUndefined();
   });
 });

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Person cards show an infant's age in months, weeks or days instead of
+  `age 0`.
+
 - Automatic recall can inject ordinary single-clause memory lines, not only
   canonical `X's Y is Z` facts. The line must cover every content word of the
   question and lead the next unrelated hit by a clear score margin. First-person
