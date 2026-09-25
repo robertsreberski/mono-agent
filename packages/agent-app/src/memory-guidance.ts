@@ -1,4 +1,5 @@
 import type { MemoryLoadOptions } from "@mono-agent/agent-contracts";
+import { createHash } from "node:crypto";
 import type { EntityRecord, MemoryDb } from "@mono-agent/memory/store";
 import type { MemoryRecallHit } from "./memory-recall.js";
 
@@ -94,7 +95,8 @@ const keyText = (key: string): string => key.replace(/^other:/u, "").replace(/[-
 
 export function memoryGuidanceScopes(conversationId?: string, options: MemoryLoadOptions = {}): string[] {
   const scopes = ["agent"];
-  if (conversationId !== undefined && scopeId(conversationId)) scopes.push(`conversation:${conversationId}`);
+  if (conversationId !== undefined && conversationId.length > 0) scopes.push(`conversation:${scopeId(conversationId)
+    ? conversationId : createHash("sha256").update(conversationId).digest("hex").slice(0, 32)}`);
   if (options.senderToken !== undefined && /^[a-f0-9]{32}$/u.test(options.senderToken)) scopes.push(`user:${options.senderToken}`);
   // No project scope: the harness has no host-confirmed active project id.
   return scopes;

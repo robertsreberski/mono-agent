@@ -1,4 +1,5 @@
 import type { MemoryCaptureEvidence, MemoryCaptureSpeakerKind } from "@mono-agent/agent-contracts";
+import { createHash } from "node:crypto";
 import { encodeMemoryLabel, validateMemoryLabel, type MemoryLabel } from "./labels.js";
 
 export interface CaptureLabelContext {
@@ -19,7 +20,10 @@ export function captureLabels(raw: readonly unknown[], text: string, context: Ca
       const label = validateMemoryLabel(candidate);
       let accepted: MemoryLabel | undefined;
       if (label.kind === "fact") {
-        if (factSupported(label, text, context.entityNames)) {
+        if (factSupported(label, text, context.entityNames)
+          || (label.entityId === "person:owner" && context.captureEvidence?.ownerTurn === true
+            && context.captureSpeakerKind === "human-turn" && /\b(?:the user|the owner|i|my)\b/iu.test(text)
+            && valueSupported(label, text))) {
           const userSupported = user !== undefined && valueSupported(label, user);
           const attribution = label.attribution === "unknown" ? "unknown"
             : label.attribution === "user-stated" && userSupported ? "user-stated" : "assistant-inferred";
@@ -60,9 +64,8 @@ export function verifiedRetryCount(evidence: MemoryCaptureEvidence | undefined):
 
 function preferenceScope(proposed: string, user: string, context: CaptureLabelContext): string | undefined {
   const senderToken = context.captureEvidence?.senderToken;
-  if (senderToken === undefined) return safeConversationScope(context.conversationId);
-  if (proposed === "agent" && context.captureEvidence?.ownerTurn === true
-    && /\b(agent|assistant|agente|assistent|asystent)\b/iu.test(normalize(user))) return "agent";
+  if (proposed === "agent" && context.captureEvidence?.ownerTurn === true) return "agent";
+  if (senderToken === undefined) return explicitProject(proposed, user) ?? safeConversationScope(context.conversationId);
   return explicitProject(proposed, user) ?? `user:${senderToken}`;
 }
 function explicitProject(scope: string, user: string): string | undefined {
@@ -70,9 +73,10 @@ function explicitProject(scope: string, user: string): string | undefined {
   const named = scope.slice(8).replaceAll("-", " ");
   return /\b(project|progetto|projekt)\b/iu.test(normalize(user)) && includesPhrase(user, named) ? scope : undefined;
 }
-function safeConversationScope(id: string | undefined): string | undefined {
-  if (id === undefined || id.length > 96 || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u.test(id)) return undefined;
-  return `conversation:${id}`;
+export function safeConversationScope(id: string | undefined): string | undefined {
+  if (id === undefined || id.length === 0) return undefined;
+  if (id.length <= 96 && /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u.test(id)) return `conversation:${id}`;
+  return `conversation:${createHash("sha256").update(id).digest("hex").slice(0, 32)}`;
 }
 function preferenceSupported(text: string, user: string): boolean {
   const contentWords = (value: string): string[] => {

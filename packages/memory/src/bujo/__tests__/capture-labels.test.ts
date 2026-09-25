@@ -1,4 +1,5 @@
 import { mkdtempSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MemoryCaptureEvidence } from "@mono-agent/agent-contracts";
@@ -166,6 +167,31 @@ describe("host-validated capture labels", () => {
       .candidates[0]?.labels).toEqual([{ ...fact, attribution: "assistant-inferred" }]);
     expect((await extract("Morgan was born May 17, 1990.", [{ ...fact, attribution: "unknown" }], context))
       .candidates[0]?.labels).toEqual([{ ...fact, attribution: "unknown" }]);
+  });
+
+  it("binds owner-reported facts to the stable owner entity without trusting unidentified turns", async () => {
+    const ownerFact = { v: 1, kind: "fact", entityId: "person:owner", key: "other:favorite-color",
+      value: { type: "text", text: "blue" }, attribution: "user-stated" };
+    const ownerText = "The user prefers blue for fictional sketches.";
+    const ownerContext = { captureSpeakerKind: "human-turn" as const, conversationId: "acp:fictional",
+      captureEvidence: evidence("I prefer blue for fictional sketches.", { ownerTurn: true }) };
+    expect((await extract(ownerText, [ownerFact], ownerContext)).candidates[0]?.labels).toEqual([ownerFact]);
+    expect((await extract(ownerText, [ownerFact], { ...ownerContext, captureEvidence: evidence("I prefer blue.") }))
+      .candidates[0]?.labels).toBeUndefined();
+  });
+
+  it("keeps host-verified senderless owner agent guidance and hashes colon conversations", async () => {
+    const sentence = "The assistant should keep concise fictional notes.";
+    const context = { captureSpeakerKind: "human-turn" as const, conversationId: "web:fictional-thread",
+      captureEvidence: evidence(sentence, { ownerTurn: true }) };
+    expect((await extract(sentence, [preference], context)).candidates[0]?.labels).toEqual([preference]);
+    expect((await extract("The user prefers concise fictional notes.", [preference], {
+      ...context, captureEvidence: evidence("I prefer concise fictional notes.", { ownerTurn: true }),
+    })).candidates[0]?.labels).toEqual([preference]);
+    const unknown = { ...context, captureEvidence: evidence(sentence) };
+    const expectedScope = `conversation:${createHash("sha256").update("web:fictional-thread").digest("hex").slice(0, 32)}`;
+    expect((await extract(sentence, [preference], unknown)).candidates[0]?.labels)
+      .toEqual([{ ...preference, scope: expectedScope }]);
   });
 
   it("forces unidentified human preferences to conversation scope and drops trigger preferences", async () => {
