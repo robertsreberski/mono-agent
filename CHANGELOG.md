@@ -23,6 +23,10 @@
   full, and recovery and rebuild keep full parity checks. Per-turn capture on a
   large store drops from seconds to well under two seconds of host CPU.
 
+- On the operator's own turns, automatic recall reads a first-person question
+  that names nobody else (`When was I born?`) as a question about the canonical
+  owner id `person:owner` and answers from its labelled facts.
+
 - Memory capture tells the model which id to reuse when several known entities
   share one name: the most-associated id is marked preferred and the others
   point at it. Owner turns offer the canonical `person:owner` id first.
