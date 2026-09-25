@@ -4,6 +4,8 @@
  * the harness (no embedding/network at construction); the direct-store tests inject
  * a fake embeddings provider so no Ollama call is made.
  */
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -164,17 +166,65 @@ describe("createConfiguredMemory — bujo mode", () => {
     await (store as unknown as { close(): Promise<void> }).close();
   });
 
-  it("runs operator curation model calls under the agent root", async () => {
+  it("runs operator curation without acquiring the agent-root lease and disposes sessions", async () => {
     const dir = await tempDir();
     const runtime = createRecordingRuntime();
     const config = bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "curate-memory"),
       llm: { provider: "agent-host", model: "openai-codex:gpt-5.5" } });
-    const llm = await createConfiguredCurationLlm(config, "openai-codex:gpt-5.5", dir, runtime);
-    await llm.complete("Return an empty fictional proposal list.", { label: "curate:propose" }).catch(() => undefined);
-    expect(runtime.calls).toHaveLength(1);
-    expect(runtime.calls[0]!.options.model).toMatchObject({ provider: "openai-codex", model: "gpt-5.5" });
-    expect(runtime.calls[0]!.options.allowedTools).toEqual([]);
+    const { acquireAgentRootOwnership } = await import("../agent-root-coordinator.js");
+    const held = await acquireAgentRootOwnership(dir);
+    let disposed = 0;
+    const operatorRuntime = { ...runtime, disposeAllSessions: async () => { disposed++; } };
+    try {
+      const llm = await createConfiguredCurationLlm(config, "openai-codex:gpt-5.5", dir, operatorRuntime);
+      await llm.complete("Return an empty fictional proposal list.", { label: "curate:propose" });
+      expect(runtime.calls).toHaveLength(1);
+      expect(runtime.calls[0]!.options.model).toMatchObject({ provider: "openai-codex", model: "gpt-5.5" });
+      expect(runtime.calls[0]!.options.allowedTools).toEqual([]);
+      expect(runtime.calls[0]!.options.mcpServers).toEqual({});
+      expect(runtime.calls[0]!.options.maxTurns).toBe(1);
+      expect(disposed).toBe(1);
+    } finally { held.release(); }
   });
+
+  it("disposes operator runtime sessions after a failed model completion", async () => {
+    const dir = await tempDir();
+    const config = bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "curate-memory"),
+      llm: { provider: "agent-host", model: "openai-codex:gpt-5.5" } });
+    let disposed = 0;
+    const llm = await createConfiguredCurationLlm(config, undefined, dir, {
+      run: async () => { throw new Error("fictional transport failure"); },
+      disposeAllSessions: async () => { disposed++; },
+    });
+    await expect(llm.complete("Keep a fictional note.")).rejects.toThrow("fictional transport failure");
+    expect(disposed).toBe(1);
+  });
+
+  it("allows curation while another process owns the agent root", async () => {
+    const dir = await tempDir();
+    const runtime = createRecordingRuntime();
+    const config = bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "curate-memory"),
+      llm: { provider: "agent-host", model: "openai-codex:gpt-5.5" } });
+    const child = spawn(process.execPath, ["--input-type=module", "-e", `
+      import { acquireAgentRootOwnership, releaseAgentRootOwnershipWhenIdle } from ${JSON.stringify(new URL("../../dist/agent-root-coordinator.js", import.meta.url).href)};
+      const lease = await acquireAgentRootOwnership(${JSON.stringify(dir)}, { homeDir: ${JSON.stringify(coordinatorHome.path)} });
+      process.stdout.write('ready\\n');
+      process.stdin.once('data', async () => { await releaseAgentRootOwnershipWhenIdle(lease); process.exit(0); });
+    `], { stdio: ["pipe", "pipe", "pipe"] });
+    try {
+      await Promise.race([once(child.stdout!, "data"), once(child, "exit").then(() => { throw new Error("lease holder exited early"); })]);
+      const llm = await createConfiguredCurationLlm(config, "openai-codex:gpt-5.5", dir, runtime);
+      await llm.complete("Keep a fictional note.");
+      expect(runtime.calls).toHaveLength(1);
+      expect(runtime.calls[0]!.options.allowedTools).toEqual([]);
+      expect(runtime.calls[0]!.options.mcpServers).toEqual({});
+      expect(runtime.calls[0]!.options.maxTurns).toBe(1);
+    } finally {
+      child.stdin?.end("release");
+      if (child.exitCode === null) await Promise.race([once(child, "exit"), new Promise((resolve) => setTimeout(resolve, 2_000))]);
+      if (child.exitCode === null) child.kill();
+    }
+  }, 15_000);
 
   it("forwards strict capture schema to the runtime and consumes only structuredResult", async () => {
     const dir = await tempDir();

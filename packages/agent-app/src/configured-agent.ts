@@ -2106,9 +2106,9 @@ function runtimeHostOptionsForConfig(config: MonoAgentConfig): Parameters<typeof
 export async function createConfiguredCurationLlm(
   config: MonoAgentConfig,
   modelOverride: string | undefined,
-  // The operator CLI runs outside the agent process; model calls still need the
-  // agent root for its request lease, exactly like the in-process memory LLM.
-  agentRoot: string,
+  // Operator completions are tool-less, single-turn calls with no MCP or process
+  // jobs. They must not take the live agent's exclusive root lease.
+  _agentRoot: string,
   memoryRuntime?: MonoRuntimeLike,
 ): Promise<LlmComplete> {
   const bujo = await import("@mono-agent/memory/bujo");
@@ -2120,9 +2120,24 @@ export async function createConfiguredCurationLlm(
     ...(modelOverride.startsWith("ollama:") && configured?.provider === "ollama" && configured.endpoint !== undefined
       ? { endpoint: configured.endpoint } : {}),
   };
-  const llm = configuredMemoryLlm(bujo, config, llmConfig, memoryRuntime, undefined, agentRoot, undefined);
-  if (llm === undefined) throw new Error("memory-curate: memory.llm is not configured");
-  return llm;
+  // Do not route operator-only completion through configuredMemoryLlm: that
+  // path deliberately takes a root lease for in-process memory maintenance.
+  // Curation has no tools, MCP or process jobs; it reads only the prompt passed
+  // by the CLI. Keeping the runtime private also lets us dispose its sessions
+  // after each completion so the CLI does not retain provider handles.
+  if (llmConfig.provider === "ollama") {
+    return bujo.createOllamaLlm({ model: llmConfig.model,
+      ...(llmConfig.endpoint === undefined ? {} : { endpoint: llmConfig.endpoint }) });
+  }
+  const model = parseMonoRuntimeModelReference(llmConfig.model);
+  const runtime = memoryRuntime ?? createMonoRuntime(runtimeHostOptionsForConfig(config));
+  const llm = createAgentHostMemoryLlm({ runtime, model, cwd: config.runtime.workspace,
+    runtimeOptions: mergeStaticRuntimeOptions(runtimeOptionsForLocalProvider(model, config.providers?.local), configRuntimeFlags(config)),
+    ...("timeoutMs" in llmConfig && llmConfig.timeoutMs !== undefined ? { timeoutMs: llmConfig.timeoutMs } : {}) });
+  return { ...llm, async complete(prompt, options) {
+    try { return await llm.complete(prompt, options); }
+    finally { await runtime.disposeAllSessions?.(); }
+  } };
 }
 
 function configuredMemoryLlm(
