@@ -128,6 +128,24 @@ function dailyContent(root: string): string {
 }
 
 describe("reconcile", () => {
+  it("matches an entity's labelled property by key even without an overlapping topic phrase", async () => {
+    const root = newRoot(); const db = openDb(root);
+    const label: MemoryLabel = { v: 1, kind: "fact", entityId: "person:morgan", key: "other:favorite-color",
+      value: { type: "text", text: "blue" }, attribution: "user-stated" };
+    await seed(db, root, "COLOR-OLD", "Morgan's favorite color is blue.", { labels: [label] });
+    db.upsertEntity({ id: "person:morgan", name: "Morgan", type: "person", createdAt: FIXED.toISOString() });
+    db.associateMemory({ memoryId: "COLOR-OLD", entityId: "person:morgan", provenance: "capture", createdAt: FIXED.toISOString() });
+    db.findSimilarMany = async () => [[]];
+    let offered = "";
+    const actions = await reconcileBatch([{ type: "note", text: "Morgan likes green.", salience: 0.8,
+      isInsight: false, entityIds: ["person:morgan"], labels: [{ ...label,
+        value: { type: "text", text: "green" } }] }], makeDeps(db, root, { id: "label-key",
+      complete: async (prompt) => { offered = prompt; return JSON.stringify([{ index: 0, action: "supersede",
+        targetId: "COLOR-OLD", text: "Morgan likes green." }]); },
+    }, { strictModelOutput: true, deferBatchCommit: true, beforeBatchCommit: () => {} }));
+    expect(offered).toContain('"sameEntityTopic":"other:favorite-color"');
+    expect(actions[0]?.kind).toBe("supersede");
+  });
   it("adds on a malformed legacy classifier reply when only an entity anchor was offered", async () => {
     const root = newRoot(); const db = openDb(root);
     await seed(db, root, "OLD", "Morgan lives in Maple Town.");
@@ -147,9 +165,10 @@ describe("reconcile", () => {
     const root = newRoot();
     const db = openDb(root);
     await seed(db, root, "HOME-OLD", "Morgan lives in Maple Town.");
-    await seed(db, root, "OTHER", "Taylor works in Maple Town.");
+    await seed(db, root, "OTHER", "Morgan works at Cedar Company.");
     db.upsertEntity({ id: "person:morgan", name: "Morgan", type: "person", createdAt: FIXED.toISOString() });
     db.associateMemory({ memoryId: "HOME-OLD", entityId: "person:morgan", provenance: "capture", createdAt: FIXED.toISOString() });
+    db.associateMemory({ memoryId: "OTHER", entityId: "person:morgan", provenance: "capture", createdAt: FIXED.toISOString() });
     db.findSimilarMany = async () => [[]];
     let offered = "";
     const result = await reconcileBatch([{ type: "note", text: "Morgan moved to Cedar City.",
