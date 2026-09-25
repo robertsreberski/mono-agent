@@ -8,6 +8,7 @@ import { openMemoryDb, type MemoryRecord } from "../../store/index.js";
 import { MemorySearchError } from "../../search/index.js";
 import { fakeEmbeddings, fakeLlm } from "./helpers.js";
 import { writeCaptureIntent } from "../capture-outbox.js";
+import { retainCapturePlan, listRetainedCapturePlanKeys } from "../capture-plan-cache.js";
 import { createBujoMemoryStore } from "../store.js";
 import { appendBullet, auditFilePath, dailyFilePath, normalizedContentHash } from "../daily.js";
 import { auditCanonicalGraphParity, appendGraphBatch } from "../index.js";
@@ -17,6 +18,21 @@ import { readBujoRuntimeSnapshot } from "../runtime-snapshot.js";
 import type { Bullet } from "../types.js";
 
 describe("BujoMemoryStore — tier derivation", () => {
+  it("retires orphan and resolved extraction plans at startup after interrupted cleanup", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-plan-cleanup-"));
+    const store = createBujoMemoryStore({ root });
+    const admitted = await store.persistCompletedTurn!({ runId: "fictional-resolved", conversationId: "fictional",
+      summary: "A fictional completed turn." });
+    await store.flush();
+    await store.close();
+    const plan = { candidates: [], entities: [], relations: [] };
+    retainCapturePlan(root, admitted.id, "a".repeat(64), plan);
+    retainCapturePlan(root, "b".repeat(64), "b".repeat(64), plan);
+    expect(listRetainedCapturePlanKeys(root)).toHaveLength(2);
+    const reopened = createBujoMemoryStore({ root });
+    expect(listRetainedCapturePlanKeys(root)).toEqual([]);
+    await reopened.close();
+  });
   it("lite tier: no embeddings → tier() === 'lite'; completed-turn summary and recall work", async () => {
     const root = mkdtempSync(join(tmpdir(), "bujo-tier-lite-"));
     const now = new Date("2026-06-16T09:00:00.000Z");

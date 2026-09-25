@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CapturePlan } from "./capture-batch.js";
 
@@ -49,6 +49,14 @@ export function recoveredCapturePlan(root: string, key: string, inputHash: strin
     throw new Error("memory-capture: retained plan is invalid");
   }
   return plan;
+}
+
+export function listRetainedCapturePlanKeys(root: string): readonly string[] {
+  const dir = join(root, DIR);
+  pathFor(root, "a".repeat(64));
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir).flatMap((file) => KEY.test(file.slice(0, -5)) && file.endsWith(".json")
+    ? [file.slice(0, -5)] : []);
 }
 
 export function discardCapturePlan(root: string, key: string): void {

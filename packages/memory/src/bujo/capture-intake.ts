@@ -21,6 +21,7 @@ import type {
 import { assertBoundedMemoryText } from "./text-safety.js";
 import { acquireMemoryWriterLease } from "./generations.js";
 import { findRetainedCaptureIntent } from "./capture-outbox.js";
+import { discardCapturePlan } from "./capture-plan-cache.js";
 import {
   appendCanonicalFile,
   canonicalMemoryRootPath,
@@ -305,11 +306,14 @@ export class CompletedTurnIntakeManager {
       }
       this.cleanupResolved?.(
         materialized.located.filter(({ record }) => record.state === "resolved").map(({ record }) => record.id),
+        materialized.located.filter(({ record }) => record.state !== "resolved").map(({ record }) => record.id),
       );
       this.scheduleWorker();
       this.notifyChange();
     } else if (readIntakeSchemaMarker(this.root) !== undefined) {
       throw new Error("memory-bujo: initialized completed-turn intake layout is missing.");
+    } else {
+      this.cleanupResolved?.([], []);
     }
   }
 
@@ -991,6 +995,9 @@ export function resolveCompletedTurnIntake(
       reason,
     };
     moveRecord(lease.root, source, "resolved", receipt);
+    // A crash here is repaired by startup inventory cleanup; explicit operator
+    // resolution must not leave its extraction plan behind indefinitely.
+    discardCapturePlan(lease.root, id);
     pruneResolved(lease.root, DEFAULT_RESOLVED_RETENTION, id);
     return { resolved: true };
   } finally {
