@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Memory recall scores are clamped to `[0, 1]`; salience and insight
+  tie-breakers can no longer push a score above a perfect match.
+
 - Preference and lesson background is injected only when its memory ranks in
   the top eight hits and leads the median candidate score by `0.1`, instead of
   whenever it clears the absolute `0.35` floor.

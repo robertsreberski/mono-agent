@@ -109,7 +109,7 @@ describe("embedding-first recall ranking", () => {
     try {
       await db.upsertMany([note("fact", "Morgan selected cobalt as the deployment color.")]);
       const [hit] = await db.recall("What deployment color did Morgan select?", { trackAccess: false });
-      expect(hit?.score).toBeCloseTo(1.005, 6);
+      expect(hit?.score).toBe(1); // relevance 1 plus tie-breakers, clamped
     } finally {
       db.close();
     }

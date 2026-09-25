@@ -16,11 +16,16 @@ describe("rrfFuse", () => {
 
 describe("reScore", () => {
   it("uses relevance with salience and insight tie-breakers", () => {
-    const base = { rrfScore: 1, salience: 0.5, isInsight: false };
+    const base = { rrfScore: 0.9, salience: 0.5, isInsight: false };
     const fresh = reScore(base, DEFAULT_WEIGHTS);
     const insight = reScore({ ...base, isInsight: true }, DEFAULT_WEIGHTS);
-    expect(fresh).toBe(1.005);
+    expect(fresh).toBeCloseTo(0.905);
     expect(insight).toBeGreaterThan(fresh);
+  });
+
+  it("clamps final scores to [0, 1]", () => {
+    expect(reScore({ rrfScore: 1, salience: 1, isInsight: true }, DEFAULT_WEIGHTS)).toBe(1);
+    expect(reScore({ rrfScore: -1, salience: 0, isInsight: false }, DEFAULT_WEIGHTS)).toBe(0);
   });
 
   it("returns a finite score from relevance and bounded tie-breakers", () => {
