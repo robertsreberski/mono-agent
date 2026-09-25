@@ -2144,7 +2144,9 @@ export async function createConfiguredCurationLlm(
       }
       throw error;
     }
-    finally { await runtime.disposeAllSessions?.(); }
+    // Session cleanup is best-effort: a close failure cannot replace the model
+    // result or conceal the operator's real authentication/transport failure.
+    finally { await runtime.disposeAllSessions?.().catch(() => undefined); }
   } };
 }
 

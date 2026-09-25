@@ -174,7 +174,7 @@ describe("createConfiguredMemory — bujo mode", () => {
     const { acquireAgentRootOwnership } = await import("../agent-root-coordinator.js");
     const held = await acquireAgentRootOwnership(dir);
     let disposed = 0;
-    const operatorRuntime = { ...runtime, disposeAllSessions: async () => { disposed++; } };
+    const operatorRuntime = { ...runtime, disposeAllSessions: async () => { disposed++; throw new Error("fictional cleanup failure"); } };
     try {
       const llm = await createConfiguredCurationLlm(config, "openai-codex:gpt-5.5", operatorRuntime);
       await llm.complete("Return an empty fictional proposal list.", { label: "curate:propose" });
@@ -194,7 +194,7 @@ describe("createConfiguredMemory — bujo mode", () => {
     let disposed = 0;
     const llm = await createConfiguredCurationLlm(config, undefined, {
       run: async () => { throw new Error("fictional transport failure"); },
-      disposeAllSessions: async () => { disposed++; },
+      disposeAllSessions: async () => { disposed++; throw new Error("fictional cleanup failure"); },
     });
     await expect(llm.complete("Keep a fictional note.")).rejects.toThrow("fictional transport failure");
     expect(disposed).toBe(1);
@@ -211,6 +211,7 @@ describe("createConfiguredMemory — bujo mode", () => {
     ]) {
       const llm = await createConfiguredCurationLlm(config, undefined, {
         run: async () => ({ text: "", ...result }),
+        disposeAllSessions: async () => { throw new Error("fictional cleanup failure"); },
       });
       await expect(llm.complete("Keep a fictional note.")).rejects.toMatchObject({ code: "provider_auth" });
     }
