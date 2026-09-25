@@ -43,6 +43,13 @@ describe("host-validated capture labels", () => {
     const plan = await extract("Morgan's daughter Maple enjoys drawing.", [relation],
       { captureSpeakerKind: "human-turn", captureEvidence: evidence("Morgan's daughter Maple enjoys drawing.") });
     expect(plan.candidates[0]?.labels).toEqual([relation]);
+    expect((await extract("Maple is Morgan's daughter.", [relation], {})).candidates[0]?.labels)
+      .toEqual([{ ...relation, attribution: "assistant-inferred" }]);
+    expect((await extract("Morgan is Maple's daughter.", [relation], {})).candidates[0]?.labels).toBeUndefined();
+    const spouse = { ...relation, value: { ...relation.value, role: "spouse" } };
+    expect((await extract("Morgan's partner Maple visited.", [spouse], {})).candidates[0]?.labels).toBeUndefined();
+    expect((await extract("Morgan's wife Maple visited.", [spouse], {})).candidates[0]?.labels)
+      .toEqual([{ ...spouse, attribution: "assistant-inferred" }]);
     const owner = { v: 1, kind: "fact", entityId: "person:owner", key: "other:favorite-animal",
       value: { type: "text", text: "otter" }, attribution: "user-stated" };
     const ctx = { captureSpeakerKind: "human-turn" as const, captureEvidence: evidence("My favorite animal is otter.", { ownerTurn: true }) };
