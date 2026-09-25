@@ -33,20 +33,6 @@ export function unsafeCredentialContext(text: string): boolean {
   return false;
 }
 
-/** Conservative overlap guard for a candidate that merely repeats an outer-turn instruction.
- * Only pass host-known instruction text; an omitted trigger is not recoverable. */
-export function echoesTurnInstruction(candidate: string, instruction: string): boolean {
-  const tokens = (value: string): Set<string> => new Set(
-    (value.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter((token) => token.length >= 4),
-  );
-  const proposed = tokens(candidate);
-  const original = tokens(instruction);
-  if (proposed.size < 5 || original.size < 5) return false;
-  let shared = 0;
-  for (const token of proposed) if (original.has(token)) shared++;
-  return shared >= 5 && shared / proposed.size >= 0.6;
-}
-
 /** Lone surrogates, C0 controls (tab/LF/CR excluded), DEL, and C1 controls. */
 const UNSAFE_CODE_POINTS = /[\p{Cs}\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u;
 

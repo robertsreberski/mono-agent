@@ -13,13 +13,10 @@ function planJson(texts: readonly string[]): string {
 }
 
 describe("extractCapturePlanStrict intra-turn precision", () => {
-  it("rejects instruction echoes without removing an independently supported outcome", async () => {
-    const turn = "User: Please check the Maple build log, summarize the Maple build log, and send the Maple build log.\nAssistant: The Maple build finished with a passing result.";
-    const plan = await extractCapturePlanStrict(turn, { id: "instruction-echo", complete: async () => planJson([
-      "Check the Maple build log, summarize the Maple build log, and send the Maple build log.",
-      "The Maple build finished with a passing result.",
-    ]) });
-    expect(plan.candidates.map(({ text }) => text)).toEqual(["The Maple build finished with a passing result."]);
+  it("keeps owner-stated facts and standing preferences even when the wording resembles an instruction", async () => {
+    const standing = await extractCapturePlanStrict("User: Never book the Maple room again.\nAssistant: Understood.",
+      { id: "standing-preference", complete: async () => planJson(["The assistant should never book the Maple room again."]) });
+    expect(standing.candidates.map(({ text }) => text)).toEqual(["The assistant should never book the Maple room again."]);
     const factual = await extractCapturePlanStrict("User: Morgan chose the Maple build log as the final artifact.\nAssistant: Noted.",
       { id: "durable-decision", complete: async () => planJson(["Morgan chose the Maple build log as the final artifact."]) });
     expect(factual.candidates).toHaveLength(1);
@@ -31,13 +28,6 @@ describe("extractCapturePlanStrict intra-turn precision", () => {
       return planJson(["Morgan completed the Maple migration on 2026-07-12 after a successful review."]);
     } });
     expect(preserved.candidates).toHaveLength(1);
-    const qualified = await extractCapturePlanStrict(ownerRequest, { id: "mixed-request", complete: async () => planJson([
-      "The assistant was instructed to remember Morgan completed the Maple migration on 2026-07-12 after a successful review.",
-      "Morgan completed the Maple migration on 2026-07-12 after a successful review.",
-    ]) });
-    expect(qualified.candidates.map(({ text }) => text)).toEqual([
-      "Morgan completed the Maple migration on 2026-07-12 after a successful review.",
-    ]);
   });
   it("does not pretend an omitted trigger can be compared with an instruction", async () => {
     const turn = "Scheduled task trigger (not a user message; trigger text omitted):\nAssistant: The Maple build completed on 2026-07-12.";

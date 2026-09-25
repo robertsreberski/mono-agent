@@ -11,7 +11,7 @@ import type { LlmComplete } from "./llm.js";
 import type { MemoryCaptureEvidence, MemoryCaptureSpeakerKind } from "@mono-agent/agent-contracts";
 import { captureLabels, verifiedRetryCount, type CaptureLabelContext } from "./capture-labels.js";
 import { MemoryModelError, MemoryModelOutputError } from "./model-error.js";
-import { echoesTurnInstruction, unsafeCaptureContent } from "./text-safety.js";
+import { unsafeCaptureContent } from "./text-safety.js";
 
 export const MAX_CAPTURE_MEMORIES = 8;
 export const MAX_CAPTURE_ENTITIES = 16;
@@ -269,18 +269,7 @@ export async function extractCapturePlanStrict(
   const entityNames = new Map(entities.map((entity) => [entity.id, entity.name]));
   const labelContext = { ...observationContext, entityNames };
   const parsedCandidates = output.memories.flatMap((value, index) => strictCandidate(value, index, entityIds, labelContext));
-  // The host omits scheduled/webhook trigger bodies. Compare only visible outer
-  // instructions, never fabricated prompt text or an Assistant recap.
-  const outerUser = /^User: ([^\n]*(?:\n(?!Assistant:)[^\n]*)*)/u.exec(text)?.[1] ?? "";
-  const instruction = /^(?:please|could you|can you|would you|do not|don't|always|never|run|check|summarize|write|send|ensure)\b/iu.test(outerUser.trim())
-    ? outerUser : "";
-  // Similar words are not enough: a request can itself contain a durable owner
-  // fact. Only an instruction-shaped candidate can be rejected as its echo.
-  const instructionShaped = (value: string): boolean =>
-    /^(?:please|could you|can you|would you|do not|don't|always|never|run|check|summarize|write|send|ensure)\b/iu.test(value)
-    || /\b(?:asked|instructed|requested|told) (?:the )?(?:assistant|agent) to\b|\b(?:assistant|agent) (?:was instructed to|should|must|needs to)\b/iu.test(value);
   const safeCandidates = parsedCandidates.filter(({ candidate }) => !unsafeCaptureContent(candidate.text, text)
-    && !(instruction && instructionShaped(candidate.text) && echoesTurnInstruction(candidate.text, instruction))
     && !(/\?\s*$/u.test(candidate.text)
       || /^\s*(?:please|can you|could you|would you)\b/iu.test(candidate.text)));
   const unsafeIds = new Set(entities.filter((entity) => unsafeCaptureContent(entity.name)

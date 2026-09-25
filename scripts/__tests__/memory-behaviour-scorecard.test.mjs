@@ -11,6 +11,7 @@ describe("fictional completed-turn memory behaviour scorecard", () => {
       credentialStored: true, pendingTurns: true, rebuildParity: true });
     expect(result.superseded).toBe(2);
     expect(result.categories["trigger-outcome"]).toBe(1);
+    expect(result.triggerOutcomeStored).toBe(true);
     expect(result.activeRecords).toBeGreaterThanOrEqual(5);
     expect(result.labelKinds.fact).toBeGreaterThanOrEqual(3);
     expect(result.labelKinds.preference).toBeGreaterThanOrEqual(1);

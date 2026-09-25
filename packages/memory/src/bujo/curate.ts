@@ -118,6 +118,7 @@ function hash(text: string): string { return createHash("sha256").update(text).d
 /** Canonical-only, read-only, identity-stable inventory; no outside context is consulted. */
 export function inspectCurateSource(root: string, limit = 120, select = DEFAULT_CURATE_SELECT): CurateSnapshot {
   const buckets = parseCurateSelect(select);
+  const oldestOnly = buckets.length === 1 && buckets[0] === "oldest";
   if (!Number.isInteger(limit) || limit < 1 || limit > MAX_LINES) throw new Error("memory-curate: invalid limit");
   const fingerprint = readBujoCanonicalSourceFingerprint(root);
   const names = listCanonicalFileNames(root, "daily", { allowMissing: true, include: (name) => /^\d{4}-\d{2}-\d{2}\.md$/u.test(name) });
@@ -140,6 +141,7 @@ export function inspectCurateSource(root: string, limit = 120, select = DEFAULT_
       if (bullet.status === "dropped" || bullet.status === "invalidated") { skipped.terminal++; continue; }
       if (ids.has(bullet.id)) throw new Error("memory-curate: duplicate canonical id");
       ids.add(bullet.id);
+      if (oldestOnly && lines.length >= limit) continue;
       if (lines.length >= MAX_INVENTORY) throw new Error("memory-curate: inventory exceeds bound");
       lines.push({ id: bullet.id, file, line: entry.lineNumber, text: bullet.text,
         textHash: hash(bullet.text), createdAt: bullet.createdAt, status: bullet.status, refs: bullet.refs });
@@ -181,7 +183,7 @@ function selectCurateLines(inventory: readonly CurateLine[], limit: number, mix:
     recent: byDate,
     repeated: byDate.filter((line) => repeated.has(line.id)),
     risky: byDate.filter((line) => unsafeCredentialContext(line.text)
-      || /\b(?:please|you must|always|never|do not|run|check|ensure|remember to)\b/iu.test(line.text)),
+      || /^\s*(?:please|you must|always|never|do not|run|check|ensure|remember to)\b|\b(?:assistant|agent) (?:should|must|needs to)\b/iu.test(line.text)),
     oldest: inventory,
   };
   const weights = mix.length === 4 ? { recent: 4, repeated: 2.5, risky: 2.5, oldest: 1 }
@@ -205,6 +207,10 @@ function selectCurateLines(inventory: readonly CurateLine[], limit: number, mix:
     for (const bucket of mix) append(bucket, selected[bucket] + 1);
     if (lines.length === before) break;
   }
+  // Keep the sampled buckets, but present them in canonical source order so
+  // adjacent prompt hints and paired repetitions retain their original context.
+  const position = new Map(inventory.map((line, index) => [line.id, index]));
+  lines.sort((a, b) => position.get(a.id)! - position.get(b.id)!);
   return { lines, selected };
 }
 

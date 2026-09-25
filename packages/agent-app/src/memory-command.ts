@@ -3028,7 +3028,8 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       const ownerAssociations = ownerScan?.associations ?? [];
       // `--limit 0` prepares only the operator merges / owner backfill: no line is sent to a model.
       const modelPass = input.limit !== 0;
-      const inspected = bujo.inspectCurateSource(root, modelPass ? input.limit ?? 120 : 1, input.curateSelect);
+      const inspected = bujo.inspectCurateSource(root, modelPass ? input.limit ?? 120 : 1,
+        modelPass ? input.curateSelect : "oldest");
       const snapshot = modelPass ? inspected : { ...inspected, lines: [] };
       bujo.previewCurateMutations(root, [], undefined, operatorMerges, ownerAssociations);
       if (Buffer.byteLength(JSON.stringify(snapshot.lines), "utf8") > MAX_CURATE_PLAN_BYTES / 2) {

@@ -54,6 +54,8 @@ export function scoreBehaviour({ records, labels, questions, pending, before, af
   const ownerBindingOfOthers = labels.filter((row) => row.active && row.label.kind === "fact"
     && row.label.entityId === "person:owner" && /(?:colleague Taylor|Morgan's home)/iu.test(records.find((r) => r.id === row.memoryId)?.text ?? "")).length;
   const credentialStored = records.filter((r) => /fake-secret-123/iu.test(r.text)).length;
+  const triggerText = TURNS.find((turn) => turn.kind === "trigger-outcome")?.memories[0]?.text;
+  const triggerOutcomeStored = triggerText !== undefined && active.some((row) => row.text === triggerText);
   const falseAutomaticRecall = questions.reduce((sum, q) => sum + q.falseHits, 0);
   const parity = JSON.stringify(before) === JSON.stringify(after);
   const gates = {
@@ -70,7 +72,7 @@ export function scoreBehaviour({ records, labels, questions, pending, before, af
     superseded: records.filter((row) => row.status === "invalidated").length,
     categories: Object.fromEntries([...new Set(TURNS.map((t) => t.kind))].map((kind) => [kind, 1])),
     cpuMs: { total: cpuMs.reduce((a, b) => a + b, 0), perTurn: cpuMs },
-    falseAutomaticRecall, ownerBindingOfOthers, credentialStored, pendingTurns: pending,
+    falseAutomaticRecall, ownerBindingOfOthers, credentialStored, triggerOutcomeStored, pendingTurns: pending,
     rebuildParity: parity, gates, passed: Object.values(gates).every(Boolean) };
 }
 
