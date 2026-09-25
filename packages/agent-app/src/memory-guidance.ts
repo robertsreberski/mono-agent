@@ -54,9 +54,7 @@ export function factValueText(value: FactLabel["value"]): string {
 }
 
 // Question words that ask about a birth date without naming the key.
-const KEY_ALIASES: Readonly<Record<string, readonly string[]>> = {
-  birth_date: ["birth", "birthday", "born", "age", "old", "birthdate"],
-};
+const BIRTH_ALIASES = ["birth", "birthday", "born", "age", "old", "birthdate"];
 const QUESTION_FILLER = new Set([
   "a", "about", "an", "and", "are", "as", "at", "be", "can", "could", "did", "do", "does", "for", "from",
   "give", "has", "have", "he", "her", "his", "how", "i", "in", "is", "it", "know", "me", "my", "of", "on",
@@ -77,12 +75,19 @@ function questionConcepts(query: string, names: readonly string[]): Set<string> 
   return out;
 }
 
-/** A key answers the question when one of its words (or a key alias) is asked about. */
-function keyRelevant(key: string, concepts: ReadonlySet<string>): boolean {
-  const words = [...fold(key.replace(/^other:/u, "")).split(/[^\p{L}\p{N}]+/u), ...(KEY_ALIASES[key] ?? [])]
-    .filter((word) => word.length > 1 && word !== "date");
-  return words.some((word) => concepts.has(stem(word)));
+/**
+ * A key answers the question only when the question names the whole property:
+ * every content word of the key (`favorite` and `color` for
+ * `other:favorite_color`). Birth dates also answer their question-word aliases.
+ */
+function keyRelevant(key: string, concepts: ReadonlySet<string>, query: string): boolean {
+  if (key === "birth_date") return BIRTH_ALIASES.some((word) => concepts.has(stem(word)));
+  const words = fold(key.replace(/^other:/u, "")).split(/[^\p{L}\p{N}]+/u)
+    .filter((word) => word.length > 1 && !QUESTION_FILLER.has(word));
+  return words.length > 0 && words.every((word) => concepts.has(stem(word)));
 }
+
+const keyText = (key: string): string => key.replace(/^other:/u, "").replace(/[-_]+/gu, " ");
 
 export function memoryGuidanceScopes(conversationId?: string, options: MemoryLoadOptions = {}): string[] {
   const scopes = ["agent"];
@@ -121,7 +126,7 @@ export function formatMemoryBackground(
 ): {
   readonly content: string;
   readonly truncated: boolean;
-  /** Current, user-stated/document fact labels whose key the question asks about. */
+  /** Owner turns only: current fact labels whose key the question asks about. */
   readonly facts?: readonly string[];
 } | undefined {
   if (store.guidanceForScope === undefined || store.labelsForEntity === undefined) return undefined;
@@ -151,9 +156,11 @@ export function formatMemoryBackground(
     && entities.some((other) => other.id !== entity.id && fold(other.name) === fold(entity.name)))
     .map((entity) => entity.id));
   // Relevance: a question that asks something beyond the name gets only the
-  // keys it asks about, as direct facts; unrelated keys are never injected. A
+  // keys it asks about; unrelated keys are never injected. On an owner turn they
+  // answer directly; elsewhere (group, trigger, peer) they stay background. A
   // bare mention (`Morgan`, `Tell me about Morgan`) keeps the whole background
-  // card. Conflicting values stay background and prompt a question.
+  // card. Conflicting values, and labels that disagree with the records the
+  // direct-fact gate selected, stay background and prompt a question.
   const concepts = questionConcepts(query, entities.map((entity) => entity.name));
   const bare = concepts.size === 0;
   const cards: string[] = [];
@@ -163,12 +170,12 @@ export function formatMemoryBackground(
       && (hit.label.attribution === "user-stated" || hit.label.attribution === "document"));
     const parts: string[] = [];
     for (const key of [...new Set(facts.map((hit) => hit.label.kind === "fact" ? hit.label.key : ""))]) {
-      const relevant = keyRelevant(key, concepts);
+      const relevant = keyRelevant(key, concepts, query);
       if (!bare && !relevant) continue;
       const candidates = facts.filter((hit) => hit.label.kind === "fact" && hit.label.key === key && hit.currentAt);
       if (candidates.length === 0) continue;
       if (candidates.some((hit) => hit.conflict)) {
-        parts.push(`${key.replace(/^other:/u, "").replace(/[-_]+/gu, " ")}: conflicting values — ask`);
+        parts.push(`${keyText(key)}: conflicting values — ask`);
         continue;
       }
       for (const hit of candidates) {

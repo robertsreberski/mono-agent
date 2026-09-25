@@ -212,3 +212,18 @@ describe("explicit fact sheet rendering", () => {
     expect(sections?.factSheet?.[0]).toMatchObject({ key: "other:home-city", value: { type: "text", text: "Lisbon" } });
   });
 });
+
+describe("label relevance and agreement", () => {
+  const owner = { ...options, ownerTurn: true as const };
+  const labelled = (key: string, text: string, id: string): MemoryLabelHit => ({
+    ...fact(id, "1990-05-17"), text: `Morgan's ${key} is ${text}.`,
+    label: { v: 1, kind: "fact", entityId: "person:morgan", key, value: { type: "text", text }, attribution: "user-stated" },
+  });
+
+  it("requires the question to name every word of the key", () => {
+    const person = store([], [labelled("other:favorite_color", "teal", "color")]);
+    expect(formatBlock(person, "What color did Morgan choose for the launch?", "conv", owner, [])).toBeUndefined();
+    expect(formatBlock(person, "What is Morgan's favorite color?", "conv", owner, [])?.facts)
+      .toEqual(["Morgan — favorite color: teal (you said, recorded 2026-09-06)"]);
+  });
+});
