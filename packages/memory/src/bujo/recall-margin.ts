@@ -9,7 +9,8 @@
  * 1. The question is a short direct question (`who`/`what`/`when`/`where`/
  *    `which`/`how old|much|many`), not about the current conversation.
  * 2. The top-ranked hit is one short clause: a single sentence of at most
- *    `CLEAR_MARGIN_MAX_WORDS` words, with no negation, unknown, hedge, request
+ *    `CLEAR_MARGIN_MAX_WORDS` words, no subordinate clause and `and` only inside
+ *    a comma list, with no negation, unknown, hedge, request
  *    or quotation language. An owner-report envelope (`The user said ...`) is
  *    unwrapped first.
  * 3. The line covers the question: it contains every content word of the
@@ -72,6 +73,11 @@ const UNSAFE = /\b(?:nor|unsure|might|wants?\s+to\s+know|wondered|question|wheth
 
 const OTHER_POSSESSOR = /\b\p{Lu}[\p{L}\p{M}-]*['’]s\b/u;
 
+// One clause: no subordinate or contrastive clause, and `and` only inside a
+// comma list (`Mondays, Tuesdays and Fridays`), never joining two statements.
+const SUBORDINATE = /\b(?:but|while|whereas|although|because|unless|since|which|who|whom|whose|after|before|so|then)\b|:(?!\d)/iu;
+const joinsClauses = (line: string): boolean => SUBORDINATE.test(line) || (/\band\b/iu.test(line) && !line.includes(","));
+
 const fold = (text: string): string => text.normalize("NFKD").replace(/\p{M}/gu, "").toLocaleLowerCase("und");
 const words = (text: string): string[] => fold(text).replace(/['’]s\b/gu, "").match(/[\p{L}\p{N}]+/gu) ?? [];
 
@@ -119,7 +125,7 @@ function evidenceLine(text: string): string | undefined {
   if (line.length === 0 || /[.!;]\s+\S/u.test(line) || /[\n\r]/u.test(line)) return undefined;
   // `Assistant` inside a proper name (`Home Assistant`) is not the assistant speaking.
   const hedgeText = line.replace(/(?<=\S\s+)Assistant\b/gu, "");
-  if (UNSAFE.test(line) || NEGATION_OR_UNKNOWN.test(line) || REPORTED_OR_DITRANSITIVE.test(line)
+  if (UNSAFE.test(line) || joinsClauses(line) || NEGATION_OR_UNKNOWN.test(line) || REPORTED_OR_DITRANSITIVE.test(line)
     || ATTRIBUTED_REPORT_EXCLUSION.test(hedgeText) || line.split(/\s+/u).length > CLEAR_MARGIN_MAX_WORDS) return undefined;
   return line;
 }

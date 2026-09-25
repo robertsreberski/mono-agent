@@ -38,7 +38,7 @@ describe("clear-margin automatic recall", () => {
 
   it("injects close lines that also answer the question", () => {
     const top = hit("Maple is on omeprazole for reflux.", 0.95);
-    const also = hit("Maple has a reflux history and is on omeprazole.", 0.93);
+    const also = hit("Maple takes omeprazole daily for reflux.", 0.93);
     expect(selectClearMarginHit("Is Maple on omeprazole for reflux?", [top, also, unrelated])).toEqual([]);
     expect(selectClearMarginHit("What is Maple on for reflux?", [top, also, unrelated])).toEqual([top, also]);
   });
@@ -51,6 +51,8 @@ describe("clear-margin automatic recall", () => {
     ["Where does Morgan work?", "The assistant said Morgan works at Initech."],
     ["Where does Morgan work?", "Morgan works at Initech. Maple works at Globex."],
     ["When was Morgan born?", "Morgan was born in spring."],
+    ["What color is Morgans car?", "Morgan selected cobalt as the deployment color and drives a hatchback car."],
+    ["Where does Morgan work?", "Morgan works at Initech because Maple recommended it."],
     ["What did you say last message?", "Morgan said hello in the last message."],
   ])("rejects lines that do not answer: %s / %s", (query, text) => {
     expect(selectAutomaticRecallHits([hit(text, 0.95), unrelated], { query, ownerTurn: true })).toEqual([]);
