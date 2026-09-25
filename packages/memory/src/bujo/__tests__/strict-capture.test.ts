@@ -8,6 +8,7 @@ import { openMemoryDb } from "../../store/index.js";
 import { extractCapturePlanStrict, MAX_CAPTURE_MEMORIES, STRICT_CAPTURE_OUTPUT_SCHEMA } from "../capture-batch.js";
 import { captureTurnStrict } from "../capture.js";
 import { appendBullet } from "../daily.js";
+import { clampCaptureText } from "../distill.js";
 import { MAX_MODEL_JSON_CHARS } from "../json.js";
 import { reconcileBatch as reconcileBatchImpl } from "../reconcile.js";
 import { assertCanonicalGraphRepairBaseParity } from "../rebuild.js";
@@ -143,8 +144,8 @@ describe("strict completed-turn extraction", () => {
     const second = `${shared}Tuesday including onboarding tutorials walkthroughs checklists templates snippets examples samples `
       + "demos sandboxes playgrounds workshops seminars webinars podcasts newsletters bulletins digests "
       + "summaries briefs memos minutes agendas transcripts recordings archives forums.";
-    const clamped = [...first].slice(0, 160).join("").trim();
-    expect([...second].slice(0, 160).join("").trim()).toBe(clamped);
+    const clamped = clampCaptureText(first);
+    expect(clampCaptureText(second)).toBe(clamped);
     const sibling = "Morgan prefers strict durable capture.";
 
     const plan = await extractCapturePlanStrict("completed turn", {
@@ -344,6 +345,44 @@ describe("strict completed-turn extraction", () => {
     expect(called).toBe(false);
   });
 
+  it("clamps multi-fact text at a complete sentence instead of mid-phrase", async () => {
+    const first = "Morgan chose blue for the fictional project.";
+    const second = `Morgan also chose ${"a".repeat(160)} for the other project.`;
+    const plan = await extractCapturePlanStrict("completed turn", { id: "sentence-boundary",
+      complete: async () => planWithMemoryTexts([`${first} ${second}`]),
+    });
+    expect(plan.candidates[0]?.text).toBe(first);
+  });
+
+  it("retains extraction across reconcile retries and falls back to a deduplicated ADD", async () => {
+    const root = mkdtempSync(join(tmpdir(), "capture-plan-retry-"));
+    const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(64), dim: 64 });
+    let extractions = 0;
+    let reconciles = 0;
+    let failEmbedding = true;
+    const realFind = db.findSimilarMany.bind(db);
+    db.findSimilarMany = async (...args) => {
+      if (failEmbedding) throw new Error("fictional embedding outage");
+      return await realFind(...args);
+    };
+    const llm = { id: "retry", complete: async (_prompt: string, opts?: LlmCompleteOptions) => {
+      if (opts?.label === "capture:extract") { extractions++; return JSON.stringify(validPlan); }
+      reconciles++;
+      return "malformed reply";
+    } };
+    const deps = { db, root, llm, nextId: () => "RETRY-CAPTURE", now: () => FIXED,
+      captureRetentionKey: "a".repeat(64), canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity };
+    try {
+      await expect(captureTurnStrict("User: Morgan prefers strict durable capture.", deps))
+        .rejects.toThrow(/embedding/u);
+      failEmbedding = false;
+      expect((await captureTurnStrict("User: Morgan prefers strict durable capture.", deps)).actions)
+        .toEqual([{ kind: "add", id: "RETRY-CAPTURE" }]);
+      expect(extractions).toBe(1);
+      expect(reconciles).toBe(0);
+    } finally { db.close(); }
+  });
+
   it("samples the strict capture clock once and reuses it as the extraction anchor", async () => {
     const root = mkdtempSync(join(tmpdir(), "strict-capture-temporal-"));
     const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(64), dim: 64 });
@@ -528,6 +567,20 @@ describe("strict completed-turn reconciliation", () => {
     }
   });
 
+  it("preserves novel extracted candidates when capture classification fails", async () => {
+    const fixture = await reconcileFixture();
+    try {
+      const actions = await reconcileBatch(fixture.candidates, {
+        ...fixture.deps,
+        strictModelOutput: true,
+        fallbackOnClassifierFailure: true,
+        llm: { id: "offline", complete: async () => { throw new Error("fictional model failure"); } },
+      });
+      expect(actions.map((action) => action?.kind)).toEqual(["add", "add"]);
+      expect(fixture.db.count()).toBe(3);
+    } finally { fixture.db.close(); }
+  });
+
   it("states the exact per-action object contract that strict reconciliation enforces", async () => {
     const fixture = await reconcileFixture();
     let reconcilePrompt = "";
@@ -557,7 +610,7 @@ describe("strict completed-turn reconciliation", () => {
       expect(reconcilePrompt).toContain("targetId is REQUIRED");
       expect(reconcilePrompt).toContain("selected by at most one decision");
       expect(reconcilePrompt).toContain("complete, non-empty replacement text");
-      expect(reconcilePrompt).toContain("at most 280 Unicode code points");
+      expect(reconcilePrompt).toContain("at most 160 Unicode code points");
       expect(reconcilePrompt).toContain("Do not emit duplicate object keys");
       expect(reconcilePrompt).toContain("Every object contains exactly the keys shown");
       expect(reconcilePrompt).toContain("resolved calendar intervals, observation anchors, uncertainty, negation");
@@ -581,7 +634,7 @@ describe("strict completed-turn reconciliation", () => {
       const schemaText = JSON.stringify(options?.outputSchema);
       expect(schemaText).toContain('"const":"noop"');
       expect(schemaText).toContain('"enum":["TARGET"]');
-      expect(schemaText).toContain('"maxLength":280');
+      expect(schemaText).toContain('"maxLength":160');
     } finally {
       fixture.db.close();
     }

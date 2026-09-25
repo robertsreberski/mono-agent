@@ -38,6 +38,7 @@ import { repairLegacyCaptureClockDriftAtStartup } from "./capture-clock-repair.j
 import type { LlmComplete } from "./llm.js";
 import { adoptEmbeddingIndexIdentity, type EmbeddingProvider } from "../search/index.js";
 import { captureTurnStrict } from "./capture.js";
+import { discardCapturePlan } from "./capture-plan-cache.js";
 import {
   findRetainedCaptureIntent,
   listRetainedCaptureIntentKeys,
@@ -1063,11 +1064,11 @@ export class BujoMemoryStore implements MemoryStore {
         db: this.db,
         tier: this._tier,
         canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
-      }, async () => { removeRetainedCaptureIntent(this.root, id); }),
+      }, async () => { removeRetainedCaptureIntent(this.root, id); discardCapturePlan(this.root, id); }),
       cleanupResolved: (ids) => {
         const resolved = new Set(ids);
         for (const key of listRetainedCaptureIntentKeys(this.root)) {
-          if (resolved.has(key)) removeRetainedCaptureIntent(this.root, key);
+          if (resolved.has(key)) { removeRetainedCaptureIntent(this.root, key); discardCapturePlan(this.root, key); }
         }
       },
       onChange: (urgency) => {

@@ -52,6 +52,8 @@ export interface ReconcileDeps {
   readonly deferBatchCommit?: boolean;
   /** Strong completed-turn mode: every model decision is exact and all-or-nothing. */
   readonly strictModelOutput?: boolean;
+  /** Capture intake only: preserve extracted candidates if classifier cannot settle. */
+  readonly fallbackOnClassifierFailure?: boolean;
   /** Run-owned capture plans remain replayable until durable intake resolution. */
   readonly captureRetentionKey?: string;
   readonly canonicalGraphRepairGuard?: CanonicalGraphRepairGuard;
@@ -174,9 +176,23 @@ async function reconcileBatchUnlocked(
     return similar.length > 0 && (similar[0]?.distance ?? Infinity) <= dupThreshold ? [index] : [];
   });
   const reconcileIndexSet = new Set(reconcileIndexes);
-  const decisions = reconcileIndexes.length === 0
-    ? new Map<number, Classification>()
-    : await classifyBatch(candidates, neighbours, reconcileIndexes, deps);
+  let decisions: Map<number, Classification>;
+  try {
+    decisions = reconcileIndexes.length === 0
+      ? new Map<number, Classification>()
+      : await classifyBatch(candidates, neighbours, reconcileIndexes, deps);
+  } catch (error) {
+    deps.abortSignal?.throwIfAborted();
+    if (deps.fallbackOnClassifierFailure !== true || !(error instanceof MemoryModelOutputError
+      || (error instanceof MemoryModelError && error.kind === "llm"))) throw error;
+    // Extraction already succeeded. A failed classifier must not erase it;
+    // avoid exact duplicate lines while preserving every novel candidate.
+    decisions = new Map(reconcileIndexes.map((index) => {
+      const duplicate = (neighbours[index] ?? []).find((hit) => hit.record.text === candidates[index]?.text);
+      return [index, duplicate === undefined ? { action: "add" as const }
+        : { action: "noop" as const, targetId: duplicate.record.id }];
+    }));
+  }
   rejectConflictingTargets(decisions, deps.strictModelOutput === true);
   deps.abortSignal?.throwIfAborted();
   const plans: Array<BatchActionPlan | undefined> = candidates.map(() => undefined);
@@ -368,8 +384,9 @@ function planBatchAction(
       // and hide it from recall. Keep the remembered evidence exactly as it is
       // and record the refinement as its own memory (threaded to its
       // neighbour by the shared ADD path).
-      if (isRememberedUpdateTarget(decision, deps) || isNewTimeSensitiveSnapshot(candidate, decision, deps)) {
-        return planAddWithoutIndex(candidate, similar, deps, threadThreshold);
+      if (isRememberedUpdateTarget(decision, deps)) return planAddWithoutIndex(candidate, similar, deps, threadThreshold);
+      if (isNewTimeSensitiveSnapshot(candidate, decision, deps)) {
+        return planSupersede(candidate, { ...decision, action: "supersede", text: candidate.text }, deps);
       }
       return planUpdate(candidate, decision, deps);
     case "supersede":
@@ -458,6 +475,12 @@ const CURRENT_SNAPSHOT = /\b(?:currently|as of today|at present|attualmente|al m
 function isNewTimeSensitiveSnapshot(candidate: CandidateMemory, decision: Classification, deps: ReconcileDeps): boolean {
   const old = deps.db.get(decision.targetId ?? "");
   if (old === undefined || old.text === candidate.text) return false;
+  const dates = (text: string): string[] => [...text.matchAll(/\b\d{4}-\d{2}-\d{2}\b/gu)].map(([date]) => date);
+  const oldDates = dates(old.text);
+  const newDates = dates(candidate.text);
+  if (oldDates.length > 0 && newDates.length > 0 && newDates[0]! > oldDates[0]!) return true;
+  const negated = (text: string): boolean => /\b(?:not|no longer|never|doesn't|isn't|stopped|ceased)\b/iu.test(text);
+  if (negated(old.text) !== negated(candidate.text)) return true;
   return AGE_SNAPSHOT.test(candidate.text) || CURRENT_SNAPSHOT.test(candidate.text);
 }
 

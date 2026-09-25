@@ -1,4 +1,5 @@
 import { extractCapturePlanStrict } from "./capture-batch.js";
+import { capturePlanInputHash, recoveredCapturePlan, retainCapturePlan } from "./capture-plan-cache.js";
 import { captureLabels } from "./capture-labels.js";
 import { labelsOf } from "./labels.js";
 import {
@@ -50,8 +51,15 @@ async function captureTurnUnlocked(
   // uses that same instant for the observation anchor and capture metadata.
   // Durable intake retries replace this clock with immutable admittedAt.
   const knownEntities = knownEntityHints(deps.root, text);
+  if (deps.captureSpeakerKind === "human-turn" && deps.captureEvidence?.ownerTurn === true
+    && !knownEntities.some((entity) => entity.id === "person:owner")) {
+    knownEntities.push({ id: "person:owner", name: "Owner", type: "person" });
+  }
   const observedAt = deps.now();
-  const extraction = await extractCapturePlanStrict(text, deps.llm, deps.abortSignal, knownEntities, {
+  const key = deps.captureRetentionKey;
+  const inputHash = capturePlanInputHash(text);
+  const extraction = (key === undefined ? undefined : recoveredCapturePlan(deps.root, key, inputHash))
+    ?? await extractCapturePlanStrict(text, deps.llm, deps.abortSignal, knownEntities, {
     observedAt: observedAt.toISOString(),
     ...(deps.captureSpeakerKind === undefined ? {} : { captureSpeakerKind: deps.captureSpeakerKind }),
     ...(deps.captureEvidence === undefined ? {} : { captureEvidence: deps.captureEvidence }),
@@ -65,6 +73,7 @@ async function captureTurnUnlocked(
     ...extraction,
     candidates: extraction.candidates.filter((candidate) => candidate.labels?.some((label) => only.includes(label.kind))),
   };
+  if (key !== undefined) retainCapturePlan(deps.root, key, inputHash, selected);
   const createdAt = observedAt.toISOString();
   const labelContext = { ...deps, entityNames: new Map(extraction.entities.map((entity) => [entity.id, entity.name])) };
   let intentHandle: CaptureIntentHandle | undefined;
@@ -80,6 +89,7 @@ async function captureTurnUnlocked(
     // cannot observe a later wall clock or reinterpret relative-time anchors.
     now: () => observedAt,
     strictModelOutput: true,
+    fallbackOnClassifierFailure: true,
     labelsForAction: (_action, candidate, _previous, finalText) => candidate.labels === undefined ? undefined
       : captureLabels(candidate.labels, finalText ?? candidate.text, labelContext),
     // Once the intent exists it is the single commit owner. Writing the same
