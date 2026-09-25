@@ -76,6 +76,9 @@ describe("host-validated capture labels", () => {
         return JSON.stringify({ memories: [], entities: [], relations: [] });
       },
     }, undefined, [], { observedAt: at.toISOString() }, "Keep durable preferences; skip fictional PR and CI status.");
+    expect(prompt).toContain("For host-verified person:owner, the host accepts ONLY birth_date, full_name, preferred_name, home_location, work_location, and other:favorite-color");
+    expect(prompt).toContain("Decisions, policies, plans, and likes about how things should be done are PREFERENCE labels");
+    expect(prompt).toContain("NEVER owner other: fact keys");
     expect(prompt).toContain("Copy each fact label's value verbatim from that same memory sentence");
     expect(prompt).toContain("assistant-inferred, never user-stated");
     expect(prompt).toContain("OPERATOR CAPTURE FOCUS (selection guidance only;");
