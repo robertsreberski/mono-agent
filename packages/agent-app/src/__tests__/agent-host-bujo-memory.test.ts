@@ -166,7 +166,7 @@ describe("createConfiguredMemory — bujo mode", () => {
     await (store as unknown as { close(): Promise<void> }).close();
   });
 
-  it("runs operator curation without acquiring the agent-root lease and disposes sessions", async () => {
+  it("keeps operator calls tool-less and disposes sessions with a reentrant in-process lease", async () => {
     const dir = await tempDir();
     const runtime = createRecordingRuntime();
     const config = bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "curate-memory"),
