@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { MemoryCompletedTurn } from "@mono-agent/agent-contracts";
+import { retainCapturePlan, listRetainedCapturePlanKeys } from "../capture-plan-cache.js";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -179,6 +180,38 @@ describe("completed-turn durable intake", () => {
     expect(lstatSync(join(memoryRoot, ".capture-intake-v1")).mode & 0o777).toBe(0o600);
     expect(inspectCompletedTurnIntake(memoryRoot, FIXED).snapshot).toMatchObject({ pending: 1, due: 1 });
     intake.abortForShutdown(false);
+  });
+
+  it("removes an orphaned extraction when an operator resolves pending intake", () => {
+    const memoryRoot = root();
+    const intake = manager(memoryRoot, { capture: async () => { throw new Error("fictional unavailable classifier"); } });
+    const admitted = intake.admit(turn({ runId: "fictional-operator-resolve" }));
+    retainCapturePlan(memoryRoot, admitted.id, "a".repeat(64), { candidates: [], entities: [], relations: [] });
+    intake.abortForShutdown(false);
+    intake.finishShutdown();
+    expect(resolveCompletedTurnIntake(memoryRoot, admitted.id, "operator_accepted", FIXED)).toEqual({ resolved: true });
+    expect(listRetainedCapturePlanKeys(memoryRoot)).toEqual([]);
+  });
+
+  it("marks only the last automatic retry as eligible for classifier fallback", async () => {
+    const memoryRoot = root();
+    const flags: boolean[] = [];
+    const capture: NonNullable<ConstructorParameters<typeof CompletedTurnIntakeManager>[0]["capture"]> =
+      async (_turn, _id, _at, _signal, isFinalAttempt) => {
+        flags.push(isFinalAttempt);
+        if (!isFinalAttempt) throw new Error("fictional transient classifier outage");
+        return "captured";
+      };
+    const intake = manager(memoryRoot, { capture, maxAttempts: 2, retryBaseMs: 1 });
+    const admitted = intake.admit(turn({ runId: "fictional-final-attempt" }));
+    await intake.flush();
+    intake.abortForShutdown(false);
+    intake.finishShutdown();
+    retryCompletedTurnIntake(memoryRoot, { id: admitted.id, now: FIXED });
+    const restarted = manager(memoryRoot, { capture, maxAttempts: 2, retryBaseMs: 1 });
+    await restarted.flush();
+    expect(flags).toEqual([false, true]);
+    restarted.abortForShutdown(false);
   });
 
   it("notifies metadata-only observers across admission, processing, and shutdown transitions", async () => {

@@ -12,7 +12,7 @@ export interface CandidateMemory {
 }
 
 export const MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS = 160;
-export const MAX_RECONCILIATION_TEXT_CODE_POINTS = 280;
+export const MAX_RECONCILIATION_TEXT_CODE_POINTS = MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS;
 
 /**
  * Clamp model-authored capture text to the bounded store contract.
@@ -26,10 +26,42 @@ export const MAX_RECONCILIATION_TEXT_CODE_POINTS = 280;
  */
 export function clampCaptureText(value: string): string {
   // Slice by code point so an astral pair is never split into lone surrogates.
-  return Array.from(value)
-    .slice(0, MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS)
-    .join("")
-    .trim();
+  const points = Array.from(value);
+  if (points.length <= MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS) return value;
+  const prefix = points.slice(0, MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS).join("");
+  // Prefer the last complete sentence; never cut a multi-fact answer midway
+  // through its next fact. Single unpunctuated sentences retain the old cap.
+  const end = sentenceEnds(prefix).filter((index) => index >= 24).at(-1);
+  if (end !== undefined) return prefix.slice(0, end + 1).trim();
+  const clause = [...prefix.matchAll(/[,;:—](?=\s)/gu)].filter((match) => match.index! >= 40).at(-1);
+  if (clause !== undefined) return prefix.slice(0, clause.index!).trim();
+  const wordEnd = prefix.lastIndexOf(" ");
+  return (wordEnd >= 40 ? prefix.slice(0, wordEnd) : prefix).trim();
+}
+
+/** Sentence boundaries shared by extraction, owner evidence, and length clamping. */
+export function splitCaptureSentences(text: string): string[] {
+  const parts: string[] = [];
+  let start = 0;
+  for (const end of sentenceEnds(text)) {
+    const sentence = text.slice(start, end + 1).trim();
+    if (sentence) parts.push(sentence);
+    start = end + 1;
+  }
+  const tail = text.slice(start).trim();
+  if (tail) parts.push(tail);
+  return parts.length > 0 ? parts : [text];
+}
+
+function sentenceEnds(text: string): number[] {
+  const ends: number[] = [];
+  for (const match of text.matchAll(/[.!?](?=\s|$)/gu)) {
+    const end = match.index!;
+    const prior = text.slice(Math.max(0, end - 8), end + 1);
+    if (/(?:\b(?:dr|st|mr|ms|mrs|prof|e\.g|i\.e)|\b[a-z])\.$/iu.test(prior)) continue;
+    ends.push(end);
+  }
+  return ends;
 }
 
 /** Normalize legacy reconciliation text to its bounded one-line representation. */
@@ -43,6 +75,6 @@ export function normalizeReconciliationText(
     .replace(/\s+/gu, " ")
     .replace(/<!--mem/gu, "")
     .trim();
-  const text = Array.from(normalized).slice(0, MAX_RECONCILIATION_TEXT_CODE_POINTS).join("");
+  const text = clampCaptureText(normalized);
   return text.length === 0 ? undefined : text;
 }

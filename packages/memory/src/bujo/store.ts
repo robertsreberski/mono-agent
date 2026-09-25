@@ -38,6 +38,7 @@ import { repairLegacyCaptureClockDriftAtStartup } from "./capture-clock-repair.j
 import type { LlmComplete } from "./llm.js";
 import { adoptEmbeddingIndexIdentity, type EmbeddingProvider } from "../search/index.js";
 import { captureTurnStrict } from "./capture.js";
+import { discardCapturePlan, listRetainedCapturePlanKeys } from "./capture-plan-cache.js";
 import {
   findRetainedCaptureIntent,
   listRetainedCaptureIntentKeys,
@@ -840,6 +841,7 @@ export class BujoMemoryStore implements MemoryStore {
     intakeId: string,
     admittedAt: string,
     abortSignal: AbortSignal,
+    isFinalAttempt: boolean,
   ): Promise<"captured" | "summary_only"> {
     return await withSerializedBujoMutation({
       root: this.root,
@@ -868,6 +870,7 @@ export class BujoMemoryStore implements MemoryStore {
         now: () => new Date(admittedAt),
         abortSignal,
         captureRetentionKey: intakeId,
+        isFinalCaptureAttempt: isFinalAttempt,
         conversationId: turn.conversationId,
         ...(this.captureSettings === undefined ? {} : { captureSettings: this.captureSettings }),
         ...(turn.captureSpeakerKind === undefined ? {} : { captureSpeakerKind: turn.captureSpeakerKind }),
@@ -1052,22 +1055,27 @@ export class BujoMemoryStore implements MemoryStore {
       writeSummary: async (turn, id, admittedAt, signal) => {
         await this.appendCompletedTurnSummary(turn, id, admittedAt, signal);
       },
-      capture: async (turn, id, admittedAt, signal) => await this.captureCompletedTurn(
+      capture: async (turn, id, admittedAt, signal, isFinalAttempt) => await this.captureCompletedTurn(
         turn,
         id,
         admittedAt,
         signal,
+        isFinalAttempt,
       ),
       afterResolved: async (id) => await withSerializedBujoMutation({
         root: this.root,
         db: this.db,
         tier: this._tier,
         canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
-      }, async () => { removeRetainedCaptureIntent(this.root, id); }),
-      cleanupResolved: (ids) => {
+      }, async () => { removeRetainedCaptureIntent(this.root, id); discardCapturePlan(this.root, id); }),
+      cleanupResolved: (ids, activeIds) => {
         const resolved = new Set(ids);
+        const active = new Set(activeIds);
         for (const key of listRetainedCaptureIntentKeys(this.root)) {
           if (resolved.has(key)) removeRetainedCaptureIntent(this.root, key);
+        }
+        for (const key of listRetainedCapturePlanKeys(this.root)) {
+          if (resolved.has(key) || !active.has(key)) discardCapturePlan(this.root, key);
         }
       },
       onChange: (urgency) => {

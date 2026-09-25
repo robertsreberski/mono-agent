@@ -159,11 +159,10 @@ describe("reconcile", () => {
     ]);
     expect(parseDailyFile(dailyContent(root)).bullets.find((item) => item.id === replacementId)?.refs).toEqual([]);
   });
-  it("retains unchanged UPDATE labels and explicitly replaces SUPERSEDE labels", async () => {
+  it("retains unchanged UPDATE labels and falls back to ADD for labelled preference supersession", async () => {
     const root = newRoot();
     const db = openDb(root);
     const label: MemoryLabel = { v: 1, kind: "preference", scope: "agent", attribution: "user-stated" };
-    const replacement: MemoryLabel = { v: 1, kind: "lesson", scope: "agent", verified: true };
     const text = "Morgan prefers concise technical reports";
     await seed(db, root, "OLD1", text, { labels: [label] });
     await reconcile([{ type: "note", text, salience: 0.7, isInsight: false }], makeDeps(db, root,
@@ -172,11 +171,24 @@ describe("reconcile", () => {
     const actions = await reconcile([{ type: "note", text: "Morgan prefers detailed reports", salience: 0.7,
       isInsight: false }], makeDeps(db, root,
       fakeLlm([["CLASSIFY", '{"action":"supersede","targetId":"OLD1","text":"Morgan prefers detailed technical reports"}']]),
-      { labelsForAction: (action) => action === "supersede" ? [replacement] : [] }));
-    const newId = actions[0]?.kind === "supersede" ? actions[0].newId : "";
-    expect(newId).not.toBe("");
+      { labelsForAction: () => [] }));
+    expect(actions[0]?.kind).toBe("add");
     expect(db.guidanceForScope("agent").map((hit) => [hit.memoryId, hit.label, hit.active]))
-      .toEqual([[newId, replacement, true], ["OLD1", label, false]]);
+      .toEqual([["OLD1", label, true]]);
+  });
+
+  it("adds a candidate rather than merging an over-bound UPDATE into an old line", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    const oldText = "Morgan cataloged fictional notes.";
+    await seed(db, root, "OLD1", oldText);
+    const merged = `${oldText} ${"The archive includes detailed fictional catalog entries. ".repeat(4)}`.trim();
+    const actions = await reconcileBatch([{ type: "note", text: "Morgan cataloged new fictional notes.",
+      salience: 0.7, isInsight: false }], makeDeps(db, root,
+      { id: "fictional-merge", complete: async () => JSON.stringify([{ index: 0, action: "update", targetId: "OLD1", text: merged }]) },
+      { strictModelOutput: true }));
+    expect(actions[0]?.kind).toBe("add");
+    expect(db.get("OLD1")?.text).toBe(oldText);
   });
 
   it("case 1 — novel candidate (no similar) → ADD", async () => {
@@ -451,7 +463,7 @@ describe("reconcile", () => {
     expect(parsed.bullets.find((b) => b.id === "UPD1")?.text).toBe(merged);
   });
 
-  it("keeps the public legacy reconcile path at 280 well-formed Unicode code points", async () => {
+  it("bounds the public legacy reconcile path at 160 well-formed Unicode code points", async () => {
     const root = newRoot();
     const db = openDb(root);
     await seed(db, root, "LEGACY", "Existing legacy reconciliation memory");
@@ -462,7 +474,6 @@ describe("reconcile", () => {
       salience: 0.8,
       isInsight: false,
     };
-    const expected = `${"a".repeat(279)}🧠`;
     const escapedBoundary = `${"a".repeat(139)}\ud83d${"a".repeat(140)}🧠`;
     const reply = JSON.stringify({
       action: "update",
@@ -476,14 +487,11 @@ describe("reconcile", () => {
       makeDeps(db, root, fakeLlm([["CLASSIFY", reply]])),
     );
 
-    expect(actions).toEqual([{ kind: "update", id: "LEGACY" }]);
-    expect(db.get("LEGACY")?.text).toBe(expected);
-    expect(Array.from(db.get("LEGACY")?.text ?? "")).toHaveLength(280);
-    expect(db.get("LEGACY")?.text).toMatch(/🧠$/u);
-    expect(db.get("LEGACY")?.text).not.toContain("�");
-    expect(db.get("LEGACY")?.text).not.toMatch(/\p{Cs}/u);
-    expect(parseDailyFile(dailyContent(root)).bullets.find((bullet) => bullet.id === "LEGACY")?.text)
-      .toBe(expected);
+    expect(actions[0]?.kind).toBe("add");
+    expect(db.get("LEGACY")?.text).toBe("Existing legacy reconciliation memory");
+    const added = actions[0]?.kind === "add" ? db.get(actions[0].id) : undefined;
+    expect(added?.text).toBe(candidate.text);
+    expect(added?.text).not.toMatch(/\p{Cs}/u);
   });
 
   it("case 5 — durable replay stops on pre-existing canonical/index divergence", async () => {
@@ -669,9 +677,42 @@ describe("reconcile", () => {
 });
 
 describe("reconcileBatch", () => {
+  it("keeps a supported fact label when a newer dated UPDATE supersedes its old line", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    const old = "Morgan likes blue as of 2026-07-12.";
+    const next = "Morgan likes blue as of 2026-07-15.";
+    const label: MemoryLabel = { v: 1, kind: "fact", entityId: "person:morgan", key: "other:favorite-color",
+      value: { type: "text", text: "blue" }, attribution: "user-stated" };
+    await seed(db, root, "OLD-BLUE", old, { labels: [label] });
+    db.findSimilarMany = async () => [[{ record: db.get("OLD-BLUE")!, distance: 0.1 }]];
+    const actions = await reconcileBatch([{ type: "note", text: next, salience: 0.8, isInsight: false }],
+      makeDeps(db, root, { id: "dated", complete: async () => JSON.stringify([
+        { index: 0, action: "update", targetId: "OLD-BLUE", text: next },
+      ]) }, { nextId: () => "NEW-BLUE", labelsForAction: () => [] }));
+    expect(actions).toEqual([{ kind: "supersede", oldId: "OLD-BLUE", newId: "NEW-BLUE" }]);
+    expect(db.listLabels({ entityId: "person:morgan" }).hits.filter((hit) => hit.active && hit.memoryId === "NEW-BLUE")
+      .map((hit) => hit.label)).toEqual([label]);
+    db.close();
+  });
+
+  it("keeps merged context when a partial negation is an UPDATE, not a supersession", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "OLD-NOTE", "Morgan prefers blue and concise notes.");
+    db.findSimilarMany = async () => [[{ record: db.get("OLD-NOTE")!, distance: 0.1 }]];
+    const merged = "Morgan no longer prefers blue but still prefers concise notes.";
+    const actions = await reconcileBatch([{ type: "note", text: "Morgan no longer prefers blue.", salience: 0.8, isInsight: false }],
+      makeDeps(db, root, { id: "partial", complete: async () => JSON.stringify([
+        { index: 0, action: "update", targetId: "OLD-NOTE", text: merged },
+      ]) }));
+    expect(actions).toEqual([{ kind: "update", id: "OLD-NOTE" }]);
+    expect(db.get("OLD-NOTE")?.text).toBe(merged);
+    db.close();
+  });
   it.each([
     "Morgan is 7.5 months old", "Morgan ha 7,5 mesi", "Morgan is 7,5 maanden oud",
-  ])("converts a time-sensitive UPDATE to a new dated ADD without rewriting the original: %s", async (text) => {
+  ])("converts a time-sensitive UPDATE to dated supersession preserving the original as history: %s", async (text) => {
     const root = newRoot();
     const db = openDb(root);
     await seed(db, root, "OLD-AGE", "Morgan is 6 months old");
@@ -687,13 +728,14 @@ describe("reconcileBatch", () => {
       nextId: () => "AGE-NEW",
       strictModelOutput: true,
     }));
-    expect(actions).toEqual([{ kind: "add", id: "AGE-NEW" }]);
-    expect(dailyContent(root)).toBe(oldSource);
+    expect(actions).toEqual([{ kind: "supersede", oldId: "OLD-AGE", newId: "AGE-NEW" }]);
+    expect(dailyContent(root)).not.toBe(oldSource);
+    expect(db.get("OLD-AGE")?.status).toBe("invalidated");
     expect(db.get("OLD-AGE")?.text).toBe("Morgan is 6 months old");
     expect(db.get("AGE-NEW")?.createdAt).toBe(nextDay.toISOString());
     expect(readFileSync(dailyFilePath(root, nextDay), "utf8")).toContain(text);
   });
-  it("plans the same run-derived ADD identity on a deferred snapshot retry", async () => {
+  it("plans the same run-derived supersession identity on a deferred snapshot retry", async () => {
     const root = newRoot();
     const db = openDb(root);
     await seed(db, root, "AGE-OLD", "Morgan is 6 months old");
@@ -707,8 +749,8 @@ describe("reconcileBatch", () => {
       strictModelOutput: true, deferBatchCommit: true, nextId: () => "AGE-RUN-00",
       beforeBatchCommit: (actions) => { intents.push(JSON.stringify(actions)); },
     });
-    expect(await reconcileBatch([candidate], deps)).toEqual([{ kind: "add", id: "AGE-RUN-00" }]);
-    expect(await reconcileBatch([candidate], deps)).toEqual([{ kind: "add", id: "AGE-RUN-00" }]);
+    expect(await reconcileBatch([candidate], deps)).toEqual([{ kind: "supersede", oldId: "AGE-OLD", newId: "AGE-RUN-00" }]);
+    expect(await reconcileBatch([candidate], deps)).toEqual([{ kind: "supersede", oldId: "AGE-OLD", newId: "AGE-RUN-00" }]);
     expect(intents).toHaveLength(2);
     expect(intents[0]).toBe(intents[1]);
     expect(db.get("AGE-OLD")?.text).toBe("Morgan is 6 months old");
@@ -1114,19 +1156,21 @@ describe("reconcileBatch", () => {
 
     const actions = await reconcileBatch(
       candidates,
-      makeDeps(db, root, fakeLlm([["Classify each candidate", reply]])),
+      makeDeps(db, root, fakeLlm([["Classify each candidate", reply]]), {
+        nextId: (() => { let index = 0; return () => `MERGE-${index++}`; })(),
+      }),
     );
 
-    expect(actions[0]).toEqual({ kind: "update", id: "UPDATE" });
+    expect(actions[0]?.kind).toBe("add");
     expect(actions[1]?.kind).toBe("supersede");
-    expect(db.get("UPDATE")?.text).not.toMatch(/[\n\r]|<!--mem/u);
-    expect(db.get("UPDATE")?.text.length).toBeLessThanOrEqual(280);
+    expect(db.get("UPDATE")?.text).toBe("Morgan prefers blue green deployments");
+    expect(db.get(actions[0]?.kind === "add" ? actions[0].id : "")?.text).toBe(candidates[0]?.text);
     const replacementId = actions[1]?.kind === "supersede" ? actions[1].newId : "";
     expect(db.get(replacementId)?.text).toBe(candidates[1]?.text);
     expect(db.get("OLD")?.status).toBe("invalidated");
   });
 
-  it("keeps the lenient reconciliation path at 280 complete Unicode code points", async () => {
+  it("bounds the lenient reconciliation path at 160 complete Unicode code points", async () => {
     const root = newRoot();
     const db = openDb(root);
     await seed(db, root, "EXACT", "Existing exact-boundary memory");
@@ -1139,7 +1183,7 @@ describe("reconcileBatch", () => {
       [{ record: db.get("EXACT")!, distance: 0.1 }],
       [{ record: db.get("OVER")!, distance: 0.1 }],
     ];
-    const exactBoundary = `${"a".repeat(279)}🧠`;
+    const exactBoundary = "a".repeat(160);
     const escapedOverBoundary = `${"a".repeat(139)}\ud83d${"a".repeat(140)}🧠tail`;
     const reply = JSON.stringify([
       { index: 0, action: "update", targetId: "EXACT", text: exactBoundary },
@@ -1154,13 +1198,11 @@ describe("reconcileBatch", () => {
 
     expect(actions).toEqual([
       { kind: "update", id: "EXACT" },
-      { kind: "update", id: "OVER" },
+      expect.objectContaining({ kind: "add" }),
     ]);
     expect(db.get("EXACT")?.text).toBe(exactBoundary);
-    expect(db.get("OVER")?.text).toBe(exactBoundary);
-    expect(Array.from(db.get("OVER")?.text ?? "")).toHaveLength(280);
-    expect(db.get("OVER")?.text).not.toContain("�");
-    expect(db.get("OVER")?.text).not.toMatch(/\p{Cs}/u);
+    expect(db.get("OVER")?.text).toBe("Existing over-boundary memory");
+    expect(db.get(actions[1]?.kind === "add" ? actions[1].id : "")?.text).toBe(candidates[1]?.text);
   });
 
   it("allows an explicit valid add decision for a close candidate", async () => {

@@ -21,6 +21,7 @@ import type {
 import { assertBoundedMemoryText } from "./text-safety.js";
 import { acquireMemoryWriterLease } from "./generations.js";
 import { findRetainedCaptureIntent } from "./capture-outbox.js";
+import { discardCapturePlan } from "./capture-plan-cache.js";
 import {
   appendCanonicalFile,
   canonicalMemoryRootPath,
@@ -211,11 +212,12 @@ export interface CompletedTurnIntakeManagerOptions {
     id: string,
     admittedAt: string,
     signal: AbortSignal,
+    isFinalAttempt: boolean,
   ) => Promise<"captured" | "summary_only">;
   /** Retire a run-owned semantic plan only after its resolved receipt is durable. */
   readonly afterResolved?: (id: string) => void | Promise<void>;
   /** Startup cleanup for receipts published before a crash interrupted plan retirement. */
-  readonly cleanupResolved?: (ids: readonly string[]) => void;
+  readonly cleanupResolved?: (resolvedIds: readonly string[], activeIds: readonly string[]) => void;
   /** Content-free notification after intake runtime or durable metadata changes. */
   readonly onChange?: (urgency?: "urgent") => void;
   readonly warn?: (message: string) => void;
@@ -246,7 +248,7 @@ export class CompletedTurnIntakeManager {
   private readonly capture: CompletedTurnIntakeManagerOptions["capture"];
   private readonly warn: (message: string) => void;
   private readonly afterResolved: ((id: string) => void | Promise<void>) | undefined;
-  private readonly cleanupResolved: ((ids: readonly string[]) => void) | undefined;
+  private readonly cleanupResolved: CompletedTurnIntakeManagerOptions["cleanupResolved"];
   private readonly onChange: (urgency?: "urgent") => void;
   private readonly maxAttempts: number;
   private readonly retryBaseMs: number;
@@ -304,11 +306,14 @@ export class CompletedTurnIntakeManager {
       }
       this.cleanupResolved?.(
         materialized.located.filter(({ record }) => record.state === "resolved").map(({ record }) => record.id),
+        materialized.located.filter(({ record }) => record.state !== "resolved").map(({ record }) => record.id),
       );
       this.scheduleWorker();
       this.notifyChange();
     } else if (readIntakeSchemaMarker(this.root) !== undefined) {
       throw new Error("memory-bujo: initialized completed-turn intake layout is missing.");
+    } else {
+      this.cleanupResolved?.([], []);
     }
   }
 
@@ -536,7 +541,8 @@ export class CompletedTurnIntakeManager {
         this.setRuntimeRecord(current.record);
         this.notifyChange();
       }
-      const outcome = await this.capture(turn, current.record.id, current.record.admittedAt, controller.signal);
+      const outcome = await this.capture(turn, current.record.id, current.record.admittedAt, controller.signal,
+        current.record.attempt + 1 >= this.maxAttempts);
       controller.signal.throwIfAborted();
       const resolved = resolvePending(
         this.root,
@@ -989,6 +995,9 @@ export function resolveCompletedTurnIntake(
       reason,
     };
     moveRecord(lease.root, source, "resolved", receipt);
+    // A crash here is repaired by startup inventory cleanup; explicit operator
+    // resolution must not leave its extraction plan behind indefinitely.
+    discardCapturePlan(lease.root, id);
     pruneResolved(lease.root, DEFAULT_RESOLVED_RETENTION, id);
     return { resolved: true };
   } finally {

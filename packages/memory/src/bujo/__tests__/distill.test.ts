@@ -5,14 +5,19 @@ import {
 } from "../distill.js";
 
 describe("legacy reconciliation normalization", () => {
-  it("uses the separate 280-code-point reconciliation cap", () => {
-    expect(MAX_RECONCILIATION_TEXT_CODE_POINTS).toBe(280);
-    const exactBoundary = `${"a".repeat(279)}🧠`;
-    const overBoundary = `${exactBoundary}tail`;
-
+  it("shares the 160-code-point capture cap and preserves word boundaries", () => {
+    expect(MAX_RECONCILIATION_TEXT_CODE_POINTS).toBe(160);
+    const exactBoundary = `${"a".repeat(159)}🧠`;
     expect(normalizeReconciliationText(exactBoundary)).toBe(exactBoundary);
-    expect(normalizeReconciliationText(overBoundary)).toBe(exactBoundary);
-    expect(Array.from(normalizeReconciliationText(overBoundary) ?? "")).toHaveLength(280);
+    expect(normalizeReconciliationText(`${"word ".repeat(32)}tail`)).toBe(`${"word ".repeat(31)}word`);
+    expect(Array.from(normalizeReconciliationText(`${"a".repeat(160)} tail`) ?? "")).toHaveLength(160);
+  });
+
+  it("uses real sentence endings rather than abbreviations when clamping", () => {
+    const first = "Dr. Morgan works at St. Anne's clinic, e.g. on weekdays, i.e. most mornings.";
+    expect(normalizeReconciliationText(`${first} ${"another lengthy unpunctuated continuation ".repeat(10)}`)).toBe(first);
+    expect(normalizeReconciliationText(`The measurement is 7.5 units. ${"another lengthy unpunctuated continuation ".repeat(10)}`))
+      .toBe("The measurement is 7.5 units.");
   });
 
   it("removes escaped lone surrogates while preserving valid astral pairs", () => {

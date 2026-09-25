@@ -2412,7 +2412,10 @@ function createAgentHostMemoryLlm(options: {
             messages: [{ role: "user", content: prompt }],
             abortSignal: ctrl.signal,
             cwd: options.cwd,
-            maxTurns: 1,
+            // StructuredOutput is a tool call that requires a follow-up finalization
+            // turn in Pi-native. One turn rejects a successful tool submission as
+            // "max turns reached" before its structured result can be returned.
+            maxTurns: opts?.outputSchema === undefined ? 1 : 3,
             allowedTools: [],
             disallowedTools: [],
             mcpServers: {},

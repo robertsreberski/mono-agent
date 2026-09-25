@@ -1,4 +1,5 @@
 import { mkdtempSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MemoryCaptureEvidence } from "@mono-agent/agent-contracts";
@@ -168,6 +169,80 @@ describe("host-validated capture labels", () => {
       .candidates[0]?.labels).toEqual([{ ...fact, attribution: "unknown" }]);
   });
 
+  it("does not bind an owner turn about a relative to the owner entity", async () => {
+    const label = { v: 1, kind: "fact", entityId: "person:owner", key: "birth_date",
+      value: { type: "date", date: "1990-05-17" }, attribution: "user-stated" };
+    const text = "The user's son was born May 17, 1990.";
+    expect((await extract(text, [label], { captureSpeakerKind: "human-turn", conversationId: "acp:fictional",
+      captureEvidence: evidence("My son was born May 17, 1990.", { ownerTurn: true }) })).candidates[0]?.labels)
+      .toBeUndefined();
+    expect((await extract("The user was born May 17, 1990.", [label], {
+      captureSpeakerKind: "human-turn", conversationId: "acp:fictional",
+      captureEvidence: evidence("I was born May 17, 1990.", { ownerTurn: true }),
+    })).candidates[0]?.labels).toEqual([label]);
+  });
+
+  it("binds an owner property only in the sentence with its value", async () => {
+    const label = { v: 1, kind: "fact", entityId: "person:owner", key: "birth_date",
+      value: { type: "date", date: "1990-05-17" }, attribution: "user-stated" };
+    const owner = (userText: string) => ({ captureSpeakerKind: "human-turn" as const,
+      captureEvidence: evidence(userText, { ownerTurn: true }) });
+    for (const relation of ["wife", "sons", "children", "daughter"]) {
+      const sentence = `The user's ${relation} was born May 17, 1990.`;
+      expect((await extract(sentence, [label], owner(`My ${relation} was born May 17, 1990.`)))
+        .candidates[0]?.labels).toBeUndefined();
+    }
+    expect((await extract("The user has a daughter born May 17, 1990.", [label],
+      owner("I have a daughter born May 17, 1990."))).candidates[0]?.labels).toBeUndefined();
+    expect((await extract("The user's birthday is May 17, 1990.", [label],
+      owner("My wife likes cake. My birthday is May 17, 1990."))).candidates[0]?.labels).toEqual([label]);
+    expect((await extract("The user was born May 17, 1990. Their son was born in 2010.", [label],
+      owner("My birthday is May 17, 1990. My son likes cake."))).candidates[0]?.labels).toEqual([label]);
+    const location = { ...label, key: "home_location", value: { type: "text", text: "Lisbon" } };
+    expect((await extract("The user is based in Lisbon.", [location],
+      owner("I'm based in Lisbon."))).candidates[0]?.labels).toEqual([location]);
+  });
+
+  it("binds owner-reported facts to the stable owner entity without trusting unidentified turns", async () => {
+    const ownerFact = { v: 1, kind: "fact", entityId: "person:owner", key: "other:favorite-color",
+      value: { type: "text", text: "blue" }, attribution: "user-stated" };
+    const ownerText = "The user prefers blue for fictional sketches.";
+    const ownerContext = { captureSpeakerKind: "human-turn" as const, conversationId: "acp:fictional",
+      captureEvidence: evidence("I prefer blue for fictional sketches.", { ownerTurn: true }) };
+    expect((await extract(ownerText, [ownerFact], ownerContext)).candidates[0]?.labels).toEqual([ownerFact]);
+    expect((await extract(ownerText, [ownerFact], { ...ownerContext, captureEvidence: evidence("I prefer blue.") }))
+      .candidates[0]?.labels).toBeUndefined();
+  });
+
+  it("does not copy a preference onto a sibling split sentence", async () => {
+    const first = "The user prefers concise fictional project notes.";
+    const sibling = "Morgan archives detailed fictional catalog records and diagrams for the team.";
+    const plan = await extractCapturePlanStrict("completed turn", {
+      id: "preference-split", complete: async () => JSON.stringify({
+        memories: [{ type: "note", text: `${first} ${sibling} ${"The archive records many old maps. ".repeat(3)}`.trim(),
+          salience: 0.8, isInsight: false, entityIds: [], labels: [preference] }],
+        entities: [], relations: [],
+      }),
+    }, undefined, [], { observedAt: at.toISOString(), captureSpeakerKind: "human-turn",
+      conversationId: "conv-1", captureEvidence: evidence("I prefer concise fictional project notes.", { ownerTurn: true }) });
+    expect(plan.candidates[0]?.labels).toEqual([preference]);
+    expect(plan.candidates.find((candidate) => candidate.text === sibling)?.labels).toBeUndefined();
+  });
+
+  it("keeps host-verified senderless owner agent guidance and hashes colon conversations", async () => {
+    const sentence = "The assistant should keep concise fictional notes.";
+    const context = { captureSpeakerKind: "human-turn" as const, conversationId: "web:fictional-thread",
+      captureEvidence: evidence(sentence, { ownerTurn: true }) };
+    expect((await extract(sentence, [preference], context)).candidates[0]?.labels).toEqual([preference]);
+    expect((await extract("The user prefers concise fictional notes.", [preference], {
+      ...context, captureEvidence: evidence("I prefer concise fictional notes.", { ownerTurn: true }),
+    })).candidates[0]?.labels).toEqual([preference]);
+    const unknown = { ...context, captureEvidence: evidence(sentence) };
+    const expectedScope = `conversation:h_${createHash("sha256").update("web:fictional-thread").digest("hex")}`;
+    expect((await extract(sentence, [preference], unknown)).candidates[0]?.labels)
+      .toEqual([{ ...preference, scope: expectedScope }]);
+  });
+
   it("forces unidentified human preferences to conversation scope and drops trigger preferences", async () => {
     const sentence = "Morgan prefers concise project notes.";
     const user = "Morgan prefers concise project notes.";
@@ -189,13 +264,13 @@ describe("host-validated capture labels", () => {
     const token = "a".repeat(32);
     const addressed = { ...context, captureEvidence: evidence("You should keep concise notes.", { senderToken: token }) };
     expect((await extract("Morgan keeps concise notes.", [preference], addressed)).candidates[0]?.labels)
-      .toEqual([{ ...preference, scope: `user:${token}` }]);
+      .toBeUndefined();
     const explicitAgent = { ...context, captureEvidence: evidence("The assistant should keep concise notes.", { senderToken: token }) };
     expect((await extract("Morgan keeps concise notes.", [preference], explicitAgent)).candidates[0]?.labels)
-      .toEqual([{ ...preference, scope: `user:${token}` }]);
+      .toBeUndefined();
     expect((await extract("Morgan keeps concise notes.", [preference], {
       ...explicitAgent, captureEvidence: { ...explicitAgent.captureEvidence, ownerTurn: true as const },
-    })).candidates[0]?.labels).toEqual([preference]);
+    })).candidates[0]?.labels).toBeUndefined();
   });
 
   it("keeps only a uniquely host-proven successful retry; malformed label never drops the memory", async () => {
@@ -236,11 +311,12 @@ describe("host-validated capture labels", () => {
     })).candidates[0]?.labels).toEqual([lesson]);
   });
 
-  it("drops a fact whose supported value was clamped away and rejects malformed label array structure", async () => {
-    const text = `${"Morgan keeps notes. ".repeat(12)} Morgan was born May 17, 1990.`;
+  it("retains a supported fact from a separate tail sentence and rejects malformed label arrays", async () => {
+    const text = `${"Morgan keeps fictional archive notes on a deliberately long bounded opening sentence with extensive references to safe written examples and fictional projects."} Morgan was born May 17, 1990.`;
     const plan = await extract(text, [fact], { captureSpeakerKind: "human-turn",
       captureEvidence: evidence("Morgan was born May 17, 1990.") });
     expect(plan.candidates[0]?.labels).toBeUndefined();
+    expect(plan.candidates[1]?.labels).toEqual([fact]);
     await expect(extractCapturePlanStrict("turn", { id: "bad-structure", complete: async () => JSON.stringify({
       memories: [{ type: "note", text: "Morgan keeps notes.", salience: 0.8, isInsight: false,
         entityIds: [], labels: {} }], entities: [], relations: [],

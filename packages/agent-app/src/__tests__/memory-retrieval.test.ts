@@ -6,11 +6,12 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { MemoryCompletedTurn } from "@mono-agent/agent-contracts";
 import { createAgentHarness } from "@mono-agent/agent-harness";
-import { createBujoMemoryStore, safeRebuildMemoryIndex } from "@mono-agent/memory/bujo";
+import { createBujoMemoryStore, extractCapturePlanStrict, safeRebuildMemoryIndex } from "@mono-agent/memory/bujo";
 import { MemorySearchError } from "@mono-agent/memory/search";
 import { openMemoryDb, type MemoryRecord } from "@mono-agent/memory/store";
 import { describe, expect, it } from "vitest";
 
+import { memoryGuidanceScopes } from "../memory-guidance.js";
 import {
   createSharedMemoryRecallRuntimeExtension,
   MemoryRetrievalService,
@@ -70,6 +71,24 @@ function fakeStore(options: { readonly fail?: boolean; readonly disputed?: boole
 }
 
 describe("MemoryRetrievalService", () => {
+  it("uses capture-identical reserved hashes for colon and hash-shaped conversation ids", async () => {
+    for (const conversationId of ["web:fictional-thread", `h_${"a".repeat(64)}`]) {
+      const sentence = "The assistant should keep concise fictional notes.";
+      const plan = await extractCapturePlanStrict(`User: ${sentence}`, {
+        id: "fictional-scope", complete: async () => JSON.stringify({ memories: [{ type: "note", text: sentence,
+          salience: 0.8, isInsight: false, entityIds: [],
+          labels: [{ v: 1, kind: "preference", scope: "agent", attribution: "user-stated" }] }],
+        entities: [], relations: [] }),
+      }, undefined, [], { observedAt: "2026-07-12T09:00:00.000Z", captureSpeakerKind: "human-turn",
+        conversationId, captureEvidence: { userText: sentence, toolOutcomes: [] } });
+      const scope = plan.candidates[0]?.labels?.[0];
+      expect(scope?.kind).toBe("preference");
+      if (scope?.kind !== "preference") throw new Error("fictional preference missing");
+      expect(memoryGuidanceScopes(conversationId)).toContain(scope.scope);
+      expect(scope.scope).toMatch(/^conversation:h_[a-f0-9]{64}$/u);
+      expect(scope.scope).not.toBe(`conversation:${conversationId}`);
+    }
+  });
   it("scopes explicit labelled guidance to the host-bound original turn", async () => {
     const senderToken = "a".repeat(32);
     const store = Object.assign(fakeStore(), {

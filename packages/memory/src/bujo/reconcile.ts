@@ -21,7 +21,8 @@ import type { CanonicalGraphRepairGuard } from "./graph.js";
 import { MemoryModelError, MemoryModelOutputError } from "./model-error.js";
 import { withSerializedBujoMutation } from "./mutation-lock.js";
 import type { Bullet } from "./types.js";
-import { labelsOf, withMemoryLabels, type MemoryLabel } from "./labels.js";
+import { canonicalMemoryLabel, labelsOf, withMemoryLabels, type MemoryLabel } from "./labels.js";
+import { factSupported, ownerFactSupported } from "./capture-labels.js";
 
 /** The outcome of reconciling a single candidate against the existing index. */
 export type ReconcileAction =
@@ -52,6 +53,10 @@ export interface ReconcileDeps {
   readonly deferBatchCommit?: boolean;
   /** Strong completed-turn mode: every model decision is exact and all-or-nothing. */
   readonly strictModelOutput?: boolean;
+  /** Capture intake only: preserve extracted candidates if classifier cannot settle. */
+  readonly fallbackOnClassifierFailure?: boolean;
+  /** Only the intake's last automatic attempt may degrade to deduplicated ADD. */
+  readonly isFinalCaptureAttempt?: boolean;
   /** Run-owned capture plans remain replayable until durable intake resolution. */
   readonly captureRetentionKey?: string;
   readonly canonicalGraphRepairGuard?: CanonicalGraphRepairGuard;
@@ -174,9 +179,24 @@ async function reconcileBatchUnlocked(
     return similar.length > 0 && (similar[0]?.distance ?? Infinity) <= dupThreshold ? [index] : [];
   });
   const reconcileIndexSet = new Set(reconcileIndexes);
-  const decisions = reconcileIndexes.length === 0
-    ? new Map<number, Classification>()
-    : await classifyBatch(candidates, neighbours, reconcileIndexes, deps);
+  let decisions: Map<number, Classification>;
+  try {
+    decisions = reconcileIndexes.length === 0
+      ? new Map<number, Classification>()
+      : await classifyBatch(candidates, neighbours, reconcileIndexes, deps);
+  } catch (error) {
+    deps.abortSignal?.throwIfAborted();
+    if (deps.fallbackOnClassifierFailure !== true || deps.isFinalCaptureAttempt !== true
+      || !(error instanceof MemoryModelOutputError
+      || (error instanceof MemoryModelError && error.kind === "llm"))) throw error;
+    // Extraction already succeeded. A failed classifier must not erase it;
+    // avoid exact duplicate lines while preserving every novel candidate.
+    decisions = new Map(reconcileIndexes.map((index) => {
+      const duplicate = (neighbours[index] ?? []).find((hit) => hit.record.text === candidates[index]?.text);
+      return [index, duplicate === undefined ? { action: "add" as const }
+        : { action: "noop" as const, targetId: duplicate.record.id }];
+    }));
+  }
   rejectConflictingTargets(decisions, deps.strictModelOutput === true);
   deps.abortSignal?.throwIfAborted();
   const plans: Array<BatchActionPlan | undefined> = candidates.map(() => undefined);
@@ -368,12 +388,22 @@ function planBatchAction(
       // and hide it from recall. Keep the remembered evidence exactly as it is
       // and record the refinement as its own memory (threaded to its
       // neighbour by the shared ADD path).
-      if (isRememberedUpdateTarget(decision, deps) || isNewTimeSensitiveSnapshot(candidate, decision, deps)) {
+      if (isRememberedUpdateTarget(decision, deps)
+        || (decision.text !== undefined && [...decision.text].length > MAX_RECONCILIATION_TEXT_CODE_POINTS)) {
         return planAddWithoutIndex(candidate, similar, deps, threadThreshold);
       }
+      if (isNewTimeSensitiveSnapshot(candidate, decision, deps)) {
+        return planBatchAction(candidate, { ...decision, action: "supersede", text: decision.text ?? candidate.text }, similar, deps, threadThreshold);
+      }
       return planUpdate(candidate, decision, deps);
-    case "supersede":
+    case "supersede": {
+      const old = deps.db.get(decision.targetId ?? "");
+      if (old?.source.file !== undefined && labelsOf(requireCanonicalTarget(deps.root, old.source.file, old.id))
+        .some((label) => label.kind === "preference" || label.kind === "lesson")) {
+        return planAddWithoutIndex(candidate, similar, deps, threadThreshold);
+      }
       return planSupersede(candidate, decision, deps);
+    }
     default:
       throw new Error("memory-reconcile: unsupported batch action.");
   }
@@ -458,6 +488,10 @@ const CURRENT_SNAPSHOT = /\b(?:currently|as of today|at present|attualmente|al m
 function isNewTimeSensitiveSnapshot(candidate: CandidateMemory, decision: Classification, deps: ReconcileDeps): boolean {
   const old = deps.db.get(decision.targetId ?? "");
   if (old === undefined || old.text === candidate.text) return false;
+  const dates = (text: string): string[] => [...text.matchAll(/\b\d{4}-\d{2}-\d{2}\b/gu)].map(([date]) => date);
+  const oldDates = dates(old.text);
+  const newDates = dates(candidate.text);
+  if (oldDates.length > 0 && newDates.length > 0 && newDates[0]! > oldDates[0]!) return true;
   return AGE_SNAPSHOT.test(candidate.text) || CURRENT_SNAPSHOT.test(candidate.text);
 }
 
@@ -518,16 +552,32 @@ function planSupersede(
   // never precede the memory it invalidates.
   const effectiveAt = new Date(Math.max(admittedAt.getTime(), Date.parse(beforeOld.createdAt)));
   const id = deps.nextId();
+  const replacement = decision.text ?? candidate.text;
+  const proposedLabels = deps.labelsForAction?.("supersede", candidate, beforeOld, replacement) ?? [];
+  // A dated replacement may still contain facts carried forward from the old
+  // line. Keep only labels still supported by that replacement; do not transfer
+  // a stale value merely because the old line had a label.
+  const carried = labelsOf(beforeOld).filter((label) => label.kind === "fact"
+    ? (label.entityId === "person:owner" ? ownerFactSupported(label, replacement)
+      : (label.key !== "preferred_name" || /\b(?:called|named|name is|goes by|addressed as)\b/iu.test(replacement))
+        && factSupported(label, replacement))
+    : false);
+  const labels = [...proposedLabels];
+  const seen = new Set(labels.map(canonicalMemoryLabel));
+  for (const label of carried) {
+    const key = canonicalMemoryLabel(label);
+    if (!seen.has(key) && labels.length < 8) { labels.push(label); seen.add(key); }
+  }
   const bullet: Bullet = withMemoryLabels({
     id,
     type: candidate.type,
     status: "open",
-    text: decision.text ?? candidate.text,
+    text: replacement,
     salience: candidate.salience,
     isInsight: candidate.isInsight,
     createdAt: effectiveAt.toISOString(),
     refs: [],
-  }, deps.labelsForAction?.("supersede", candidate, beforeOld, decision.text ?? candidate.text) ?? []);
+  }, labels);
   const record = recordFor(bullet, deps.root, effectiveAt);
   const newSourceFile = record.source.file!;
   return {
@@ -579,7 +629,7 @@ function strictReconciliationOutputSchema(
     const replacementSchema = {
       type: "string",
       minLength: 1,
-      maxLength: MAX_RECONCILIATION_TEXT_CODE_POINTS,
+      maxLength: 1024,
     } as const;
     return [
       {
@@ -602,7 +652,7 @@ function strictReconciliationOutputSchema(
           index: indexSchema,
           action: { const: action },
           targetId: targetSchema,
-          text: replacementSchema,
+          text: { ...replacementSchema, maxLength: action === "update" ? 1024 : MAX_RECONCILIATION_TEXT_CODE_POINTS },
         },
       })),
     ];
@@ -704,7 +754,7 @@ ${JSON.stringify(input)}`,
     if (record.action !== "add" && (
       targetId === undefined || !(neighbours[index] ?? []).some((hit) => hit.record.id === targetId)
     )) continue;
-    const text = normalizeReconciliationText(record.text);
+    const text = normalizeLegacyDecisionText(record.action, record.text);
     decisions.set(index, {
       action: record.action,
       ...(targetId === undefined ? {} : { targetId }),
@@ -765,7 +815,7 @@ function parseStrictBatchClassifications(
       decisions.set(Number(index), { action, targetId });
       continue;
     }
-    const exactText = strictClassificationText(text);
+    const exactText = strictClassificationText(text, action === "update" ? 1024 : MAX_RECONCILIATION_TEXT_CODE_POINTS);
     if (keys.length !== 4) {
       throw new MemoryModelOutputError("classify-batch", "update and supersede require exact text");
     }
@@ -777,10 +827,20 @@ function parseStrictBatchClassifications(
   return decisions;
 }
 
-function strictClassificationText(value: unknown): string {
+function normalizeLegacyDecisionText(action: string, value: unknown): string | undefined {
+  if (action === "update" && typeof value === "string" && [...value].length > MAX_RECONCILIATION_TEXT_CODE_POINTS
+    && [...value].length <= 1024) {
+    // Preserve the length signal rather than silently truncating a proposed merge.
+    // The dispatcher adds the bounded candidate and leaves the old line intact.
+    return value;
+  }
+  return normalizeReconciliationText(value);
+}
+
+function strictClassificationText(value: unknown, maxLength = MAX_RECONCILIATION_TEXT_CODE_POINTS): string {
   if (typeof value !== "string" || value.length === 0 || value !== value.trim()
-    || [...value].length > MAX_RECONCILIATION_TEXT_CODE_POINTS
-    || Buffer.byteLength(value, "utf8") > MAX_RECONCILIATION_TEXT_CODE_POINTS * 4
+    || [...value].length > maxLength
+    || Buffer.byteLength(value, "utf8") > maxLength * 4
     || /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(value) || value.includes("<!--mem")) {
     throw new MemoryModelOutputError("classify-batch", "replacement text is invalid or exceeds its bound");
   }
@@ -818,7 +878,7 @@ async function classify(
   if (action !== "add") {
     if (targetId === undefined || !similar.some((h) => h.record.id === targetId)) return undefined;
   }
-  const text = normalizeReconciliationText(parsed.text);
+  const text = normalizeLegacyDecisionText(action, parsed.text);
   return {
     action,
     ...(targetId !== undefined && { targetId }),

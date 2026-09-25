@@ -1,5 +1,7 @@
 import type { MemoryCaptureEvidence, MemoryCaptureSpeakerKind } from "@mono-agent/agent-contracts";
+import { createHash } from "node:crypto";
 import { encodeMemoryLabel, validateMemoryLabel, type MemoryLabel } from "./labels.js";
+import { splitCaptureSentences } from "./distill.js";
 
 export interface CaptureLabelContext {
   readonly captureSpeakerKind?: MemoryCaptureSpeakerKind;
@@ -19,7 +21,11 @@ export function captureLabels(raw: readonly unknown[], text: string, context: Ca
       const label = validateMemoryLabel(candidate);
       let accepted: MemoryLabel | undefined;
       if (label.kind === "fact") {
-        if (factSupported(label, text, context.entityNames)) {
+        const ownerFact = label.entityId === "person:owner";
+        if (ownerFact
+          ? context.captureEvidence?.ownerTurn === true && user !== undefined
+            && ownerFactSupported(label, text) && ownerFactSupported(label, user)
+          : factSupported(label, text, context.entityNames)) {
           const userSupported = user !== undefined && valueSupported(label, user);
           const attribution = label.attribution === "unknown" ? "unknown"
             : label.attribution === "user-stated" && userSupported ? "user-stated" : "assistant-inferred";
@@ -60,9 +66,8 @@ export function verifiedRetryCount(evidence: MemoryCaptureEvidence | undefined):
 
 function preferenceScope(proposed: string, user: string, context: CaptureLabelContext): string | undefined {
   const senderToken = context.captureEvidence?.senderToken;
-  if (senderToken === undefined) return safeConversationScope(context.conversationId);
-  if (proposed === "agent" && context.captureEvidence?.ownerTurn === true
-    && /\b(agent|assistant|agente|assistent|asystent)\b/iu.test(normalize(user))) return "agent";
+  if (proposed === "agent" && context.captureEvidence?.ownerTurn === true) return "agent";
+  if (senderToken === undefined) return explicitProject(proposed, user) ?? safeConversationScope(context.conversationId);
   return explicitProject(proposed, user) ?? `user:${senderToken}`;
 }
 function explicitProject(scope: string, user: string): string | undefined {
@@ -70,9 +75,13 @@ function explicitProject(scope: string, user: string): string | undefined {
   const named = scope.slice(8).replaceAll("-", " ");
   return /\b(project|progetto|projekt)\b/iu.test(normalize(user)) && includesPhrase(user, named) ? scope : undefined;
 }
-function safeConversationScope(id: string | undefined): string | undefined {
-  if (id === undefined || id.length > 96 || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u.test(id)) return undefined;
-  return `conversation:${id}`;
+export function safeConversationScope(id: string | undefined): string | undefined {
+  if (id === undefined || id.length === 0) return undefined;
+  if (id.length <= 96 && /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u.test(id)
+    && !id.startsWith("h_")) return `conversation:${id}`;
+  // Reserve h_ for hashed scopes: a raw h_ id is always hashed itself, so a
+  // caller cannot choose a raw id that aliases some other conversation's hash.
+  return `conversation:h_${createHash("sha256").update(id).digest("hex")}`;
 }
 function preferenceSupported(text: string, user: string): boolean {
   const contentWords = (value: string): string[] => {
@@ -82,8 +91,26 @@ function preferenceSupported(text: string, user: string): boolean {
     return tokens.filter((word) => word.length > 3 && !["prefer", "prefers", "wants", "should"].includes(word));
   };
   const source = contentWords(user);
-  return contentWords(text).some((word) => source.includes(word));
+  return /\b(?:prefer|prefers|preferred|should|want|wants|please|keep|use|preferisce|wil|chce)\b/iu.test(text)
+    && contentWords(text).some((word) => source.includes(word));
 }
+// Only finite owner properties have a supported grammatical binding. A bare
+// first-person pronoun elsewhere in a message cannot assign a relative's fact.
+const OWNER_PROPERTY: Readonly<Record<string, RegExp>> = {
+  birth_date: /\b(?:my|the (?:user|owner)'s)\s+(?:birthday|birth\s+date)\b|\b(?:i|the (?:user|owner))\s+(?:was|am|'m)\s+born\b/iu,
+  full_name: /\b(?:my|the (?:user|owner)'s)\s+(?:full\s+)?name\b|\b(?:i\s+am|i'm|the (?:user|owner)\s+is)\s+(?:named|called)\b/iu,
+  preferred_name: /\b(?:my|the (?:user|owner)'s)\s+(?:preferred\s+)?name\b|\b(?:i|the (?:user|owner))\s+(?:prefer|prefers|go\s+by|goes\s+by)\b/iu,
+  home_location: /\b(?:my|the (?:user|owner)'s)\s+home\b|\b(?:i|the (?:user|owner))\s+(?:live|lives|lived|moved)\s+(?:in|to|at)\b|\b(?:i\s+am|i'm|the (?:user|owner)\s+is)\s+based\s+in\b/iu,
+  work_location: /\b(?:my|the (?:user|owner)'s)\s+(?:work|job|employer)\b|\b(?:i|the (?:user|owner))\s+(?:work|works|worked)\s+(?:at|for|as|in)\b/iu,
+  "other:favorite-color": /\b(?:my|the (?:user|owner)'s)\s+favorite\s+colou?r\b|\b(?:i|the (?:user|owner))\s+(?:prefer|prefers)\b/iu,
+};
+export function ownerFactSupported(label: Extract<MemoryLabel, { kind: "fact" }>, text: string): boolean {
+  const property = OWNER_PROPERTY[label.key];
+  if (property === undefined) return false;
+  return splitCaptureSentences(text).some((sentence) => valueSupported(label, sentence)
+    && property.test(normalize(sentence).replace(/[’]/gu, "'")));
+}
+
 export function factSupported(label: Extract<MemoryLabel, { kind: "fact" }>, text: string,
   names?: ReadonlyMap<string, string>): boolean {
   const slug = label.entityId.slice(label.entityId.indexOf(":") + 1);

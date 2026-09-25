@@ -158,7 +158,7 @@ describe("createConfiguredMemory — bujo mode", () => {
       expect(call.systemPrompt).toMatch(/private memory maintenance LLM/u);
       expect(call.options.model).toMatchObject({ provider: "openai-codex", model: "gpt-5.5" });
       expect(call.options.cwd).toBe(dir);
-      expect(call.options.maxTurns).toBe(1);
+      expect(call.options.maxTurns).toBe(3);
       expect(call.options.allowedTools).toEqual([]);
       expect(call.options.disallowedTools).toEqual([]);
       expect(call.options.mcpServers).toEqual({});
@@ -292,7 +292,7 @@ describe("createConfiguredMemory — bujo mode", () => {
       additionalProperties: false,
       required: ["memories", "entities", "relations"],
     });
-    expect(calls[0]?.maxTurns).toBe(1);
+    expect(calls[0]?.maxTurns).toBe(3);
     expect(calls[0]?.allowedTools).toEqual([]);
     expect(calls[0]?.mcpServers).toEqual({});
     expect(inspectCompletedTurnIntake(memoryRoot).snapshot).toMatchObject({ pending: 0, resolved: 1 });
@@ -381,7 +381,7 @@ describe("createConfiguredMemory — bujo mode", () => {
       required: ["decisions"],
       properties: { decisions: { type: "array", minItems: 1, maxItems: 1 } },
     });
-    expect(calls[1]?.maxTurns).toBe(1);
+    expect(calls[1]?.maxTurns).toBe(3);
     const snapshot = await store.browseJournal({
       fromInclusive: "2000-01-01T00:00:00.000Z",
       toExclusive: "2100-01-01T00:00:00.000Z",

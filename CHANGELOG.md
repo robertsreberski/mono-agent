@@ -17,6 +17,13 @@
   operator's own web/TUI/ACP turns it answers first-person questions (`What is
   my phone number?`) from owner facts and `The user reports that …` records.
   Multi-clause and hedged records still abstain.
+- Keep extracted BuJo memories across reconciliation retries and retain novel
+  facts if the classifier still fails on the last attempt; give structured
+  memory calls time to finish.
+- Label directly supported owner facts and senderless owner preferences, preserve
+  dated updates as history, and split multi-sentence captures before the
+  160-code-point bound. Keep old preference and lesson lines when a replacement
+  cannot safely carry their labels.
 
 - Add `memory.embeddings.instructions` so each embedding model gets the
   query/document prefixes it was trained for (`bge-m3` none, Snowflake Arctic

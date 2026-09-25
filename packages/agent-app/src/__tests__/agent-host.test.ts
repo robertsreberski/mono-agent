@@ -824,7 +824,8 @@ describe("agent host composition helpers", () => {
         expect(call.options.allowedTools).toEqual([]);
         expect(call.options.disallowedTools).toEqual([]);
         expect(call.options.mcpServers).toEqual({});
-        expect(call.options.maxTurns).toBe(1);
+        // A schema-bound call gets the structured-output finalization turn; nothing else does.
+        expect(call.options.maxTurns).toBe(call.options.outputSchema === undefined ? 1 : 3);
       }
     } finally {
       await (memory as unknown as { close(): Promise<void> }).close();

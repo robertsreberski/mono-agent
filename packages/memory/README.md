@@ -131,6 +131,22 @@ provider or invent semantic scores. A Lite store with no embedding provider is
 normally `lexical_only` and is not degraded. Callers must keep the degradation
 visible even when no lexical hit survives their own selection policy.
 
+### BuJo capture resilience
+
+BuJo retains a private, run-keyed extraction plan across intake retries, so a
+reconciliation failure never asks the model to extract the same turn again.
+Only on the final automatic intake attempt, if the capture classifier fails,
+the host writes novel candidates as ADDs and skips exact-text duplicates;
+embedding or durable-write failures still retry.
+Host-verified owner turns can bind first-person facts to `person:owner` and keep
+agent-wide preferences even without a sender id. Unidentified senders remain
+conversation-scoped, including colon-containing conversation ids (hashed for
+safe scope keys). Newer dated updates supersede the prior line without erasing
+its history. Capture and reconcile use a 160-code-point bound; multi-sentence
+memories are split into separate candidates up to the eight-memory plan limit
+rather than silently discarding later sentences. Overlong individual sentences
+still clamp at a word or clause boundary.
+
 ### Automatic direct-fact evidence
 
 The provider-free automatic selector accepts only finite direct-fact query and
