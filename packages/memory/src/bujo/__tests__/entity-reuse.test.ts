@@ -73,6 +73,34 @@ describe("selectKnownEntityHints", () => {
       .toEqual(["person:alex-operations", "person:alex-design"]);
   });
 
+  it("names the most-associated id as preferred when several ids share one folded name", () => {
+    // Fictional: one person captured three times under different ids and types.
+    const graph = [
+      { id: "concept:morgan", name: "Morgan", type: "concept", createdAt: "2026-03-01T00:00:00.000Z", associations: 2 },
+      { id: "person:morgan", name: "Morgan", type: "person", createdAt: "2026-01-01T00:00:00.000Z", associations: 9 },
+      { id: "person:morgan-2", name: "morgan ", type: "person", createdAt: "2026-04-01T00:00:00.000Z", associations: 1 },
+      { id: "place:maple-street", name: "Maple Street", type: "place", createdAt: "2026-04-01T00:00:00.000Z", associations: 5 },
+    ];
+    const hints = selectKnownEntityHints("Morgan walked down Maple Street", graph);
+
+    expect(hints.map((hint) => hint.id)).toEqual(["place:maple-street", "person:morgan", "concept:morgan", "person:morgan-2"]);
+    expect(hints.map((hint) => hint.preferredId)).toEqual([undefined, undefined, "person:morgan", "person:morgan"]);
+    const block = renderKnownEntityHints(hints);
+    expect(block).toContain("- person:morgan — Morgan (person) — preferred id for this name");
+    expect(block).toContain("- concept:morgan — Morgan (concept) — duplicate name; reuse person:morgan unless this is a different thing");
+    expect(block).toContain("- place:maple-street — Maple Street (place)\n");
+    expect(selectKnownEntityHints("Morgan walked down Maple Street", [...graph].reverse())).toEqual(hints);
+  });
+
+  it("breaks an association tie with the ordinary deterministic order", () => {
+    const graph = [
+      { id: "person:morgan-a", name: "Morgan", type: "person", createdAt: "2026-01-01T00:00:00.000Z", associations: 3 },
+      { id: "person:morgan-b", name: "Morgan", type: "person", createdAt: "2026-02-01T00:00:00.000Z", associations: 3 },
+    ];
+    const hints = selectKnownEntityHints("Morgan called", graph);
+    expect(hints.map((hint) => [hint.id, hint.preferredId])).toEqual([["person:morgan-b", undefined], ["person:morgan-a", "person:morgan-b"]]);
+  });
+
   it("bounds how many hints reach the prompt", () => {
     const many = Array.from({ length: 200 }, (_, index) => ({
       id: `topic:curtain-${index}`,

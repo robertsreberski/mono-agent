@@ -23,6 +23,10 @@
   full, and recovery and rebuild keep full parity checks. Per-turn capture on a
   large store drops from seconds to well under two seconds of host CPU.
 
+- Memory capture tells the model which id to reuse when several known entities
+  share one name: the most-associated id is marked preferred and the others
+  point at it. Owner turns offer the canonical `person:owner` id first.
+
 - Keep `memory curate prepare` limited to rebuild-indexed lines and report
   skipped canonical-line counts by reason. Refuse unindexed selections before
   backup and show safe failure reasons after recovered apply errors.

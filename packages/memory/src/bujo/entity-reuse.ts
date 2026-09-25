@@ -27,6 +27,25 @@ interface ScoredHint {
   readonly entity: ExtractedEntity;
   readonly score: number;
   readonly createdAt: string;
+  readonly associations: number;
+}
+
+/**
+ * A reuse hint. When several known ids share one folded name, the first of
+ * them (most associations, then the ordinary deterministic order) is the
+ * preferred id and every other one names it in `preferredId`, so the model is
+ * told which id to reuse instead of being offered equal-looking aliases.
+ */
+export interface KnownEntityHint extends ExtractedEntity {
+  readonly preferredId?: string;
+}
+
+/** Known graph entity with its optional association count (graph usage). */
+export type KnownEntity = ExtractedEntity & { readonly createdAt?: string; readonly associations?: number };
+
+/** Case-, accent- and whitespace-insensitive name key used to spot duplicate ids. */
+export function foldEntityName(name: string): string {
+  return name.normalize("NFD").replace(/\p{M}/gu, "").toLocaleLowerCase("en-US").replace(/\s+/gu, " ").trim();
 }
 
 /**
@@ -51,9 +70,9 @@ function tokenize(value: string): Set<string> {
  */
 export function selectKnownEntityHints(
   text: string,
-  known: readonly (ExtractedEntity & { readonly createdAt?: string })[],
+  known: readonly KnownEntity[],
   limit: number = MAX_KNOWN_ENTITY_HINTS,
-): ExtractedEntity[] {
+): KnownEntityHint[] {
   if (limit <= 0) return [];
   const turnTokens = tokenize(text);
   if (turnTokens.size === 0) return [];
@@ -69,7 +88,8 @@ export function selectKnownEntityHints(
       if (turnTokens.has(token)) score += 1;
     }
     if (score === 0) continue;
-    scored.push({ entity, score, createdAt: entity.createdAt ?? "" });
+    const associations = typeof entity.associations === "number" && Number.isFinite(entity.associations) ? entity.associations : 0;
+    scored.push({ entity, score, createdAt: entity.createdAt ?? "", associations });
   }
 
   // Strongest overlap first, then most recent, then id — fully deterministic so
@@ -78,11 +98,30 @@ export function selectKnownEntityHints(
     || right.createdAt.localeCompare(left.createdAt)
     || left.entity.id.localeCompare(right.entity.id));
 
-  return scored.slice(0, limit).map(({ entity }) => (
-    entity.type === undefined
-      ? { id: entity.id, name: entity.name }
-      : { id: entity.id, name: entity.name, type: entity.type }
-  ));
+  // Ids sharing one folded name stay adjacent, most-associated first: the
+  // established node is the one the graph already uses, so it is the preferred
+  // reuse target. Same-name ids remain visible because two different people
+  // can share a first name; the model still decides.
+  const groups = new Map<string, ScoredHint[]>();
+  for (const hint of scored) {
+    const key = foldEntityName(hint.entity.name);
+    const group = groups.get(key);
+    if (group === undefined) groups.set(key, [hint]);
+    else group.push(hint);
+  }
+  const ordered: KnownEntityHint[] = [];
+  for (const group of groups.values()) {
+    // Stable sort keeps the ordinary order as the deterministic tie-break.
+    const members = [...group].sort((left, right) => right.associations - left.associations);
+    const preferred = members[0]!.entity.id;
+    for (const { entity } of members) {
+      const hint: KnownEntityHint = entity.type === undefined
+        ? { id: entity.id, name: entity.name }
+        : { id: entity.id, name: entity.name, type: entity.type };
+      ordered.push(members.length > 1 && entity.id !== preferred ? { ...hint, preferredId: preferred } : hint);
+    }
+  }
+  return ordered.slice(0, limit);
 }
 
 function clampName(name: string): string {
@@ -93,12 +132,15 @@ function clampName(name: string): string {
 }
 
 /** Render the reuse block, or an empty string when there is nothing to offer. */
-export function renderKnownEntityHints(hints: readonly ExtractedEntity[]): string {
+export function renderKnownEntityHints(hints: readonly KnownEntityHint[]): string {
   if (hints.length === 0) return "";
-  const lines = hints.map((hint) => (
-    hint.type === undefined
+  const duplicated = new Set(hints.flatMap((hint) => hint.preferredId === undefined ? [] : [hint.preferredId]));
+  const lines = hints.map((hint) => {
+    const base = hint.type === undefined
       ? `- ${hint.id} — ${clampName(hint.name)}`
-      : `- ${hint.id} — ${clampName(hint.name)} (${hint.type})`
-  ));
+      : `- ${hint.id} — ${clampName(hint.name)} (${hint.type})`;
+    if (hint.preferredId !== undefined) return `${base} — duplicate name; reuse ${hint.preferredId} unless this is a different thing`;
+    return duplicated.has(hint.id) ? `${base} — preferred id for this name` : base;
+  });
   return `\nKNOWN ENTITIES already in the graph, most relevant to this turn first:\n${lines.join("\n")}\n`;
 }
