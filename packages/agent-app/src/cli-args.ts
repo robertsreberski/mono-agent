@@ -158,6 +158,8 @@ export interface ParsedCliArgs {
   readonly reason?: string;
   /** memory forget prepare/apply: owner-private plan artifact. */
   readonly planPath?: string;
+  /** memory curate prepare: comma-separated source selection buckets. */
+  readonly curateSelect?: string;
   /** memory curate review: comma-separated action:reason category selectors. */
   readonly curateAccept?: string;
   /** memory curate review: comma-separated action:reason category selectors. */
@@ -222,6 +224,7 @@ const CLI_VALUE_FLAGS = new Set([
   "--agent",
   "--stale-after-ms",
   "--limit",
+  "--select",
   "--cursor",
   "--kind",
   "--about",
@@ -406,6 +409,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let idsFile: string | undefined;
   let reason: string | undefined;
   let planPath: string | undefined;
+  let curateSelect: string | undefined;
   let curateAccept: string | undefined;
   let curateReject: string | undefined;
   const curateMerges: string[] = [];
@@ -524,6 +528,14 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
           throw new Error(`--limit must be an integer between ${String(minimum)} and ${String(maximum)}.`);
         }
         limit = parsed;
+        break;
+      }
+      case "--select": {
+        const value = requireValue(rest, ++i, flag);
+        const buckets = value.split(",");
+        if (buckets.length > 4 || buckets.some((bucket) => !["recent", "repeated", "risky", "oldest"].includes(bucket))
+          || new Set(buckets).size !== buckets.length) throw new Error("--select requires distinct recent,repeated,risky,oldest buckets.");
+        curateSelect = value;
         break;
       }
       case "--cursor":
@@ -835,6 +847,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if ((limit !== undefined || cursor !== undefined) && cmd === "continuations" && (positionals[0] ?? "list") !== "list") {
     throw new Error("--limit and --cursor are only supported for `mono-agent continuations list`.");
   }
+  if (curateSelect !== undefined && (cmd !== "memory" || positionals[0] !== "curate" || positionals[1] !== "prepare")) {
+    throw new Error("--select requires `mono-agent memory curate prepare`.");
+  }
   if (cursor !== undefined && cmd !== "continuations") {
     throw new Error("--cursor is only supported for `mono-agent continuations list`.");
   }
@@ -1025,6 +1040,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(idsFile === undefined ? {} : { idsFile }),
     ...(reason === undefined ? {} : { reason }),
     ...(planPath === undefined ? {} : { planPath }),
+    ...(curateSelect === undefined ? {} : { curateSelect }),
     ...(curateAccept === undefined ? {} : { curateAccept }),
     ...(curateReject === undefined ? {} : { curateReject }),
     ...(curateMerges.length === 0 ? {} : { curateMerges }),

@@ -263,7 +263,7 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
       "mono-agent memory labels [--kind fact|preference|lesson] [--about entity] [--scope scope] [--json]\n" +
       "mono-agent memory lessons --propose [--json]\n" +
       "mono-agent memory entities --duplicates [--limit N] [--json]\n" +
-      "mono-agent memory curate prepare --plan <file> [--model provider:model] [--limit N] [--owner-backfill] [--dry-run]\n" +
+      "mono-agent memory curate prepare --plan <file> [--model provider:model] [--limit N] [--select recent,repeated,risky,oldest] [--owner-backfill] [--dry-run]\n" +
       "mono-agent memory curate review --plan <file> [--accept drop:generic-advice,label:*] [--reject id:<id>]\n" +
       "                  curate prepare|review also take [--merge <fromId>=<toId>]... [--merge-file <file>] [--allow-cross-type]\n" +
       "mono-agent memory curate apply --plan <file> | curate restore --backup <dir>\n" +
@@ -284,7 +284,7 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
       "adopt-replay is an explicit stopped-agent, SSH-safe BuJo trust-on-first-use",
       "operation. It returns metadata only and requires rebuild before restart.",
       "forget uses an explicit, content-free plan plus a full owner-private backup;",
-      "curate prepare selects at most 8192 lines (120 by default); apply checks only",
+      "curate prepare selects at most 8192 lines (120 by default) across recent, repeated, risky, and oldest buckets; --select oldest preserves chronological selection; apply checks only",
       "accepted source lines against the live store and requires a stopped agent.",
       "entities --duplicates is read-only: names held by several ids, with association",
       "counts. --merge adds pre-accepted operator merges (any name; other types only",

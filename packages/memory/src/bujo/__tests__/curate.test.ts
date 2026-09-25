@@ -13,6 +13,23 @@ function seed(path: string, id: string, text: string) {
     createdAt: "2026-07-12T10:00:00.000Z", refs: [] }, new Date("2026-07-12T10:00:00.000Z"));
 }
 describe("curation preparation", () => {
+  it("selects a bounded mix and preserves chronological compatibility on demand", () => {
+    const path = root();
+    for (let index = 0; index < 24; index++) seed(path, `fictional-${index}`, `Morgan noted demo item ${index}.`);
+    seed(path, "fictional-risk", "The demo credential needs review.");
+    seed(path, "fictional-repeat-a", "The Maple report finished with a dated result.");
+    seed(path, "fictional-repeat-b", "The Maple report finished with a dated result.");
+    const mix = inspectCurateSource(path, 8);
+    expect(mix.lines).toHaveLength(8);
+    expect(mix.selected.recent).toBeGreaterThan(0);
+    expect(mix.selected.repeated).toBeGreaterThan(0);
+    expect(mix.selected.risky).toBeGreaterThan(0);
+    expect(mix.selected.oldest).toBeGreaterThan(0);
+    expect(new Set(mix.lines.map(({ id }) => id)).size).toBe(8);
+    expect(inspectCurateSource(path, 2, "oldest").lines.map(({ id }) => id)).toEqual(["fictional-0", "fictional-1"]);
+    expect(inspectCurateSource(path, 4, "risky").lines.map(({ id }) => id)).toEqual(["fictional-risk"]);
+    expect(() => inspectCurateSource(path, 2, "oldest,oldest")).toThrow(/invalid selection/u);
+  });
   it("allows 8192 selected lines but refuses 8193", () => {
     const path = root();
     expect(inspectCurateSource(path, 8192).lines).toEqual([]);

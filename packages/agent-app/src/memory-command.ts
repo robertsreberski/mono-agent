@@ -116,6 +116,7 @@ export interface RunMemoryCommandInput {
   readonly limit?: number;
   readonly idsFile?: string;
   readonly reason?: string;
+  readonly curateSelect?: string;
   readonly curateAccept?: string;
   readonly curateReject?: string;
   /** Operator entity merges (`fromId=toId`) for curate prepare/review. */
@@ -309,6 +310,9 @@ function memoryCommandUsageError(input: RunMemoryCommandInput): string | undefin
   }
   if (input.limit !== undefined && subcommand !== "stats" && subcommand !== "search" && subcommand !== "top" && subcommand !== "entities" && !(subcommand === "curate" && rest[0] === "prepare")) {
     return "--limit is only supported for memory stats, search, top, entities, and curate prepare.";
+  }
+  if (input.curateSelect !== undefined && !(subcommand === "curate" && rest[0] === "prepare")) {
+    return "--select requires `mono-agent memory curate prepare`.";
   }
   const operatorMerges = (input.curateMerges?.length ?? 0) > 0 || input.curateMergeFile !== undefined;
   if ((operatorMerges || input.allowCrossType === true) && !(subcommand === "curate" && (rest[0] === "prepare" || rest[0] === "review"))) {
@@ -3024,7 +3028,7 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       const ownerAssociations = ownerScan?.associations ?? [];
       // `--limit 0` prepares only the operator merges / owner backfill: no line is sent to a model.
       const modelPass = input.limit !== 0;
-      const inspected = bujo.inspectCurateSource(root, modelPass ? input.limit ?? 120 : 1);
+      const inspected = bujo.inspectCurateSource(root, modelPass ? input.limit ?? 120 : 1, input.curateSelect);
       const snapshot = modelPass ? inspected : { ...inspected, lines: [] };
       bujo.previewCurateMutations(root, [], undefined, operatorMerges, ownerAssociations);
       if (Buffer.byteLength(JSON.stringify(snapshot.lines), "utf8") > MAX_CURATE_PLAN_BYTES / 2) {
@@ -3033,9 +3037,9 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       const estimate = bujo.curateEstimate(snapshot, memory.capture);
       const model = input.model ?? memory.llm?.model ?? (modelPass ? undefined : "none");
       if (model === undefined) throw new Error("memory LLM not configured");
-      const estimateText = `Curate estimate: ${estimate.lines} lines, ${estimate.calls} calls, ~${estimate.inputTokens} input / ~${estimate.outputTokens} output tokens; cost unknown. Skipped canonical lines: ${JSON.stringify(snapshot.skipped)}.\n`;
+      const estimateText = `Curate estimate: ${estimate.lines} lines, ${estimate.calls} calls, ~${estimate.inputTokens} input / ~${estimate.outputTokens} output tokens; cost unknown. Selected buckets: ${JSON.stringify(modelPass ? snapshot.selected : {})}. Skipped canonical lines: ${JSON.stringify(snapshot.skipped)}.\n`;
       if (input.dryRun) {
-        write(input.json, { operation: "curate-prepare", status: "estimated", model, estimate, skipped: snapshot.skipped,
+        write(input.json, { operation: "curate-prepare", status: "estimated", model, estimate, skipped: snapshot.skipped, selected: modelPass ? snapshot.selected : {},
           ...(ownerScan === undefined ? {} : { ownerBackfill: ownerScan.counts }) },
           () => `${estimateText}${ownerScan === undefined ? "" : `Owner backfill: ${JSON.stringify(ownerScan.counts)}.\n`}`);
         return 0;
@@ -3070,7 +3074,7 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
         discarded.filter((item) => item.reason === reason).length]));
       write(input.json, { operation: "curate-prepare", status: "prepared", planPath, count: proposals.length,
         operatorMerges: operatorMerges.length, ...(ownerScan === undefined ? {} : { ownerBackfill: ownerScan.counts }),
-        discarded: discarded.length, discardedByReason, skipped: snapshot.skipped },
+        discarded: discarded.length, discardedByReason, skipped: snapshot.skipped, selected: modelPass ? snapshot.selected : {} },
         () => `Curate plan prepared: ${proposals.length} proposals, ${operatorMerges.length} operator merges, ${ownerScan === undefined ? "" : `${ownerAssociations.length} owner associations (${JSON.stringify(ownerScan.counts)}), `}${discarded.length} discarded (${JSON.stringify(discardedByReason)}); skipped canonical lines: ${JSON.stringify(snapshot.skipped)} at ${planPath}. Review before applying.\n`);
       return 0;
     }

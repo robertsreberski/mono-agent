@@ -2016,6 +2016,9 @@ describe("memory curate operator CLI", () => {
     expect(parseCliArgs(["memory", "curate", "review", "--plan", "plan.json", "--accept", "drop:generic-advice,label:*", "--reject", "id:fictional-a"]))
       .toMatchObject({ curateAccept: "drop:generic-advice,label:*", curateReject: "id:fictional-a" });
     expect(parseCliArgs(["memory", "curate", "prepare", "--limit", "8192"]).limit).toBe(8192);
+    expect(parseCliArgs(["memory", "curate", "prepare", "--select", "risky,repeated"]).curateSelect).toBe("risky,repeated");
+    expect(() => parseCliArgs(["memory", "curate", "prepare", "--select", "risky,risky"])).toThrow(/--select/u);
+    expect(() => parseCliArgs(["memory", "curate", "review", "--select", "oldest"])).toThrow(/--select/u);
     expect(() => parseCliArgs(["memory", "curate", "prepare", "--limit", "8193"])).toThrow();
     expect(() => parseCliArgs(["memory", "forget", "prepare", "--model", "openai-codex:gpt-6-sol"])).toThrow(/--model/u);
   });
@@ -2045,7 +2048,8 @@ describe("memory curate operator CLI", () => {
       "memory", "curate", "prepare", "--plan", plan, "--dry-run", "--json",
     ]))));
     expect(result.code, result.stderr).toBe(0);
-    expect(JSON.parse(result.stdout)).toMatchObject({ status: "estimated", estimate: { lines: 1, calls: 1, cost: "unknown" }, skipped: { raw: 1 } });
+    expect(JSON.parse(result.stdout)).toMatchObject({ status: "estimated", estimate: { lines: 1, calls: 1, cost: "unknown" }, skipped: { raw: 1 },
+      selected: { recent: 1, repeated: 0, risky: 0, oldest: 0 } });
     await expect(stat(plan)).rejects.toThrow();
   });
 });
