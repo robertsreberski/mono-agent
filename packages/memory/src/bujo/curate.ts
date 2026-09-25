@@ -171,6 +171,7 @@ export async function proposeCurate(snapshot: CurateSnapshot, llm: LlmComplete, 
   const output: CurateProposal[] = [];
   const discarded: CurateDiscard[] = [];
   let consecutiveModelErrorBatches = 0;
+  let anyBatchSucceeded = false;
   const byId = new Map(snapshot.lines.map((line) => [line.id, line]));
   for (let offset = 0; offset < snapshot.lines.length; offset += BATCH) {
     const batch = snapshot.lines.slice(offset, offset + BATCH);
@@ -201,9 +202,11 @@ export async function proposeCurate(snapshot: CurateSnapshot, llm: LlmComplete, 
       if (failure === "model-error") {
         consecutiveModelErrorBatches++;
         // A dead endpoint or missing model must not produce an all-discarded,
-        // apparently successful plan. One isolated failed batch may be skipped,
-        // but two consecutive failures need operator intervention.
-        if (offset === 0 || consecutiveModelErrorBatches >= 2) {
+        // apparently successful plan: before any batch has succeeded, the first
+        // failed batch (or two in a row) aborts. Once a batch has succeeded the
+        // run is known to work, so later failed batches are discarded and the
+        // paid work already done is kept.
+        if (!anyBatchSucceeded && (offset === 0 || consecutiveModelErrorBatches >= 2)) {
           throw new Error("memory-curate: model unavailable");
         }
       } else {
@@ -213,6 +216,7 @@ export async function proposeCurate(snapshot: CurateSnapshot, llm: LlmComplete, 
       continue;
     }
     consecutiveModelErrorBatches = 0;
+    anyBatchSucceeded = true;
     const seen = new Set<string>();
     for (const item of parsed as unknown[]) {
       if (item === null || typeof item !== "object" || Array.isArray(item)) {

@@ -76,14 +76,16 @@ describe("curation preparation", () => {
       unavailableCalls++; throw new Error("fetch failed");
     } })).rejects.toThrow("memory-curate: model unavailable");
     expect(unavailableCalls).toBe(2);
+    // After one batch succeeded, later outages keep the paid work: failed batches are discarded, not fatal.
     let consecutiveCalls = 0;
-    await expect(proposeCurate({ ...snapshot, lines: [...snapshot.lines, ...snapshot.lines.slice(0, 12)] },
+    const partial = await proposeCurate({ ...snapshot, lines: [...snapshot.lines, ...snapshot.lines.slice(0, 12)] },
       { id: "fake", complete: async (prompt) => {
         consecutiveCalls++;
         if (consecutiveCalls > 1) throw new Error("model endpoint unavailable");
         return JSON.stringify((JSON.parse(prompt) as { lines: { id: string }[] }).lines.map(({ id }) => ({ id, action: "keep" })));
-      } })).rejects.toThrow("memory-curate: model unavailable");
-    expect(consecutiveCalls).toBe(5);
+      } });
+    expect(partial.proposals.length).toBeGreaterThan(0);
+    expect(partial.discarded.some(({ reason }) => reason === "model-error")).toBe(true);
     await expect(proposeCurate(snapshot, { id: "fake", complete: async () => { throw new Error("unauthorized"); } })).rejects.toThrow("unauthorized");
     let invalidCalls = 0;
     const invalid = await proposeCurate({ ...snapshot, lines: snapshot.lines.slice(0, 1) }, { id: "fake", complete: async () => {
