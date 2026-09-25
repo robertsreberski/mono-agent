@@ -15,7 +15,10 @@ import { appendBullet, dailyFilePath, rewriteBullet } from "../daily.js";
 import { parseDailyFile, serializeBullet } from "../grammar.js";
 import { labelsOf, withMemoryLabels } from "../labels.js";
 import { auditCanonicalGraphParity } from "../graph-parity.js";
-import { appendEntity, appendGraphBatch, readGraph } from "../graph.js";
+import {
+  appendEntity, appendGraphBatch, establishCaptureGraphBaseline, readGraph,
+  replaceDbCanonicalGraphProjectionWithParity,
+} from "../graph.js";
 import { readCanonicalFileSnapshot } from "../path-safety.js";
 import {
   assertCanonicalGraphRepairBaseParity,
@@ -400,7 +403,12 @@ describe("capture outbox", () => {
         record: memoryRecord(added, file),
         vector: index === 0 ? [1, 0] : [0, 1],
         threads: [{ src: added.id, dst: targets[index]!.id, weight: 0.8 }],
-      }], {}, NOW.toISOString());
+      }], {
+        entities: [{ id: `person:batch-${index}`, name: index === 0 ? "First" : "Second",
+          type: "person", createdAt: NOW.toISOString() }],
+        associations: [{ memoryId: added.id, entityId: `person:batch-${index}`,
+          provenance: "capture", createdAt: NOW.toISOString() }],
+      }, NOW.toISOString());
     });
     const db = openMemoryDb({
       path: join(root, "memory.db"),
@@ -412,8 +420,12 @@ describe("capture outbox", () => {
         targets.map((target) => memoryRecord(target, file)),
         [[1, 0], [0, 1]],
       );
-
+      establishCaptureGraphBaseline(db);
       expect(replayCaptureOutbox(root, db)).toHaveLength(2);
+      const afterBatch = db.canonicalGraphSnapshot();
+      replaceDbCanonicalGraphProjectionWithParity(root, db, assertCanonicalGraphRepairBaseParity);
+      expect(db.canonicalGraphSnapshot()).toEqual(afterBatch);
+      expect(afterBatch.associations).toHaveLength(4);
 
       expect(readReplayProjectionStrict(root).projection.threads.map(({ src, dst }) => ({ src, dst })))
         .toEqual([

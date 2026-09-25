@@ -16,6 +16,21 @@ import {
 
 const GRAPH_FILE = "graph.jsonl";
 const INVALID_GRAPH_STRING = /[\p{Cc}\p{Cf}\p{Cs}]/u;
+const startupRepairedWriters = new WeakSet<MemoryDb>();
+
+/** Called only after startup recovery and a successful full graph parity repair. */
+export function establishCaptureGraphBaseline(db: MemoryDb): void {
+  startupRepairedWriters.add(db);
+}
+
+export function hasCaptureGraphBaseline(db: MemoryDb): boolean {
+  return startupRepairedWriters.has(db);
+}
+
+/** Invalidate the fast path after a post-commit race or an unprojected write. */
+export function clearCaptureGraphBaseline(db: MemoryDb): void {
+  startupRepairedWriters.delete(db);
+}
 
 type GraphLine =
   | ({ readonly kind: "entity" } & EntityRecord)
@@ -244,6 +259,84 @@ export function projectCanonicalGraph(
     collectionSupports,
     derivedLegacyAssociations,
   };
+}
+
+/**
+ * Capture-only delta projection. The writable store proves full graph/memory parity
+ * on startup; each pending receipt then owns exactly these touched rows. A crash
+ * before the atomic SQLite delta leaves the receipt pending, so replay recomputes
+ * the same rows. Full parity remains the authority for startup, rebuild and audit.
+ * A renamed/new entity also invalidates legacy matches in other memories, which
+ * are included below; canonical associations suppress derivation for that memory.
+ */
+export function applyCaptureGraphDelta(
+  root: string,
+  db: MemoryDb,
+  changedMemoryIds: readonly string[],
+  changedEntityIds: readonly string[],
+  changedRelations: readonly EntityRelationRecord[],
+): void {
+  const source = readCanonicalGraphStrictSnapshot(root);
+  const snapshot = db.canonicalGraphSnapshot();
+  const memories = snapshot.memories;
+  const entityById = new Map(source.records.entities.map((entity) => [entity.id, entity]));
+  const touched = new Set(changedMemoryIds);
+  const changedNames = new Set<string>();
+  for (const id of changedEntityIds) {
+    const current = db.getEntity(id);
+    const next = entityById.get(id);
+    if (current?.name !== next?.name) {
+      if (current !== undefined) changedNames.add(normalizedNameWords(current.name).join("\0"));
+      if (next !== undefined) changedNames.add(normalizedNameWords(next.name).join("\0"));
+    }
+  }
+  if (changedNames.size > 0) {
+    const names = [...changedNames].filter(Boolean).map((name) => name.split("\0"));
+    for (const memory of memories) {
+      const words = normalizedNameWords(memory.text);
+      if (names.some((name) => containsPhrase(words, name))) touched.add(memory.id);
+    }
+  }
+  for (const association of snapshot.associations) {
+    if (changedEntityIds.includes(association.entityId)) touched.add(association.memoryId);
+  }
+  const selectedMemories = memories.filter((memory) => touched.has(memory.id));
+  const selectedAssociations = source.records.associations.filter((association) => touched.has(association.memoryId));
+  const projection = projectCanonicalGraph({
+    entities: source.records.entities,
+    relations: [],
+    associations: selectedAssociations,
+  }, selectedMemories);
+  const requiredEntityIds = new Set(changedEntityIds);
+  for (const relation of changedRelations) {
+    requiredEntityIds.add(relation.src);
+    requiredEntityIds.add(relation.dst);
+  }
+  for (const association of projection.associations) requiredEntityIds.add(association.entityId);
+  const selectedEntities = source.records.entities.filter((entity) => requiredEntityIds.has(entity.id));
+  const supports = projection.collectionSupports.map((support) => ({
+    ...support,
+    weight: 1,
+    createdAt: projection.associations.find((association) => (
+      association.memoryId === support.memoryId && association.entityId === support.entityId
+    ))!.createdAt,
+  }));
+  db.applyCanonicalGraphDelta(selectedMemories, {
+    entities: selectedEntities,
+    relations: changedRelations,
+    associations: projection.associations,
+    supports,
+  });
+  try {
+    if (!sameCanonicalGraphSourceSnapshot(source, readCanonicalGraphStrictSnapshot(root))) {
+      throw new Error("memory-graph: canonical graph source changed during capture delta.");
+    }
+  } catch (error) {
+    // SQLite already committed. A failed source fence requires a guarded total
+    // replacement on the next retry, not another narrow projection.
+    clearCaptureGraphBaseline(db);
+    throw error;
+  }
 }
 
 /**

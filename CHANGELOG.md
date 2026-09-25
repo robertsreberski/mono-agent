@@ -17,6 +17,12 @@
   question and lead the next unrelated hit by a clear score margin. First-person
   questions on owner turns read as the owner.
 
+- Write only the touched memories and entities to the BuJo graph index after each
+  capture, Remember or migrate decision once startup repair has proven the base,
+  instead of replacing the whole projection; the canonical graph is still read in
+  full, and recovery and rebuild keep full parity checks. Per-turn capture on a
+  large store drops from seconds to well under two seconds of host CPU.
+
 - Keep `memory curate prepare` limited to rebuild-indexed lines and report
   skipped canonical-line counts by reason. Refuse unindexed selections before
   backup and show safe failure reasons after recovered apply errors.

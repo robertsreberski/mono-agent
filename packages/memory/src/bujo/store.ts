@@ -22,7 +22,12 @@ import { findCanonicalMemoryBullet, REMEMBER_ID_PREFIX } from "./canonical-looku
 import { assertBoundedMemoryText } from "./text-safety.js";
 import { parseDailyFile } from "./grammar.js";
 import { serializeBullet } from "./grammar.js";
-import { replaceDbCanonicalGraphProjectionWithParity } from "./graph.js";
+import {
+  applyCaptureGraphDelta,
+  clearCaptureGraphBaseline,
+  establishCaptureGraphBaseline,
+  replaceDbCanonicalGraphProjectionWithParity,
+} from "./graph.js";
 import {
   assertCanonicalGraphRepairBaseParity,
   auditCanonicalIndexHealth,
@@ -381,6 +386,7 @@ export class BujoMemoryStore implements MemoryStore {
             opened,
             assertCanonicalGraphRepairBaseParity,
           );
+          establishCaptureGraphBaseline(opened);
         } else {
           const replay = replayProjectionDbSnapshot(opened);
           if (replay.terminals.length > 0 || replay.supersedes.length > 0 || replay.threads.length > 0) {
@@ -711,11 +717,15 @@ export class BujoMemoryStore implements MemoryStore {
               if (outcome.inserted || !this.db.hasVector(record.id)) this.enqueueIndex(record);
             } else if (this._tier === "bujo") {
               this.db.commitPreparedUpserts([record], [preparedVector]);
+              // Remember bypasses the capture outbox. Keep legacy name matches
+              // exact before a later capture relies on the startup graph base.
+              applyCaptureGraphDelta(this.root, this.db, [record.id], [], []);
             } else {
               // Lite is FTS-only and has no vector to commit.
               this.db.upsertLexical(record);
             }
           } catch (error) {
+            if (this._tier === "bujo") clearCaptureGraphBaseline(this.db);
             // The canonical fact is durable whether this invocation appended it
             // or recovered it. State, not per-call byte delta, determines what
             // callers may truthfully report after projection fails.

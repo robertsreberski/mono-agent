@@ -619,6 +619,44 @@ export class MemoryDbGraph extends MemoryDbMaintenance {
     return tx();
   }
 
+  /** Atomically mirror only graph records and memory-derived rows affected by a capture intent. */
+  applyCanonicalGraphDelta(
+    expectedMemories: readonly CanonicalGraphMemoryRecord[],
+    projection: CanonicalGraphReplacement,
+  ): void {
+    const normalized = validateCanonicalGraphReplacement(expectedMemories, projection);
+    this.db.transaction(() => {
+      for (const expected of normalized.memories) {
+        const current = this.db.prepare(
+          `SELECT status, text, created_at FROM memories WHERE id = ?`,
+        ).get(expected.id) as { status: string; text: string; created_at: string } | undefined;
+        if (current === undefined || current.status !== expected.status
+          || current.text !== expected.text || current.created_at !== expected.createdAt) {
+          throw new Error("memory-store: canonical graph delta lost memory compare-and-swap.");
+        }
+      }
+      for (const entity of normalized.entities) this.mirrorCanonicalEntity(entity);
+      for (const relation of normalized.relations) this.mirrorCanonicalRelation(relation);
+      const deleteAssociations = this.db.prepare(`DELETE FROM memory_entities WHERE memory_id = ?`);
+      const deleteSupports = this.db.prepare(`DELETE FROM edges WHERE src = ? AND kind IN ('supports','about')`);
+      const setCollection = this.db.prepare(`UPDATE memories SET collection = ? WHERE id = ?`);
+      for (const memory of normalized.memories) {
+        deleteAssociations.run(memory.id);
+        deleteSupports.run(memory.id);
+        if (setCollection.run(null, memory.id).changes !== 1) {
+          throw new Error("memory-store: canonical graph delta lost memory endpoint.");
+        }
+      }
+      for (const association of normalized.associations) this.mirrorCanonicalAssociation(association);
+      for (const support of normalized.supports) {
+        this.addEdge(support.memoryId, support.entityId, "supports", support.weight, support.createdAt);
+        if (setCollection.run(support.collection, support.memoryId).changes !== 1) {
+          throw new Error("memory-store: canonical graph delta lost support endpoint.");
+        }
+      }
+    })();
+  }
+
   /** Provider-free graph inventory and derivation inputs from one SQLite read transaction. */
   canonicalGraphSnapshot(): CanonicalGraphSnapshot {
     return this.db.transaction((): CanonicalGraphSnapshot => {
