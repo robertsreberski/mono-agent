@@ -22,11 +22,9 @@ import type { EmbeddingProvider } from "../search/index.js";
 import { normalizedContentHash } from "./daily.js";
 import { labelsOf, readableLabelsOf } from "./labels.js";
 import type { IndexedMemoryLabel } from "../store/db-labels.js";
-import { isRememberedMemoryId } from "./canonical-lookup.js";
 import { hasDuplicateLabelRefsMetadata, parseDailyFile } from "./grammar.js";
 import {
   emptyCanonicalGraphProjection,
-  isLegacyHostObservation,
   parseCanonicalGraphStrict,
   projectCanonicalGraph,
   readGraph,
@@ -72,6 +70,7 @@ import {
   assertStrictBulletRaw,
   isLegacySourceRecord,
   isMissingOnlyIdentity,
+  isSkippedRawBujoRecord,
 } from "./rebuild-source-validation.js";
 import {
   acquireSqliteWriterFences,
@@ -1316,8 +1315,7 @@ function buildPlan(
     // identity outranks a prose sniff: a remembered fact that happens to open
     // with the legacy host-audit wording must not vanish on rebuild.
     if (tier === "bujo"
-      && !isRememberedMemoryId(record.id, record.text)
-      && isLegacyHostObservation(record.text)) {
+      && isSkippedRawBujoRecord(record.id, record.text)) {
       skippedRawRecords += 1;
       continue;
     }

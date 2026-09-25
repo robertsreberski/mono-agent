@@ -2025,6 +2025,9 @@ describe("memory curate operator CLI", () => {
     bujoMemory.appendBullet(memoryRoot, { id: "fictional-a", type: "note", status: "open",
       text: "Morgan completed the example.", salience: 0.5, isInsight: false,
       createdAt: "2026-07-12T10:00:00.000Z", refs: [] }, new Date("2026-07-12T10:00:00.000Z"));
+    bujoMemory.appendBullet(memoryRoot, { id: "fictional-raw", type: "note", status: "open",
+      text: "Host-observed completed turn. Fictional audit envelope.", salience: 0.5, isInsight: false,
+      createdAt: "2026-07-12T10:00:00.000Z", refs: [] }, new Date("2026-07-12T10:00:00.000Z"));
     const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
       embeddings: { provider: "ollama", model: "test-embed", dim: 8 }, llm: { provider: "ollama", model: "test-capture" } } });
     const plan = join(dir, "plan.json");
@@ -2042,7 +2045,7 @@ describe("memory curate operator CLI", () => {
       "memory", "curate", "prepare", "--plan", plan, "--dry-run", "--json",
     ]))));
     expect(result.code, result.stderr).toBe(0);
-    expect(JSON.parse(result.stdout)).toMatchObject({ status: "estimated", estimate: { lines: 1, calls: 1, cost: "unknown" } });
+    expect(JSON.parse(result.stdout)).toMatchObject({ status: "estimated", estimate: { lines: 1, calls: 1, cost: "unknown" }, skipped: { raw: 1 } });
     await expect(stat(plan)).rejects.toThrow();
   });
 });
@@ -2146,18 +2149,35 @@ describe("curate crash recovery CLI", { timeout: 30_000 }, () => {
       expect(JSON.parse(refused.stdout).code).toBe("curate_apply_failed");
       expect(bujoMemory.readBujoCanonicalSourceFingerprint(memoryRoot)).toBe(payload.sourceFingerprint);
     } finally { await competing.close(); }
+    const originalFailure = new Error("memory-curate: source changed");
     await expect(bujoMemory.applyExplicitMemoryCurate({ root: memoryRoot, proposals: [proposal],
       expectedRootFingerprint: rootFingerprint, expectedSourceFingerprint: payload.sourceFingerprint,
       planDigest: selectedDigest, embeddings, dimension: 8,
-      hooks: { afterMutation: () => { throw new Error("simulate crash"); },
+      hooks: { afterMutation: () => { throw originalFailure; },
         afterRootQuarantined: () => { throw new Error("interrupt recovery"); } } }))
-      .rejects.toMatchObject({ code: "apply_recovery_failed", backupPath: expect.any(String) });
+      .rejects.toMatchObject({ code: "apply_recovery_failed", cause: originalFailure, backupPath: expect.any(String),
+        recoveryError: expect.objectContaining({ message: "interrupt recovery" }) });
     expect(bujoMemory.readBujoCanonicalSourceFingerprint(memoryRoot)).not.toBe(payload.sourceFingerprint);
     const recovered = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
       runCli(["memory", "curate", "apply", "--plan", planPath, "--json"]))));
     expect(recovered.code).toBe(1);
     expect(JSON.parse(recovered.stdout)).toMatchObject({ code: "curate_apply_failed_recovered", backupPath: expect.any(String) });
     expect(bujoMemory.readBujoCanonicalSourceFingerprint(memoryRoot)).toBe(payload.sourceFingerprint);
+    bujoMemory.appendBullet(memoryRoot, { id: "fictional-unindexed", type: "note", status: "open",
+      text: "Morgan completed a later fictional task.", salience: 0.5, isInsight: false,
+      createdAt: "2026-07-12T10:00:00.000Z", refs: [] }, new Date("2026-07-12T10:00:00.000Z"));
+    const unindexed = { source: bujoMemory.inspectCurateSource(memoryRoot).lines.find(({ id }) => id === "fictional-unindexed")!,
+      action: "drop" as const, reason: "generic-advice" as const, accepted: true };
+    const later = { ...payload, sourceFingerprint: bujoMemory.readBujoCanonicalSourceFingerprint(memoryRoot), proposals: [unindexed] };
+    const laterDigest = createHash("sha256").update(JSON.stringify({ ...later,
+      proposals: later.proposals.map(({ accepted: _accepted, ...immutable }) => immutable) })).digest("hex");
+    await writeFile(planPath, JSON.stringify({ ...later, planDigest: laterDigest }), { mode: 0o600 });
+    const backupsBefore = (await readdir(join(memoryRoot, ".."))).filter((name) => name.includes("curate-backup"));
+    const refused = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "curate", "apply", "--plan", planPath, "--json"]))));
+    expect(JSON.parse(refused.stdout)).toMatchObject({ code: "curate_apply_failed",
+      reason: "memory-curate: selected id is not in the active index" });
+    expect((await readdir(join(memoryRoot, ".."))).filter((name) => name.includes("curate-backup"))).toEqual(backupsBefore);
   });
 });
 

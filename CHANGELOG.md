@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep `memory curate prepare` limited to rebuild-indexed lines and report
+  skipped canonical-line counts by reason. Refuse unindexed selections before
+  backup and show safe failure reasons after recovered apply errors.
+
 - Memory recall gives a name match a smaller bonus (`0.08`) than an exact
   number or date (`0.15`), so records that only share a person's name no longer
   outscore true answers to other questions.

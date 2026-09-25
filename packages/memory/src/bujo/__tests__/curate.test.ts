@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -26,6 +26,19 @@ describe("curation preparation", () => {
     const expanded = { ...snapshot, entityNames: [{ id: "person:morgan", name: "Morgan Example Name" }] };
     expect(curateEstimate(expanded, { focus: "Skip transient fictional status updates." }).inputTokens)
       .toBeGreaterThan(curateEstimate(snapshot).inputTokens);
+  });
+  it("excludes rebuild-skipped canonical records before the selection limit and reports counts", () => {
+    const path = root();
+    seed(path, "fictional-raw", "Host-observed completed turn. Fictional audit envelope.");
+    seed(path, "fictional-live", "Morgan completed a fictional task.");
+    appendFileSync(join(path, "daily/2026-07-12.md"), [
+      "- ◦ Unstructured fictional note.",
+      "- – Fictional missing identity.  <!--mem type=note status=open salience=0.6 isInsight=0 created=2026-07-12T09:00:00.000Z refs=-->",
+      "",
+    ].join("\n"));
+    const snapshot = inspectCurateSource(path, 1);
+    expect(snapshot.lines.map(({ id }) => id)).toEqual(["fictional-live"]);
+    expect(snapshot.skipped).toMatchObject({ raw: 1, unstructured: 1, missingIdentity: 1 });
   });
   it("rejects unsupported legacy label authority and invalid rewrites", async () => {
     const path = root(); seed(path, "fictional-a", "Morgan completed the example.");
@@ -130,6 +143,42 @@ describe("curation preparation", () => {
 });
 
 describe("durable curation apply", { timeout: 20_000 }, () => {
+  it("refuses a canonical but unindexed proposal before backup and retains the original failure after recovery", async () => {
+    const { createHash } = await import("node:crypto");
+    const { mkdirSync, realpathSync, readdirSync } = await import("node:fs");
+    const { initializeReplayProjection, readBujoCanonicalSourceFingerprint } = await import("../replay-projection.js");
+    const { safeRebuildMemoryIndex } = await import("../rebuild.js");
+    const { fakeEmbeddings } = await import("./helpers.js");
+    const { applyExplicitMemoryCurate } = await import("../explicit-curate.js");
+    const parent = root(); const path = join(parent, "memory"); mkdirSync(path, { mode: 0o700 });
+    initializeReplayProjection(path);
+    seed(path, "fictional-live", "Morgan finished a fictional task.");
+    seed(path, "fictional-raw", "Host-observed completed turn. Fictional audit envelope.");
+    const embeddings = fakeEmbeddings(16);
+    const rebuilt = await safeRebuildMemoryIndex({ root: path, tier: "bujo", embeddings, dim: 16 });
+    expect(rebuilt.skippedRawRecords).toBe(1);
+    const fingerprint = createHash("sha256").update(realpathSync(path)).digest("hex");
+    const source = { ...inspectCurateSource(path).lines[0]!, id: "fictional-raw",
+      text: "Host-observed completed turn. Fictional audit envelope.",
+      textHash: createHash("sha256").update("Host-observed completed turn. Fictional audit envelope.").digest("hex") };
+    // Use the actual canonical line location, not the index (which correctly omits it).
+    const { parseDailyFile } = await import("../grammar.js");
+    const { readFileSync } = await import("node:fs");
+    const raw = parseDailyFile(readFileSync(join(path, "daily/2026-07-12.md"), "utf8")).lines.find((line) => line.bullet?.id === "fictional-raw")!;
+    const proposal = { source: { ...source, line: raw.lineNumber }, action: "drop" as const, reason: "generic-advice" as const, accepted: true };
+    const base = { root: path, proposals: [proposal], expectedRootFingerprint: fingerprint,
+      expectedSourceFingerprint: readBujoCanonicalSourceFingerprint(path),
+      planDigest: createHash("sha256").update("fictional-unindexed").digest("hex"), embeddings, dimension: 16 };
+    await expect(applyExplicitMemoryCurate(base)).rejects.toMatchObject({ code: "apply_failed",
+      cause: expect.objectContaining({ message: "memory-curate: selected id is not in the active index" }) });
+    expect(readdirSync(parent).filter((name) => name.includes("curate-backup"))).toEqual([]);
+    const live = inspectCurateSource(path).lines[0]!;
+    const failure = new Error("memory-curate: source changed");
+    await expect(applyExplicitMemoryCurate({ ...base, proposals: [{ source: live, action: "drop", reason: "generic-advice", accepted: true }],
+      hooks: { afterTransactionDurable: () => { throw failure; } } })).rejects.toMatchObject({
+      code: "apply_failed_recovered", cause: failure, backupPath: expect.any(String),
+    });
+  });
   it("accepts unrelated live captures and status changes but rejects changed selected lines before backup", async () => {
     const { mkdirSync, realpathSync, readdirSync } = await import("node:fs");
     const { createHash } = await import("node:crypto");
