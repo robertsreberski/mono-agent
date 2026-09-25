@@ -514,4 +514,37 @@ describe("operator entity merges", { timeout: 20_000 }, () => {
     const db = openMemoryDb({ path: resolveActiveMemoryDbPath(path), readOnly: true, dim: 16 });
     try { expect(auditCanonicalGraphParity(path, db).status).toBe("match"); } finally { db.close(); }
   });
+
+  it("creates the canonical person:owner target when an operator merges into it before capture minted it", async () => {
+    const { mkdirSync, realpathSync } = await import("node:fs");
+    const { createHash } = await import("node:crypto");
+    const { appendGraphBatch, readCanonicalGraphStrictSnapshot } = await import("../graph.js");
+    const { initializeReplayProjection, readBujoCanonicalSourceFingerprint } = await import("../replay-projection.js");
+    const { safeRebuildMemoryIndex } = await import("../rebuild.js");
+    const { fakeEmbeddings } = await import("./helpers.js");
+    const { applyExplicitMemoryCurate } = await import("../explicit-curate.js");
+    const { previewCurateMutations } = await import("../curate.js");
+    const { auditCanonicalGraphParity } = await import("../graph-parity.js");
+    const { openMemoryDb } = await import("../../store/index.js");
+    const { resolveActiveMemoryDbPath } = await import("../generations.js");
+    const parent = root(); const path = join(parent, "memory"); mkdirSync(path, { mode: 0o700 });
+    initializeReplayProjection(path);
+    seed(path, "fictional-a", "The user planned the Maple project.");
+    appendGraphBatch(path, { ...morganGraph, associations: [
+      { memoryId: "fictional-a", entityId: "person:the-user", provenance: "capture", createdAt: at }] });
+    // Only the host-owner id may be a not-yet-existing target.
+    expect(() => previewCurateMutations(path, [], undefined, [merge("person:the-user", "person:absent")])).toThrow(/unknown entity/u);
+    const embeddings = fakeEmbeddings(16);
+    await safeRebuildMemoryIndex({ root: path, tier: "bujo", embeddings, dim: 16 });
+    await applyExplicitMemoryCurate({ root: path, proposals: [], operatorMerges: [merge("person:the-user", "person:owner")],
+      expectedRootFingerprint: createHash("sha256").update(realpathSync(path)).digest("hex"),
+      expectedSourceFingerprint: readBujoCanonicalSourceFingerprint(path), planDigest: createHash("sha256").update("owner-plan").digest("hex"),
+      embeddings, dimension: 16, now: () => new Date(at) });
+    const graph = readCanonicalGraphStrictSnapshot(path).records;
+    expect(graph.entities).toContainEqual({ id: "person:owner", name: "Owner", type: "person", createdAt: at });
+    expect(graph.entities.map(({ id }) => id)).not.toContain("person:the-user");
+    expect(graph.associations.map(({ entityId }) => entityId)).toEqual(["person:owner"]);
+    const db = openMemoryDb({ path: resolveActiveMemoryDbPath(path), readOnly: true, dim: 16 });
+    try { expect(auditCanonicalGraphParity(path, db).status).toBe("match"); } finally { db.close(); }
+  });
 });

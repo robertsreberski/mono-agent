@@ -2,7 +2,7 @@ export { createBujoMemoryStore, BujoMemoryStore } from "./store.js";
 export { applyExplicitMemoryCurate, restoreExplicitMemoryCurate, resolveExplicitMemoryCurateRoot, ExplicitMemoryCurateError } from "./explicit-curate.js";
 export type { ApplyExplicitMemoryCurateOptions, RestoreExplicitMemoryCurateOptions } from "./explicit-curate.js";
 export { inspectCurateSource, curateEstimate, proposeCurate, validateCurateProposal, previewCurateMutations, CURATE_DISCARD_REASONS,
-  MAX_CURATE_OPERATOR_MERGES, parseCurateOperatorMerges, validateCurateOperatorMerge } from "./curate.js";
+  MAX_CURATE_OPERATOR_MERGES, OWNER_ENTITY_ID, parseCurateOperatorMerges, validateCurateOperatorMerge } from "./curate.js";
 export type { CurateOperatorMerge, CurateLine, CurateProposal, CurateSnapshot, CurateAction, CurateReason, CurateDiscard, CurateSuggestionResult } from "./curate.js";
 export {
   AUTO_RECALL_BACKEND_HITS,

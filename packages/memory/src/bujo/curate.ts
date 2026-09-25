@@ -54,6 +54,12 @@ export interface CurateOperatorMerge {
   readonly accepted: boolean;
 }
 export const MAX_CURATE_OPERATOR_MERGES = 512;
+/**
+ * The canonical host-owner id used by owner-turn capture. An operator merge
+ * may target it before any capture has minted it; apply then creates it.
+ */
+export const OWNER_ENTITY_ID = "person:owner";
+const OWNER_ENTITY = { id: OWNER_ENTITY_ID, name: "Owner", type: "person" } as const;
 const ENTITY_ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/u;
 
 export function validateCurateOperatorMerge(merge: CurateOperatorMerge): void {
@@ -336,7 +342,8 @@ function mergePairs(root: string, proposals: readonly CurateProposal[], operator
   for (const merge of operatorMerges) {
     validateCurateOperatorMerge(merge);
     if (!merge.accepted) continue;
-    const source = entities.get(merge.from); const target = entities.get(merge.to);
+    const source = entities.get(merge.from);
+    const target = entities.get(merge.to) ?? (merge.to === OWNER_ENTITY_ID ? OWNER_ENTITY : undefined);
     if (!source || !target) throw new Error("memory-curate: operator merge refers to an unknown entity");
     if (source.type !== target.type && !merge.allowCrossType) throw new Error("memory-curate: cross-type merge requires --allow-cross-type");
     add(merge.from, merge.to);
@@ -419,11 +426,14 @@ function remapLabel(label: MemoryLabel, pairs: ReadonlyMap<string, string>): Mem
       : value;
   return validateMemoryLabel({ ...label, entityId: pairs.get(label.entityId) ?? label.entityId, value: mappedValue });
 }
-function rewriteMergedEntities(root: string, pairs: ReadonlyMap<string, string>): void {
+function rewriteMergedEntities(root: string, pairs: ReadonlyMap<string, string>, now: () => Date): void {
   if (pairs.size === 0) return;
   const snapshot = readCanonicalGraphStrictSnapshot(root);
   const graph = snapshot.records;
   const entities = graph.entities.filter(({ id }) => !pairs.has(id));
+  if ([...pairs.values()].includes(OWNER_ENTITY_ID) && !entities.some(({ id }) => id === OWNER_ENTITY_ID)) {
+    entities.push({ ...OWNER_ENTITY, createdAt: now().toISOString() });
+  }
   const relations = graph.relations.map((relation) => ({ ...relation, src: pairs.get(relation.src) ?? relation.src,
     dst: pairs.get(relation.dst) ?? relation.dst }));
   const associations = graph.associations.map((association) => ({ ...association, entityId: pairs.get(association.entityId) ?? association.entityId }));
@@ -462,7 +472,7 @@ export async function applyCurateMutations(root: string, db: MemoryDb, proposals
       : { text: bullet.text, refs: withMemoryLabels(bullet, [...labelsOf(bullet), ...proposal.labels!]).refs };
     if (!rewriteBullet(root, file, id, updated)) throw new Error("memory-curate: missing source");
   }
-  rewriteMergedEntities(root, mergePairs(root, proposals, operatorMerges));
+  rewriteMergedEntities(root, mergePairs(root, proposals, operatorMerges), now);
   return { changed: proposals.length + operatorMerges.filter(({ accepted }) => accepted).length,
     sourceFingerprint: readBujoCanonicalSourceFingerprint(root) };
 }

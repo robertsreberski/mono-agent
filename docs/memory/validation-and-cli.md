@@ -112,7 +112,7 @@ Capture can record one real person or thing under several entity ids. `memory en
 
 Model merges stay narrow: same type, same folded name, supported by the line. The operator can decide more. `curate prepare` and `curate review` accept `--merge <fromId>=<toId>` (repeatable) and `--merge-file <file>` (one `fromId=toId` per line, `#` comments). These operator merges may join different names. They may join different types only with `--allow-cross-type`. They enter the private plan pre-accepted and are listed as `merge:operator`; `review --reject id:<fromId>` or `--reject merge:operator` turns them off. `prepare --limit 0` prepares only operator merges and makes no model call. Several ids may merge into one target; chains (`a=b`, `b=c`), unknown ids and merges that would turn a relation into a self-relation are refused. Apply then uses the same checks, backup, root swap, rebuild and restore as every other curation. Merged ids disappear. Their associations, relations, daily references and fact labels move to the target, and the target keeps its name.
 
-Owner turns use one canonical host-owner id, `person:owner`. Merge any older owner ids into it. When capture sees several known ids with one name, it marks the most-associated id as the one to reuse.
+Owner turns use one canonical host-owner id, `person:owner`. Merge any older owner ids into it. Apply creates `person:owner` if capture has not yet minted it; no other target may be missing. When capture sees several known ids with one name, it marks the most-associated id as the one to reuse.
 
 ### Reversible explicit BuJo forget plans
 
