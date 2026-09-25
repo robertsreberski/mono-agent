@@ -661,10 +661,10 @@ describe("strict completed-turn reconciliation", () => {
     }
   });
 
-  it("requires every close candidate once and rejects conflicting targets as a whole", async () => {
+  it("drops a losing noop without re-adding its stale candidate", async () => {
     const fixture = await reconcileFixture(true);
     try {
-      await expect(reconcileBatch(fixture.candidates, {
+      const actions = await reconcileBatch(fixture.candidates, {
         ...fixture.deps,
         strictModelOutput: true,
         llm: {
@@ -674,11 +674,31 @@ describe("strict completed-turn reconciliation", () => {
             { index: 1, action: "noop", targetId: "TARGET" },
           ]),
         },
-      })).rejects.toMatchObject({ name: "MemoryModelOutputError" });
+      });
+      expect(actions.map((action) => action?.kind)).toEqual(["noop", undefined]);
       expect(fixture.db.count()).toBe(1);
     } finally {
       fixture.db.close();
     }
+  });
+
+  it("closes the stale target when a farther supported supersession competes with a closer noop", async () => {
+    const fixture = await reconcileFixture(true);
+    try {
+      fixture.db.findSimilarMany = async () => fixture.candidates.map((_item, index) => [
+        { record: fixture.db.get("TARGET")!, distance: index === 0 ? 0.05 : 0.2 },
+      ]);
+      const actions = await reconcileBatch(fixture.candidates, {
+        ...fixture.deps,
+        strictModelOutput: true,
+        llm: { id: "state-change", complete: async () => decisions([
+          { index: 0, action: "noop", targetId: "TARGET" },
+          { index: 1, action: "supersede", targetId: "TARGET", text: "Morgan now prefers durable capture always" },
+        ]) },
+      });
+      expect(actions.map((item) => item?.kind)).toEqual([undefined, "supersede"]);
+      expect(fixture.db.get("TARGET")?.status).toBe("invalidated");
+    } finally { fixture.db.close(); }
   });
 
   it("accepts one exact decision for every offered close candidate", async () => {

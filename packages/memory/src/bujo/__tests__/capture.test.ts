@@ -241,7 +241,7 @@ describe("captureTurnStrict", () => {
     expect(readGraph(root).associations).toEqual([]);
   });
 
-  it("does not attach either candidate's entities when same-turn mutations collide on one target", async () => {
+  it("keeps competing candidates' graph evidence on separate memories", async () => {
     const root = newRoot();
     const db = openDb(root);
     let extractionCall = 0;
@@ -297,10 +297,10 @@ describe("captureTurnStrict", () => {
     await captureTurn("Morgan prefers blue-green deployments", deps);
     db.findSimilarMany = async (texts) => texts.map(() => [{ record: db.get("CAP0001")!, distance: 0.1 }]);
 
-    await expect(captureTurn("Morgan clarified the deployment preference", deps)).rejects.toThrow(/multiple candidates selected one target/iu);
-    expect(db.get("CAP0001")?.text).toBe("Morgan prefers blue-green deployments");
-    expect(db.associationsForMemory("CAP0001")).toEqual([]);
-    expect(readGraph(root).associations).toEqual([]);
+    const result = await captureTurn("Morgan clarified the deployment preference", deps);
+    expect(result.actions.map((action) => action?.kind)).toEqual(["update", "add"]);
+    expect(db.associationsForMemory("CAP0001").map((association) => association.entityId)).toEqual(["concept:review"]);
+    expect(db.associationsForMemory("CAP0002").map((association) => association.entityId)).toEqual(["concept:canary"]);
   });
 
   it("extracts a bounded plan, reconciles, mirrors the graph, and keeps precise associations", async () => {

@@ -495,6 +495,17 @@ export class MemoryDbGraph extends MemoryDbMaintenance {
     }
   }
 
+  /** A bounded recent neighbourhood for capture state reconciliation. Only
+   * canonical graph associations count; orphaned or invalidated rows do not. */
+  memoriesForEntity(entityId: string, limit = 24): MemoryRecord[] {
+    const ids = this.db.prepare(
+      `SELECT m.id FROM memory_entities me JOIN memories m ON m.id = me.memory_id
+       WHERE me.entity_id = ? AND m.status = 'open'
+       ORDER BY m.created_at DESC, m.id DESC LIMIT ?`,
+    ).all(entityId, Math.min(Math.max(1, limit), 24)) as Array<{ id: string }>;
+    return ids.flatMap(({ id }) => { const record = this.get(id); return record === undefined ? [] : [record]; });
+  }
+
   associationsForMemory(memoryId: string): MemoryEntityAssociation[] {
     const rows = this.db.prepare(
       `SELECT memory_id, entity_id, provenance, created_at FROM memory_entities WHERE memory_id = ? ORDER BY entity_id`,

@@ -128,6 +128,77 @@ function dailyContent(root: string): string {
 }
 
 describe("reconcile", () => {
+  it("looks up state neighbours for project entities without querying person-only labels", async () => {
+    const root = newRoot(); const db = openDb(root);
+    await seed(db, root, "PROJECT-OLD", "Project Maple is paused.");
+    db.upsertEntity({ id: "project:maple", name: "Maple", type: "project", createdAt: FIXED.toISOString() });
+    db.associateMemory({ memoryId: "PROJECT-OLD", entityId: "project:maple", provenance: "capture", createdAt: FIXED.toISOString() });
+    db.findSimilarMany = async () => [[]];
+    let offered = "";
+    const actions = await reconcileBatch([{ type: "note", text: "Project Maple resumed.", salience: 0.8,
+      isInsight: false, entityIds: ["project:maple"] }], makeDeps(db, root, { id: "project-state",
+      complete: async (input) => { offered = input; return JSON.stringify([{ index: 0, action: "supersede",
+        targetId: "PROJECT-OLD", text: "Project Maple resumed." }]); },
+    }, { strictModelOutput: true, deferBatchCommit: true, beforeBatchCommit: () => {} }));
+    expect(offered).toContain('"sameEntityTopic":"status"');
+    expect(actions[0]?.kind).toBe("supersede");
+  });
+  it("matches an entity's labelled property by key even without an overlapping topic phrase", async () => {
+    const root = newRoot(); const db = openDb(root);
+    const label: MemoryLabel = { v: 1, kind: "fact", entityId: "person:morgan", key: "other:favorite-color",
+      value: { type: "text", text: "blue" }, attribution: "user-stated" };
+    await seed(db, root, "COLOR-OLD", "Morgan's favorite color is blue.", { labels: [label] });
+    db.upsertEntity({ id: "person:morgan", name: "Morgan", type: "person", createdAt: FIXED.toISOString() });
+    db.associateMemory({ memoryId: "COLOR-OLD", entityId: "person:morgan", provenance: "capture", createdAt: FIXED.toISOString() });
+    db.findSimilarMany = async () => [[]];
+    let offered = "";
+    const actions = await reconcileBatch([{ type: "note", text: "Morgan likes green.", salience: 0.8,
+      isInsight: false, entityIds: ["person:morgan"], labels: [{ ...label,
+        value: { type: "text", text: "green" } }] }], makeDeps(db, root, { id: "label-key",
+      complete: async (prompt) => { offered = prompt; return JSON.stringify([{ index: 0, action: "supersede",
+        targetId: "COLOR-OLD", text: "Morgan likes green." }]); },
+    }, { strictModelOutput: true, deferBatchCommit: true, beforeBatchCommit: () => {} }));
+    expect(offered).toContain('"sameEntityTopic":"other:favorite-color"');
+    expect(actions[0]?.kind).toBe("supersede");
+  });
+  it("adds on a malformed legacy classifier reply when only an entity anchor was offered", async () => {
+    const root = newRoot(); const db = openDb(root);
+    await seed(db, root, "OLD", "Morgan lives in Maple Town.");
+    db.upsertEntity({ id: "person:morgan", name: "Morgan", type: "person", createdAt: FIXED.toISOString() });
+    db.associateMemory({ memoryId: "OLD", entityId: "person:morgan", provenance: "capture", createdAt: FIXED.toISOString() });
+    db.findSimilar = async () => [];
+    let prompt = "";
+    const actions = await reconcile([{ type: "note", text: "Morgan moved to Cedar City.", salience: 0.8,
+      isInsight: false, entityIds: ["person:morgan"] }], makeDeps(db, root, { id: "malformed",
+      complete: async (input) => { prompt = input; return "not JSON"; },
+    }, { canonicalGraphRepairGuard: () => {} }));
+    expect(prompt).toContain("sameEntityTopic=home_location (no vector score)");
+    expect(actions[0]?.kind).toBe("add");
+    expect(db.get("OLD")?.status).toBe("open");
+  });
+  it("offers a bounded same-entity state neighbour even when vectors disagree", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "HOME-OLD", "Morgan lives in Maple Town.");
+    await seed(db, root, "OTHER", "Morgan works at Cedar Company.");
+    db.upsertEntity({ id: "person:morgan", name: "Morgan", type: "person", createdAt: FIXED.toISOString() });
+    db.associateMemory({ memoryId: "HOME-OLD", entityId: "person:morgan", provenance: "capture", createdAt: FIXED.toISOString() });
+    db.associateMemory({ memoryId: "OTHER", entityId: "person:morgan", provenance: "capture", createdAt: FIXED.toISOString() });
+    db.findSimilarMany = async () => [[]];
+    let offered = "";
+    const result = await reconcileBatch([{ type: "note", text: "Morgan moved to Cedar City.",
+      salience: 0.8, isInsight: false, entityIds: ["person:morgan"] }], makeDeps(db, root, {
+      id: "state", complete: async (input) => { offered = input; return JSON.stringify([
+        { index: 0, action: "supersede", targetId: "HOME-OLD", text: "Morgan lives in Cedar City." },
+      ]); },
+    }, { strictModelOutput: true, deferBatchCommit: true, beforeBatchCommit: () => {} }));
+    expect(offered).toContain("HOME-OLD");
+    expect(offered).toContain('"sameEntityTopic":"home_location"');
+    expect(offered).not.toContain('"distance":0.49');
+    expect(offered).not.toContain('"id":"OTHER"');
+    expect(result[0]?.kind).toBe("supersede");
+    expect(db.get("HOME-OLD")?.status).toBe("open"); // deferred capture owns the commit
+  });
   it("clears labels on changed UPDATE and keeps only history on SUPERSEDE", async () => {
     const label: MemoryLabel = { v: 1, kind: "fact", entityId: "person:morgan", key: "preferred_name",
       value: { type: "text", text: "Morgan" }, attribution: "user-stated" };
@@ -1011,22 +1082,16 @@ describe("reconcileBatch", () => {
   });
 
   it.each(["update", "supersede"] as const)(
-    "fails every colliding %s decision closed before canonical or index mutation",
+    "degrades competing %s decisions to a separate add",
     async (action) => {
       const root = newRoot();
       const db = openDb(root);
       await seed(db, root, "ONE", "Morgan prefers blue-green deployments");
-      const before = dailyContent(root);
       const candidates: CandidateMemory[] = [
         { type: "note", text: "Morgan prefers blue-green deployments with review", salience: 0.7, isInsight: false },
         { type: "note", text: "Morgan prefers blue-green deployments with canaries", salience: 0.8, isInsight: false },
       ];
       db.findSimilarMany = async () => candidates.map(() => [{ record: db.get("ONE")!, distance: 0.1 }]);
-      let persistencePreflights = 0;
-      db.prepareUpsertVectors = async (records) => {
-        persistencePreflights += records.length;
-        return records.map(() => undefined);
-      };
       const reply = JSON.stringify(candidates.map((candidate, index) => ({
         index,
         action,
@@ -1036,37 +1101,26 @@ describe("reconcileBatch", () => {
 
       const actions = await reconcileBatch(
         candidates,
-        makeDeps(db, root, fakeLlm([["Classify each candidate", reply]])),
+        makeDeps(db, root, fakeLlm([["Classify each candidate", reply]]),
+          { nextId: (() => { let id = 0; return () => `DUP-${++id}`; })() }),
       );
 
-      expect(actions).toEqual([undefined, undefined]);
-      expect(persistencePreflights).toBe(0);
-      expect(db.count()).toBe(1);
-      expect(db.get("ONE")).toMatchObject({
-        text: "Morgan prefers blue-green deployments",
-        status: "open",
-      });
-      expect(dailyContent(root)).toBe(before);
+      expect(actions.map((item) => item?.kind)).toEqual([action, "add"]);
+      expect(db.count()).toBe(action === "supersede" ? 3 : 2);
     },
   );
 
   it.each(["update", "supersede"] as const)(
-    "fails a mixed %s/noop collision closed before canonical or index mutation",
+    "drops the losing noop when %s wins the target",
     async (action) => {
       const root = newRoot();
       const db = openDb(root);
       await seed(db, root, "ONE", "Morgan prefers blue-green deployments");
-      const before = dailyContent(root);
       const candidates: CandidateMemory[] = [
         { type: "note", text: "Morgan prefers reviewed blue-green deployments", salience: 0.7, isInsight: false },
         { type: "note", text: "Morgan prefers canary blue-green deployments", salience: 0.8, isInsight: false },
       ];
       db.findSimilarMany = async () => candidates.map(() => [{ record: db.get("ONE")!, distance: 0.1 }]);
-      let persistencePreflights = 0;
-      db.prepareUpsertVectors = async (records) => {
-        persistencePreflights += records.length;
-        return records.map(() => undefined);
-      };
       const reply = JSON.stringify([
         { index: 0, action, targetId: "ONE", text: candidates[0]!.text },
         { index: 1, action: "noop", targetId: "ONE" },
@@ -1074,16 +1128,12 @@ describe("reconcileBatch", () => {
 
       const actions = await reconcileBatch(
         candidates,
-        makeDeps(db, root, fakeLlm([["Classify each candidate", reply]])),
+        makeDeps(db, root, fakeLlm([["Classify each candidate", reply]]),
+          { nextId: (() => { let id = 0; return () => `DUP-${++id}`; })() }),
       );
 
-      expect(actions).toEqual([undefined, undefined]);
-      expect(persistencePreflights).toBe(0);
-      expect(db.get("ONE")).toMatchObject({
-        text: "Morgan prefers blue-green deployments",
-        status: "open",
-      });
-      expect(dailyContent(root)).toBe(before);
+      expect(actions.map((item) => item?.kind)).toEqual([action, undefined]);
+      expect(db.count()).toBe(action === "supersede" ? 2 : 1);
     },
   );
 

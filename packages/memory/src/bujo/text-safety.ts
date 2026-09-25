@@ -9,6 +9,25 @@
  * surrounding context, not here.
  */
 
+/** Capture-specific content guard. Never apply this heuristic to explicit Remember
+ * writes: the completed-turn source/speaker context is required. */
+export function unsafeCaptureContent(text: string, source = ""): boolean {
+  // A stored line must not *narrate* in the first person; reported speech
+  // ("Morgan said: I …") and quoted text are third-person lines and stay.
+  if (/^\s*(?:i|i'm|i've|i'd|i'll|my)\b/iu.test(text)) return true;
+  const inventedDoubt = /\b(?:unclear whether|not clear whether|possibly|unverified|cannot confirm)\b/iu;
+  if ((inventedDoubt.test(text) && !inventedDoubt.test(source))
+    || (/\bmay\b/u.test(text) && !/\bmay\b/u.test(source))) return true;
+  if (/\b(?:\d+(?:[.,]\d+)?\s*(?:years?|months?)\s*old|aged?\s+\d+(?:[.,]\d+)?\s*(?:years?|months?))\b/iu.test(text)) return true;
+  const credential = /\b(?:password|passphrase|passcode|pin|api[ -]?key|access[ -]?token|secret[ -]?key|credential)\b/iu;
+  const login = /\b(?:login|log[ -]?in|sign[ -]?in|account|username)\b/iu;
+  const identifier = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/iu;
+  const token = /\b(?:sk-[A-Za-z0-9_-]{12,}|ghp_[A-Za-z0-9]{12,}|xox[a-z]-[A-Za-z0-9-]{12,}|AKIA[A-Z0-9]{16})\b/u;
+  if (credential.test(text) || token.test(text) || (login.test(text) && (identifier.test(text)
+    || /\b(?:username|user\s*id|handle|email|address)\b/iu.test(text)))) return true;
+  return false;
+}
+
 /** Lone surrogates, C0 controls (tab/LF/CR excluded), DEL, and C1 controls. */
 const UNSAFE_CODE_POINTS = /[\p{Cs}\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u;
 

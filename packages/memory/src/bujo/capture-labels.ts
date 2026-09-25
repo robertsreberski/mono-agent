@@ -24,9 +24,9 @@ export function captureLabels(raw: readonly unknown[], text: string, context: Ca
         const ownerFact = label.entityId === "person:owner";
         if (ownerFact
           ? context.captureEvidence?.ownerTurn === true && user !== undefined
-            && ownerFactSupported(label, text) && ownerFactSupported(label, user)
+            && ownerFactSupported(label, text) && ownerPropertySupported(label, user)
           : factSupported(label, text, context.entityNames)) {
-          const userSupported = user !== undefined && valueSupported(label, user);
+          const userSupported = user !== undefined && valueSupported(label, user, context.entityNames);
           const attribution = label.attribution === "unknown" ? "unknown"
             : label.attribution === "user-stated" && userSupported ? "user-stated" : "assistant-inferred";
           accepted = { ...label, attribution };
@@ -104,6 +104,11 @@ const OWNER_PROPERTY: Readonly<Record<string, RegExp>> = {
   work_location: /\b(?:my|the (?:user|owner)'s)\s+(?:work|job|employer)\b|\b(?:i|the (?:user|owner))\s+(?:work|works|worked)\s+(?:at|for|as|in)\b/iu,
   "other:favorite-color": /\b(?:my|the (?:user|owner)'s)\s+favorite\s+colou?r\b|\b(?:i|the (?:user|owner))\s+(?:prefer|prefers)\b/iu,
 };
+function ownerPropertySupported(label: Extract<MemoryLabel, { kind: "fact" }>, text: string): boolean {
+  const property = OWNER_PROPERTY[label.key];
+  return property !== undefined && splitCaptureSentences(text).some((sentence) =>
+    property.test(normalize(sentence).replace(/[’]/gu, "'")));
+}
 export function ownerFactSupported(label: Extract<MemoryLabel, { kind: "fact" }>, text: string): boolean {
   const property = OWNER_PROPERTY[label.key];
   if (property === undefined) return false;
@@ -115,18 +120,36 @@ export function factSupported(label: Extract<MemoryLabel, { kind: "fact" }>, tex
   names?: ReadonlyMap<string, string>): boolean {
   const slug = label.entityId.slice(label.entityId.indexOf(":") + 1);
   if (!subjectSupported(text, slug, names?.get(label.entityId))) return false;
-  return valueSupported(label, text);
+  return valueSupported(label, text, names);
 }
 function subjectSupported(text: string, slug: string, display?: string): boolean {
   if (display !== undefined && includesPhrase(text, display)) return true;
   return slug.split("-").some((token) => words(token).some((word) => word.length >= 3 && words(text).includes(word)));
 }
-export function valueSupported(label: Extract<MemoryLabel, { kind: "fact" }>, text: string): boolean {
+export function valueSupported(label: Extract<MemoryLabel, { kind: "fact" }>, text: string,
+  names?: ReadonlyMap<string, string>): boolean {
   const value = label.value;
   if (value.type === "date") return civilDateAppears(value.date, text);
   if (value.type === "text") return includesPhrase(text, value.text);
   if (value.type === "entity") return subjectSupported(text, value.entityId.split(":")[1]!);
-  return includesPhrase(text, value.role) && subjectSupported(text, value.targetEntityId.split(":")[1]!);
+  const roleWords: Readonly<Record<string, readonly string[]>> = {
+    child: ["child", "children", "son", "daughter", "kid", "kids"],
+    parent: ["parent", "mother", "mom", "mum", "father", "dad"],
+    partner: ["partner", "wife", "husband", "spouse"],
+    spouse: ["spouse", "wife", "husband"],
+    sibling: ["sibling", "brother", "sister"],
+  };
+  const subject = names?.get(label.entityId) ?? label.entityId.slice(label.entityId.indexOf(":") + 1).replaceAll("-", " ");
+  const target = names?.get(value.targetEntityId) ?? value.targetEntityId.slice(value.targetEntityId.indexOf(":") + 1).replaceAll("-", " ");
+  const source = normalize(text).replace(/[’]/gu, "'");
+  const escaped = (phrase: string): string => normalize(phrase).replace(/[’]/gu, "'")
+    .replace(/[^\p{L}\p{N}]+/gu, " ").trim().split(/\s+/u).join("\\s+");
+  const subjectPattern = escaped(subject);
+  const targetPattern = escaped(target);
+  return (roleWords[value.role] ?? [value.role]).some((word) => {
+    const role = escaped(word);
+    return new RegExp(`\\b${subjectPattern}(?:'s|s')\\s+${role}\\s+(?:is\\s+)?${targetPattern}\\b|\\b${targetPattern}\\s+(?:is|was)\\s+${subjectPattern}(?:'s|s')\\s+${role}\\b`, "u").test(source);
+  });
 }
 function normalize(text: string): string {
   return text.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase();

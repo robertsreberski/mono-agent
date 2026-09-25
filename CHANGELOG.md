@@ -44,6 +44,11 @@
   established person is not crowded out by newer one-off tasks that share a
   word. Owner turns offer the canonical `person:owner` id first.
 
+- Keep completed-turn capture moving when candidates share a reconciliation
+  target, and offer same-entity state lines for supersession even when their
+  wording differs. Retain supported kinship and owner fact labels; omit
+  first-person, speculative, age-only, and credential-bearing capture lines.
+
 - Keep `memory curate prepare` limited to rebuild-indexed lines and report
   skipped canonical-line counts by reason. Refuse unindexed selections before
   backup and show safe failure reasons after recovered apply errors.

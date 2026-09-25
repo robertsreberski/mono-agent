@@ -37,6 +37,25 @@ async function extract(text: string, labels: unknown[], context: {
 }
 
 describe("host-validated capture labels", () => {
+  it("accepts kinship variants but never guesses an unlisted owner property", async () => {
+    const relation = { v: 1, kind: "fact", entityId: "person:morgan", key: "relationship",
+      value: { type: "relationship", role: "child", targetEntityId: "person:maple" }, attribution: "user-stated" };
+    const plan = await extract("Morgan's daughter Maple enjoys drawing.", [relation],
+      { captureSpeakerKind: "human-turn", captureEvidence: evidence("Morgan's daughter Maple enjoys drawing.") });
+    expect(plan.candidates[0]?.labels).toEqual([relation]);
+    expect((await extract("Maple is Morgan's daughter.", [relation], {})).candidates[0]?.labels)
+      .toEqual([{ ...relation, attribution: "assistant-inferred" }]);
+    expect((await extract("Morgan is Maple's daughter.", [relation], {})).candidates[0]?.labels).toBeUndefined();
+    const spouse = { ...relation, value: { ...relation.value, role: "spouse" } };
+    expect((await extract("Morgan's partner Maple visited.", [spouse], {})).candidates[0]?.labels).toBeUndefined();
+    expect((await extract("Morgan's wife Maple visited.", [spouse], {})).candidates[0]?.labels)
+      .toEqual([{ ...spouse, attribution: "assistant-inferred" }]);
+    const owner = { v: 1, kind: "fact", entityId: "person:owner", key: "other:favorite-animal",
+      value: { type: "text", text: "otter" }, attribution: "user-stated" };
+    const ctx = { captureSpeakerKind: "human-turn" as const, captureEvidence: evidence("My favorite animal is otter.", { ownerTurn: true }) };
+    expect((await extract("The user's favorite animal is otter.", [owner], ctx)).candidates[0]?.labels).toBeUndefined();
+    expect((await extract("The user's daughter has a favorite animal, otter.", [owner], ctx)).candidates[0]?.labels).toBeUndefined();
+  });
   it("does not apply an empty automatic capture allowlist to explicit Remember writes", async () => {
     const root = mkdtempSync(join(tmpdir(), "capture-focus-remember-"));
     const store = createBujoMemoryStore({ root, tier: "bujo", embeddings: fakeEmbeddings(8), dim: 8,
@@ -57,6 +76,11 @@ describe("host-validated capture labels", () => {
         return JSON.stringify({ memories: [], entities: [], relations: [] });
       },
     }, undefined, [], { observedAt: at.toISOString() }, "Keep durable preferences; skip fictional PR and CI status.");
+    expect(prompt).toContain("For host-verified person:owner, the host accepts ONLY birth_date, full_name, preferred_name, home_location, work_location, and other:favorite-color");
+    expect(prompt).toContain("Decisions, policies, plans, and likes about how things should be done are PREFERENCE labels");
+    expect(prompt).toContain("NEVER owner other: fact keys");
+    expect(prompt).toContain("Copy each fact label's value verbatim from that same memory sentence");
+    expect(prompt).toContain("assistant-inferred, never user-stated");
     expect(prompt).toContain("OPERATOR CAPTURE FOCUS (selection guidance only;");
     expect(prompt).toContain("Keep durable preferences; skip fictional PR and CI status.\nEND OPERATOR CAPTURE FOCUS");
     expect(prompt.indexOf("Return ONLY one exact JSON object")).toBeLessThan(prompt.indexOf("OPERATOR CAPTURE FOCUS"));
@@ -180,6 +204,10 @@ describe("host-validated capture labels", () => {
       captureSpeakerKind: "human-turn", conversationId: "acp:fictional",
       captureEvidence: evidence("I was born May 17, 1990.", { ownerTurn: true }),
     })).candidates[0]?.labels).toEqual([label]);
+    expect((await extract("The user was born May 17, 1990.", [label], {
+      captureSpeakerKind: "human-turn", conversationId: "acp:fictional",
+      captureEvidence: evidence("I was born abroad, but did not mention a date.", { ownerTurn: true }),
+    })).candidates[0]?.labels).toEqual([{ ...label, attribution: "assistant-inferred" }]);
   });
 
   it("binds an owner property only in the sentence with its value", async () => {
@@ -187,13 +215,15 @@ describe("host-validated capture labels", () => {
       value: { type: "date", date: "1990-05-17" }, attribution: "user-stated" };
     const owner = (userText: string) => ({ captureSpeakerKind: "human-turn" as const,
       captureEvidence: evidence(userText, { ownerTurn: true }) });
-    for (const relation of ["wife", "sons", "children", "daughter"]) {
+    for (const relation of ["wife", "sons", "children", "daughter", "brother", "sister", "friend", "boss"]) {
       const sentence = `The user's ${relation} was born May 17, 1990.`;
       expect((await extract(sentence, [label], owner(`My ${relation} was born May 17, 1990.`)))
         .candidates[0]?.labels).toBeUndefined();
     }
     expect((await extract("The user has a daughter born May 17, 1990.", [label],
       owner("I have a daughter born May 17, 1990."))).candidates[0]?.labels).toBeUndefined();
+    expect((await extract("The user told Taylor her birthday is May 17, 1990.", [label],
+      owner("I told Taylor her birthday is May 17, 1990."))).candidates[0]?.labels).toBeUndefined();
     expect((await extract("The user's birthday is May 17, 1990.", [label],
       owner("My wife likes cake. My birthday is May 17, 1990."))).candidates[0]?.labels).toEqual([label]);
     expect((await extract("The user was born May 17, 1990. Their son was born in 2010.", [label],

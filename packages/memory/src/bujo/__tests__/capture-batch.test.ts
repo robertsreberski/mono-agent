@@ -13,6 +13,57 @@ function planJson(texts: readonly string[]): string {
 }
 
 describe("extractCapturePlanStrict intra-turn precision", () => {
+  it("preserves contact addresses, May dates and secret-named entities but drops credential identifiers", async () => {
+    const memories = [
+      { type: "note", text: "Morgan's contact address is morgan@example.test.", salience: 0.7,
+        isInsight: false, entityIds: ["concept:secret-garden"] },
+      { type: "note", text: "May is a good month to visit the Secret Garden.", salience: 0.7,
+        isInsight: false, entityIds: ["concept:secret-garden"] },
+      { type: "note", text: "MY favorite garden is the Secret Garden.", salience: 0.7,
+        isInsight: false, entityIds: ["concept:secret-garden"] },
+      { type: "note", text: "Morgan's login email is login@example.test.", salience: 0.7,
+        isInsight: false, entityIds: ["login:demo"] },
+      { type: "note", text: "The test token is sk-ABCDEFGHIJKLMN.", salience: 0.7,
+        isInsight: false, entityIds: [] },
+    ];
+    const plan = await extractCapturePlanStrict("User: Morgan shared contact details for May.", {
+      id: "safe-contacts", complete: async () => JSON.stringify({ memories, entities: [
+        { id: "concept:secret-garden", name: "Secret Garden", type: "concept" },
+        { id: "login:demo", name: "demo@example.test", type: "login" },
+      ], relations: [] }),
+    });
+    expect(plan.candidates.map((candidate) => candidate.text)).toEqual(memories.slice(0, 2).map((memory) => memory.text));
+    expect(plan.entities.map((entity) => entity.id)).toEqual(["concept:secret-garden"]);
+  });
+  it("keeps durable when/how/what/why lead-ins and drops questions or imperative requests", async () => {
+    const texts = ["When Morgan moved, the project changed hands.", "How Morgan works has changed.",
+      "What Morgan chose became final.", "Why Morgan moved remains documented.",
+      "When did Morgan move?", "Please summarize the project.", "Could you check the project?"];
+    const plan = await extractCapturePlanStrict("User: Morgan discussed the project move.",
+      { id: "requests", complete: async () => planJson(texts) });
+    expect(plan.candidates.map((item) => item.text)).toEqual(texts.slice(0, 4));
+  });
+  it("drops first-person, invented doubt, ages and credential identities without dropping safe siblings", async () => {
+    const output = JSON.stringify({ memories: [
+      ...["I visited Maple Town.", "Morgan may have moved to Maple Town.",
+        "The assistant reports Morgan is 9 years old.", "Morgan's login email is demo@example.test.",
+        "Morgan moved to Maple Town."].map((text, index) => ({ type: "note", text,
+        salience: 0.7, isInsight: false, entityIds: index === 3 ? ["login:demo"] : [] })),
+    ], entities: [{ id: "login:demo", name: "demo@example.test", type: "login" }], relations: [] });
+    const plan = await extractCapturePlanStrict("User: Morgan moved to Maple Town.",
+      { id: "hygiene", complete: async () => output });
+    expect(plan.candidates.map((item) => item.text)).toEqual(["Morgan moved to Maple Town."]);
+    expect(plan.entities).toEqual([]);
+  });
+  it("keeps third-person reported speech that quotes the speaker in the first person", async () => {
+    const output = JSON.stringify({ memories: [
+      { type: "note", text: "Morgan said: I selected cobalt for the launch.", salience: 0.7, isInsight: false, entityIds: [] },
+      { type: "note", text: "My walk was cloudy.", salience: 0.7, isInsight: false, entityIds: [] },
+    ], entities: [], relations: [] });
+    const plan = await extractCapturePlanStrict("User: I selected cobalt for the launch.",
+      { id: "reported-speech", complete: async () => output });
+    expect(plan.candidates.map((item) => item.text)).toEqual(["Morgan said: I selected cobalt for the launch."]);
+  });
   it("instructs fake extraction to retain user facts instead of assistant restatements or invented doubt", async () => {
     const prompts: string[] = [];
     for (const [turn, expected] of [
@@ -45,12 +96,12 @@ describe("extractCapturePlanStrict intra-turn precision", () => {
         id: "scripted-absolute-dates",
         complete: async (prompt) => { prompts.push(prompt); return planJson([stored]); },
       }, undefined, [], { observedAt: "2026-09-08T12:00:00.000Z" });
-      expect(plan.candidates[0]?.text).toBe(stored);
+      expect(plan.candidates[0]?.text).toBe(text.includes("months old") ? undefined : stored);
     }
     expect(prompts[0]).toContain("Do not store decaying relative time");
     expect(prompts[0]).toContain("2026-09-08T12:00:00.000Z");
     expect(prompts[1]).toContain("never guess an unstated timezone");
-    expect(prompts[2]).toContain("whose referent is ambiguous must retain the phrase");
+    expect(prompts[2]).toContain("ambiguous weekday-relative phrases retain");
   });
 
   it("supplies claim attribution and correction semantics without trusting quoted roles", async () => {
