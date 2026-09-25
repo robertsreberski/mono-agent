@@ -40,6 +40,49 @@ export interface CurateProposal {
   readonly mergeEntity?: { readonly from: string; readonly to: string };
   readonly accepted: boolean;
 }
+/**
+ * Operator-authoritative entity merge. Unlike a model merge it is not bound to
+ * one source line and may join different names (and, with `allowCrossType`,
+ * different types), because the operator knows two ids are one real thing.
+ * It still passes the same existence, conflict and self-relation checks and
+ * the same root-swap apply as model merges.
+ */
+export interface CurateOperatorMerge {
+  readonly from: string;
+  readonly to: string;
+  readonly allowCrossType: boolean;
+  readonly accepted: boolean;
+}
+export const MAX_CURATE_OPERATOR_MERGES = 512;
+const ENTITY_ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/u;
+
+export function validateCurateOperatorMerge(merge: CurateOperatorMerge): void {
+  if (merge === null || typeof merge !== "object" || Array.isArray(merge)
+    || Object.keys(merge).sort().join(",") !== "accepted,allowCrossType,from,to"
+    || typeof merge.from !== "string" || !ENTITY_ID.test(merge.from)
+    || typeof merge.to !== "string" || !ENTITY_ID.test(merge.to) || merge.from === merge.to
+    || typeof merge.allowCrossType !== "boolean" || typeof merge.accepted !== "boolean") {
+    throw new Error("memory-curate: invalid operator merge");
+  }
+}
+
+/** Parse `from=to` operator merge specs (CLI flag values or merge-file lines). */
+export function parseCurateOperatorMerges(specs: readonly string[], allowCrossType: boolean): CurateOperatorMerge[] {
+  const merges: CurateOperatorMerge[] = [];
+  for (const raw of specs) {
+    const spec = raw.trim();
+    if (spec.length === 0 || spec.startsWith("#")) continue;
+    const parts = spec.split("=");
+    if (parts.length !== 2) throw new Error("memory-curate: invalid operator merge");
+    const merge = { from: parts[0]!.trim(), to: parts[1]!.trim(), allowCrossType, accepted: true };
+    validateCurateOperatorMerge(merge);
+    if (merges.some((existing) => existing.from === merge.from)) throw new Error("memory-curate: conflicting entity merge");
+    merges.push(merge);
+  }
+  if (merges.length > MAX_CURATE_OPERATOR_MERGES) throw new Error("memory-curate: too many operator merges");
+  return merges;
+}
+
 export const CURATE_DISCARD_REASONS = ["unknown-id", "duplicate-id", "invalid-proposal", "invalid-action", "invalid-reason", "invalid-text", "invalid-label", "invalid-merge", "invalid-fields", "missing-proposal", "invalid-preview", "invalid-response", "model-error"] as const;
 export type CurateDiscardReason = typeof CURATE_DISCARD_REASONS[number];
 export interface CurateDiscard { readonly id: string; readonly reason: CurateDiscardReason }
@@ -278,10 +321,26 @@ function allDailyPaths(root: string): string[] {
     ...listCanonicalFileNames(root, "daily", { allowMissing: true, include: (name) => /^\d{4}-\d{2}-\d{2}\.md$/u.test(name) }).map((name) => `daily/${name}`)].sort();
 }
 function normalizeName(name: string): string { return name.normalize("NFD").replace(/\p{Mn}/gu, "").toLowerCase().trim(); }
-function mergePairs(root: string, proposals: readonly CurateProposal[]): Map<string, string> {
+function mergePairs(root: string, proposals: readonly CurateProposal[], operatorMerges: readonly CurateOperatorMerge[] = []): Map<string, string> {
   const graph = readCanonicalGraphStrictSnapshot(root).records;
   const entities = new Map(graph.entities.map((entity) => [entity.id, entity]));
   const pairs = new Map<string, string>();
+  const add = (from: string, to: string): void => {
+    if (pairs.get(from) === to) return; // Repeated confirmation of this exact pair changes nothing.
+    // Several ids may fold into one target; a chain or a split may not.
+    if (pairs.has(from) || pairs.has(to) || [...pairs.values()].includes(from)) {
+      throw new Error("memory-curate: conflicting entity merge");
+    }
+    pairs.set(from, to);
+  };
+  for (const merge of operatorMerges) {
+    validateCurateOperatorMerge(merge);
+    if (!merge.accepted) continue;
+    const source = entities.get(merge.from); const target = entities.get(merge.to);
+    if (!source || !target) throw new Error("memory-curate: operator merge refers to an unknown entity");
+    if (source.type !== target.type && !merge.allowCrossType) throw new Error("memory-curate: cross-type merge requires --allow-cross-type");
+    add(merge.from, merge.to);
+  }
   for (const proposal of proposals) {
     if (proposal.action !== "merge") continue;
     const { from, to } = proposal.mergeEntity!;
@@ -289,11 +348,7 @@ function mergePairs(root: string, proposals: readonly CurateProposal[]): Map<str
     if (!source || !target || source.type === undefined || target.type === undefined || source.type !== target.type
       || normalizeName(source.name) !== normalizeName(target.name)
       || !proposal.source.text.toLowerCase().includes(source.name.toLowerCase())) throw new Error("memory-curate: ambiguous entity merge");
-    if (pairs.get(from) === to) continue; // Repeated confirmation of this exact pair changes nothing.
-    if (pairs.has(from) || pairs.has(to) || [...pairs.values()].includes(from) || [...pairs.values()].includes(to)) {
-      throw new Error("memory-curate: conflicting entity merge");
-    }
-    pairs.set(from, to);
+    add(from, to);
   }
   for (const relation of graph.relations) {
     // Only a merge may not collapse a relation onto one entity; a relation that was already
@@ -304,7 +359,8 @@ function mergePairs(root: string, proposals: readonly CurateProposal[]): Map<str
   return pairs;
 }
 /** Exact pre-backup source check; every proposed source is pinned to one canonical bullet. */
-export function previewCurateMutations(root: string, proposals: readonly CurateProposal[], activeDb?: MemoryDb): void {
+export function previewCurateMutations(root: string, proposals: readonly CurateProposal[], activeDb?: MemoryDb,
+  operatorMerges: readonly CurateOperatorMerge[] = []): void {
   const seen = new Set<string>();
   const selected = new Set(proposals.map(({ source }) => source.id));
   const counts = new Map<string, number>();
@@ -351,7 +407,7 @@ export function previewCurateMutations(root: string, proposals: readonly CurateP
       throw new Error("memory-curate: label refers to an unknown entity");
     }
   }
-  mergePairs(root, proposals);
+  mergePairs(root, proposals, operatorMerges);
   const drops = proposals.filter((item) => item.action === "drop").map(({ source }) => source.id);
   if (drops.length > 0) previewCanonicalExplicitForgetMemories(root, drops);
 }
@@ -389,9 +445,10 @@ function rewriteMergedEntities(root: string, pairs: ReadonlyMap<string, string>)
   }
 }
 /** Runs only inside the durable root-swap transaction with the writer lease held. */
-export async function applyCurateMutations(root: string, db: MemoryDb, proposals: readonly CurateProposal[], expectedSourceFingerprint: string, now: () => Date) {
+export async function applyCurateMutations(root: string, db: MemoryDb, proposals: readonly CurateProposal[], expectedSourceFingerprint: string, now: () => Date,
+  operatorMerges: readonly CurateOperatorMerge[] = []) {
   if (readBujoCanonicalSourceFingerprint(root) !== expectedSourceFingerprint) throw new Error("memory-curate: source changed");
-  previewCurateMutations(root, proposals);
+  previewCurateMutations(root, proposals, undefined, operatorMerges);
   const drops = proposals.filter((item) => item.action === "drop").map(({ source }) => source.id);
   if (drops.length > 0) await forgetExplicitMemories({ root, db, ids: drops, now, expectedSourceFingerprint });
   for (const proposal of proposals) {
@@ -405,6 +462,7 @@ export async function applyCurateMutations(root: string, db: MemoryDb, proposals
       : { text: bullet.text, refs: withMemoryLabels(bullet, [...labelsOf(bullet), ...proposal.labels!]).refs };
     if (!rewriteBullet(root, file, id, updated)) throw new Error("memory-curate: missing source");
   }
-  rewriteMergedEntities(root, mergePairs(root, proposals));
-  return { changed: proposals.length, sourceFingerprint: readBujoCanonicalSourceFingerprint(root) };
+  rewriteMergedEntities(root, mergePairs(root, proposals, operatorMerges));
+  return { changed: proposals.length + operatorMerges.filter(({ accepted }) => accepted).length,
+    sourceFingerprint: readBujoCanonicalSourceFingerprint(root) };
 }

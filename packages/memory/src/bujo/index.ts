@@ -1,8 +1,9 @@
 export { createBujoMemoryStore, BujoMemoryStore } from "./store.js";
 export { applyExplicitMemoryCurate, restoreExplicitMemoryCurate, resolveExplicitMemoryCurateRoot, ExplicitMemoryCurateError } from "./explicit-curate.js";
 export type { ApplyExplicitMemoryCurateOptions, RestoreExplicitMemoryCurateOptions } from "./explicit-curate.js";
-export { inspectCurateSource, curateEstimate, proposeCurate, validateCurateProposal, previewCurateMutations, CURATE_DISCARD_REASONS } from "./curate.js";
-export type { CurateLine, CurateProposal, CurateSnapshot, CurateAction, CurateReason, CurateDiscard, CurateSuggestionResult } from "./curate.js";
+export { inspectCurateSource, curateEstimate, proposeCurate, validateCurateProposal, previewCurateMutations, CURATE_DISCARD_REASONS,
+  MAX_CURATE_OPERATOR_MERGES, parseCurateOperatorMerges, validateCurateOperatorMerge } from "./curate.js";
+export type { CurateOperatorMerge, CurateLine, CurateProposal, CurateSnapshot, CurateAction, CurateReason, CurateDiscard, CurateSuggestionResult } from "./curate.js";
 export {
   AUTO_RECALL_BACKEND_HITS,
   AUTO_RECALL_MAX_BYTES,
@@ -154,11 +155,12 @@ export {
 export type { CaptureObservationContext, CapturePlan } from "./capture-batch.js";
 export {
   MAX_KNOWN_ENTITY_HINTS,
+  findDuplicateEntityNames,
   foldEntityName,
   renderKnownEntityHints,
   selectKnownEntityHints,
 } from "./entity-reuse.js";
-export type { KnownEntity, KnownEntityHint } from "./entity-reuse.js";
+export type { DuplicateEntityName, KnownEntity, KnownEntityHint } from "./entity-reuse.js";
 export {
   auditCompletedTurnIntake,
   inspectCompletedTurnIntake,

@@ -428,3 +428,90 @@ describe("curate merge identity safety", () => {
       mergeEntity: { from: "person:morgan-dup", to: "person:morgan" } }])).not.toThrow();
   });
 });
+
+describe("operator entity merges", { timeout: 20_000 }, () => {
+  // Fictional: Morgan was captured as two person ids and one concept id.
+  const at = "2026-07-12T10:00:00.000Z";
+  const morganGraph = {
+    entities: [
+      { id: "person:morgan", name: "Morgan", type: "person", createdAt: at },
+      { id: "person:the-user", name: "the user", type: "person", createdAt: at },
+      { id: "concept:morgan", name: "Morgan", type: "concept", createdAt: at },
+      { id: "project:maple", name: "Maple", type: "project", createdAt: at },
+    ],
+    relations: [{ src: "person:the-user", dst: "project:maple", relation: "works on", createdAt: at }],
+  };
+  const merge = (from: string, to: string, allowCrossType = false) => ({ from, to, allowCrossType, accepted: true });
+
+  it("parses from=to specs, skips comments and refuses malformed or repeated sources", async () => {
+    const { parseCurateOperatorMerges } = await import("../curate.js");
+    expect(parseCurateOperatorMerges(["# owner", "", "person:the-user=person:morgan", " concept:morgan = person:morgan "], true))
+      .toEqual([merge("person:the-user", "person:morgan", true), merge("concept:morgan", "person:morgan", true)]);
+    expect(() => parseCurateOperatorMerges(["person:morgan"], false)).toThrow(/invalid operator merge/u);
+    expect(() => parseCurateOperatorMerges(["person:morgan=person:morgan"], false)).toThrow(/invalid operator merge/u);
+    expect(() => parseCurateOperatorMerges(["a:b=c:d", "a:b=e:f"], false)).toThrow(/conflicting/u);
+  });
+
+  it("joins different names, needs explicit cross-type consent and refuses chains, unknown ids and self-relations", async () => {
+    const { appendGraphBatch } = await import("../graph.js");
+    const { previewCurateMutations } = await import("../curate.js");
+    const path = root(); seed(path, "fictional-a", "The user planned the Maple project.");
+    appendGraphBatch(path, morganGraph);
+    // Different names, same type: the operator's decision is enough; many-to-one is fine.
+    expect(() => previewCurateMutations(path, [], undefined, [merge("person:the-user", "person:morgan")])).not.toThrow();
+    expect(() => previewCurateMutations(path, [], undefined, [merge("concept:morgan", "person:morgan")]))
+      .toThrow(/cross-type merge requires --allow-cross-type/u);
+    expect(() => previewCurateMutations(path, [], undefined, [merge("person:the-user", "person:morgan"), merge("concept:morgan", "person:morgan", true)]))
+      .not.toThrow();
+    expect(() => previewCurateMutations(path, [], undefined, [merge("person:absent", "person:morgan")])).toThrow(/unknown entity/u);
+    expect(() => previewCurateMutations(path, [], undefined, [merge("person:the-user", "person:morgan"), merge("person:morgan", "concept:morgan", true)]))
+      .toThrow(/conflicting/u);
+    // A rejected operator merge is inert.
+    expect(() => previewCurateMutations(path, [], undefined, [{ ...merge("person:absent", "person:morgan"), accepted: false }])).not.toThrow();
+    expect(() => previewCurateMutations(path, [], undefined, [merge("person:the-user", "project:maple", true)])).toThrow(/self-relation/u);
+  });
+
+  it("applies through the root-swap transaction and rebuilds with graph parity", async () => {
+    const { mkdirSync, realpathSync } = await import("node:fs");
+    const { createHash } = await import("node:crypto");
+    const { appendGraphBatch, readCanonicalGraphStrictSnapshot } = await import("../graph.js");
+    const { initializeReplayProjection, readBujoCanonicalSourceFingerprint } = await import("../replay-projection.js");
+    const { safeRebuildMemoryIndex } = await import("../rebuild.js");
+    const { fakeEmbeddings } = await import("./helpers.js");
+    const { applyExplicitMemoryCurate } = await import("../explicit-curate.js");
+    const { auditCanonicalGraphParity } = await import("../graph-parity.js");
+    const { openMemoryDb } = await import("../../store/index.js");
+    const { resolveActiveMemoryDbPath } = await import("../generations.js");
+    const { encodeMemoryLabel, labelsOf } = await import("../labels.js");
+    const { rewriteBullet } = await import("../daily.js");
+    const parent = root(); const path = join(parent, "memory"); mkdirSync(path, { mode: 0o700 });
+    initializeReplayProjection(path);
+    seed(path, "fictional-a", "The user was born on 1990-05-17.");
+    seed(path, "fictional-b", "Morgan likes the Maple project.");
+    const line = inspectCurateSource(path).lines[0]!;
+    rewriteBullet(path, line.file, line.id, { refs: [encodeMemoryLabel({ v: 1, kind: "fact", entityId: "person:the-user",
+      key: "birth_date", value: { type: "date", date: "1990-05-17" }, attribution: "unknown" })] });
+    appendGraphBatch(path, { ...morganGraph, associations: [
+      { memoryId: "fictional-a", entityId: "person:the-user", provenance: "capture", createdAt: at },
+      { memoryId: "fictional-b", entityId: "concept:morgan", provenance: "capture", createdAt: at },
+      { memoryId: "fictional-b", entityId: "person:morgan", provenance: "capture", createdAt: at },
+    ] });
+    const embeddings = fakeEmbeddings(16);
+    await safeRebuildMemoryIndex({ root: path, tier: "bujo", embeddings, dim: 16 });
+    const applied = await applyExplicitMemoryCurate({ root: path, proposals: [],
+      operatorMerges: [merge("person:the-user", "person:morgan"), merge("concept:morgan", "person:morgan", true)],
+      expectedRootFingerprint: createHash("sha256").update(realpathSync(path)).digest("hex"),
+      expectedSourceFingerprint: readBujoCanonicalSourceFingerprint(path), planDigest: createHash("sha256").update("operator-plan").digest("hex"),
+      embeddings, dimension: 16 });
+    expect(applied).toMatchObject({ status: "applied", changed: 2 });
+    const graph = readCanonicalGraphStrictSnapshot(path).records;
+    expect(new Set(graph.entities.map(({ id }) => id))).toEqual(new Set(["person:morgan", "project:maple"]));
+    expect(graph.associations.map(({ memoryId, entityId }) => `${memoryId}>${entityId}`).sort())
+      .toEqual(["fictional-a>person:morgan", "fictional-b>person:morgan"]);
+    expect(graph.relations).toEqual([expect.objectContaining({ src: "person:morgan", dst: "project:maple" })]);
+    const bullet = inspectCurateSource(path).lines.find(({ id }) => id === "fictional-a")!;
+    expect(labelsOf(bullet as never)).toEqual([expect.objectContaining({ entityId: "person:morgan", key: "birth_date" })]);
+    const db = openMemoryDb({ path: resolveActiveMemoryDbPath(path), readOnly: true, dim: 16 });
+    try { expect(auditCanonicalGraphParity(path, db).status).toBe("match"); } finally { db.close(); }
+  });
+});

@@ -144,3 +144,42 @@ export function renderKnownEntityHints(hints: readonly KnownEntityHint[]): strin
   });
   return `\nKNOWN ENTITIES already in the graph, most relevant to this turn first:\n${lines.join("\n")}\n`;
 }
+
+/** One folded name shared by several entity ids, for operator merge review. */
+export interface DuplicateEntityName {
+  readonly name: string;
+  readonly types: readonly string[];
+  readonly associations: number;
+  readonly ids: readonly { readonly id: string; readonly name: string; readonly type?: string; readonly associations: number }[];
+}
+
+/** Read-only: every folded name with more than one entity id, busiest first. */
+export function findDuplicateEntityNames(
+  graph: {
+    readonly entities: readonly { readonly id: string; readonly name: string; readonly type?: string }[];
+    readonly associations: readonly { readonly entityId: string }[];
+  },
+): DuplicateEntityName[] {
+  const counts = new Map<string, number>();
+  for (const { entityId } of graph.associations) counts.set(entityId, (counts.get(entityId) ?? 0) + 1);
+  const groups = new Map<string, Map<string, { id: string; name: string; type?: string; associations: number }>>();
+  for (const entity of graph.entities) {
+    if (typeof entity?.id !== "string" || typeof entity.name !== "string") continue;
+    const key = foldEntityName(entity.name);
+    if (key.length === 0) continue;
+    const group = groups.get(key) ?? new Map();
+    // Graph rows are append-only; the last record for an id wins, as on read.
+    group.set(entity.id, { id: entity.id, name: entity.name, ...(entity.type === undefined ? {} : { type: entity.type }),
+      associations: counts.get(entity.id) ?? 0 });
+    groups.set(key, group);
+  }
+  const duplicates: DuplicateEntityName[] = [];
+  for (const [name, group] of groups) {
+    if (group.size < 2) continue;
+    const ids = [...group.values()].sort((left, right) => right.associations - left.associations || left.id.localeCompare(right.id));
+    duplicates.push({ name, types: [...new Set(ids.map(({ type }) => type ?? "untyped"))].sort(),
+      associations: ids.reduce((sum, { associations }) => sum + associations, 0), ids });
+  }
+  return duplicates.sort((left, right) => right.associations - left.associations
+    || right.ids.length - left.ids.length || left.name.localeCompare(right.name));
+}
