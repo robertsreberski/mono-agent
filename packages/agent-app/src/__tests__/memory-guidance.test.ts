@@ -127,9 +127,32 @@ describe("automatic labelled background", () => {
     expect(remoteBlock).toBeUndefined();
     const labelled = Object.assign(remote, store([], [fact("birth", "1990-05-17")]));
     const block = await new MemoryRetrievalService(labelled).load("current", "What is Morgan's birthday?", { hostDate: "2026-09-24" });
-    expect(block?.content).toContain("Memory (background — not direct evidence)");
-    expect(block?.content).toContain("age 36");
+    // A labelled fact whose key the question asks about answers directly.
+    expect(block?.content).toBe("## Memory (recalled)\n\n- Morgan — born: 1990-05-17 (you said, recorded 2026-09-06); age 36");
     expect(block?.content).not.toContain("likes blue sky");
+  });
+
+  it("injects only the labelled keys a question asks about, rendered as text", () => {
+    const labelled = (key: string, text: string, id: string): MemoryLabelHit => ({
+      ...fact(id, "1990-05-17"), text: `Morgan's ${key} is ${text}.`,
+      label: { v: 1, kind: "fact", entityId: "person:morgan", key, value: { type: "text", text }, attribution: "user-stated" },
+    });
+    const person = store([], [fact("birth", "1990-05-17"), labelled("other:home-city", "Lisbon", "city"),
+      labelled("other:employer", "Initech", "job")]);
+    const asked = formatBlock(person, "Where is Morgan's home city?", "conv", options, []);
+    expect(asked?.facts).toEqual(["Morgan — home city: Lisbon (you said, recorded 2026-09-06)"]);
+    expect(asked?.content).toBe("");
+    // An unrelated question about the same person injects nothing.
+    expect(formatBlock(person, "What is Morgan's phone number?", "conv", options, [])).toBeUndefined();
+    expect(formatBlock(person, "How old is Morgan?", "conv", options, [])?.facts)
+      .toEqual(["Morgan — born: 1990-05-17 (you said, recorded 2026-09-06); age 36"]);
+    // A bare mention keeps the whole background card, without `other:` or JSON.
+    const card = formatMemoryBackground(person, "Tell me about Morgan", "conv", options, []);
+    expect(card).toContain("Person card:");
+    expect(card).toContain("home city: Lisbon");
+    expect(card).toContain("employer: Initech");
+    expect(card).not.toContain("other:");
+    expect(card).not.toContain("{");
   });
 
   it("preserves byte-identical ordinary recall when a label lookup fails", async () => {
@@ -173,5 +196,19 @@ describe("automatic labelled background", () => {
     };
     await expect(new MemoryRetrievalService(degraded).load("conv", "Morgan", options))
       .rejects.toThrow(/semantic memory retrieval is unavailable/iu);
+  });
+});
+
+describe("explicit fact sheet rendering", () => {
+  it("renders reader-facing keys and value text instead of JSON", async () => {
+    const { readLabelSections } = await import("../memory-label-sections.js");
+    const city: MemoryLabelHit = { ...fact("city", "1990-05-17"), text: "Morgan's home city is Lisbon.",
+      label: { v: 1, kind: "fact", entityId: "person:morgan", key: "other:home-city",
+        value: { type: "text", text: "Lisbon" }, attribution: "user-stated" } };
+    const sections = readLabelSections(store([], [city]), { query: "Morgan", kind: "fact" }, { hostDate: "2026-09-24" });
+    expect(sections?.text).toContain("Morgan [person:morgan] home city: Lisbon (user-stated");
+    expect(sections?.text).not.toContain("{");
+    // The structured entry keeps the stored key and typed value.
+    expect(sections?.factSheet?.[0]).toMatchObject({ key: "other:home-city", value: { type: "text", text: "Lisbon" } });
   });
 });

@@ -201,11 +201,22 @@ export class MemoryRetrievalService implements MemoryStore {
         // Corrupt or temporarily unavailable labels must not erase ordinary recall.
         background = undefined;
       }
-      if (block === undefined && !background?.content) return undefined;
+      // Label-backed direct facts: current labelled values whose key the
+      // question asks about join the recalled evidence, inside the byte budget.
+      let recalled = block?.content;
+      let factsTruncated = false;
+      for (const fact of background?.facts ?? []) {
+        const next = recalled === undefined ? `## Memory (recalled)\n\n- ${fact}` : `${recalled}\n- ${fact}`;
+        const total = Buffer.byteLength(next, "utf8")
+          + (background?.content ? Buffer.byteLength(background.content, "utf8") + 2 : 0);
+        if (total > this.maxBytes) { factsTruncated = true; continue; }
+        recalled = next;
+      }
+      if (recalled === undefined && !background?.content) return undefined;
       if (hits.length > 0) this.recordServed(turnId, hits);
       return { kind: "markdown", source: this.source,
-        content: [block?.content, background?.content].filter((text) => text !== undefined && text.length > 0).join("\n\n"),
-        truncated: (block?.truncated ?? false) || (background?.truncated ?? false) };
+        content: [recalled, background?.content].filter((text) => text !== undefined && text.length > 0).join("\n\n"),
+        truncated: (block?.truncated ?? false) || (background?.truncated ?? false) || factsTruncated };
     } finally {
       if (ephemeral) this.releaseTurn(turnId);
     }

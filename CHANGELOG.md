@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Automatic memory recall injects only the labelled person facts a question asks
+  about, as direct recalled facts, instead of the whole person card for every
+  name mention. Fact keys drop the `other:` prefix and values render as text,
+  not JSON, in automatic recall and the `MemoryRecall` fact sheet.
+
 - Automatic memory recall reads lower-case and `what's` questions, and on the
   operator's own web/TUI/ACP turns it answers first-person questions (`What is
   my phone number?`) from owner facts and `The user reports that …` records.

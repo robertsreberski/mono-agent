@@ -344,7 +344,20 @@ inner clause is itself one of the canonical shapes above (`their` reads as the
 owner), and it counts as attributed evidence, so a disagreeing answer in the
 candidate window abstains. On other turns `my` could be anyone in a group chat,
 so neither form applies. Most captured prose is multi-clause and still abstains;
-labelled facts are the main automatic path for it (see below).
+labelled facts are the main automatic path for it.
+
+Labelled facts answer directly. When a question names one unambiguous person
+entity and asks about something a current, user-stated or document fact label
+covers, that value is added to the recalled block as
+`Morgan — home city: Lisbon (you said, recorded 2026-09-06)`. A key covers the
+question when one of its words appears in it (`other:home-city` for `Where is
+Morgan's home city?`); a birth date also answers `birthday`, `born`, `age` and
+`How old`. Keys the question does not ask about are never injected, so `What is
+Morgan's phone number?` gets nothing unless a phone key exists. A bare mention
+(`Morgan`, `Tell me about Morgan`) still gets the whole person card as
+background. Conflicting values stay in the background card and ask. Keys drop
+the `other:` namespace and values render as text, not JSON, in both the
+automatic block and the explicit `MemoryRecall` fact sheet.
 
 Scheduled temporal questions are one bounded copular-time form. For example,
 `When is the Project Atlas production migration scheduled?` can use a direct
