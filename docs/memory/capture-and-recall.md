@@ -346,18 +346,25 @@ candidate window abstains. On other turns `my` could be anyone in a group chat,
 so neither form applies. Most captured prose is multi-clause and still abstains;
 labelled facts are the main automatic path for it.
 
-Labelled facts answer directly. When a question names one unambiguous person
-entity and asks about something a current, user-stated or document fact label
-covers, that value is added to the recalled block as
+Labelled facts answer directly on owner turns. When a question names one
+unambiguous person entity and asks about a property a current, user-stated or
+document fact label covers, that value is added to the recalled block as
 `Morgan — home city: Lisbon (you said, recorded 2026-09-06)`. A key covers the
-question when one of its words appears in it (`other:home-city` for `Where is
-Morgan's home city?`); a birth date also answers `birthday`, `born`, `age` and
-`How old`. Keys the question does not ask about are never injected, so `What is
-Morgan's phone number?` gets nothing unless a phone key exists. A bare mention
-(`Morgan`, `Tell me about Morgan`) still gets the whole person card as
-background. Conflicting values stay in the background card and ask. Keys drop
-the `other:` namespace and values render as text, not JSON, in both the
-automatic block and the explicit `MemoryRecall` fact sheet.
+question only when every content word of the key appears in it:
+`other:home-city` answers `Where is Morgan's home city?`, but
+`other:favorite_color` does not answer `What color did Morgan choose for the
+launch?`. A birth date answers only birth-date and current-age questions
+(`birthday`, `date of birth`, `When was … born?`, `How old is …?`), never
+`Where was … born?` or a historical age such as `How old was Morgan in 2015?`.
+Keys the question does not ask about are never injected. Two or more current
+distinct values for the same key, or a label that disagrees with the records
+the direct-fact gate selected, are never direct: neither is injected directly
+and the background card says the values conflict and asks. On other turns
+(group, trigger, peer or unidentified) relevant labels stay in the background
+card. A bare mention (`Morgan`, `Tell me about Morgan`) still gets the whole
+card as background. Keys drop the `other:` namespace and values render as text,
+not JSON, in both the automatic block and the explicit `MemoryRecall` fact
+sheet.
 
 Scheduled temporal questions are one bounded copular-time form. For example,
 `When is the Project Atlas production migration scheduled?` can use a direct

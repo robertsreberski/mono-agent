@@ -127,9 +127,13 @@ describe("automatic labelled background", () => {
     expect(remoteBlock).toBeUndefined();
     const labelled = Object.assign(remote, store([], [fact("birth", "1990-05-17")]));
     const block = await new MemoryRetrievalService(labelled).load("current", "What is Morgan's birthday?", { hostDate: "2026-09-24" });
-    // A labelled fact whose key the question asks about answers directly.
-    expect(block?.content).toBe("## Memory (recalled)\n\n- Morgan — born: 1990-05-17 (you said, recorded 2026-09-06); age 36");
+    expect(block?.content).toContain("Memory (background — not direct evidence)");
+    expect(block?.content).toContain("age 36");
     expect(block?.content).not.toContain("likes blue sky");
+    // On an owner turn a labelled fact whose key the question asks about answers directly.
+    const owned = await new MemoryRetrievalService(labelled).load("current", "What is Morgan's birthday?",
+      { hostDate: "2026-09-24", ownerTurn: true });
+    expect(owned?.content).toBe("## Memory (recalled)\n\n- Morgan — born: 1990-05-17 (you said, recorded 2026-09-06); age 36");
   });
 
   it("injects only the labelled keys a question asks about, rendered as text", () => {
@@ -139,12 +143,13 @@ describe("automatic labelled background", () => {
     });
     const person = store([], [fact("birth", "1990-05-17"), labelled("other:home-city", "Lisbon", "city"),
       labelled("other:employer", "Initech", "job")]);
-    const asked = formatBlock(person, "Where is Morgan's home city?", "conv", options, []);
+    const owner = { ...options, ownerTurn: true as const };
+    const asked = formatBlock(person, "Where is Morgan's home city?", "conv", owner, []);
     expect(asked?.facts).toEqual(["Morgan — home city: Lisbon (you said, recorded 2026-09-06)"]);
     expect(asked?.content).toBe("");
     // An unrelated question about the same person injects nothing.
-    expect(formatBlock(person, "What is Morgan's phone number?", "conv", options, [])).toBeUndefined();
-    expect(formatBlock(person, "How old is Morgan?", "conv", options, [])?.facts)
+    expect(formatBlock(person, "What is Morgan's phone number?", "conv", owner, [])).toBeUndefined();
+    expect(formatBlock(person, "How old is Morgan?", "conv", owner, [])?.facts)
       .toEqual(["Morgan — born: 1990-05-17 (you said, recorded 2026-09-06); age 36"]);
     // A bare mention keeps the whole background card, without `other:` or JSON.
     const card = formatMemoryBackground(person, "Tell me about Morgan", "conv", options, []);
@@ -259,5 +264,13 @@ describe("label relevance and agreement", () => {
     const agreed = await new MemoryRetrievalService(agree).load("conv", query, owner);
     expect(agreed?.content).toContain("## Memory (recalled)");
     expect(agreed?.content).toContain("Morgan — phone number: 555-0100 (you said");
+  });
+
+  it("keeps relevant labels background-only on turns that are not the owner's", () => {
+    const person = store([], [labelled("other:home-city", "Lisbon", "city")]);
+    const result = formatBlock(person, "What is Morgan's home city?", "conv", options, []);
+    expect(result?.facts).toBeUndefined();
+    expect(result?.content).toContain("Person card:");
+    expect(result?.content).toContain("home city: Lisbon");
   });
 });

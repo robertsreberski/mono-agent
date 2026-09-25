@@ -7,9 +7,11 @@
   outscore true answers to other questions.
 
 - Automatic memory recall injects only the labelled person facts a question asks
-  about, as direct recalled facts, instead of the whole person card for every
-  name mention. Fact keys drop the `other:` prefix and values render as text,
-  not JSON, in automatic recall and the `MemoryRecall` fact sheet.
+  about, instead of the whole person card for every name mention. On the
+  operator's own turns they answer directly when the question names the whole
+  key and no other value or recalled record disagrees; elsewhere they stay
+  background. Fact keys drop the `other:` prefix and values render as text, not
+  JSON, in automatic recall and the `MemoryRecall` fact sheet.
 
 - Automatic memory recall reads lower-case and `what's` questions, and on the
   operator's own web/TUI/ACP turns it answers first-person questions (`What is

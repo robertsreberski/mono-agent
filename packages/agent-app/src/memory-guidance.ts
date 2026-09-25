@@ -202,7 +202,7 @@ export function formatMemoryBackground(
           const age = ageAt(value.date, date);
           if (age !== undefined) values.push(`age ${age}`);
         }
-        if (relevant) direct.push(`${safeLine(entity.name)} — ${values.join("; ")}`);
+        if (relevant && options.ownerTurn === true) direct.push(`${safeLine(entity.name)} — ${values.join("; ")}`);
         else parts.push(...values);
       }
     }
