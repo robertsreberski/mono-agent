@@ -14,15 +14,17 @@
  *    or quotation language. An owner-report envelope (`The user said ...`) is
  *    unwrapped first.
  * 3. The line covers the question: it contains every content word of the
- *    question (names included, with small stem and synonym folding), and a
- *    date/time question needs a date or time value in the line. On a
- *    host-stamped owner turn a first-person question (`my`, `I`, `we`) is about the
- *    owner, whom capture records as `the user`: the line must say `user` or at
- *    least carry no other name's possessive (`Morgan's`). Elsewhere `my` could
- *    be anyone and the question abstains.
- * 4. The line leads the best hit that does not also pass (2) and (3) by at
- *    least `CLEAR_MARGIN`. Close hits that pass both are injected with it, up
- *    to `CLEAR_MARGIN_MAX_HITS`; more close candidates abstain.
+ *    question (names included, with small stem and synonym folding). For a
+ *    date/time question a date or time value must attach to the question's
+ *    head term (`Morgan was born on 17 May`), not to a noun qualifying it
+ *    (`Morgan's birthday party is on 17 May`). On a host-stamped owner turn a
+ *    first-person question (`my`, `I`, `we`) is about the owner, whom capture
+ *    records as `the user`: the line's subject must be the user (`The user
+ *    works …`, `User's employer is …`, or `they` inside an owner envelope).
+ *    Elsewhere `my` could be anyone and the question abstains.
+ * 4. Exactly one line in the window qualifies (verbatim duplicates count once),
+ *    and it leads every other hit by at least `CLEAR_MARGIN`. Two qualifying
+ *    lines abstain even when their values differ only slightly.
  *
  * Choice, scoped-choice and scheduled questions never reach this gate: the
  * grammar in `recall-evidence.ts` decides their scope and conflict identity alone.
@@ -43,8 +45,6 @@ import {
 export const CLEAR_MARGIN = 0.05;
 /** Longest evidence line accepted by the clear-margin gate. */
 export const CLEAR_MARGIN_MAX_WORDS = 30;
-/** Most close, question-covering lines injected together. */
-export const CLEAR_MARGIN_MAX_HITS = 3;
 
 interface MarginHit {
   readonly score: number;
@@ -71,7 +71,12 @@ const OWNER_REPORT = /^(?:the\s+)?user\s+(?:reports|reported|says|said|states|st
 // advice and open questions are not answers.
 const UNSAFE = /\b(?:nor|unsure|might|wants?\s+to\s+know|wondered|question|whether|if|remind|reminder|todo|draft|suggested|suggests|recommend|recommended|should|could|would)\b|["“”?]/iu;
 
-const OTHER_POSSESSOR = /\b\p{Lu}[\p{L}\p{M}-]*['’]s\b/u;
+/** A line about the owner names the user as its subject: `The user works …`, `User's employer is …`. */
+const OWNER_SUBJECT = /^(?:the\s+)?user(?:['’]s)?\b/iu;
+/** Inside an owner envelope (`The user said they work …`) the owner may be `they`/`their`. */
+const OWNER_ENVELOPE_SUBJECT = /^(?:they|their)\b/iu;
+/** Words that may sit between a time question's head term and its date/time value. */
+const TIME_CONNECTOR = /^(?:\s+(?:is|was|are|were|on|at|in|for|scheduled|set|planned|every|from|the|of))*\s+/iu;
 
 // One clause: no subordinate or contrastive clause, and `and` only inside a
 // comma list (`Mondays, Tuesdays and Fridays`), never joining two statements.
@@ -121,13 +126,42 @@ function questionConcepts(query: string, ownerTurn: boolean): { concepts: string
 }
 
 function evidenceLine(text: string): string | undefined {
-  const line = text.trim().replace(OWNER_REPORT, "").replace(/[.!]+$/u, "").trim();
+  const line = unwrapOwnerReport(text).replace(/[.!]+$/u, "").trim();
   if (line.length === 0 || /[.!;]\s+\S/u.test(line) || /[\n\r]/u.test(line)) return undefined;
   // `Assistant` inside a proper name (`Home Assistant`) is not the assistant speaking.
   const hedgeText = line.replace(/(?<=\S\s+)Assistant\b/gu, "");
   if (UNSAFE.test(line) || joinsClauses(line) || NEGATION_OR_UNKNOWN.test(line) || REPORTED_OR_DITRANSITIVE.test(line)
     || ATTRIBUTED_REPORT_EXCLUSION.test(hedgeText) || line.split(/\s+/u).length > CLEAR_MARGIN_MAX_WORDS) return undefined;
   return line;
+}
+
+function unwrapOwnerReport(text: string): string {
+  return text.trim().replace(OWNER_REPORT, "");
+}
+
+/** True when the line's subject is explicitly the owner. */
+function aboutOwner(rawText: string, line: string): boolean {
+  if (OWNER_SUBJECT.test(line)) return true;
+  return OWNER_REPORT.test(rawText.trim()) && OWNER_ENVELOPE_SUBJECT.test(line);
+}
+
+/**
+ * True when a date/time value attaches to the question's head term
+ * (`Morgan was born on 17 May`), not to a noun that qualifies it
+ * (`Morgan's birthday party is on 17 May`, `appointment reminder is on Monday`).
+ */
+function timeAttachesTo(head: string, line: string): boolean {
+  const group = SYNONYMS.find((set) => set.has(head));
+  // Allow a leading day number (`17 May`) and a bare year (`in 1990`).
+  const attached = new RegExp(`^(?:\\d{1,2}(?:st|nd|rd|th)?\\s+)?(?:${DATE_OR_TIME.source}|\\b(?:19|20)\\d{2}\\b)`, "iu");
+  for (const match of fold(line).matchAll(/[\p{L}\p{N}]+(?:['’]s)?/gu)) {
+    const word = match[0].replace(/['’]s$/u, "");
+    if (word !== head && stem(word) !== head && !(group?.has(word) ?? false)) continue;
+    const rest = fold(line).slice(match.index + match[0].length);
+    const connector = TIME_CONNECTOR.exec(rest);
+    if (connector !== null && attached.test(rest.slice(connector[0].length))) return true;
+  }
+  return false;
 }
 
 /**
@@ -145,30 +179,29 @@ export function selectClearMarginHit<T extends MarginHit>(
   const question = questionConcepts(query, options.ownerTurn === true);
   const top = hits[0];
   if (question === undefined || top?.record === undefined) return [];
-  const coversQuestion = (text: string): boolean => {
-    const set = lineWordSet(text);
-    // `my` means the owner: the line must name the user, or at least not be
-    // about somebody else's thing (`Morgan's blood type`).
-    if (question.owner && !set.has("user") && OTHER_POSSESSOR.test(text.replace(/\buser['’]s\b/giu, ""))) return false;
-    if (question.temporal && !DATE_OR_TIME.test(text)) return false;
+  const qualifies = (rawText: string): boolean => {
+    const line = evidenceLine(rawText);
+    if (line === undefined) return false;
+    const set = lineWordSet(line);
+    // `my` means the owner: the line's subject must be the user, never a
+    // line that merely names nobody else.
+    if (question.owner && !aboutOwner(rawText, line)) return false;
+    if (question.temporal && !timeAttachesTo(question.concepts.at(-1)!, line)) return false;
     // `day care` also matches `daycare`.
     return question.concepts.every((concept, index, all) => covers(concept, set)
       || covers(`${all[index - 1] ?? ""}${concept}`, set) || covers(`${concept}${all[index + 1] ?? ""}`, set));
   };
-  const line = evidenceLine(top.record.text);
-  if (line === undefined || !coversQuestion(line)) return [];
-  // The margin is measured against the best hit that does not answer the
-  // question. Close hits that also cover it join the answer (at most
-  // CLEAR_MARGIN_MAX_HITS); if there are more, nothing singles an answer out.
-  const selected: T[] = [top];
-  for (const hit of hits.slice(1, Math.max(2, options.window ?? 8))) {
+  if (!qualifies(top.record.text)) return [];
+  // Exactly one line may qualify in the window (verbatim duplicates count once):
+  // two answers, even far apart in score, abstain and stay in MemoryRecall.
+  // The single answer must also lead the next hit by CLEAR_MARGIN.
+  const topText = fold(top.record.text).trim();
+  const window = hits.slice(1, Math.max(2, options.window ?? 8));
+  for (const hit of window) {
     const text = hit.record?.text;
     if (text === undefined) return [];
-    if (top.score - hit.score >= CLEAR_MARGIN) break;
-    const other = evidenceLine(text);
-    if (other === undefined || !coversQuestion(other)) return [];
-    selected.push(hit);
-    if (selected.length > CLEAR_MARGIN_MAX_HITS) return [];
+    if (fold(text).trim() === topText) continue;
+    if (top.score - hit.score < CLEAR_MARGIN || qualifies(text)) return [];
   }
-  return selected;
+  return [top];
 }

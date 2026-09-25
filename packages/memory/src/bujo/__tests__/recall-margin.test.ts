@@ -12,7 +12,7 @@ describe("clear-margin automatic recall", () => {
     ["When was Morgan born?", "Morgan was born on 17 May 1990."],
     ["What time is Morgan's swim class?", "Morgan's swim class is on Tuesdays at 18:30."],
     ["Where does Morgan work?", "Morgan works at Initech as a data engineer."],
-    ["What is the router IP of my Home Assistant box?", "Home Assistant box uses router IP 10.0.0.8 for local access."],
+    ["What time is Morgan's appointment?", "Morgan's appointment is on Monday at 09:30."],
   ])("accepts a single-clause line with a clear margin: %s", (query, text) => {
     const top = hit(text, 0.9);
     expect(selectAutomaticRecallHits([top, unrelated], { query, ownerTurn: true })).toEqual([top]);
@@ -36,11 +36,29 @@ describe("clear-margin automatic recall", () => {
     expect(selectClearMarginHit("Where does Morgan work?", [top, hit(close.record.text, 0.9 - CLEAR_MARGIN)])).toEqual([top]);
   });
 
-  it("injects close lines that also answer the question", () => {
-    const top = hit("Maple is on omeprazole for reflux.", 0.95);
-    const also = hit("Maple takes omeprazole daily for reflux.", 0.93);
-    expect(selectClearMarginHit("Is Maple on omeprazole for reflux?", [top, also, unrelated])).toEqual([]);
-    expect(selectClearMarginHit("What is Maple on for reflux?", [top, also, unrelated])).toEqual([top, also]);
+  it("answers a first-person question only from a line about the user", () => {
+    const query = "Where do I work?";
+    const other = hit("Morgan works at Initech as a data engineer.", 0.95);
+    expect(selectAutomaticRecallHits([other, unrelated], { query, ownerTurn: true })).toEqual([]);
+    const envelope = hit("The user said they work at Initech.", 0.95);
+    expect(selectAutomaticRecallHits([envelope, unrelated], { query, ownerTurn: true })).toEqual([envelope]);
+  });
+
+  it("abstains when two lines answer the question", () => {
+    const first = hit("Morgan works at Initech as a data engineer.", 0.95);
+    const second = hit("Morgan works at Globex as a data engineer.", 0.93);
+    expect(selectClearMarginHit("Where does Morgan work?", [first, second, unrelated])).toEqual([]);
+    // Far below the top, a second answer still abstains; a verbatim duplicate does not.
+    expect(selectClearMarginHit("Where does Morgan work?", [first, unrelated, hit(second.record.text, 0.6)])).toEqual([]);
+    expect(selectClearMarginHit("Where does Morgan work?", [first, hit(first.record.text, 0.94), unrelated]))
+      .toEqual([first]);
+  });
+
+  it.each([
+    ["When was Morgan born?", "Morgan's birthday party is on 17 May."],
+    ["When is Morgan's appointment?", "Morgan's appointment reminder is on Monday."],
+  ])("needs the date or time to attach to the asked term: %s / %s", (query, text) => {
+    expect(selectAutomaticRecallHits([hit(text, 0.95), unrelated], { query, ownerTurn: true })).toEqual([]);
   });
 
   it.each([

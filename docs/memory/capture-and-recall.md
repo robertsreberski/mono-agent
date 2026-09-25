@@ -333,10 +333,10 @@ Recall fuses two retrievers and re-ranks the result:
 - When the canonical shapes find nothing, a clear-margin rule may inject ordinary single-clause lines such as `Morgan works at Initech as a data engineer.` It needs all of the following:
   - a short `who`/`what`/`when`/`where`/`which`/`how old|much|many` question;
   - a top hit of at most 30 words that is one clause (`and` only inside a comma list, no subordinate clause), with no negation, reported speech, hedging, request or advice wording (an owner envelope such as `The user said` is unwrapped first);
-  - every content word of the question in that line, including names, with light stem and synonym folding (`born`/`birthday`, `work`/`job`/`employer`); `when` and `what time` questions also need a date or time value;
-  - a lead of at least `0.05` over the best hit that does not also pass these checks. Close hits that pass them are injected alongside, up to three; with more, recall abstains.
+  - every content word of the question in that line, including names, with light stem and synonym folding (`born`/`birthday`, `work`/`job`/`employer`); `when` and `what time` questions also need a date or time value attached to the asked term (`Morgan was born on 17 May`, not `Morgan's birthday party is on 17 May`);
+  - exactly one qualifying line among the top eight hits (verbatim duplicates count once), leading every other hit by at least `0.05`. Two qualifying lines abstain, even with different values.
 
-  On a host-stamped owner turn, `my`, `I` or `we` means the owner. The line must then name `the user`, or at least not carry another name's possessive (`Maple's blood type`). On any other turn, first-person questions abstain. Deliberate tool calls may inspect more results (up to the requested limit).
+  On a host-stamped owner turn, `my`, `I` or `we` means the owner. The line's subject must then be the user (`The user works …`, `User's employer is …`, or `they` inside an owner envelope such as `The user said they work …`); a line about anyone else never answers it. On any other turn, first-person questions abstain. Deliberate tool calls may inspect more results (up to the requested limit).
 
 Questions are normalized before the gate: `what's` expands, a trailing `now`,
 `right now` or `currently` is dropped, and in an all-lower-case question a
