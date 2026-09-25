@@ -3,6 +3,7 @@ import type { MemoryDb } from "../store/index.js";
 
 import { MARKER_FOR } from "./grammar.js";
 import { hasConflictingAutomaticRecallEvidence, selectAnswerBearingRecallHits } from "./recall-evidence.js";
+import { selectClearMarginHit } from "./recall-margin.js";
 
 /** Confidence floor for automatic prompt injection. Deliberate tool recall may inspect lower scores. */
 export const AUTO_RECALL_MIN_SCORE = 0.65;
@@ -50,7 +51,13 @@ export function selectAutomaticRecallHits<T extends {
   const evidenceWindow = hits.slice(0, Math.max(8, maxHits)).filter(
     (hit): hit is T & { readonly record: { readonly text: string } } => hit.record !== undefined,
   );
-  return selectAnswerBearingRecallHits(options.query, evidenceWindow, context).slice(0, maxHits);
+  const windowSupported = selectAnswerBearingRecallHits(options.query, evidenceWindow, context);
+  if (windowSupported.length > 0) return windowSupported.slice(0, maxHits);
+
+  // Ordinary single-clause lines: one top line that covers the question and
+  // clearly beats every other hit (see recall-margin.ts).
+  if (topScore < AUTO_RECALL_MIN_SCORE) return [];
+  return selectClearMarginHit(options.query, hits, context);
 }
 
 export async function composeRecallBlock(

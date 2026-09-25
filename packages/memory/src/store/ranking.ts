@@ -24,11 +24,13 @@ export interface ReScoreInput {
   readonly isInsight: boolean;
 }
 
-/** Final relevance: rank/evidence first, with small salience/insight tie-breakers. */
+/**
+ * Final relevance: rank/evidence first, with small salience/insight tie-breakers.
+ * Clamped to [0, 1] so tie-breakers never push a score past a perfect match.
+ */
 export function reScore(input: ReScoreInput, weights: RecallWeights): number {
-  return (
-    weights.rrf * input.rrfScore +
+  const score = weights.rrf * input.rrfScore +
     weights.salience * input.salience +
-    weights.insight * (input.isInsight ? 1 : 0)
-  );
+    weights.insight * (input.isInsight ? 1 : 0);
+  return Math.min(1, Math.max(0, score));
 }

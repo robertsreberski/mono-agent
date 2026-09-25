@@ -117,9 +117,9 @@ export function isConversationRelativeQuery(query: string): boolean {
 // automatic context never tries to resolve who/manager/lead/approval queries.
 const ACTOR_OR_RELATION_QUERY = /\b(?:who|whose|manager|manages?|managed|lead|leads|leading|led|approve|approves|approved|approving|approval)\b/iu;
 const UNSAFE_FACT_LANGUAGE = /\b(?:and|but|or|while|whereas|although|because|if|unless|since|that|which|who|after|before)\b|[,:;\n\r]/iu;
-const REPORTED_OR_DITRANSITIVE = /\b(?:gave|give|gives|told|tell|tells|asked|ask|asks|said|say|says|reported|reports|discussed|discusses|mentioned|mentions|informed|informs|showed|shows|sent|sends)\b/iu;
-const NEGATION_OR_UNKNOWN = /\b(?:no|not|never|neither|unknown|unset|tbd|none)\b/iu;
-const ATTRIBUTED_REPORT_EXCLUSION = /\b(?:assistant|quote|quoted|quotes|quoting|quotation|pasted|claim|claimed|claims|claiming|unconfirmed|unverified|unchecked|uncertain|uncertainty|unclear|unsure|doubtful|alleged|allegedly|apparently|maybe|perhaps|possibly|probably|rumor|rumored|rumoured|supposedly|seemingly|without|correction|corrected|correcting|incorrect|wrong|erroneous)\b/iu;
+export const REPORTED_OR_DITRANSITIVE = /\b(?:gave|give|gives|told|tell|tells|asked|ask|asks|said|say|says|reported|reports|discussed|discusses|mentioned|mentions|informed|informs|showed|shows|sent|sends)\b/iu;
+export const NEGATION_OR_UNKNOWN = /\b(?:no|not|never|neither|unknown|unset|tbd|none)\b/iu;
+export const ATTRIBUTED_REPORT_EXCLUSION = /\b(?:assistant|quote|quoted|quotes|quoting|quotation|pasted|claim|claimed|claims|claiming|unconfirmed|unverified|unchecked|uncertain|uncertainty|unclear|unsure|doubtful|alleged|allegedly|apparently|maybe|perhaps|possibly|probably|rumor|rumored|rumoured|supposedly|seemingly|without|correction|corrected|correcting|incorrect|wrong|erroneous)\b/iu;
 const ATTRIBUTED_REPORT_CORRECTION = /\b(?:correction|corrected|correcting|incorrect|wrong|erroneous|previously|formerly|now|instead|rather)\b/iu;
 const ATTRIBUTED_REPORT_QUOTATION = /["'“”‘’«»‹›]/u;
 const SCHEDULED_TEMPORAL_ATTRIBUTION = /\baccording\s+to\b/iu;
@@ -246,6 +246,15 @@ function hasConflictingValues(
     if (values.size > 1 && (includeCanonicalOnly || hasAttributed)) return true;
   }
   return false;
+}
+
+/**
+ * True for choice, scoped-choice and scheduled questions. Their property, scope
+ * and conflict identity rules are the whole point, so only this grammar decides them.
+ */
+export function isIdentityBoundDirectFactQuery(query: string, context: RecallEvidenceContext = {}): boolean {
+  const parsed = parseDirectFactQuery(query, context);
+  return parsed !== undefined && (parsed.kind === "choice" || requiresCanonicalConflictGuard(parsed));
 }
 
 export function hasAutomaticRecallEvidence(

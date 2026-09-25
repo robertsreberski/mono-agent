@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Memory recall scores are clamped to `[0, 1]`; salience and insight
+  tie-breakers can no longer push a score above a perfect match.
+
+- Preference and lesson background is injected only when its memory ranks in
+  the top eight hits and leads the median candidate score by `0.1`, instead of
+  whenever it clears the absolute `0.35` floor.
+
+- Person cards show an infant's age in months, weeks or days instead of
+  `age 0`.
+
+- Automatic recall can inject ordinary single-clause memory lines, not only
+  canonical `X's Y is Z` facts. The line must cover every content word of the
+  question and lead the next unrelated hit by a clear score margin. First-person
+  questions on owner turns read as the owner.
+
 - Keep `memory curate prepare` limited to rebuild-indexed lines and report
   skipped canonical-line counts by reason. Refuse unindexed selections before
   backup and show safe failure reasons after recovered apply errors.

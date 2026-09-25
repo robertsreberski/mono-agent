@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { MemoryDb } from "@mono-agent/memory/store";
 type MemoryLabelHit = ReturnType<MemoryDb["labelsForEntity"]>[number];
-import { formatMemoryBackground as formatBlock, type LabelRecallStore } from "../memory-guidance.js";
+import { ageAt, formatMemoryBackground as formatBlock, type LabelRecallStore } from "../memory-guidance.js";
 const formatMemoryBackground = (...args: Parameters<typeof formatBlock>) => formatBlock(...args)?.content || undefined;
 import { MemoryRetrievalService, type SharedRecallStore } from "../memory-retrieval.js";
 
@@ -20,7 +20,9 @@ const fact = (id: string, date: string, conflict = false, active = true): Memory
     value: { type: "date", date }, attribution: "user-stated" },
 });
 const hits = ["scoped", "other-user", "other-conversation", "other-project", "unverified", "inactive", "irrelevant"]
-  .map((id) => ({ score: id === "irrelevant" ? 0.1 : 0.81, record: { id, text: "Please make the relevant note concise." } }));
+  .map((id) => ({ score: id === "irrelevant" ? 0.1 : 0.81, record: { id, text: "Please make the relevant note concise." } }))
+  // Ordinary unlabelled candidates: guidance must lead their median score.
+  .concat([1, 2, 3, 4, 5].map((n) => ({ score: 0.6, record: { id: `filler-${n}`, text: "Unrelated note." } })));
 
 function store(rows: MemoryLabelHit[], facts: MemoryLabelHit[] = []): LabelRecallStore {
   return {
@@ -272,5 +274,32 @@ describe("label relevance and agreement", () => {
     expect(result?.facts).toBeUndefined();
     expect(result?.content).toContain("Person card:");
     expect(result?.content).toContain("home city: Lisbon");
+  });
+});
+
+describe("ageAt", () => {
+  it("renders infants in months, weeks or days, never age 0", () => {
+    expect(ageAt("2026-01-10", "2026-09-25")).toBe("age 8 months");
+    expect(ageAt("2026-08-24", "2026-09-25")).toBe("age 1 month");
+    expect(ageAt("2026-09-01", "2026-09-25")).toBe("age 3 weeks");
+    expect(ageAt("2026-09-22", "2026-09-25")).toBe("age 3 days");
+    expect(ageAt("2025-09-25", "2026-09-25")).toBe("age 1");
+    expect(ageAt("2026-09-26", "2026-09-25")).toBeUndefined();
+  });
+});
+
+describe("guidance score floor", () => {
+  const guidance = [preference(`user:${token}`, "Keep replies short.", "pref")];
+  const background = (score: number, others: readonly number[]) => formatMemoryBackground(store(guidance), "Reply to Morgan", "current", options,
+    [{ score, record: { id: "pref", text: "Keep replies short." } },
+      ...others.map((value, n) => ({ score: value, record: { id: `other-${n}`, text: "Unrelated note." } }))]);
+
+  it("injects a preference only when it clearly leads the candidate median", () => {
+    expect(background(0.86, [0.8, 0.79, 0.78, 0.78, 0.77])).toBeUndefined();
+    expect(background(0.92, [0.8, 0.79, 0.78, 0.78, 0.77])).toContain("Keep replies short.");
+  });
+
+  it("requires the preference to rank among the top hits", () => {
+    expect(background(0.95, Array.from({ length: 9 }, () => 0.97).concat([0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]))).toBeUndefined();
   });
 });
