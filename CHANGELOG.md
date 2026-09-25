@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Memory recall gives a name match a smaller bonus (`0.08`) than an exact
+  number or date (`0.15`), so records that only share a person's name no longer
+  outscore true answers to other questions.
+
 - Automatic memory recall injects only the labelled person facts a question asks
   about, as direct recalled facts, instead of the whole person card for every
   name mention. Fact keys drop the `other:` prefix and values render as text,

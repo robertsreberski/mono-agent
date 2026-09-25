@@ -4,8 +4,15 @@
  * carries them. Matching is Unicode-aware and accent-insensitive.
  */
 
-/** Largest semantic bonus a record can earn by containing every query anchor. */
+/** Largest semantic bonus a record can earn by containing every numeric/date query anchor. */
 export const ANCHOR_BOOST = 0.15;
+/**
+ * Largest bonus for name anchors. The embedding already carries a name, so a
+ * full 0.15 counted it twice: every record about a named person outscored true
+ * answers to other questions even when nothing in it answered this one. A
+ * smaller name bonus still breaks near-ties toward the named record.
+ */
+export const NAME_ANCHOR_BOOST = 0.08;
 
 // Capitalized question/imperative words that start queries in the languages the
 // capture pipeline sees most often. They are never names.
@@ -66,6 +73,20 @@ export function queryAnchors(query: string, candidateTexts: readonly string[]): 
     if (/\p{N}/u.test(word) || /^\p{Lu}/u.test(raw) || recordNames.has(word)) anchors.add(word);
   }
   return anchors;
+}
+
+/**
+ * Bonus for the query anchors a record contains: each anchor carries an equal
+ * share, worth `ANCHOR_BOOST` for numbers/dates and `NAME_ANCHOR_BOOST` for names.
+ */
+export function anchorBoost(anchors: ReadonlySet<string>, text: string): number {
+  if (anchors.size === 0) return 0;
+  const words = anchorWords(text);
+  let boost = 0;
+  for (const anchor of anchors) {
+    if (words.has(anchor)) boost += /\p{N}/u.test(anchor) ? ANCHOR_BOOST : NAME_ANCHOR_BOOST;
+  }
+  return boost / anchors.size;
 }
 
 /** Fraction of query anchors present in a record, 0 when the query has none. */
