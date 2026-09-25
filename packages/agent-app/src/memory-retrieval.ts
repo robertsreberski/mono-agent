@@ -184,7 +184,10 @@ export class MemoryRetrievalService implements MemoryStore {
           throw error;
         }
       }
-      const hits = selectAutomaticRecallHits(outcome.hits, { query: evidenceQuery });
+      const hits = selectAutomaticRecallHits(outcome.hits, {
+        query: evidenceQuery,
+        ...(options.ownerTurn === true ? { ownerTurn: true } : {}),
+      });
       // Keep the degraded-no-evidence warning even if labels could render a card.
       if (hits.length === 0 && outcome.degradation?.code === "embedding_unavailable") {
         throw new Error("Semantic memory retrieval is unavailable; lexical-only recall found no eligible automatic evidence.");

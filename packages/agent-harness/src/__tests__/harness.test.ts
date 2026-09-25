@@ -2299,10 +2299,12 @@ describe("AgentHarness", () => {
       captureSpeakerKind: "human-turn", metadata: { source: "web" }, sender: { id: "fictional-sender" },
       abortSignal: new AbortController().signal });
     const { memorySenderToken } = await import("../harness/memory-persistence.js");
-    expect(reads[0]).toMatchObject({ hostDate: "2024-02-29", senderToken: memorySenderToken("web", { id: "fictional-sender" }) });
+    expect(reads[0]).toMatchObject({ hostDate: "2024-02-29", senderToken: memorySenderToken("web", { id: "fictional-sender" }),
+      ownerTurn: true });
     await harness.run({ conversationId: "conv-2", userMessage: "Trigger event.", captureSpeakerKind: "trigger",
       metadata: { source: "webhook" }, sender: { id: "fictional-sender" }, abortSignal: new AbortController().signal });
     expect(reads[1]?.senderToken).toBeUndefined();
+    expect(reads[1]?.ownerTurn).toBeUndefined();
     const disabled = createFakeRuntime(async () => ({ text: "No memory." }));
     await createAgentHarness({ identityPath, runtime: disabled.runtime, model }).run({
       conversationId: "conv-3", userMessage: "Morgan", captureSpeakerKind: "human-turn",

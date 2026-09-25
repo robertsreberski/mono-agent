@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Automatic memory recall reads lower-case and `what's` questions, and on the
+  operator's own web/TUI/ACP turns it answers first-person questions (`What is
+  my phone number?`) from owner facts and `The user reports that …` records.
+  Multi-clause and hedged records still abstain.
+
 - Add `memory.embeddings.instructions` so each embedding model gets the
   query/document prefixes it was trained for (`bge-m3` none, Snowflake Arctic
   Embed 2 `query: `, Qwen3 its instruction; nomic and other models keep

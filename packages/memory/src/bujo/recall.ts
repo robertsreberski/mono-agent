@@ -19,8 +19,9 @@ export function selectAutomaticRecallHits<T extends {
   readonly record?: { readonly text: string };
 }>(
   hits: readonly T[],
-  options: { readonly maxHits?: number; readonly query?: string } = {},
+  options: { readonly maxHits?: number; readonly query?: string; readonly ownerTurn?: boolean } = {},
 ): readonly T[] {
+  const context = options.ownerTurn === true ? { ownerTurn: true } : {};
   const topScore = hits[0]?.score;
   if (topScore === undefined) return [];
   const maxHits = Math.max(1, Math.min(options.maxHits ?? AUTO_RECALL_MAX_HITS, AUTO_RECALL_MAX_HITS));
@@ -35,11 +36,11 @@ export function selectAutomaticRecallHits<T extends {
   // candidates and adds no lookup.
   const candidates = hits.filter((hit): hit is T & { readonly record: { readonly text: string } } =>
     hit.record !== undefined);
-  if (hasConflictingAutomaticRecallEvidence(options.query, candidates)) return [];
+  if (hasConflictingAutomaticRecallEvidence(options.query, candidates, context)) return [];
   const evidenceHits = selected.filter((hit): hit is T & { readonly record: { readonly text: string } } =>
     hit.record !== undefined);
   if (evidenceHits.length !== selected.length) return [];
-  const scoreSupported = selectAnswerBearingRecallHits(options.query, evidenceHits);
+  const scoreSupported = selectAnswerBearingRecallHits(options.query, evidenceHits, context);
   if (scoreSupported.length > 0) return scoreSupported.slice(0, maxHits);
 
   // Raw backend scores are not calibrated across providers. A true paraphrase
@@ -49,7 +50,7 @@ export function selectAutomaticRecallHits<T extends {
   const evidenceWindow = hits.slice(0, Math.max(8, maxHits)).filter(
     (hit): hit is T & { readonly record: { readonly text: string } } => hit.record !== undefined,
   );
-  return selectAnswerBearingRecallHits(options.query, evidenceWindow).slice(0, maxHits);
+  return selectAnswerBearingRecallHits(options.query, evidenceWindow, context).slice(0, maxHits);
 }
 
 export async function composeRecallBlock(

@@ -65,6 +65,11 @@ export interface MemoryLoadOptions {
   readonly senderToken?: string;
   /** Host observation date (UTC, matching capture's ISO timestamp). */
   readonly hostDate?: string;
+  /**
+   * Host-stamped: a human turn from the operator's own surface (web, TUI, ACP),
+   * the same rule capture uses for `ownerTurn`. Never model text.
+   */
+  readonly ownerTurn?: true;
 }
 
 export interface MemoryStore {

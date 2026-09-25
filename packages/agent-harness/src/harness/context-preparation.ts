@@ -251,10 +251,16 @@ async function loadHarnessMemory(
       const senderToken = request.captureSpeakerKind === "human-turn"
         ? memorySenderToken(runSourceFromRequest(request).source, request.sender)
         : undefined;
+      // Same owner rule as completed-turn capture: a human turn on the
+      // operator's own surface. Recall uses it only to read first-person
+      // questions and owner-report envelopes as about the owner.
+      const ownerTurn = request.captureSpeakerKind === "human-turn" && (request.metadata?.source === "web"
+        || request.metadata?.source === "tui" || request.metadata?.source === "acp");
       block = await options.memory?.load(request.conversationId, request.userMessage, {
         turnId,
         hostDate: (options.now?.() ?? new Date()).toISOString().slice(0, 10),
         ...(senderToken === undefined ? {} : { senderToken }),
+        ...(ownerTurn ? { ownerTurn: true as const } : {}),
       });
     } catch (error) {
       // A slow or failing memory backend (e.g. embeddings timeout / circuit
