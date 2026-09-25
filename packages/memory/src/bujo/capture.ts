@@ -53,8 +53,11 @@ async function captureTurnUnlocked(
   // Strict capture samples the host-owned clock once, before extraction, and
   // uses that same instant for the observation anchor and capture metadata.
   // Durable intake retries replace this clock with immutable admittedAt.
-  const knownEntities: ExtractedEntity[] = knownEntityHints(deps.root, text);
-  if (deps.captureSpeakerKind === "human-turn" && deps.captureEvidence?.ownerTurn === true) {
+  const ownerTurn = deps.captureSpeakerKind === "human-turn" && deps.captureEvidence?.ownerTurn === true;
+  // Only a host-verified owner turn may bind the canonical owner id; never offer it elsewhere.
+  const knownEntities: ExtractedEntity[] = knownEntityHints(deps.root, text)
+    .filter((entity) => ownerTurn || entity.id !== "person:owner");
+  if (ownerTurn) {
     // The host owner has exactly one canonical id. Offer it first so owner
     // facts bind there rather than to a name-based duplicate further down.
     const index = knownEntities.findIndex((entity) => entity.id === "person:owner");

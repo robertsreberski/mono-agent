@@ -216,6 +216,35 @@ describe("capture extraction with reuse hints", () => {
     }
   });
 
+  it("never binds the canonical owner id from model output on a turn that is not the host-verified owner's", async () => {
+    const output = JSON.stringify({
+      memories: [{ type: "note", text: "Morgan met the user at Maple Street.", salience: 0.8, isInsight: false,
+        entityIds: ["person:owner", "person:morgan"],
+        labels: [{ v: 1, kind: "fact", entityId: "person:morgan", key: "relationship",
+          value: { type: "relationship", role: "friend", targetEntityId: "person:owner" }, attribution: "unknown" }] }],
+      entities: [{ id: "person:owner", name: "Owner", type: "person" }, { id: "person:morgan", name: "Morgan", type: "person" }],
+      relations: [{ src: "person:morgan", dst: "person:owner", relation: "met" }],
+    });
+    const turn = "User: Morgan met me at Maple Street.\nAssistant: Noted.";
+    const evidence = (ownerTurn: boolean) => ({ observedAt: "2026-07-12T10:00:00.000Z", captureSpeakerKind: "human-turn" as const,
+      captureEvidence: { userText: "Morgan met me at Maple Street.", toolOutcomes: [], ...(ownerTurn ? { ownerTurn: true as const } : {}) } });
+    const plan = (ownerTurn: boolean) => extractCapturePlanStrict(turn, fakeLlm([["Extract one bounded", output]]), undefined, [], evidence(ownerTurn));
+
+    const peer = await plan(false);
+    expect(peer.entities.map(({ id }) => id)).toEqual(["person:morgan"]);
+    expect(peer.relations).toEqual([]);
+    expect(peer.candidates[0]?.entityIds).toEqual(["person:morgan"]);
+    expect(peer.candidates[0]?.labels).toBeUndefined();
+    const trigger = await extractCapturePlanStrict(turn, fakeLlm([["Extract one bounded", output]]), undefined, [],
+      { observedAt: "2026-07-12T10:00:00.000Z", captureSpeakerKind: "trigger" });
+    expect(trigger.entities.map(({ id }) => id)).toEqual(["person:morgan"]);
+
+    const owner = await plan(true);
+    expect(owner.entities.map(({ id }) => id)).toEqual(["person:owner", "person:morgan"]);
+    expect(owner.relations).toHaveLength(1);
+    expect(owner.candidates[0]?.entityIds).toContain("person:owner");
+  });
+
   it("hints never relax validation of what the model returns", async () => {
     const bogus = JSON.stringify({
       memories: [],

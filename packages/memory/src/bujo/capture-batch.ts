@@ -5,7 +5,7 @@ import {
   type CandidateMemory,
 } from "./distill.js";
 import type { ExtractedEntity, ExtractedRelation } from "./entities.js";
-import { renderKnownEntityHints } from "./entity-reuse.js";
+import { OWNER_ENTITY_ID, renderKnownEntityHints } from "./entity-reuse.js";
 import { MAX_MODEL_JSON_CHARS, parseJsonExact } from "./json.js";
 import type { LlmComplete } from "./llm.js";
 import type { MemoryCaptureEvidence, MemoryCaptureSpeakerKind } from "@mono-agent/agent-contracts";
@@ -245,14 +245,18 @@ export async function extractCapturePlanStrict(
     || parsed.relations.length > MAX_CAPTURE_RELATIONS) {
     throw outputError("capture-extract", "one or more arrays exceed their item bound");
   }
+  if (!(observationContext?.captureSpeakerKind === "human-turn" && observationContext.captureEvidence?.ownerTurn === true)) {
+    parsed = withoutHostOwner(parsed as { memories: unknown[]; entities: unknown[]; relations: unknown[] });
+  }
 
-  const entities = parsed.entities.map((value, index) => strictEntity(value, index));
+  const output = parsed as { memories: unknown[]; entities: unknown[]; relations: unknown[] };
+  const entities = output.entities.map((value, index) => strictEntity(value, index));
   const entityIds = new Set<string>();
   for (const entity of entities) {
     if (entityIds.has(entity.id)) throw outputError("capture-extract", "entity ids must be unique");
     entityIds.add(entity.id);
   }
-  const relations = parsed.relations.map((value, index) => strictRelation(value, index, entityIds));
+  const relations = output.relations.map((value, index) => strictRelation(value, index, entityIds));
   const relationKeys = new Set<string>();
   for (const relation of relations) {
     const key = `${relation.src}\u0000${relation.dst}\u0000${relation.relation}`;
@@ -261,7 +265,7 @@ export async function extractCapturePlanStrict(
   }
   const entityNames = new Map(entities.map((entity) => [entity.id, entity.name]));
   const labelContext = { ...observationContext, entityNames };
-  const parsedCandidates = parsed.memories.flatMap((value, index) => strictCandidate(value, index, entityIds, labelContext));
+  const parsedCandidates = output.memories.flatMap((value, index) => strictCandidate(value, index, entityIds, labelContext));
   const candidates: CandidateMemory[] = [];
   const clampedTokenSets: string[][] = [];
   const fullTokenSets: string[][] = [];
@@ -367,6 +371,29 @@ function strictCandidate(
       salience: value.salience as number, isInsight: value.isInsight as boolean, entityIds: specificIds,
       ...(labels.length === 0 ? {} : { labels }) }, fullText: sentence, hostSplit: sentences.length > 1 };
   });
+}
+
+/**
+ * Only a host-verified owner turn (or an operator merge) may bind the canonical
+ * owner id. Elsewhere a model-emitted `person:owner` entity, its relations,
+ * references and labels naming it are dropped before strict validation, so a
+ * group, peer or trigger turn cannot attach facts to the owner.
+ */
+function withoutHostOwner(output: { memories: unknown[]; entities: unknown[]; relations: unknown[] }): typeof output {
+  const owner = (value: unknown): boolean => value === OWNER_ENTITY_ID;
+  const namesOwner = (label: unknown): boolean => isRecord(label) && (owner(label.entityId)
+    || (isRecord(label.value) && (owner(label.value.entityId) || owner(label.value.targetEntityId))));
+  return {
+    entities: output.entities.filter((entity) => !(isRecord(entity) && owner(entity.id))),
+    relations: output.relations.filter((relation) => !(isRecord(relation) && (owner(relation.src) || owner(relation.dst)))),
+    memories: output.memories.map((memory) => {
+      if (!isRecord(memory)) return memory;
+      const next: Record<string, unknown> = { ...memory };
+      if (Array.isArray(memory.entityIds)) next.entityIds = memory.entityIds.filter((id) => !owner(id));
+      if (Array.isArray(memory.labels)) next.labels = memory.labels.filter((label) => !namesOwner(label));
+      return next;
+    }),
+  };
 }
 
 /** Keep sentence boundaries, not abbreviations or decimal points, within one bounded capture plan. */
