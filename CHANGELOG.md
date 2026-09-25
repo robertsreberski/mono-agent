@@ -17,6 +17,9 @@
   question and lead the next unrelated hit by a clear score margin. First-person
   questions on owner turns read as the owner.
 
+- Keep captured BuJo graph updates bounded to touched memories and entities after
+  startup repair, while preserving full parity checks for recovery and rebuild.
+
 - Keep `memory curate prepare` limited to rebuild-indexed lines and report
   skipped canonical-line counts by reason. Refuse unindexed selections before
   backup and show safe failure reasons after recovered apply errors.

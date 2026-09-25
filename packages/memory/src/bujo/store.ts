@@ -22,7 +22,7 @@ import { findCanonicalMemoryBullet, REMEMBER_ID_PREFIX } from "./canonical-looku
 import { assertBoundedMemoryText } from "./text-safety.js";
 import { parseDailyFile } from "./grammar.js";
 import { serializeBullet } from "./grammar.js";
-import { replaceDbCanonicalGraphProjectionWithParity } from "./graph.js";
+import { establishCaptureGraphBaseline, replaceDbCanonicalGraphProjectionWithParity } from "./graph.js";
 import {
   assertCanonicalGraphRepairBaseParity,
   auditCanonicalIndexHealth,
@@ -381,6 +381,7 @@ export class BujoMemoryStore implements MemoryStore {
             opened,
             assertCanonicalGraphRepairBaseParity,
           );
+          establishCaptureGraphBaseline(opened);
         } else {
           const replay = replayProjectionDbSnapshot(opened);
           if (replay.terminals.length > 0 || replay.supersedes.length > 0 || replay.threads.length > 0) {

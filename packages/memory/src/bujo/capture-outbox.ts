@@ -15,6 +15,8 @@ import { parseDailyFile } from "./grammar.js";
 import {
   appendGraphBatch,
   assertCanonicalGraphBatch,
+  applyCaptureGraphDelta,
+  hasCaptureGraphBaseline,
   replaceDbCanonicalGraphProjectionWithParity,
   type CanonicalGraphRepairGuard,
   type GraphBatchInput,
@@ -725,12 +727,16 @@ function applyReplay(
     }
     db.replaceReplayProjection(replayProjectionDbReplacement(publishedReplay.projection));
     assertReplayProjectionMatchesDb(db, publishedReplay.projection);
-    // The exact DB projection is part of intent completion. Recomputing the
-    // whole deterministic projection also adds/removes legacy-name matches
-    // affected by this memory or entity change. Any failure leaves the intent
-    // pending so restart retries the idempotent canonical graph.
+    // The exact touched projection is part of completion. A failed delta leaves
+    // the durable receipt pending for idempotent recovery at next startup.
     if (!deferGraphAndRetirement) {
-      replaceDbCanonicalGraphProjectionWithParity(root, db, options.canonicalGraphRepairGuard!);
+      if (hasCaptureGraphBaseline(db)) {
+        applyCaptureGraphDelta(root, db,
+          [...appliedMemoryIds, ...intent.actions.filter((action) => action.kind === "supersede").map((action) => action.oldId)],
+          canonical.entities.map((entity) => entity.id), canonical.relations);
+      } else {
+        replaceDbCanonicalGraphProjectionWithParity(root, db, options.canonicalGraphRepairGuard!);
+      }
       assertDbReplayOutcome(db, intent.actions, canonical);
     }
   }
@@ -772,7 +778,17 @@ function applyReplayPlans(
   assertOrNormalizeCompleteReceiptReplay(db, replay.projection, plans);
   const pendingPlans = plans.filter((plan) => plan.intent.state === "pending");
   if (pendingPlans.length > 0) {
-    replaceDbCanonicalGraphProjectionWithParity(root, db, options.canonicalGraphRepairGuard!);
+    if (hasCaptureGraphBaseline(db)) {
+      applyCaptureGraphDelta(
+        root, db,
+        [...results.flatMap((result) => result.appliedMemoryIds),
+          ...pendingPlans.flatMap((plan) => plan.intent.actions.filter((action) => action.kind === "supersede").map((action) => action.oldId))],
+        results.flatMap((result) => result.entities.map((entity) => entity.id)),
+        results.flatMap((result) => result.relations),
+      );
+    } else {
+      replaceDbCanonicalGraphProjectionWithParity(root, db, options.canonicalGraphRepairGuard!);
+    }
   }
   for (const [index, plan] of plans.entries()) {
     if (plan.intent.state === "complete") continue;

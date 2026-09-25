@@ -8,6 +8,7 @@ import { openMemoryDb, type MemoryDb, type MemoryRecord } from "../../store/inde
 import { replayCaptureOutbox, writeCaptureIntent } from "../capture-outbox.js";
 import {
   appendGraphBatch,
+  establishCaptureGraphBaseline,
   replaceDbCanonicalGraphProjectionWithParity,
   type CanonicalGraphRepairGuard,
 } from "../graph.js";
@@ -413,6 +414,45 @@ describe("replaceDbCanonicalGraphProjectionWithParity", () => {
       entityId: alice.id,
       provenance: "legacy-name-match",
       createdAt: item.createdAt,
+    }]);
+    db.close();
+  });
+
+  it("keeps a delta receipt pending across a post-commit crash, then replays without another model call", () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-graph-delta-durable-race-"));
+    const item = bullet("M1", "Morgan maintains Maple.");
+    const file = relative(root, dailyFilePath(root, new Date(item.createdAt)));
+    const entity = { id: "person:morgan", name: "Morgan", type: "person", createdAt: AT } as const;
+    writeCaptureIntent(root, [{ candidateIndex: 0, kind: "add", id: item.id,
+      after: { file, bullet: item }, record: memoryFromBullet(item), vector: [1, 0], threads: [],
+    }], { entities: [entity] }, AT);
+    const db = openMemoryDb({ path: join(root, "memory.db"), dim: 2,
+      embeddings: { id: "test:delta-replay", embed: async () => { throw Error("No provider work during replay"); } },
+    });
+    establishCaptureGraphBaseline(db);
+    const raced = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property === "applyCanonicalGraphDelta") {
+          return (...args: Parameters<MemoryDb["applyCanonicalGraphDelta"]>) => {
+            target.applyCanonicalGraphDelta(...args);
+            appendGraphBatch(root, { entities: [{ id: "person:quinn", name: "Quinn", type: "person", createdAt: AT }] });
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    establishCaptureGraphBaseline(raced);
+    expect(() => replayCaptureOutbox(root, raced, {
+      canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
+    })).toThrow(/source changed/iu);
+    expect(readdirSync(join(root, ".capture-outbox"))).toHaveLength(1);
+    expect(() => replayCaptureOutbox(root, db, {
+      canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
+    })).not.toThrow();
+    expect(readdirSync(join(root, ".capture-outbox"))).toEqual([]);
+    expect(db.associationsForMemory("M1")).toEqual([{
+      memoryId: "M1", entityId: "person:morgan", provenance: "legacy-name-match", createdAt: AT,
     }]);
     db.close();
   });
