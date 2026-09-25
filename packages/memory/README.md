@@ -507,6 +507,7 @@ BujoRuntimeSnapshotObservation
 BujoTier
 Bullet
 COMPLETED_TURN_INTAKE_SCHEMA_VERSION
+CURATE_DISCARD_REASONS
 CandidateMemory
 CanonicalBulletLocation
 CanonicalGraphMutationState

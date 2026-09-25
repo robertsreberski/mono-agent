@@ -33,6 +33,7 @@ import { homedir } from "node:os";
 import { resolve as resolvePath } from "node:path";
 
 import { normalizeOptionalString, setToolActivityPathRoots } from "@mono-agent/agent-contracts";
+import { isProviderAuthFailureText } from "@mono-agent/agent-runtime/ai/failure.js";
 import type { AgentResponder, MemoryStore } from "@mono-agent/agent-contracts";
 import { assertNoRetiredMonoAgentConfig } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
@@ -2103,7 +2104,11 @@ function runtimeHostOptionsForConfig(config: MonoAgentConfig): Parameters<typeof
 }
 
 /** An operator-only, fallback-free memory LLM; does not start or write an agent store. */
-export async function createConfiguredCurationLlm(config: MonoAgentConfig, modelOverride?: string): Promise<LlmComplete> {
+export async function createConfiguredCurationLlm(
+  config: MonoAgentConfig,
+  modelOverride: string | undefined,
+  memoryRuntime?: MonoRuntimeLike,
+): Promise<LlmComplete> {
   const bujo = await import("@mono-agent/memory/bujo");
   const configured = config.memory?.llm;
   if (configured === undefined && modelOverride === undefined) throw new Error("memory-curate: memory.llm is not configured");
@@ -2113,9 +2118,36 @@ export async function createConfiguredCurationLlm(config: MonoAgentConfig, model
     ...(modelOverride.startsWith("ollama:") && configured?.provider === "ollama" && configured.endpoint !== undefined
       ? { endpoint: configured.endpoint } : {}),
   };
-  const llm = configuredMemoryLlm(bujo, config, llmConfig, undefined, undefined, undefined, undefined);
-  if (llm === undefined) throw new Error("memory-curate: memory.llm is not configured");
-  return llm;
+  // Do not route operator-only completion through configuredMemoryLlm: that
+  // path deliberately takes a root lease for in-process memory maintenance.
+  // Curation has no tools, MCP or process jobs; it reads only the prompt passed
+  // by the CLI. Protected-root tool sandboxing is unnecessary for a tool-less
+  // completion, so it must not acquire a live agent's exclusive root lease.
+  // Keeping the runtime private also lets us dispose its sessions
+  // after each completion so the CLI does not retain provider handles.
+  if (llmConfig.provider === "ollama") {
+    return bujo.createOllamaLlm({ model: llmConfig.model,
+      ...(llmConfig.endpoint === undefined ? {} : { endpoint: llmConfig.endpoint }) });
+  }
+  const model = parseMonoRuntimeModelReference(llmConfig.model);
+  const runtime = memoryRuntime ?? createMonoRuntime(runtimeHostOptionsForConfig(config));
+  const llm = createAgentHostMemoryLlm({ runtime, model, cwd: config.runtime.workspace,
+    runtimeOptions: mergeStaticRuntimeOptions(runtimeOptionsForLocalProvider(model, config.providers?.local), configRuntimeFlags(config)),
+    ...("timeoutMs" in llmConfig && llmConfig.timeoutMs !== undefined ? { timeoutMs: llmConfig.timeoutMs } : {}) });
+  return { ...llm, async complete(prompt, options) {
+    try { return await llm.complete(prompt, options); }
+    catch (error) {
+      const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+      if (code === "provider_auth" || error instanceof Error && isProviderAuthFailureText(error.message)) {
+        throw Object.assign(new Error("memory-curate: provider authentication failed", { cause: error }),
+          { code: "provider_auth" });
+      }
+      throw error;
+    }
+    // Session cleanup is best-effort: a close failure cannot replace the model
+    // result or conceal the operator's real authentication/transport failure.
+    finally { await runtime.disposeAllSessions?.().catch(() => undefined); }
+  } };
 }
 
 function configuredMemoryLlm(

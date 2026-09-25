@@ -30,6 +30,11 @@ describe("agent-host memory runtime results", () => {
     })).toThrow(/without the required structured result/u);
   });
 
+  it("retains the provider failure kind for operator decisions", () => {
+    expect(() => textFromMemoryRuntimeResult({ failureKind: "provider_auth", error: "opaque" }))
+      .toThrowError(expect.objectContaining({ code: "provider_auth" }));
+  });
+
   it("preserves the text path when no schema was selected", () => {
     expect(textFromMemoryRuntimeResult({ text: "legacy validated text" })).toBe("legacy validated text");
   });

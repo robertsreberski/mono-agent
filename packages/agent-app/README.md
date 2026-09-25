@@ -926,10 +926,16 @@ mono-agent memory curate prepare --plan ./curate-plan.json
 mono-agent memory curate review --plan ./curate-plan.json --accept drop:generic-advice,label:*
 # Stop the agent before apply; keep the returned backup for a possible restore.
 mono-agent memory curate apply --plan ./curate-plan.json
+mono-agent memory curate restore --backup /path/returned/by/apply
 mono-agent memory forget prepare --ids-file ./forget-ids.txt --reason noise_cleanup --plan ./forget-plan.json --json
 mono-agent memory forget apply --plan ./forget-plan.json --json
 mono-agent memory forget restore --backup /path/returned/by/apply --json
 ```
+
+Curation prepare uses tool-less, single-turn structured model calls without taking
+an agent-root lease; one retry per failed batch precedes bounded discard reasons.
+Review every proposed drop and rewrite before accepting it. A keep-only apply is
+a no-op and has no restore backup.
 
 Journal and BuJo always require a valid managed `.index/manifest.json`; only
 Lite may remain unmanaged. Missing/corrupt authority, active/configured

@@ -23,7 +23,10 @@ export function textFromMemoryRuntimeResult(
     throw new Error("agent-host memory LLM run was cancelled.");
   }
   if (typeof result.failureKind === "string" && result.failureKind.length > 0) {
-    throw new Error(`agent-host memory LLM failed (${result.failureKind}): ${result.error ?? "unknown error"}`);
+    // Preserve the runtime's typed failure kind for callers that must distinguish
+    // an operator-fixable credential failure from a transient model outage.
+    throw Object.assign(new Error(`agent-host memory LLM failed (${result.failureKind}): ${result.error ?? "unknown error"}`),
+      { code: result.failureKind });
   }
   if (typeof result.error === "string" && result.error.length > 0) {
     throw new Error(`agent-host memory LLM failed: ${result.error}`);

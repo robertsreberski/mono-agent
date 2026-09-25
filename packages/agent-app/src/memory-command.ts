@@ -22,6 +22,7 @@ import type { MemorySearchErrorCode } from "@mono-agent/memory/search";
 import type { EntityRecord, IndexMetadata, MemoryDb, MemoryRecord, MemoryStoreAudit, MemoryStoreStats } from "@mono-agent/memory/store";
 import { listTraceSources } from "@mono-agent/observability";
 import type { TraceSourceListItem } from "@mono-agent/observability";
+import { CURATE_DISCARD_REASONS } from "@mono-agent/memory/bujo";
 import type {
   BujoMemoryHealthReport,
   CompletedTurnIntakeInspection,
@@ -2912,7 +2913,7 @@ function parseCuratePlan(value: unknown): CuratePlan {
     || !Array.isArray(value.discarded) || value.discarded.length > 16384
     || value.discarded.some((entry: unknown) => !isObject(entry) || !hasExactKeys(entry, ["id", "reason"])
       || typeof entry.id !== "string" || (entry.id !== "unbound" && !MEMORY_ID_RE.test(entry.id))
-      || !["unknown-id", "duplicate-id", "invalid-proposal", "missing-proposal", "invalid-preview"].includes(String(entry.reason)))) {
+      || !(typeof entry.reason === "string" && (CURATE_DISCARD_REASONS as readonly string[]).includes(entry.reason)))) {
     throw new Error("invalid curate plan");
   }
   const bujo = value.proposals as CurateProposal[];

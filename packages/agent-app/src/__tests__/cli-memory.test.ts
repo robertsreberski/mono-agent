@@ -2236,19 +2236,22 @@ describe("curate paid-run isolation", () => {
     new Date("2026-07-12T10:00:00.000Z"));
     const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
       embeddings: { provider: "ollama", model: "test-embed", dim: 8 }, llm: { provider: "ollama", model: "test-capture" } } });
+    let planNumber = 0;
     const prepare = (complete: () => Promise<string>, json: boolean) => captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runMemoryCommand({
-      cwd: dir, env: {}, positionals: ["curate", "prepare"], planPath: join(dir, "plan.json"), json, strict: false,
+      cwd: dir, env: {}, positionals: ["curate", "prepare"], planPath: join(dir, `plan-${planNumber++}.json`), json, strict: false,
       curateLlm: { id: "fake", complete },
     }))));
     const own = await prepare(async () => "{}", false);
-    expect(own.code).toBe(1);
-    expect(own.stdout).toContain("memory-curate: invalid response envelope");
+    expect(own.code).toBe(0);
+    expect(own.stdout).toContain("invalid-response");
     const ownJson = await prepare(async () => "{}", true);
-    expect(JSON.parse(ownJson.stdout).reason).toBe("memory-curate: invalid response envelope");
+    expect(JSON.parse(ownJson.stdout).discardedByReason).toEqual({ "invalid-response": 1 });
     const external = await prepare(async () => { throw new Error("provider failed with private text"); }, false);
+    expect(external.code).toBe(1);
     expect(external.stdout).not.toContain("private text");
     expect(external.stdout).toContain("Curation preparation failed");
     const spoofed = await prepare(async () => { throw new Error("memory-curate: secret private text"); }, true);
+    expect(JSON.parse(spoofed.stdout)).toMatchObject({ status: "failed", code: "curate_prepare_failed" });
     expect(JSON.parse(spoofed.stdout).reason).toBeUndefined();
   });
   it("records individual invalid model proposals without losing valid siblings", async () => {
@@ -2274,10 +2277,10 @@ describe("curate paid-run isolation", () => {
     expect(prepared.code, prepared.stderr).toBe(0);
     expect(calls).toBe(1);
     expect(JSON.parse(prepared.stdout)).toMatchObject({ count: 1, discarded: 2,
-      discardedByReason: { "invalid-proposal": 1, "invalid-preview": 1 } });
+      discardedByReason: { "invalid-label": 1, "invalid-preview": 1 } });
     const plan = JSON.parse(await readFile(planPath, "utf8"));
     expect(plan.proposals.map((proposal: { source: { id: string } }) => proposal.source.id)).toEqual(["fictional-0"]);
-    expect(plan.discarded).toEqual([{ id: "fictional-1", reason: "invalid-proposal" },
+    expect(plan.discarded).toEqual([{ id: "fictional-1", reason: "invalid-label" },
       { id: "fictional-2", reason: "invalid-preview" }]);
     const reviewed = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
       runCli(["memory", "curate", "review", "--plan", planPath, "--json"]))));
