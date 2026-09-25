@@ -139,14 +139,15 @@ describe("embedding-first recall ranking", () => {
 });
 
 describe("name-anchor calibration", () => {
-  it("does not let a name alone lift an unrelated record above a true answer to another question", async () => {
-    // A record that only shares the person's name with a question it cannot answer.
+  it("does not let a name alone lift an unrelated record above the true answer to the same query", async () => {
+    // One query, two hits: a record that only shares the person's name, and the
+    // true answer, which does not repeat the name. A full 0.15 name bonus put
+    // the name-only record first (0.76 + 0.15 > 0.86).
     const named = note("named", "Morgan reviewed the quarterly garden plan.");
-    const named2 = await scores([named], { [named.text]: 0.76 }, "What is Morgan's shoe size?");
-    // A true answer with no name, at a typical answer similarity.
     const answer = note("answer", "The team retrospective happens every second Friday.");
-    const answered = await scores([answer], { [answer.text]: 0.86 }, "How often is the team retrospective?");
-    expect(named2.get("named")!).toBeLessThan(answered.get("answer")!);
+    const result = await scores([named, answer], { [named.text]: 0.76, [answer.text]: 0.86 },
+      "How often does Morgan's team retrospective happen?");
+    expect(result.get("answer")!).toBeGreaterThan(result.get("named")!);
   });
 
   it("keeps the full bonus for numbers and dates and a smaller one for names", async () => {
