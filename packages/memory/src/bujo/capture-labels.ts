@@ -106,18 +106,9 @@ const OWNER_PROPERTY: Readonly<Record<string, RegExp>> = {
 };
 export function ownerFactSupported(label: Extract<MemoryLabel, { kind: "fact" }>, text: string): boolean {
   const property = OWNER_PROPERTY[label.key];
-  const otherKey = label.key.startsWith("other:") ? label.key.slice(6).replaceAll("-", " ") : undefined;
-  if (property === undefined && otherKey === undefined) return false;
-  return splitCaptureSentences(text).some((sentence) => {
-    if (!valueSupported(label, sentence)) return false;
-    const normalized = normalize(sentence).replace(/[’]/gu, "'");
-    if (property?.test(normalized)) return true;
-    // Bind custom owner facts to an explicit owner subject and same-sentence
-    // value in both texts, never an unrelated relative's claim.
-    return otherKey !== undefined
-      && /\b(?:my|i|i'm|the (?:user|owner)(?:'s)?)\b/iu.test(normalized)
-      && !/\b(?:my|the (?:user|owner)'s)\s+(?:son|daughter|child|kid|partner|wife|husband|spouse|mother|mom|mum|father|dad)'?s?\b/iu.test(normalized);
-  });
+  if (property === undefined) return false;
+  return splitCaptureSentences(text).some((sentence) => valueSupported(label, sentence)
+    && property.test(normalize(sentence).replace(/[’]/gu, "'")));
 }
 
 export function factSupported(label: Extract<MemoryLabel, { kind: "fact" }>, text: string,

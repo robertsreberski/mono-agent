@@ -37,7 +37,7 @@ async function extract(text: string, labels: unknown[], context: {
 }
 
 describe("host-validated capture labels", () => {
-  it("accepts kinship variants and a custom owner property in the same subject sentence", async () => {
+  it("accepts kinship variants but never guesses an unlisted owner property", async () => {
     const relation = { v: 1, kind: "fact", entityId: "person:morgan", key: "relationship",
       value: { type: "relationship", role: "child", targetEntityId: "person:maple" }, attribution: "user-stated" };
     const plan = await extract("Morgan's daughter Maple enjoys drawing.", [relation],
@@ -46,7 +46,7 @@ describe("host-validated capture labels", () => {
     const owner = { v: 1, kind: "fact", entityId: "person:owner", key: "other:favorite-animal",
       value: { type: "text", text: "otter" }, attribution: "user-stated" };
     const ctx = { captureSpeakerKind: "human-turn" as const, captureEvidence: evidence("My favorite animal is otter.", { ownerTurn: true }) };
-    expect((await extract("The user's favorite animal is otter.", [owner], ctx)).candidates[0]?.labels).toEqual([owner]);
+    expect((await extract("The user's favorite animal is otter.", [owner], ctx)).candidates[0]?.labels).toBeUndefined();
     expect((await extract("The user's daughter has a favorite animal, otter.", [owner], ctx)).candidates[0]?.labels).toBeUndefined();
   });
   it("does not apply an empty automatic capture allowlist to explicit Remember writes", async () => {
@@ -199,13 +199,15 @@ describe("host-validated capture labels", () => {
       value: { type: "date", date: "1990-05-17" }, attribution: "user-stated" };
     const owner = (userText: string) => ({ captureSpeakerKind: "human-turn" as const,
       captureEvidence: evidence(userText, { ownerTurn: true }) });
-    for (const relation of ["wife", "sons", "children", "daughter"]) {
+    for (const relation of ["wife", "sons", "children", "daughter", "brother", "sister", "friend", "boss"]) {
       const sentence = `The user's ${relation} was born May 17, 1990.`;
       expect((await extract(sentence, [label], owner(`My ${relation} was born May 17, 1990.`)))
         .candidates[0]?.labels).toBeUndefined();
     }
     expect((await extract("The user has a daughter born May 17, 1990.", [label],
       owner("I have a daughter born May 17, 1990."))).candidates[0]?.labels).toBeUndefined();
+    expect((await extract("The user told Taylor her birthday is May 17, 1990.", [label],
+      owner("I told Taylor her birthday is May 17, 1990."))).candidates[0]?.labels).toBeUndefined();
     expect((await extract("The user's birthday is May 17, 1990.", [label],
       owner("My wife likes cake. My birthday is May 17, 1990."))).candidates[0]?.labels).toEqual([label]);
     expect((await extract("The user was born May 17, 1990. Their son was born in 2010.", [label],
