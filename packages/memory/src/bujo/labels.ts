@@ -3,13 +3,13 @@ import type { Bullet } from "./types.js";
 const PREFIX = "label:v1:";
 const ENTITY_ID = /^[a-z][a-z0-9-]{0,31}:[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const KEY = /^(?:birth_date|full_name|preferred_name|relationship|home_location|work_location|other:[a-z](?:[a-z0-9]|-[a-z0-9]){0,31})$/u;
-const ROLES = ["parent", "child", "partner", "spouse", "sibling", "friend", "colleague", "other"] as const;
+export const MEMORY_RELATIONSHIP_ROLES = ["parent", "child", "partner", "spouse", "sibling", "friend", "colleague", "other"] as const;
 const ATTRIBUTIONS = ["user-stated", "document", "assistant-inferred", "unknown"] as const;
 type Attribution = typeof ATTRIBUTIONS[number];
 type FactValue = { readonly type: "date"; readonly date: string }
   | { readonly type: "text"; readonly text: string }
   | { readonly type: "entity"; readonly entityId: string }
-  | { readonly type: "relationship"; readonly role: typeof ROLES[number]; readonly targetEntityId: string };
+  | { readonly type: "relationship"; readonly role: typeof MEMORY_RELATIONSHIP_ROLES[number]; readonly targetEntityId: string };
 export type MemoryLabel =
   | { readonly v: 1; readonly kind: "fact"; readonly entityId: string; readonly key: string;
       readonly value: FactValue; readonly attribution: Attribution; readonly validFrom?: string; readonly validTo?: string }
@@ -46,7 +46,7 @@ function valueFor(value: unknown, key: string): boolean {
   if (!object(value)) return false;
   if (key === "birth_date") return keys(value, ["type", "date"]) && value.type === "date" && date(value.date);
   if (key === "relationship") return keys(value, ["type", "role", "targetEntityId"])
-    && value.type === "relationship" && ROLES.includes(value.role as typeof ROLES[number])
+    && value.type === "relationship" && MEMORY_RELATIONSHIP_ROLES.includes(value.role as typeof MEMORY_RELATIONSHIP_ROLES[number])
     && entity(value.targetEntityId) && (value.targetEntityId as string).startsWith("person:");
   if (value.type === "text") return keys(value, ["type", "text"]) && safeText(value.text, 160);
   if (!key.startsWith("other:")) return false;

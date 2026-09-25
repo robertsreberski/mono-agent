@@ -18,6 +18,9 @@
   "User ..." lines are `associate:owner-bare` and must be accepted explicitly.
   Apply uses the usual curate backup and restore.
 
+- Keep captured relationship labels aligned with their schema role words, while
+  binding owner facts only to directly supported owner properties.
+
 - Memory recall scores are clamped to `[0, 1]`; salience and insight
   tie-breakers can no longer push a score above a perfect match.
 

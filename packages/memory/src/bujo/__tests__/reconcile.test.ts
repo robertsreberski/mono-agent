@@ -161,6 +161,24 @@ describe("reconcile", () => {
     expect(offered).toContain('"sameEntityTopic":"other:favorite-color"');
     expect(actions[0]?.kind).toBe("supersede");
   });
+  it("anchors relationship state only on schema role words", async () => {
+    const root = newRoot(); const db = openDb(root);
+    await seed(db, root, "ROLE-OLD", "Morgan's partner Cedar moved.");
+    await seed(db, root, "OTHER-OLD", "Morgan admires Maple.");
+    db.upsertEntity({ id: "person:morgan", name: "Morgan", type: "person", createdAt: FIXED.toISOString() });
+    for (const id of ["ROLE-OLD", "OTHER-OLD"]) {
+      db.associateMemory({ memoryId: id, entityId: "person:morgan", provenance: "capture", createdAt: FIXED.toISOString() });
+    }
+    db.findSimilarMany = async () => [[]];
+    let offered = "";
+    await reconcileBatch([{ type: "note", text: "Morgan's child Maple visited.", salience: 0.8,
+      isInsight: false, entityIds: ["person:morgan"] }], makeDeps(db, root, { id: "role-topic",
+      complete: async (input) => { offered = input; return JSON.stringify([{ index: 0, action: "add" }]); },
+    }, { strictModelOutput: true, deferBatchCommit: true, beforeBatchCommit: () => {} }));
+    expect(offered).toContain('"sameEntityTopic":"relationship"');
+    expect(offered).toContain("ROLE-OLD");
+    expect(offered).not.toContain('"id":"OTHER-OLD"');
+  });
   it("adds on a malformed legacy classifier reply when only an entity anchor was offered", async () => {
     const root = newRoot(); const db = openDb(root);
     await seed(db, root, "OLD", "Morgan lives in Maple Town.");

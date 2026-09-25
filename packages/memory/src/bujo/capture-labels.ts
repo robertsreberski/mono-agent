@@ -95,7 +95,7 @@ function preferenceSupported(text: string, user: string): boolean {
     && contentWords(text).some((word) => source.includes(word));
 }
 // Only finite owner properties have a supported grammatical binding. A bare
-// first-person pronoun elsewhere in a message cannot assign a relative's fact.
+// first-person pronoun elsewhere in a message cannot assign another subject's fact.
 export const OWNER_PROPERTY: Readonly<Record<string, RegExp>> = {
   birth_date: /\b(?:my|the (?:user|owner)'s)\s+(?:birthday|birth\s+date)\b|\b(?:i|the (?:user|owner))\s+(?:was|am|'m)\s+born\b/iu,
   full_name: /\b(?:my|the (?:user|owner)'s)\s+(?:full\s+)?name\b|\b(?:i\s+am|i'm|the (?:user|owner)\s+is)\s+(?:named|called)\b/iu,
@@ -132,13 +132,6 @@ export function valueSupported(label: Extract<MemoryLabel, { kind: "fact" }>, te
   if (value.type === "date") return civilDateAppears(value.date, text);
   if (value.type === "text") return includesPhrase(text, value.text);
   if (value.type === "entity") return subjectSupported(text, value.entityId.split(":")[1]!);
-  const roleWords: Readonly<Record<string, readonly string[]>> = {
-    child: ["child", "children", "son", "daughter", "kid", "kids"],
-    parent: ["parent", "mother", "mom", "mum", "father", "dad"],
-    partner: ["partner", "wife", "husband", "spouse"],
-    spouse: ["spouse", "wife", "husband"],
-    sibling: ["sibling", "brother", "sister"],
-  };
   const subject = names?.get(label.entityId) ?? label.entityId.slice(label.entityId.indexOf(":") + 1).replaceAll("-", " ");
   const target = names?.get(value.targetEntityId) ?? value.targetEntityId.slice(value.targetEntityId.indexOf(":") + 1).replaceAll("-", " ");
   const source = normalize(text).replace(/[’]/gu, "'");
@@ -146,10 +139,10 @@ export function valueSupported(label: Extract<MemoryLabel, { kind: "fact" }>, te
     .replace(/[^\p{L}\p{N}]+/gu, " ").trim().split(/\s+/u).join("\\s+");
   const subjectPattern = escaped(subject);
   const targetPattern = escaped(target);
-  return (roleWords[value.role] ?? [value.role]).some((word) => {
-    const role = escaped(word);
-    return new RegExp(`\\b${subjectPattern}(?:'s|s')\\s+${role}\\s+(?:is\\s+)?${targetPattern}\\b|\\b${targetPattern}\\s+(?:is|was)\\s+${subjectPattern}(?:'s|s')\\s+${role}\\b`, "u").test(source);
-  });
+  const singular = escaped(value.role);
+  const plural = escaped(value.role === "child" ? "children" : `${value.role}s`);
+  const role = `(?:${singular}|${plural})`;
+  return new RegExp(`\\b${subjectPattern}(?:'s|s')\\s+${role}\\s+(?:is\\s+)?${targetPattern}\\b|\\b${targetPattern}\\s+(?:is|was)\\s+${subjectPattern}(?:'s|s')\\s+${role}\\b`, "u").test(source);
 }
 function normalize(text: string): string {
   return text.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase();

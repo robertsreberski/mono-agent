@@ -381,11 +381,11 @@ describe("completed-turn durable intake", () => {
     const memoryRoot = root();
     const intake = manager(memoryRoot);
     const input = turn({
-      summary: "Family preference: 👨‍👩‍👧‍👦 trips.",
-      captureText: "User: remember the 👨‍👩‍👧‍👦 trip preference.",
+      summary: "Group preference: 🧑‍💻 trips.",
+      captureText: "User: remember the 🧑‍💻 trip preference.",
     });
     const admitted = intake.admit(input);
-    expect(readFileSync(admitted.source, "utf8")).toContain("👨‍👩‍👧‍👦");
+    expect(readFileSync(admitted.source, "utf8")).toContain("🧑‍💻");
     await intake.flush();
     expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(true);
     intake.finishShutdown();

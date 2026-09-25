@@ -7,7 +7,7 @@ describe("fictional completed-turn memory behaviour scorecard", () => {
     expect(result.passed).toBe(true);
     expect(result.turns).toBe(TURNS.length);
     expect(result.questions).toHaveLength(QUESTIONS.length);
-    expect(result.gates).toMatchObject({ falseAutomaticRecall: true, ownerBindingOfRelatives: true,
+    expect(result.gates).toMatchObject({ falseAutomaticRecall: true, ownerBindingOfOthers: true,
       credentialStored: true, pendingTurns: true, rebuildParity: true });
     expect(result.superseded).toBe(2);
     expect(result.labelKinds.fact).toBeGreaterThanOrEqual(3);
@@ -24,8 +24,8 @@ describe("fictional completed-turn memory behaviour scorecard", () => {
     expect(scoreBehaviour(base).passed).toBe(true);
     for (const changed of [
       { questions: [{ kind: "negative", falseHits: 1 }, ...base.questions.slice(1)] },
-      { records: [{ id: "relative", text: "The user's sister Taylor lives in Porto.", status: "open" }, ...base.records],
-        labels: [{ memoryId: "relative", active: true, label: { kind: "fact", entityId: "person:owner" } }] },
+      { records: [{ id: "other-person", text: "The user's colleague Taylor lives in Porto.", status: "open" }, ...base.records],
+        labels: [{ memoryId: "other-person", active: true, label: { kind: "fact", entityId: "person:owner" } }] },
       { records: [{ id: "credential", text: "fake-secret-123", status: "open" }, ...base.records] },
       { pending: 1 },
       { after: { missing: true } },
