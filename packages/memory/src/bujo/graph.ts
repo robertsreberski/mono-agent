@@ -27,6 +27,11 @@ export function hasCaptureGraphBaseline(db: MemoryDb): boolean {
   return startupRepairedWriters.has(db);
 }
 
+/** Invalidate the fast path after a post-commit race or an unprojected write. */
+export function clearCaptureGraphBaseline(db: MemoryDb): void {
+  startupRepairedWriters.delete(db);
+}
+
 type GraphLine =
   | ({ readonly kind: "entity" } & EntityRecord)
   | ({ readonly kind: "relation" } & EntityRelationRecord)
@@ -322,8 +327,15 @@ export function applyCaptureGraphDelta(
     associations: projection.associations,
     supports,
   });
-  if (!sameCanonicalGraphSourceSnapshot(source, readCanonicalGraphStrictSnapshot(root))) {
-    throw new Error("memory-graph: canonical graph source changed during capture delta.");
+  try {
+    if (!sameCanonicalGraphSourceSnapshot(source, readCanonicalGraphStrictSnapshot(root))) {
+      throw new Error("memory-graph: canonical graph source changed during capture delta.");
+    }
+  } catch (error) {
+    // SQLite already committed. A failed source fence requires a guarded total
+    // replacement on the next retry, not another narrow projection.
+    clearCaptureGraphBaseline(db);
+    throw error;
   }
 }
 

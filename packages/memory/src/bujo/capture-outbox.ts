@@ -16,6 +16,7 @@ import {
   appendGraphBatch,
   assertCanonicalGraphBatch,
   applyCaptureGraphDelta,
+  clearCaptureGraphBaseline,
   hasCaptureGraphBaseline,
   replaceDbCanonicalGraphProjectionWithParity,
   type CanonicalGraphRepairGuard,
@@ -727,21 +728,27 @@ function applyReplay(
     }
     db.replaceReplayProjection(replayProjectionDbReplacement(publishedReplay.projection));
     assertReplayProjectionMatchesDb(db, publishedReplay.projection);
-    // The exact touched projection is part of completion. A failed delta leaves
-    // the durable receipt pending for idempotent recovery at next startup.
+    // The exact touched projection is part of completion. Failure leaves the
+    // receipt pending for recovery on the next serialized mutation or startup.
     if (!deferGraphAndRetirement) {
-      if (hasCaptureGraphBaseline(db)) {
-        applyCaptureGraphDelta(root, db,
-          [...appliedMemoryIds, ...intent.actions.filter((action) => action.kind === "supersede").map((action) => action.oldId)],
-          canonical.entities.map((entity) => entity.id), canonical.relations);
-      } else {
-        replaceDbCanonicalGraphProjectionWithParity(root, db, options.canonicalGraphRepairGuard!);
+      try {
+        if (hasCaptureGraphBaseline(db)) {
+          applyCaptureGraphDelta(root, db,
+            [...appliedMemoryIds, ...intent.actions.filter((action) => action.kind === "supersede").map((action) => action.oldId)],
+            canonical.entities.map((entity) => entity.id), canonical.relations);
+        } else {
+          replaceDbCanonicalGraphProjectionWithParity(root, db, options.canonicalGraphRepairGuard!);
+        }
+        assertDbReplayOutcome(db, intent.actions, canonical);
+      } catch (error) {
+        clearCaptureGraphBaseline(db);
+        throw error;
       }
-      assertDbReplayOutcome(db, intent.actions, canonical);
     }
   }
 
   if (readBujoCanonicalSourceFingerprint(root) !== committedSourceFingerprint) {
+    if (db !== undefined) clearCaptureGraphBaseline(db);
     throw new Error("memory-capture: canonical source changed during replay projection commit.");
   }
 
@@ -777,24 +784,30 @@ function applyReplayPlans(
   }
   assertOrNormalizeCompleteReceiptReplay(db, replay.projection, plans);
   const pendingPlans = plans.filter((plan) => plan.intent.state === "pending");
-  if (pendingPlans.length > 0) {
-    if (hasCaptureGraphBaseline(db)) {
-      applyCaptureGraphDelta(
-        root, db,
-        [...results.flatMap((result) => result.appliedMemoryIds),
-          ...pendingPlans.flatMap((plan) => plan.intent.actions.filter((action) => action.kind === "supersede").map((action) => action.oldId))],
-        results.flatMap((result) => result.entities.map((entity) => entity.id)),
-        results.flatMap((result) => result.relations),
-      );
-    } else {
-      replaceDbCanonicalGraphProjectionWithParity(root, db, options.canonicalGraphRepairGuard!);
+  try {
+    if (pendingPlans.length > 0) {
+      if (hasCaptureGraphBaseline(db)) {
+        applyCaptureGraphDelta(
+          root, db,
+          [...results.flatMap((result) => result.appliedMemoryIds),
+            ...pendingPlans.flatMap((plan) => plan.intent.actions.filter((action) => action.kind === "supersede").map((action) => action.oldId))],
+          results.flatMap((result) => result.entities.map((entity) => entity.id)),
+          results.flatMap((result) => result.relations),
+        );
+      } else {
+        replaceDbCanonicalGraphProjectionWithParity(root, db, options.canonicalGraphRepairGuard!);
+      }
     }
-  }
-  for (const [index, plan] of plans.entries()) {
-    if (plan.intent.state === "complete") continue;
-    assertDbReplayOutcome(db, plan.intent.actions, results[index]!, false);
+    for (const [index, plan] of plans.entries()) {
+      if (plan.intent.state === "complete") continue;
+      assertDbReplayOutcome(db, plan.intent.actions, results[index]!, false);
+    }
+  } catch (error) {
+    clearCaptureGraphBaseline(db);
+    throw error;
   }
   if (readBujoCanonicalSourceFingerprint(root) !== sourceFingerprint) {
+    clearCaptureGraphBaseline(db);
     throw new Error("memory-capture: canonical source changed during replay batch finalization.");
   }
   const completedPlans = plans.map((plan) => (

@@ -429,13 +429,16 @@ describe("replaceDbCanonicalGraphProjectionWithParity", () => {
     const db = openMemoryDb({ path: join(root, "memory.db"), dim: 2,
       embeddings: { id: "test:delta-replay", embed: async () => { throw Error("No provider work during replay"); } },
     });
-    establishCaptureGraphBaseline(db);
+    let appendOnce = true;
     const raced = new Proxy(db, {
       get(target, property, receiver) {
         if (property === "applyCanonicalGraphDelta") {
           return (...args: Parameters<MemoryDb["applyCanonicalGraphDelta"]>) => {
             target.applyCanonicalGraphDelta(...args);
-            appendGraphBatch(root, { entities: [{ id: "person:quinn", name: "Quinn", type: "person", createdAt: AT }] });
+            if (appendOnce) {
+              appendOnce = false;
+              appendGraphBatch(root, { entities: [{ id: "person:quinn", name: "Quinn", type: "person", createdAt: AT }] });
+            }
           };
         }
         const value = Reflect.get(target, property, receiver) as unknown;
@@ -447,13 +450,17 @@ describe("replaceDbCanonicalGraphProjectionWithParity", () => {
       canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
     })).toThrow(/source changed/iu);
     expect(readdirSync(join(root, ".capture-outbox"))).toHaveLength(1);
-    expect(() => replayCaptureOutbox(root, db, {
+    expect(() => replayCaptureOutbox(root, raced, {
       canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
     })).not.toThrow();
     expect(readdirSync(join(root, ".capture-outbox"))).toEqual([]);
     expect(db.associationsForMemory("M1")).toEqual([{
       memoryId: "M1", entityId: "person:morgan", provenance: "legacy-name-match", createdAt: AT,
     }]);
+    expect(db.allEntities().map((record) => record.id)).toEqual(["person:morgan", "person:quinn"]);
+    const afterRetry = db.canonicalGraphSnapshot();
+    replaceDbCanonicalGraphProjectionWithParity(root, db, assertCanonicalGraphRepairBaseParity);
+    expect(db.canonicalGraphSnapshot()).toEqual(afterRetry);
     db.close();
   });
 
