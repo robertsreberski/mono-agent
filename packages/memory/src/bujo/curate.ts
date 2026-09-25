@@ -4,6 +4,7 @@ import { parseDailyFile } from "./grammar.js";
 import { readCanonicalGraphStrictSnapshot } from "./graph.js";
 import { readBullet, rewriteBullet } from "./daily.js";
 import { isRememberedMemoryId } from "./canonical-lookup.js";
+import { CANONICAL_VISIBLE_BULLET, isMissingOnlyIdentity, isLegacySourceRecord, isSkippedRawBujoRecord } from "./rebuild-source-validation.js";
 import { factSupported, valueSupported } from "./capture-labels.js";
 import { forgetExplicitMemories, previewCanonicalExplicitForgetMemories } from "./migrate.js";
 import { writeCanonicalFileAtomic } from "./path-safety.js";
@@ -43,7 +44,12 @@ export const CURATE_DISCARD_REASONS = ["unknown-id", "duplicate-id", "invalid-pr
 export type CurateDiscardReason = typeof CURATE_DISCARD_REASONS[number];
 export interface CurateDiscard { readonly id: string; readonly reason: CurateDiscardReason }
 export interface CurateSuggestionResult { readonly proposals: readonly CurateProposal[]; readonly discarded: readonly CurateDiscard[] }
-export interface CurateSnapshot { readonly fingerprint: string; readonly lines: readonly CurateLine[]; readonly entityNames: readonly { readonly id: string; readonly name: string }[] }
+export interface CurateSnapshot {
+  readonly fingerprint: string;
+  readonly lines: readonly CurateLine[];
+  readonly entityNames: readonly { readonly id: string; readonly name: string }[];
+  readonly skipped: { readonly raw: number; readonly unstructured: number; readonly missingIdentity: number; readonly legacySource: number; readonly terminal: number };
+}
 function hash(text: string): string { return createHash("sha256").update(text).digest("hex"); }
 
 /** Canonical-only, read-only, identity-stable inventory; no outside context is consulted. */
@@ -54,12 +60,20 @@ export function inspectCurateSource(root: string, limit = 120): CurateSnapshot {
   const paths = [...listCanonicalRootFileNames(root, { include: (name) => /^\d{4}-\d{2}-\d{2}\.md$/u.test(name) }), ...names.map((name) => `daily/${name}`)].sort();
   const lines: CurateLine[] = [];
   const ids = new Set<string>();
+  const skipped = { raw: 0, unstructured: 0, missingIdentity: 0, legacySource: 0, terminal: 0 };
   for (const file of paths) {
     const snapshot = readCanonicalFileSnapshot(root, file);
     if (snapshot === undefined) continue;
     for (const entry of parseDailyFile(snapshot.content).lines) {
       const bullet = entry.bullet;
-      if (bullet === undefined || bullet.status === "dropped" || bullet.status === "invalidated") continue;
+      if (bullet === undefined) {
+        if (isMissingOnlyIdentity(entry.raw)) skipped.missingIdentity++;
+        else if (isLegacySourceRecord(entry.raw)) skipped.legacySource++;
+        else if (CANONICAL_VISIBLE_BULLET.test(entry.raw) && !entry.raw.includes("<!--mem")) skipped.unstructured++;
+        continue;
+      }
+      if (isSkippedRawBujoRecord(bullet.id, bullet.text)) { skipped.raw++; continue; }
+      if (bullet.status === "dropped" || bullet.status === "invalidated") { skipped.terminal++; continue; }
       if (ids.has(bullet.id)) throw new Error("memory-curate: duplicate canonical id");
       ids.add(bullet.id);
       if (lines.length < limit) lines.push({ id: bullet.id, file, line: entry.lineNumber, text: bullet.text,

@@ -1,3 +1,11 @@
+import { isRememberedMemoryId } from "./canonical-lookup.js";
+import { isLegacyHostObservation } from "./graph.js";
+
+/** The same BuJo raw-record exclusion used by rebuild and read-only curation. */
+export function isSkippedRawBujoRecord(id: string, text: string): boolean {
+  return !isRememberedMemoryId(id, text) && isLegacyHostObservation(text);
+}
+
 export const CANONICAL_VISIBLE_BULLET = /^- (?:\[[ x><~]\]|◦|–) /u;
 const VALID_BULLET_TYPES = new Set(["task", "event", "note"]);
 const VALID_BULLET_STATUSES = new Set(["open", "done", "scheduled", "migrated", "dropped", "invalidated"]);

@@ -2025,6 +2025,9 @@ describe("memory curate operator CLI", () => {
     bujoMemory.appendBullet(memoryRoot, { id: "fictional-a", type: "note", status: "open",
       text: "Morgan completed the example.", salience: 0.5, isInsight: false,
       createdAt: "2026-07-12T10:00:00.000Z", refs: [] }, new Date("2026-07-12T10:00:00.000Z"));
+    bujoMemory.appendBullet(memoryRoot, { id: "fictional-raw", type: "note", status: "open",
+      text: "Host-observed completed turn. Fictional audit envelope.", salience: 0.5, isInsight: false,
+      createdAt: "2026-07-12T10:00:00.000Z", refs: [] }, new Date("2026-07-12T10:00:00.000Z"));
     const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
       embeddings: { provider: "ollama", model: "test-embed", dim: 8 }, llm: { provider: "ollama", model: "test-capture" } } });
     const plan = join(dir, "plan.json");
@@ -2042,7 +2045,7 @@ describe("memory curate operator CLI", () => {
       "memory", "curate", "prepare", "--plan", plan, "--dry-run", "--json",
     ]))));
     expect(result.code, result.stderr).toBe(0);
-    expect(JSON.parse(result.stdout)).toMatchObject({ status: "estimated", estimate: { lines: 1, calls: 1, cost: "unknown" } });
+    expect(JSON.parse(result.stdout)).toMatchObject({ status: "estimated", estimate: { lines: 1, calls: 1, cost: "unknown" }, skipped: { raw: 1 } });
     await expect(stat(plan)).rejects.toThrow();
   });
 });

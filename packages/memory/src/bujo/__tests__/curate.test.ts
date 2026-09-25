@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -26,6 +26,19 @@ describe("curation preparation", () => {
     const expanded = { ...snapshot, entityNames: [{ id: "person:morgan", name: "Morgan Example Name" }] };
     expect(curateEstimate(expanded, { focus: "Skip transient fictional status updates." }).inputTokens)
       .toBeGreaterThan(curateEstimate(snapshot).inputTokens);
+  });
+  it("excludes rebuild-skipped canonical records before the selection limit and reports counts", () => {
+    const path = root();
+    seed(path, "fictional-raw", "Host-observed completed turn. Fictional audit envelope.");
+    seed(path, "fictional-live", "Morgan completed a fictional task.");
+    appendFileSync(join(path, "daily/2026-07-12.md"), [
+      "- ◦ Unstructured fictional note.",
+      "- – Fictional missing identity.  <!--mem type=note status=open salience=0.6 isInsight=0 created=2026-07-12T09:00:00.000Z refs=-->",
+      "",
+    ].join("\n"));
+    const snapshot = inspectCurateSource(path, 1);
+    expect(snapshot.lines.map(({ id }) => id)).toEqual(["fictional-live"]);
+    expect(snapshot.skipped).toMatchObject({ raw: 1, unstructured: 1, missingIdentity: 1 });
   });
   it("rejects unsupported legacy label authority and invalid rewrites", async () => {
     const path = root(); seed(path, "fictional-a", "Morgan completed the example.");

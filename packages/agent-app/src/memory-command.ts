@@ -2951,9 +2951,9 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       const estimate = bujo.curateEstimate(snapshot, memory.capture);
       const model = input.model ?? memory.llm?.model;
       if (model === undefined) throw new Error("memory LLM not configured");
-      const estimateText = `Curate estimate: ${estimate.lines} lines, ${estimate.calls} calls, ~${estimate.inputTokens} input / ~${estimate.outputTokens} output tokens; cost unknown.\n`;
+      const estimateText = `Curate estimate: ${estimate.lines} lines, ${estimate.calls} calls, ~${estimate.inputTokens} input / ~${estimate.outputTokens} output tokens; cost unknown. Skipped canonical lines: ${JSON.stringify(snapshot.skipped)}.\n`;
       if (input.dryRun) {
-        write(input.json, { operation: "curate-prepare", status: "estimated", model, estimate }, () => estimateText);
+        write(input.json, { operation: "curate-prepare", status: "estimated", model, estimate, skipped: snapshot.skipped }, () => estimateText);
         return 0;
       }
       process.stderr.write(estimateText);
@@ -2983,8 +2983,8 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       const discardedByReason = Object.fromEntries([...new Set(discarded.map(({ reason }) => reason))].map((reason) => [reason,
         discarded.filter((item) => item.reason === reason).length]));
       write(input.json, { operation: "curate-prepare", status: "prepared", planPath, count: proposals.length,
-        discarded: discarded.length, discardedByReason },
-        () => `Curate plan prepared: ${proposals.length} proposals, ${discarded.length} discarded (${JSON.stringify(discardedByReason)}) at ${planPath}. Review before applying.\n`);
+        discarded: discarded.length, discardedByReason, skipped: snapshot.skipped },
+        () => `Curate plan prepared: ${proposals.length} proposals, ${discarded.length} discarded (${JSON.stringify(discardedByReason)}); skipped canonical lines: ${JSON.stringify(snapshot.skipped)} at ${planPath}. Review before applying.\n`);
       return 0;
     }
     if (operation === "review" || operation === "apply") {
