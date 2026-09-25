@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Automatic recall can inject ordinary single-clause memory lines, not only
+  canonical `X's Y is Z` facts. The line must cover every content word of the
+  question and lead the next unrelated hit by a clear score margin. First-person
+  questions on owner turns read as the owner.
+
 - Keep `memory curate prepare` limited to rebuild-indexed lines and report
   skipped canonical-line counts by reason. Refuse unindexed selections before
   backup and show safe failure reasons after recovered apply errors.
