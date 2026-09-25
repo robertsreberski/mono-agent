@@ -37,6 +37,11 @@
   apply accepted lines despite unrelated live captures. Report safe preparation
   and review errors; changed selected lines still refuse apply before backup.
 
+- Let `memory curate prepare` use tool-less structured model calls without
+  blocking a running agent's root lease, close provider sessions after calls,
+  retry failed batches once, and report bounded discard reason categories.
+  Curation now favors durable dated facts over transient process chatter.
+
 - Add labelled fact sheets and scoped guidance to explicit `MemoryRecall`, plus
   read-only `memory labels` and `memory lessons --propose` operator views. Remote
   recall backends and ordinary dated hits remain unchanged.
