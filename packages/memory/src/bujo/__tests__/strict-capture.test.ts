@@ -661,10 +661,10 @@ describe("strict completed-turn reconciliation", () => {
     }
   });
 
-  it("requires every close candidate once and rejects conflicting targets as a whole", async () => {
+  it("degrades competing target decisions while retaining both distinct candidates", async () => {
     const fixture = await reconcileFixture(true);
     try {
-      await expect(reconcileBatch(fixture.candidates, {
+      const actions = await reconcileBatch(fixture.candidates, {
         ...fixture.deps,
         strictModelOutput: true,
         llm: {
@@ -674,8 +674,9 @@ describe("strict completed-turn reconciliation", () => {
             { index: 1, action: "noop", targetId: "TARGET" },
           ]),
         },
-      })).rejects.toMatchObject({ name: "MemoryModelOutputError" });
-      expect(fixture.db.count()).toBe(1);
+      });
+      expect(actions.map((action) => action?.kind)).toEqual(["noop", "add"]);
+      expect(fixture.db.count()).toBe(2);
     } finally {
       fixture.db.close();
     }

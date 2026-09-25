@@ -116,6 +116,7 @@ async function reconcileUnlocked(
         throw new MemoryModelError("embedding", "findSimilar", cause);
       }
       deps.abortSignal?.throwIfAborted();
+      similar = withEntityStateNeighbours(candidate, similar, deps.db);
 
       // Clearly novel (nothing close enough) → ADD outright, no LLM.
       if (similar.length === 0 || (similar[0]?.distance ?? Infinity) > dupThreshold) {
@@ -173,6 +174,7 @@ async function reconcileBatchUnlocked(
     throw new MemoryModelError("embedding", "findSimilarBatch", cause);
   }
   deps.abortSignal?.throwIfAborted();
+  neighbours = neighbours.map((similar, index) => withEntityStateNeighbours(candidates[index]!, similar, deps.db));
 
   const reconcileIndexes = candidates.flatMap((_candidate, index) => {
     const similar = neighbours[index] ?? [];
@@ -197,7 +199,7 @@ async function reconcileBatchUnlocked(
         : { action: "noop" as const, targetId: duplicate.record.id }];
     }));
   }
-  rejectConflictingTargets(decisions, deps.strictModelOutput === true);
+  resolveConflictingTargets(decisions, candidates, neighbours);
   deps.abortSignal?.throwIfAborted();
   const plans: Array<BatchActionPlan | undefined> = candidates.map(() => undefined);
   for (const [index, candidate] of candidates.entries()) {
@@ -258,14 +260,14 @@ async function reconcileBatchUnlocked(
   return plans.map((plan) => plan?.action);
 }
 
-/**
- * A batch is planned against one pre-write snapshot. Every target-bearing
- * decision contributes candidate-specific graph evidence, including NOOP.
- * Allowing any two candidates to share a target would either race mutations or
- * merge unrelated entity evidence onto one row. Fail the entire target group
- * closed before vector preflight or canonical writes.
- */
-function rejectConflictingTargets(decisions: Map<number, Classification>, strict: boolean): void {
+/** A target can be mutated only once per snapshot. Keep the nearest supported
+ * decision, and give every other distinct candidate its own row instead of
+ * failing the entire turn or attaching its graph evidence to another fact. */
+function resolveConflictingTargets(
+  decisions: Map<number, Classification>,
+  candidates: readonly CandidateMemory[],
+  neighbours: readonly (readonly SimilarHit[])[],
+): void {
   const byTarget = new Map<string, number[]>();
   for (const [index, decision] of decisions) {
     if (decision.targetId === undefined) continue;
@@ -273,11 +275,59 @@ function rejectConflictingTargets(decisions: Map<number, Classification>, strict
     indexes.push(index);
     byTarget.set(decision.targetId, indexes);
   }
-  for (const indexes of byTarget.values()) {
+  for (const [target, indexes] of byTarget) {
     if (indexes.length < 2) continue;
-    if (strict) throw new MemoryModelOutputError("classify-batch", "multiple candidates selected one target");
-    for (const index of indexes) decisions.delete(index);
+    const support = (index: number): number => {
+      const hit = (neighbours[index] ?? []).find((item) => item.record.id === target);
+      return hit === undefined ? Number.POSITIVE_INFINITY : hit.distance;
+    };
+    indexes.sort((a, b) => support(a) - support(b) || a - b);
+    const winner = indexes[0]!;
+    for (const index of indexes.slice(1)) {
+      // Exact repetitions of an unchanged target can be omitted without a
+      // second NOOP intent (which would attach unrelated graph evidence).
+      if (decisions.get(winner)?.action === "noop"
+        && candidates[index]?.text === candidates[winner]?.text
+        && JSON.stringify(candidates[index]?.entityIds ?? []) === JSON.stringify(candidates[winner]?.entityIds ?? [])) {
+        decisions.delete(index);
+      } else {
+        decisions.set(index, { action: "add" });
+      }
+    }
   }
+}
+
+// Do not treat a shared person's unrelated notes as a state change. Only a
+// finite, recognizable property of the same graph entity can widen the vector
+// neighbourhood. The classifier still decides whether the value changed.
+const STATE_TOPICS: ReadonlyArray<readonly [string, RegExp]> = [
+  ["home_location", /\b(?:lives?|living|resides?|residing|moved|home|based)\b/iu],
+  ["work_location", /\b(?:works?|working|employed|employer|job|joined)\b/iu],
+  ["relationship", /\b(?:partner|spouse|married|dating|divorced|wife|husband)\b/iu],
+  ["status", /\b(?:status|active|inactive|paused|resumed|completed|cancelled|canceled)\b/iu],
+];
+function stateTopics(text: string, labels: readonly MemoryLabel[] = []): Set<string> {
+  const topics = new Set(labels.flatMap((label) => label.kind === "fact" ? [label.key] : []));
+  for (const [key, pattern] of STATE_TOPICS) if (pattern.test(text)) topics.add(key);
+  return topics;
+}
+function withEntityStateNeighbours(candidate: CandidateMemory, similar: readonly SimilarHit[], db: MemoryDb): SimilarHit[] {
+  const topics = stateTopics(candidate.text, candidate.labels);
+  if (topics.size === 0 || (candidate.entityIds?.length ?? 0) === 0) return [...similar];
+  const seen = new Set(similar.map((hit) => hit.record.id));
+  const anchored: SimilarHit[] = [];
+  for (const entityId of (candidate.entityIds ?? []).slice(0, 3)) {
+    for (const record of db.memoriesForEntity(entityId)) {
+      if (seen.has(record.id)) continue;
+      const oldTopics = stateTopics(record.text);
+      if (![...topics].some((topic) => oldTopics.has(topic))) continue;
+      seen.add(record.id);
+      anchored.push({ record, distance: 0.49 });
+      if (anchored.length >= 3) break;
+    }
+    if (anchored.length >= 3) break;
+  }
+  return [...similar, ...anchored].sort((a, b) => a.distance - b.distance).slice(0, 8);
 }
 
 interface BatchActionPlan {

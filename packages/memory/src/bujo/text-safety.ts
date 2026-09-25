@@ -9,6 +9,18 @@
  * surrounding context, not here.
  */
 
+/** Capture-specific content guard. Never apply this heuristic to explicit Remember
+ * writes: the completed-turn source/speaker context is required. */
+export function unsafeCaptureContent(text: string, source = ""): boolean {
+  if (/\b(?:I|I'm|I've|my|mine)\b/u.test(text)) return true;
+  if (/\b(?:unclear whether|not clear whether|may(?: or may not)?|possibly|unverified|cannot confirm)\b/iu.test(text)
+    && !/\b(?:unclear whether|not clear whether|may(?: or may not)?|possibly|unverified|cannot confirm)\b/iu.test(source)) return true;
+  if (/\b(?:\d+(?:[.,]\d+)?\s*(?:years?|months?)\s*old|aged?\s+\d+(?:[.,]\d+)?\s*(?:years?|months?))\b/iu.test(text)) return true;
+  if (/\b(?:password|passphrase|api[ -]?key|access[ -]?token|secret|login|username|credential)\b/iu.test(text)
+    || /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/iu.test(text)) return true;
+  return false;
+}
+
 /** Lone surrogates, C0 controls (tab/LF/CR excluded), DEL, and C1 controls. */
 const UNSAFE_CODE_POINTS = /[\p{Cs}\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u;
 

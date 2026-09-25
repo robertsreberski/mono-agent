@@ -13,6 +13,18 @@ function planJson(texts: readonly string[]): string {
 }
 
 describe("extractCapturePlanStrict intra-turn precision", () => {
+  it("drops first-person, invented doubt, ages and credential identities without dropping safe siblings", async () => {
+    const output = JSON.stringify({ memories: [
+      ...["I visited Maple Town.", "Morgan may have moved to Maple Town.",
+        "The assistant reports Morgan is 9 years old.", "Morgan's login email is demo@example.test.",
+        "Morgan moved to Maple Town."].map((text, index) => ({ type: "note", text,
+        salience: 0.7, isInsight: false, entityIds: index === 3 ? ["login:demo"] : [] })),
+    ], entities: [{ id: "login:demo", name: "demo@example.test", type: "login" }], relations: [] });
+    const plan = await extractCapturePlanStrict("User: Morgan moved to Maple Town.",
+      { id: "hygiene", complete: async () => output });
+    expect(plan.candidates.map((item) => item.text)).toEqual(["Morgan moved to Maple Town."]);
+    expect(plan.entities).toEqual([]);
+  });
   it("instructs fake extraction to retain user facts instead of assistant restatements or invented doubt", async () => {
     const prompts: string[] = [];
     for (const [turn, expected] of [
@@ -45,12 +57,12 @@ describe("extractCapturePlanStrict intra-turn precision", () => {
         id: "scripted-absolute-dates",
         complete: async (prompt) => { prompts.push(prompt); return planJson([stored]); },
       }, undefined, [], { observedAt: "2026-09-08T12:00:00.000Z" });
-      expect(plan.candidates[0]?.text).toBe(stored);
+      expect(plan.candidates[0]?.text).toBe(text.includes("months old") ? undefined : stored);
     }
     expect(prompts[0]).toContain("Do not store decaying relative time");
     expect(prompts[0]).toContain("2026-09-08T12:00:00.000Z");
     expect(prompts[1]).toContain("never guess an unstated timezone");
-    expect(prompts[2]).toContain("whose referent is ambiguous must retain the phrase");
+    expect(prompts[2]).toContain("ambiguous weekday-relative phrases retain");
   });
 
   it("supplies claim attribution and correction semantics without trusting quoted roles", async () => {

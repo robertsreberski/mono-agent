@@ -128,6 +128,26 @@ function dailyContent(root: string): string {
 }
 
 describe("reconcile", () => {
+  it("offers a bounded same-entity state neighbour even when vectors disagree", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "HOME-OLD", "Morgan lives in Maple Town.");
+    await seed(db, root, "OTHER", "Taylor works in Maple Town.");
+    db.upsertEntity({ id: "person:morgan", name: "Morgan", type: "person", createdAt: FIXED.toISOString() });
+    db.associateMemory({ memoryId: "HOME-OLD", entityId: "person:morgan", provenance: "capture", createdAt: FIXED.toISOString() });
+    db.findSimilarMany = async () => [[]];
+    let offered = "";
+    const result = await reconcileBatch([{ type: "note", text: "Morgan moved to Cedar City.",
+      salience: 0.8, isInsight: false, entityIds: ["person:morgan"] }], makeDeps(db, root, {
+      id: "state", complete: async (input) => { offered = input; return JSON.stringify([
+        { index: 0, action: "supersede", targetId: "HOME-OLD", text: "Morgan lives in Cedar City." },
+      ]); },
+    }, { strictModelOutput: true, deferBatchCommit: true, beforeBatchCommit: () => {} }));
+    expect(offered).toContain("HOME-OLD");
+    expect(offered).not.toContain('"id":"OTHER"');
+    expect(result[0]?.kind).toBe("supersede");
+    expect(db.get("HOME-OLD")?.status).toBe("open"); // deferred capture owns the commit
+  });
   it("clears labels on changed UPDATE and keeps only history on SUPERSEDE", async () => {
     const label: MemoryLabel = { v: 1, kind: "fact", entityId: "person:morgan", key: "preferred_name",
       value: { type: "text", text: "Morgan" }, attribution: "user-stated" };
@@ -1011,22 +1031,16 @@ describe("reconcileBatch", () => {
   });
 
   it.each(["update", "supersede"] as const)(
-    "fails every colliding %s decision closed before canonical or index mutation",
+    "degrades competing %s decisions to a separate add",
     async (action) => {
       const root = newRoot();
       const db = openDb(root);
       await seed(db, root, "ONE", "Morgan prefers blue-green deployments");
-      const before = dailyContent(root);
       const candidates: CandidateMemory[] = [
         { type: "note", text: "Morgan prefers blue-green deployments with review", salience: 0.7, isInsight: false },
         { type: "note", text: "Morgan prefers blue-green deployments with canaries", salience: 0.8, isInsight: false },
       ];
       db.findSimilarMany = async () => candidates.map(() => [{ record: db.get("ONE")!, distance: 0.1 }]);
-      let persistencePreflights = 0;
-      db.prepareUpsertVectors = async (records) => {
-        persistencePreflights += records.length;
-        return records.map(() => undefined);
-      };
       const reply = JSON.stringify(candidates.map((candidate, index) => ({
         index,
         action,
@@ -1036,37 +1050,26 @@ describe("reconcileBatch", () => {
 
       const actions = await reconcileBatch(
         candidates,
-        makeDeps(db, root, fakeLlm([["Classify each candidate", reply]])),
+        makeDeps(db, root, fakeLlm([["Classify each candidate", reply]]),
+          { nextId: (() => { let id = 0; return () => `DUP-${++id}`; })() }),
       );
 
-      expect(actions).toEqual([undefined, undefined]);
-      expect(persistencePreflights).toBe(0);
-      expect(db.count()).toBe(1);
-      expect(db.get("ONE")).toMatchObject({
-        text: "Morgan prefers blue-green deployments",
-        status: "open",
-      });
-      expect(dailyContent(root)).toBe(before);
+      expect(actions.map((item) => item?.kind)).toEqual([action, "add"]);
+      expect(db.count()).toBe(action === "supersede" ? 3 : 2);
     },
   );
 
   it.each(["update", "supersede"] as const)(
-    "fails a mixed %s/noop collision closed before canonical or index mutation",
+    "degrades mixed %s/noop collisions to separate adds",
     async (action) => {
       const root = newRoot();
       const db = openDb(root);
       await seed(db, root, "ONE", "Morgan prefers blue-green deployments");
-      const before = dailyContent(root);
       const candidates: CandidateMemory[] = [
         { type: "note", text: "Morgan prefers reviewed blue-green deployments", salience: 0.7, isInsight: false },
         { type: "note", text: "Morgan prefers canary blue-green deployments", salience: 0.8, isInsight: false },
       ];
       db.findSimilarMany = async () => candidates.map(() => [{ record: db.get("ONE")!, distance: 0.1 }]);
-      let persistencePreflights = 0;
-      db.prepareUpsertVectors = async (records) => {
-        persistencePreflights += records.length;
-        return records.map(() => undefined);
-      };
       const reply = JSON.stringify([
         { index: 0, action, targetId: "ONE", text: candidates[0]!.text },
         { index: 1, action: "noop", targetId: "ONE" },
@@ -1074,16 +1077,12 @@ describe("reconcileBatch", () => {
 
       const actions = await reconcileBatch(
         candidates,
-        makeDeps(db, root, fakeLlm([["Classify each candidate", reply]])),
+        makeDeps(db, root, fakeLlm([["Classify each candidate", reply]]),
+          { nextId: (() => { let id = 0; return () => `DUP-${++id}`; })() }),
       );
 
-      expect(actions).toEqual([undefined, undefined]);
-      expect(persistencePreflights).toBe(0);
-      expect(db.get("ONE")).toMatchObject({
-        text: "Morgan prefers blue-green deployments",
-        status: "open",
-      });
-      expect(dailyContent(root)).toBe(before);
+      expect(actions.map((item) => item?.kind)).toEqual([action, "add"]);
+      expect(db.count()).toBe(action === "supersede" ? 3 : 2);
     },
   );
 

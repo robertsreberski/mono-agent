@@ -37,6 +37,18 @@ async function extract(text: string, labels: unknown[], context: {
 }
 
 describe("host-validated capture labels", () => {
+  it("accepts kinship variants and a custom owner property in the same subject sentence", async () => {
+    const relation = { v: 1, kind: "fact", entityId: "person:morgan", key: "relationship",
+      value: { type: "relationship", role: "child", targetEntityId: "person:maple" }, attribution: "user-stated" };
+    const plan = await extract("Morgan's daughter Maple enjoys drawing.", [relation],
+      { captureSpeakerKind: "human-turn", captureEvidence: evidence("Morgan's daughter Maple enjoys drawing.") });
+    expect(plan.candidates[0]?.labels).toEqual([relation]);
+    const owner = { v: 1, kind: "fact", entityId: "person:owner", key: "other:favorite-animal",
+      value: { type: "text", text: "otter" }, attribution: "user-stated" };
+    const ctx = { captureSpeakerKind: "human-turn" as const, captureEvidence: evidence("My favorite animal is otter.", { ownerTurn: true }) };
+    expect((await extract("The user's favorite animal is otter.", [owner], ctx)).candidates[0]?.labels).toEqual([owner]);
+    expect((await extract("The user's daughter has a favorite animal, otter.", [owner], ctx)).candidates[0]?.labels).toBeUndefined();
+  });
   it("does not apply an empty automatic capture allowlist to explicit Remember writes", async () => {
     const root = mkdtempSync(join(tmpdir(), "capture-focus-remember-"));
     const store = createBujoMemoryStore({ root, tier: "bujo", embeddings: fakeEmbeddings(8), dim: 8,
