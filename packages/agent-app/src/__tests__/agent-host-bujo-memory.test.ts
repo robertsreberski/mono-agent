@@ -18,6 +18,7 @@ import type { RunSummary } from "@mono-agent/observability";
 import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 
 import { createConfiguredAgentHarness, createConfiguredMemory } from "../index.js";
+import { createConfiguredCurationLlm } from "../configured-agent.js";
 
 const coordinatorHome = vi.hoisted(() => ({ path: "" }));
 vi.mock("../account-home.js", () => ({
@@ -161,6 +162,18 @@ describe("createConfiguredMemory — bujo mode", () => {
       expect(call.options.mcpServers).toEqual({});
     }
     await (store as unknown as { close(): Promise<void> }).close();
+  });
+
+  it("runs operator curation model calls under the agent root", async () => {
+    const dir = await tempDir();
+    const runtime = createRecordingRuntime();
+    const config = bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "curate-memory"),
+      llm: { provider: "agent-host", model: "openai-codex:gpt-5.5" } });
+    const llm = await createConfiguredCurationLlm(config, "openai-codex:gpt-5.5", dir, runtime);
+    await llm.complete("Return an empty fictional proposal list.", { label: "curate:propose" }).catch(() => undefined);
+    expect(runtime.calls).toHaveLength(1);
+    expect(runtime.calls[0]!.options.model).toMatchObject({ provider: "openai-codex", model: "gpt-5.5" });
+    expect(runtime.calls[0]!.options.allowedTools).toEqual([]);
   });
 
   it("forwards strict capture schema to the runtime and consumes only structuredResult", async () => {

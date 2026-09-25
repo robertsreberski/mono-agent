@@ -2103,7 +2103,14 @@ function runtimeHostOptionsForConfig(config: MonoAgentConfig): Parameters<typeof
 }
 
 /** An operator-only, fallback-free memory LLM; does not start or write an agent store. */
-export async function createConfiguredCurationLlm(config: MonoAgentConfig, modelOverride?: string): Promise<LlmComplete> {
+export async function createConfiguredCurationLlm(
+  config: MonoAgentConfig,
+  modelOverride: string | undefined,
+  // The operator CLI runs outside the agent process; model calls still need the
+  // agent root for its request lease, exactly like the in-process memory LLM.
+  agentRoot: string,
+  memoryRuntime?: MonoRuntimeLike,
+): Promise<LlmComplete> {
   const bujo = await import("@mono-agent/memory/bujo");
   const configured = config.memory?.llm;
   if (configured === undefined && modelOverride === undefined) throw new Error("memory-curate: memory.llm is not configured");
@@ -2113,7 +2120,7 @@ export async function createConfiguredCurationLlm(config: MonoAgentConfig, model
     ...(modelOverride.startsWith("ollama:") && configured?.provider === "ollama" && configured.endpoint !== undefined
       ? { endpoint: configured.endpoint } : {}),
   };
-  const llm = configuredMemoryLlm(bujo, config, llmConfig, undefined, undefined, undefined, undefined);
+  const llm = configuredMemoryLlm(bujo, config, llmConfig, memoryRuntime, undefined, agentRoot, undefined);
   if (llm === undefined) throw new Error("memory-curate: memory.llm is not configured");
   return llm;
 }
