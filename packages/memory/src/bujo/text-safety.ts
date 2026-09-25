@@ -19,6 +19,11 @@ export function unsafeCaptureContent(text: string, source = ""): boolean {
   if ((inventedDoubt.test(text) && !inventedDoubt.test(source))
     || (/\bmay\b/u.test(text) && !/\bmay\b/u.test(source))) return true;
   if (/\b(?:\d+(?:[.,]\d+)?\s*(?:years?|months?)\s*old|aged?\s+\d+(?:[.,]\d+)?\s*(?:years?|months?))\b/iu.test(text)) return true;
+  return unsafeCredentialContext(text);
+}
+
+/** Credential-like content in a canonical line, independently of turn context. */
+export function unsafeCredentialContext(text: string): boolean {
   const credential = /\b(?:password|passphrase|passcode|pin|api[ -]?key|access[ -]?token|secret[ -]?key|credential)\b/iu;
   const login = /\b(?:login|log[ -]?in|sign[ -]?in|account|username)\b/iu;
   const identifier = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/iu;

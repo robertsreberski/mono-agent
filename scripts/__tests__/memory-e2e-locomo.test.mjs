@@ -138,7 +138,7 @@ describe("LoCoMo BuJo evaluation protocol (synthetic schema only)", () => {
       review: { blindArmLabels: true, paidAutomaticJudge: false },
     });
     expect(plan.perCall).toMatchObject({
-      readerMaxTurns: 4, readerEstimatedInputTokens: 98_304, extractorEstimatedInputTokens: 8_192,
+      readerMaxTurns: 4, readerEstimatedInputTokens: 98_304, extractorEstimatedInputTokens: 10_240,
       reconciliationEstimatedInputTokens: 29_897, callTimeoutMs: 180_000,
       embeddingTimeoutMs: 30_000, captureTimeoutSettlementMs: 30_000,
       readinessTimeoutMs: 6_840_000, captureModelOutputAttempts: 16,

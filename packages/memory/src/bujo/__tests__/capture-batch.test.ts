@@ -13,6 +13,30 @@ function planJson(texts: readonly string[]): string {
 }
 
 describe("extractCapturePlanStrict intra-turn precision", () => {
+  it("keeps owner-stated facts and standing preferences even when the wording resembles an instruction", async () => {
+    const standing = await extractCapturePlanStrict("User: Never book the Maple room again.\nAssistant: Understood.",
+      { id: "standing-preference", complete: async () => planJson(["The assistant should never book the Maple room again."]) });
+    expect(standing.candidates.map(({ text }) => text)).toEqual(["The assistant should never book the Maple room again."]);
+    const factual = await extractCapturePlanStrict("User: Morgan chose the Maple build log as the final artifact.\nAssistant: Noted.",
+      { id: "durable-decision", complete: async () => planJson(["Morgan chose the Maple build log as the final artifact."]) });
+    expect(factual.candidates).toHaveLength(1);
+    const ownerRequest = "User: Please remember Morgan completed the Maple migration on 2026-07-12 after a successful review.\nAssistant: Morgan completed the Maple migration on 2026-07-12 after a successful review.";
+    const preserved = await extractCapturePlanStrict(ownerRequest, { id: "owner-request", complete: async (prompt) => {
+      expect(prompt).toContain("preserve each durable fact");
+      expect(prompt).toContain("even when the Assistant merely restates it");
+      expect(prompt).toContain("additional acceptance message is not required");
+      return planJson(["Morgan completed the Maple migration on 2026-07-12 after a successful review."]);
+    } });
+    expect(preserved.candidates).toHaveLength(1);
+  });
+  it("does not pretend an omitted trigger can be compared with an instruction", async () => {
+    const turn = "Scheduled task trigger (not a user message; trigger text omitted):\nAssistant: The Maple build completed on 2026-07-12.";
+    const plan = await extractCapturePlanStrict(turn, { id: "trigger-outcome", complete: async (prompt) => {
+      expect(prompt).toContain("require verified outcomes or dated consequential state changes");
+      return planJson(["The Maple build completed on 2026-07-12."]);
+    } }, undefined, [], { observedAt: "2026-07-12T10:00:00.000Z", captureSpeakerKind: "trigger" });
+    expect(plan.candidates).toHaveLength(1);
+  });
   it("preserves contact addresses, May dates and secret-named entities but drops credential identifiers", async () => {
     const memories = [
       { type: "note", text: "Morgan's contact address is morgan@example.test.", salience: 0.7,

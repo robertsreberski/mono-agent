@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { appendBullet } from "../daily.js";
+import { serializeBullet } from "../grammar.js";
 import { curateEstimate, inspectCurateSource, proposeCurate, validateCurateProposal } from "../curate.js";
 
 const roots: string[] = [];
@@ -13,6 +14,46 @@ function seed(path: string, id: string, text: string) {
     createdAt: "2026-07-12T10:00:00.000Z", refs: [] }, new Date("2026-07-12T10:00:00.000Z"));
 }
 describe("curation preparation", () => {
+  it("selects a bounded mix in canonical order and preserves chronological compatibility on demand", async () => {
+    const path = root();
+    for (let index = 0; index < 24; index++) seed(path, `fictional-${index}`, `Morgan noted demo item ${index}.`);
+    seed(path, "fictional-risk", "The demo credential needs review.");
+    seed(path, "fictional-repeat-a", "The Maple report finished with a dated result.");
+    seed(path, "fictional-repeat-b", "The Maple report finished with a dated result.");
+    const mix = inspectCurateSource(path, 8);
+    expect(mix.lines).toHaveLength(8);
+    expect(mix.selected.recent).toBeGreaterThan(0);
+    expect(mix.selected.repeated).toBeGreaterThan(0);
+    expect(mix.selected.risky).toBeGreaterThan(0);
+    expect(mix.selected.oldest).toBeGreaterThan(0);
+    expect(new Set(mix.lines.map(({ id }) => id)).size).toBe(8);
+    expect(mix.lines.map(({ line }) => line)).toEqual([...mix.lines.map(({ line }) => line)].sort((a, b) => a - b));
+    const ids = mix.lines.map(({ id }) => id);
+    expect(ids.indexOf("fictional-repeat-b")).toBe(ids.indexOf("fictional-repeat-a") + 1);
+    await proposeCurate(mix, { id: "ordered-batch", complete: async (prompt) => {
+      const payload = JSON.parse(prompt) as { lines: { id: string; text: string }[];
+        neighbors: { id: string; before?: string; after?: string }[] };
+      expect(payload.lines.map(({ id }) => id)).toEqual(ids);
+      expect(payload.neighbors[1]?.before).toBe(payload.lines[0]?.text);
+      expect(payload.neighbors[0]?.after).toBe(payload.lines[1]?.text);
+      return JSON.stringify(payload.lines.map(({ id }) => ({ id, action: "keep" })));
+    } });
+    expect(inspectCurateSource(path, 2, "oldest").lines.map(({ id }) => id)).toEqual(["fictional-0", "fictional-1"]);
+    expect(inspectCurateSource(path, 4, "risky").lines.map(({ id }) => id)).toEqual(["fictional-risk"]);
+    expect(() => inspectCurateSource(path, 2, "oldest,oldest")).toThrow(/invalid selection/u);
+  });
+  it("keeps oldest-only inspection bounded even when the live inventory exceeds the mixed-selection cap", () => {
+    const path = root();
+    seed(path, "fictional-first", "Morgan recorded the first example.");
+    const createdAt = "2026-07-12T10:00:00.000Z";
+    const overflow = Array.from({ length: 65536 }, (_, index) => serializeBullet({
+      id: `fictional-overflow-${index}`, text: `Maple recorded example ${index}.`, type: "note", status: "open",
+      salience: 0.5, isInsight: false, createdAt, refs: [],
+    })).join("\n");
+    appendFileSync(join(path, "daily/2026-07-12.md"), `${overflow}\n`);
+    expect(inspectCurateSource(path, 1, "oldest").lines.map(({ id }) => id)).toEqual(["fictional-first"]);
+    expect(() => inspectCurateSource(path, 1)).toThrow(/inventory exceeds bound/u);
+  }, 30_000);
   it("allows 8192 selected lines but refuses 8193", () => {
     const path = root();
     expect(inspectCurateSource(path, 8192).lines).toEqual([]);

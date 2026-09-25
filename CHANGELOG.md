@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Keep completed-turn capture focused on durable claims, dated changes, and
+  evidenced outcomes through model guidance. Owner preferences are not rejected
+  merely because their wording resembles an instruction.
+
+- Select memory curation candidates from bounded recent, repeated, risky, and
+  oldest shares by default. `--select oldest` retains oldest-first selection;
+  dry-run and prepare report bucket counts without exposing memory text.
+
 - `MemoryRecall` returns fewer weak hits on the local hybrid store. It drops
   hits more than `0.15` below the best one and, when the best hit clears the
   `0.65` floor, hits below the floor; the best hit is always kept. Hits carry
