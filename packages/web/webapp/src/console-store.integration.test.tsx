@@ -334,6 +334,9 @@ describe("ConsoleStoreProvider integration", () => {
   });
 
   afterEach(() => {
+    // The setup-file cleanup runs later (Vitest stacks afterEach hooks). Unmount
+    // while the stream and device globals are still available to passive effects.
+    cleanupDom();
     vi.useRealTimers();
     resetServerClock();
     vi.unstubAllGlobals();
