@@ -22,7 +22,7 @@ import { MemoryModelError, MemoryModelOutputError } from "./model-error.js";
 import { withSerializedBujoMutation } from "./mutation-lock.js";
 import type { Bullet } from "./types.js";
 import { canonicalMemoryLabel, labelsOf, withMemoryLabels, type MemoryLabel } from "./labels.js";
-import { factSupported, valueSupported } from "./capture-labels.js";
+import { factSupported, ownerFactSupported } from "./capture-labels.js";
 
 /** The outcome of reconciling a single candidate against the existing index. */
 export type ReconcileAction =
@@ -549,10 +549,10 @@ function planSupersede(
   // line. Keep only labels still supported by that replacement; do not transfer
   // a stale value merely because the old line had a label.
   const carried = labelsOf(beforeOld).filter((label) => label.kind === "fact"
-    ? (label.key !== "preferred_name" || /\b(?:called|named|name is|goes by|addressed as)\b/iu.test(replacement))
-      && (factSupported(label, replacement) || (label.entityId === "person:owner"
-      && /\b(?:the user|the owner|i|my)\b/iu.test(replacement) && valueSupported(label, replacement)))
-    : replacement.includes(beforeOld.text));
+    ? (label.entityId === "person:owner" ? ownerFactSupported(label, replacement)
+      : (label.key !== "preferred_name" || /\b(?:called|named|name is|goes by|addressed as)\b/iu.test(replacement))
+        && factSupported(label, replacement))
+    : false);
   const labels = [...proposedLabels];
   const seen = new Set(labels.map(canonicalMemoryLabel));
   for (const label of carried) {

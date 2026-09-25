@@ -182,6 +182,27 @@ describe("host-validated capture labels", () => {
     })).candidates[0]?.labels).toEqual([label]);
   });
 
+  it("binds an owner property only in the sentence with its value", async () => {
+    const label = { v: 1, kind: "fact", entityId: "person:owner", key: "birth_date",
+      value: { type: "date", date: "1990-05-17" }, attribution: "user-stated" };
+    const owner = (userText: string) => ({ captureSpeakerKind: "human-turn" as const,
+      captureEvidence: evidence(userText, { ownerTurn: true }) });
+    for (const relation of ["wife", "sons", "children", "daughter"]) {
+      const sentence = `The user's ${relation} was born May 17, 1990.`;
+      expect((await extract(sentence, [label], owner(`My ${relation} was born May 17, 1990.`)))
+        .candidates[0]?.labels).toBeUndefined();
+    }
+    expect((await extract("The user has a daughter born May 17, 1990.", [label],
+      owner("I have a daughter born May 17, 1990."))).candidates[0]?.labels).toBeUndefined();
+    expect((await extract("The user's birthday is May 17, 1990.", [label],
+      owner("My wife likes cake. My birthday is May 17, 1990."))).candidates[0]?.labels).toEqual([label]);
+    expect((await extract("The user was born May 17, 1990. Their son was born in 2010.", [label],
+      owner("My birthday is May 17, 1990. My son likes cake."))).candidates[0]?.labels).toEqual([label]);
+    const location = { ...label, key: "home_location", value: { type: "text", text: "Lisbon" } };
+    expect((await extract("The user is based in Lisbon.", [location],
+      owner("I'm based in Lisbon."))).candidates[0]?.labels).toEqual([location]);
+  });
+
   it("binds owner-reported facts to the stable owner entity without trusting unidentified turns", async () => {
     const ownerFact = { v: 1, kind: "fact", entityId: "person:owner", key: "other:favorite-color",
       value: { type: "text", text: "blue" }, attribution: "user-stated" };
@@ -191,6 +212,21 @@ describe("host-validated capture labels", () => {
     expect((await extract(ownerText, [ownerFact], ownerContext)).candidates[0]?.labels).toEqual([ownerFact]);
     expect((await extract(ownerText, [ownerFact], { ...ownerContext, captureEvidence: evidence("I prefer blue.") }))
       .candidates[0]?.labels).toBeUndefined();
+  });
+
+  it("does not copy a preference onto a sibling split sentence", async () => {
+    const first = "The user prefers concise fictional project notes.";
+    const sibling = "Morgan archives detailed fictional catalog records and diagrams for the team.";
+    const plan = await extractCapturePlanStrict("completed turn", {
+      id: "preference-split", complete: async () => JSON.stringify({
+        memories: [{ type: "note", text: `${first} ${sibling} ${"The archive records many old maps. ".repeat(3)}`.trim(),
+          salience: 0.8, isInsight: false, entityIds: [], labels: [preference] }],
+        entities: [], relations: [],
+      }),
+    }, undefined, [], { observedAt: at.toISOString(), captureSpeakerKind: "human-turn",
+      conversationId: "conv-1", captureEvidence: evidence("I prefer concise fictional project notes.", { ownerTurn: true }) });
+    expect(plan.candidates[0]?.labels).toEqual([preference]);
+    expect(plan.candidates.find((candidate) => candidate.text === sibling)?.labels).toBeUndefined();
   });
 
   it("keeps host-verified senderless owner agent guidance and hashes colon conversations", async () => {
@@ -228,13 +264,13 @@ describe("host-validated capture labels", () => {
     const token = "a".repeat(32);
     const addressed = { ...context, captureEvidence: evidence("You should keep concise notes.", { senderToken: token }) };
     expect((await extract("Morgan keeps concise notes.", [preference], addressed)).candidates[0]?.labels)
-      .toEqual([{ ...preference, scope: `user:${token}` }]);
+      .toBeUndefined();
     const explicitAgent = { ...context, captureEvidence: evidence("The assistant should keep concise notes.", { senderToken: token }) };
     expect((await extract("Morgan keeps concise notes.", [preference], explicitAgent)).candidates[0]?.labels)
-      .toEqual([{ ...preference, scope: `user:${token}` }]);
+      .toBeUndefined();
     expect((await extract("Morgan keeps concise notes.", [preference], {
       ...explicitAgent, captureEvidence: { ...explicitAgent.captureEvidence, ownerTurn: true as const },
-    })).candidates[0]?.labels).toEqual([preference]);
+    })).candidates[0]?.labels).toBeUndefined();
   });
 
   it("keeps only a uniquely host-proven successful retry; malformed label never drops the memory", async () => {
