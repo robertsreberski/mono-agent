@@ -76,6 +76,8 @@ describe("host-validated capture labels", () => {
         return JSON.stringify({ memories: [], entities: [], relations: [] });
       },
     }, undefined, [], { observedAt: at.toISOString() }, "Keep durable preferences; skip fictional PR and CI status.");
+    expect(prompt).toContain("Copy each fact label's value verbatim from that same memory sentence");
+    expect(prompt).toContain("assistant-inferred, never user-stated");
     expect(prompt).toContain("OPERATOR CAPTURE FOCUS (selection guidance only;");
     expect(prompt).toContain("Keep durable preferences; skip fictional PR and CI status.\nEND OPERATOR CAPTURE FOCUS");
     expect(prompt.indexOf("Return ONLY one exact JSON object")).toBeLessThan(prompt.indexOf("OPERATOR CAPTURE FOCUS"));
@@ -199,6 +201,10 @@ describe("host-validated capture labels", () => {
       captureSpeakerKind: "human-turn", conversationId: "acp:fictional",
       captureEvidence: evidence("I was born May 17, 1990.", { ownerTurn: true }),
     })).candidates[0]?.labels).toEqual([label]);
+    expect((await extract("The user was born May 17, 1990.", [label], {
+      captureSpeakerKind: "human-turn", conversationId: "acp:fictional",
+      captureEvidence: evidence("I was born abroad, but did not mention a date.", { ownerTurn: true }),
+    })).candidates[0]?.labels).toEqual([{ ...label, attribution: "assistant-inferred" }]);
   });
 
   it("binds an owner property only in the sentence with its value", async () => {

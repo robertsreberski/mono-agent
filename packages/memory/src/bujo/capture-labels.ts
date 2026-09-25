@@ -24,7 +24,7 @@ export function captureLabels(raw: readonly unknown[], text: string, context: Ca
         const ownerFact = label.entityId === "person:owner";
         if (ownerFact
           ? context.captureEvidence?.ownerTurn === true && user !== undefined
-            && ownerFactSupported(label, text) && ownerFactSupported(label, user)
+            && ownerFactSupported(label, text) && ownerPropertySupported(label, user)
           : factSupported(label, text, context.entityNames)) {
           const userSupported = user !== undefined && valueSupported(label, user, context.entityNames);
           const attribution = label.attribution === "unknown" ? "unknown"
@@ -104,6 +104,11 @@ const OWNER_PROPERTY: Readonly<Record<string, RegExp>> = {
   work_location: /\b(?:my|the (?:user|owner)'s)\s+(?:work|job|employer)\b|\b(?:i|the (?:user|owner))\s+(?:work|works|worked)\s+(?:at|for|as|in)\b/iu,
   "other:favorite-color": /\b(?:my|the (?:user|owner)'s)\s+favorite\s+colou?r\b|\b(?:i|the (?:user|owner))\s+(?:prefer|prefers)\b/iu,
 };
+function ownerPropertySupported(label: Extract<MemoryLabel, { kind: "fact" }>, text: string): boolean {
+  const property = OWNER_PROPERTY[label.key];
+  return property !== undefined && splitCaptureSentences(text).some((sentence) =>
+    property.test(normalize(sentence).replace(/[’]/gu, "'")));
+}
 export function ownerFactSupported(label: Extract<MemoryLabel, { kind: "fact" }>, text: string): boolean {
   const property = OWNER_PROPERTY[label.key];
   if (property === undefined) return false;
