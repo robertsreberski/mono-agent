@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Embed large explicit memory plans (curate, forget) in bounded provider
+  batches. Applying a plan with hundreds of dropped lines no longer sends one
+  oversized request that a local Ollama runner rejects.
+
 - Keep completed-turn capture focused on durable claims, dated changes, and
   evidenced outcomes through model guidance. Owner preferences are not rejected
   merely because their wording resembles an instruction.

@@ -226,7 +226,17 @@ export class MemoryDbCore {
   ): Promise<readonly (readonly number[] | undefined)[]> {
     if (this.embeddings === undefined) return records.map(() => undefined);
     if (records.length === 0) return [];
-    const vectors = await this.embeddings.embed(records.map((record) => `${this.prefixes.document}${record.text}`));
+    // Large explicit plans (curate, forget) prepare hundreds of records at once;
+    // one provider request per bounded batch keeps local runners within limits.
+    const vectors: (readonly number[])[] = [];
+    for (let offset = 0; offset < records.length; offset += DEFAULT_EMBEDDING_BATCH_SIZE) {
+      const batch = records.slice(offset, offset + DEFAULT_EMBEDDING_BATCH_SIZE);
+      const embedded = await this.embeddings.embed(batch.map((record) => `${this.prefixes.document}${record.text}`));
+      if (embedded.length !== batch.length) {
+        throw new Error(`memory-store: embedding provider returned ${embedded.length} vectors for ${batch.length} records.`);
+      }
+      vectors.push(...embedded);
+    }
     if (vectors.length !== records.length) {
       throw new Error(`memory-store: embedding provider returned ${vectors.length} vectors for ${records.length} records.`);
     }
