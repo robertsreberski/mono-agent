@@ -629,7 +629,7 @@ function strictReconciliationOutputSchema(
     const replacementSchema = {
       type: "string",
       minLength: 1,
-      maxLength: MAX_RECONCILIATION_TEXT_CODE_POINTS,
+      maxLength: 1024,
     } as const;
     return [
       {
@@ -652,7 +652,7 @@ function strictReconciliationOutputSchema(
           index: indexSchema,
           action: { const: action },
           targetId: targetSchema,
-          text: replacementSchema,
+          text: { ...replacementSchema, maxLength: action === "update" ? 1024 : MAX_RECONCILIATION_TEXT_CODE_POINTS },
         },
       })),
     ];
@@ -754,7 +754,7 @@ ${JSON.stringify(input)}`,
     if (record.action !== "add" && (
       targetId === undefined || !(neighbours[index] ?? []).some((hit) => hit.record.id === targetId)
     )) continue;
-    const text = normalizeReconciliationText(record.text);
+    const text = normalizeLegacyDecisionText(record.action, record.text);
     decisions.set(index, {
       action: record.action,
       ...(targetId === undefined ? {} : { targetId }),
@@ -815,7 +815,7 @@ function parseStrictBatchClassifications(
       decisions.set(Number(index), { action, targetId });
       continue;
     }
-    const exactText = strictClassificationText(text);
+    const exactText = strictClassificationText(text, action === "update" ? 1024 : MAX_RECONCILIATION_TEXT_CODE_POINTS);
     if (keys.length !== 4) {
       throw new MemoryModelOutputError("classify-batch", "update and supersede require exact text");
     }
@@ -827,10 +827,20 @@ function parseStrictBatchClassifications(
   return decisions;
 }
 
-function strictClassificationText(value: unknown): string {
+function normalizeLegacyDecisionText(action: string, value: unknown): string | undefined {
+  if (action === "update" && typeof value === "string" && [...value].length > MAX_RECONCILIATION_TEXT_CODE_POINTS
+    && [...value].length <= 1024) {
+    // Preserve the length signal rather than silently truncating a proposed merge.
+    // The dispatcher adds the bounded candidate and leaves the old line intact.
+    return value;
+  }
+  return normalizeReconciliationText(value);
+}
+
+function strictClassificationText(value: unknown, maxLength = MAX_RECONCILIATION_TEXT_CODE_POINTS): string {
   if (typeof value !== "string" || value.length === 0 || value !== value.trim()
-    || [...value].length > MAX_RECONCILIATION_TEXT_CODE_POINTS
-    || Buffer.byteLength(value, "utf8") > MAX_RECONCILIATION_TEXT_CODE_POINTS * 4
+    || [...value].length > maxLength
+    || Buffer.byteLength(value, "utf8") > maxLength * 4
     || /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(value) || value.includes("<!--mem")) {
     throw new MemoryModelOutputError("classify-batch", "replacement text is invalid or exceeds its bound");
   }
@@ -868,7 +878,7 @@ async function classify(
   if (action !== "add") {
     if (targetId === undefined || !similar.some((h) => h.record.id === targetId)) return undefined;
   }
-  const text = normalizeReconciliationText(parsed.text);
+  const text = normalizeLegacyDecisionText(action, parsed.text);
   return {
     action,
     ...(targetId !== undefined && { targetId }),

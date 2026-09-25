@@ -159,11 +159,10 @@ describe("reconcile", () => {
     ]);
     expect(parseDailyFile(dailyContent(root)).bullets.find((item) => item.id === replacementId)?.refs).toEqual([]);
   });
-  it("retains unchanged UPDATE labels and explicitly replaces SUPERSEDE labels", async () => {
+  it("retains unchanged UPDATE labels and falls back to ADD for labelled preference supersession", async () => {
     const root = newRoot();
     const db = openDb(root);
     const label: MemoryLabel = { v: 1, kind: "preference", scope: "agent", attribution: "user-stated" };
-    const replacement: MemoryLabel = { v: 1, kind: "lesson", scope: "agent", verified: true };
     const text = "Morgan prefers concise technical reports";
     await seed(db, root, "OLD1", text, { labels: [label] });
     await reconcile([{ type: "note", text, salience: 0.7, isInsight: false }], makeDeps(db, root,
@@ -172,11 +171,24 @@ describe("reconcile", () => {
     const actions = await reconcile([{ type: "note", text: "Morgan prefers detailed reports", salience: 0.7,
       isInsight: false }], makeDeps(db, root,
       fakeLlm([["CLASSIFY", '{"action":"supersede","targetId":"OLD1","text":"Morgan prefers detailed technical reports"}']]),
-      { labelsForAction: (action) => action === "supersede" ? [replacement] : [] }));
-    const newId = actions[0]?.kind === "supersede" ? actions[0].newId : "";
-    expect(newId).not.toBe("");
+      { labelsForAction: () => [] }));
+    expect(actions[0]?.kind).toBe("add");
     expect(db.guidanceForScope("agent").map((hit) => [hit.memoryId, hit.label, hit.active]))
-      .toEqual([[newId, replacement, true], ["OLD1", label, false]]);
+      .toEqual([["OLD1", label, true]]);
+  });
+
+  it("adds a candidate rather than merging an over-bound UPDATE into an old line", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    const oldText = "Morgan cataloged fictional notes.";
+    await seed(db, root, "OLD1", oldText);
+    const merged = `${oldText} ${"The archive includes detailed fictional catalog entries. ".repeat(4)}`.trim();
+    const actions = await reconcileBatch([{ type: "note", text: "Morgan cataloged new fictional notes.",
+      salience: 0.7, isInsight: false }], makeDeps(db, root,
+      { id: "fictional-merge", complete: async () => JSON.stringify([{ index: 0, action: "update", targetId: "OLD1", text: merged }]) },
+      { strictModelOutput: true }));
+    expect(actions[0]?.kind).toBe("add");
+    expect(db.get("OLD1")?.text).toBe(oldText);
   });
 
   it("case 1 — novel candidate (no similar) → ADD", async () => {
@@ -462,7 +474,6 @@ describe("reconcile", () => {
       salience: 0.8,
       isInsight: false,
     };
-    const expected = "a".repeat(160);
     const escapedBoundary = `${"a".repeat(139)}\ud83d${"a".repeat(140)}🧠`;
     const reply = JSON.stringify({
       action: "update",
@@ -476,14 +487,11 @@ describe("reconcile", () => {
       makeDeps(db, root, fakeLlm([["CLASSIFY", reply]])),
     );
 
-    expect(actions).toEqual([{ kind: "update", id: "LEGACY" }]);
-    expect(db.get("LEGACY")?.text).toBe(expected);
-    expect(Array.from(db.get("LEGACY")?.text ?? "")).toHaveLength(160);
-    expect(db.get("LEGACY")?.text).not.toContain("🧠");
-    expect(db.get("LEGACY")?.text).not.toContain("�");
-    expect(db.get("LEGACY")?.text).not.toMatch(/\p{Cs}/u);
-    expect(parseDailyFile(dailyContent(root)).bullets.find((bullet) => bullet.id === "LEGACY")?.text)
-      .toBe(expected);
+    expect(actions[0]?.kind).toBe("add");
+    expect(db.get("LEGACY")?.text).toBe("Existing legacy reconciliation memory");
+    const added = actions[0]?.kind === "add" ? db.get(actions[0].id) : undefined;
+    expect(added?.text).toBe(candidate.text);
+    expect(added?.text).not.toMatch(/\p{Cs}/u);
   });
 
   it("case 5 — durable replay stops on pre-existing canonical/index divergence", async () => {
@@ -1148,13 +1156,15 @@ describe("reconcileBatch", () => {
 
     const actions = await reconcileBatch(
       candidates,
-      makeDeps(db, root, fakeLlm([["Classify each candidate", reply]])),
+      makeDeps(db, root, fakeLlm([["Classify each candidate", reply]]), {
+        nextId: (() => { let index = 0; return () => `MERGE-${index++}`; })(),
+      }),
     );
 
-    expect(actions[0]).toEqual({ kind: "update", id: "UPDATE" });
+    expect(actions[0]?.kind).toBe("add");
     expect(actions[1]?.kind).toBe("supersede");
-    expect(db.get("UPDATE")?.text).not.toMatch(/[\n\r]|<!--mem/u);
-    expect(db.get("UPDATE")?.text.length).toBeLessThanOrEqual(280);
+    expect(db.get("UPDATE")?.text).toBe("Morgan prefers blue green deployments");
+    expect(db.get(actions[0]?.kind === "add" ? actions[0].id : "")?.text).toBe(candidates[0]?.text);
     const replacementId = actions[1]?.kind === "supersede" ? actions[1].newId : "";
     expect(db.get(replacementId)?.text).toBe(candidates[1]?.text);
     expect(db.get("OLD")?.status).toBe("invalidated");
@@ -1188,13 +1198,11 @@ describe("reconcileBatch", () => {
 
     expect(actions).toEqual([
       { kind: "update", id: "EXACT" },
-      { kind: "update", id: "OVER" },
+      expect.objectContaining({ kind: "add" }),
     ]);
     expect(db.get("EXACT")?.text).toBe(exactBoundary);
-    expect(db.get("OVER")?.text).toBe(exactBoundary);
-    expect(Array.from(db.get("OVER")?.text ?? "")).toHaveLength(160);
-    expect(db.get("OVER")?.text).not.toContain("�");
-    expect(db.get("OVER")?.text).not.toMatch(/\p{Cs}/u);
+    expect(db.get("OVER")?.text).toBe("Existing over-boundary memory");
+    expect(db.get(actions[1]?.kind === "add" ? actions[1].id : "")?.text).toBe(candidates[1]?.text);
   });
 
   it("allows an explicit valid add decision for a close candidate", async () => {
