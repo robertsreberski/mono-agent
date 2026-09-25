@@ -199,7 +199,7 @@ async function reconcileBatchUnlocked(
         : { action: "noop" as const, targetId: duplicate.record.id }];
     }));
   }
-  resolveConflictingTargets(decisions, candidates, neighbours);
+  resolveConflictingTargets(decisions, neighbours);
   deps.abortSignal?.throwIfAborted();
   const plans: Array<BatchActionPlan | undefined> = candidates.map(() => undefined);
   for (const [index, candidate] of candidates.entries()) {
@@ -265,7 +265,6 @@ async function reconcileBatchUnlocked(
  * failing the entire turn or attaching its graph evidence to another fact. */
 function resolveConflictingTargets(
   decisions: Map<number, Classification>,
-  candidates: readonly CandidateMemory[],
   neighbours: readonly (readonly SimilarHit[])[],
 ): void {
   const byTarget = new Map<string, number[]>();
@@ -291,15 +290,11 @@ function resolveConflictingTargets(
     indexes.sort((a, b) => priority(a) - priority(b) || support(a) - support(b) || a - b);
     const winner = indexes[0]!;
     for (const index of indexes.slice(1)) {
-      // Exact repetitions of an unchanged target can be omitted without a
-      // second NOOP intent (which would attach unrelated graph evidence).
-      if (decisions.get(winner)?.action === "noop"
-        && candidates[index]?.text === candidates[winner]?.text
-        && JSON.stringify(candidates[index]?.entityIds ?? []) === JSON.stringify(candidates[winner]?.entityIds ?? [])) {
-        decisions.delete(index);
-      } else {
-        decisions.set(index, { action: "add" });
-      }
+      // A losing NOOP asserts no new content. Re-adding it would resurrect a
+      // stale state after the winning supersession, or duplicate an unchanged
+      // target. Only distinct mutating losers retain a separate new row.
+      if (decisions.get(index)?.action === "noop") decisions.delete(index);
+      else decisions.set(index, { action: "add" });
     }
   }
 }

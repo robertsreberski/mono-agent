@@ -1060,7 +1060,7 @@ describe("reconcileBatch", () => {
   );
 
   it.each(["update", "supersede"] as const)(
-    "degrades mixed %s/noop collisions to separate adds",
+    "drops the losing noop when %s wins the target",
     async (action) => {
       const root = newRoot();
       const db = openDb(root);
@@ -1081,8 +1081,8 @@ describe("reconcileBatch", () => {
           { nextId: (() => { let id = 0; return () => `DUP-${++id}`; })() }),
       );
 
-      expect(actions.map((item) => item?.kind)).toEqual([action, "add"]);
-      expect(db.count()).toBe(action === "supersede" ? 3 : 2);
+      expect(actions.map((item) => item?.kind)).toEqual([action, undefined]);
+      expect(db.count()).toBe(action === "supersede" ? 2 : 1);
     },
   );
 

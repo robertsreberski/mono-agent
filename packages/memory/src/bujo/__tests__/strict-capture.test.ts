@@ -661,7 +661,7 @@ describe("strict completed-turn reconciliation", () => {
     }
   });
 
-  it("degrades competing target decisions while retaining both distinct candidates", async () => {
+  it("drops a losing noop without re-adding its stale candidate", async () => {
     const fixture = await reconcileFixture(true);
     try {
       const actions = await reconcileBatch(fixture.candidates, {
@@ -675,8 +675,8 @@ describe("strict completed-turn reconciliation", () => {
           ]),
         },
       });
-      expect(actions.map((action) => action?.kind)).toEqual(["noop", "add"]);
-      expect(fixture.db.count()).toBe(2);
+      expect(actions.map((action) => action?.kind)).toEqual(["noop", undefined]);
+      expect(fixture.db.count()).toBe(1);
     } finally {
       fixture.db.close();
     }
@@ -696,7 +696,7 @@ describe("strict completed-turn reconciliation", () => {
           { index: 1, action: "supersede", targetId: "TARGET", text: "Morgan now prefers durable capture always" },
         ]) },
       });
-      expect(actions.map((item) => item?.kind)).toEqual(["add", "supersede"]);
+      expect(actions.map((item) => item?.kind)).toEqual([undefined, "supersede"]);
       expect(fixture.db.get("TARGET")?.status).toBe("invalidated");
     } finally { fixture.db.close(); }
   });
