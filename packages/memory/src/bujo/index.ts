@@ -1,7 +1,7 @@
 export { createBujoMemoryStore, BujoMemoryStore } from "./store.js";
 export { applyExplicitMemoryCurate, restoreExplicitMemoryCurate, resolveExplicitMemoryCurateRoot, ExplicitMemoryCurateError } from "./explicit-curate.js";
 export type { ApplyExplicitMemoryCurateOptions, RestoreExplicitMemoryCurateOptions } from "./explicit-curate.js";
-export { inspectCurateSource, curateEstimate, proposeCurate, validateCurateProposal, previewCurateMutations } from "./curate.js";
+export { inspectCurateSource, curateEstimate, proposeCurate, validateCurateProposal, previewCurateMutations, CURATE_DISCARD_REASONS } from "./curate.js";
 export type { CurateLine, CurateProposal, CurateSnapshot, CurateAction, CurateReason, CurateDiscard, CurateSuggestionResult } from "./curate.js";
 export {
   AUTO_RECALL_BACKEND_HITS,

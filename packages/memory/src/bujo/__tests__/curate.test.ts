@@ -41,6 +41,48 @@ describe("curation preparation", () => {
     expect(() => previewCurateMutations(path, [{ source: dated, action: "rewrite", text: "Morgan visited on 2026-07-10.", accepted: true }]))
       .toThrow(/unsupported date/u);
   });
+  it("passes a bounded strict schema and preserves dated fictional facts in the prompt", async () => {
+    const path = root(); seed(path, "fictional-a", "Morgan reported a balance of 42 on 2026-07-12.");
+    const snapshot = inspectCurateSource(path);
+    const result = await proposeCurate(snapshot, { id: "fake", complete: async (prompt, opts) => {
+      expect(prompt).toContain("Dated amounts");
+      expect(prompt).toContain("session exhaust");
+      expect(prompt).toContain("tool-progress");
+      expect(opts?.structuredResultKey).toBe("proposals");
+      expect(opts?.outputSchema).toMatchObject({ required: ["proposals"], properties: { proposals: { minItems: 1, maxItems: 1 } } });
+      return JSON.stringify([{ id: "fictional-a", action: "keep" }]);
+    } });
+    expect(result.proposals).toHaveLength(1);
+  });
+  it("retries individual failed batches once and records safe bounded reasons", async () => {
+    const path = root();
+    for (let index = 0; index < 13; index++) seed(path, `fictional-${index}`, "Morgan recorded a fictional note.");
+    const snapshot = inspectCurateSource(path);
+    let calls = 0;
+    const result = await proposeCurate(snapshot, { id: "fake", complete: async () => {
+      calls++;
+      if (calls <= 2) throw new Error("transport unavailable");
+      return JSON.stringify([{ id: "fictional-12", action: "keep" }]);
+    } });
+    expect(calls).toBe(3);
+    expect(result.discarded).toHaveLength(12);
+    expect(result.discarded.every(({ reason }) => reason === "model-error")).toBe(true);
+    expect(result.proposals).toHaveLength(1);
+    await expect(proposeCurate(snapshot, { id: "fake", complete: async () => { throw new Error("unauthorized"); } })).rejects.toThrow("unauthorized");
+    let invalidCalls = 0;
+    const invalid = await proposeCurate({ ...snapshot, lines: snapshot.lines.slice(0, 1) }, { id: "fake", complete: async () => {
+      invalidCalls++; return "not JSON";
+    } });
+    expect(invalidCalls).toBe(2);
+    expect(invalid.discarded).toEqual([{ id: "fictional-0", reason: "invalid-response" }]);
+  });
+  it("reports validation reason categories without exposing model text", async () => {
+    const path = root(); seed(path, "fictional-a", "Morgan made a fictional note.");
+    const result = await proposeCurate(inspectCurateSource(path), { id: "fake", complete: async () => JSON.stringify([
+      { id: "fictional-a", action: "rewrite", text: "Bad\ntext" },
+    ]) });
+    expect(result.discarded).toEqual([{ id: "fictional-a", reason: "invalid-text" }]);
+  });
   it("batches fake-model proposals and fails closed on unknown IDs", async () => {
     const path = root(); seed(path, "fictional-a", "Generic demo advice."); seed(path, "fictional-b", "Morgan completed the example.");
     const snapshot = inspectCurateSource(path);
