@@ -281,7 +281,14 @@ function resolveConflictingTargets(
       const hit = (neighbours[index] ?? []).find((item) => item.record.id === target);
       return hit === undefined ? Number.POSITIVE_INFINITY : hit.distance;
     };
-    indexes.sort((a, b) => support(a) - support(b) || a - b);
+    const priority = (index: number): number => {
+      switch (decisions.get(index)?.action) {
+        case "supersede": return 0;
+        case "update": return 1;
+        default: return 2;
+      }
+    };
+    indexes.sort((a, b) => priority(a) - priority(b) || support(a) - support(b) || a - b);
     const winner = indexes[0]!;
     for (const index of indexes.slice(1)) {
       // Exact repetitions of an unchanged target can be omitted without a
