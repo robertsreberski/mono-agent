@@ -234,4 +234,13 @@ describe("label relevance and agreement", () => {
     expect(result?.content).toContain("home city: conflicting values — ask");
     expect(result?.content).not.toContain("Lisbon");
   });
+
+  it("answers birth-date questions only for the birth date or current age", () => {
+    const person = store([], [fact("birth", "1990-05-17")]);
+    expect(formatBlock(person, "When was Morgan born?", "conv", owner, [])?.facts)
+      .toEqual(["Morgan — born: 1990-05-17 (you said, recorded 2026-09-06); age 36"]);
+    expect(formatBlock(person, "Where was Morgan born?", "conv", owner, [])).toBeUndefined();
+    expect(formatBlock(person, "How old was Morgan in 2015?", "conv", owner, [])).toBeUndefined();
+    expect(formatBlock(person, "What is Morgan's age?", "conv", owner, [])).toBeUndefined();
+  });
 });

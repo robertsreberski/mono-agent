@@ -53,8 +53,11 @@ export function factValueText(value: FactLabel["value"]): string {
     : value.type === "entity" ? value.entityId : `${value.role} ${value.targetEntityId}`;
 }
 
-// Question words that ask about a birth date without naming the key.
-const BIRTH_ALIASES = ["birth", "birthday", "born", "age", "old", "birthdate"];
+// A birth date answers only a question about the birth date or current age.
+// `Where was Morgan born?` asks for a place, and a historical age (`How old was
+// Morgan in 2015?`) would need arithmetic the card does not do.
+const BIRTH_QUESTION = /\bbirthday\b|\bdate\s+of\s+birth\b|\bbirth\s*date\b|\bhow\s+old\b|\bwhen\b.*\bborn\b|\bwhat\s+(?:date|day|year)\b.*\bborn\b/iu;
+const NOT_BIRTH_DATE_QUESTION = /\bwhere\b|\bhow\s+old\s+(?:was|were|will|would)\b|\b(?:19|20)\d{2}\b|\b(?:ago|last|next|then)\b/iu;
 const QUESTION_FILLER = new Set([
   "a", "about", "an", "and", "are", "as", "at", "be", "can", "could", "did", "do", "does", "for", "from",
   "give", "has", "have", "he", "her", "his", "how", "i", "in", "is", "it", "know", "me", "my", "of", "on",
@@ -78,10 +81,10 @@ function questionConcepts(query: string, names: readonly string[]): Set<string> 
 /**
  * A key answers the question only when the question names the whole property:
  * every content word of the key (`favorite` and `color` for
- * `other:favorite_color`). Birth dates also answer their question-word aliases.
+ * `other:favorite_color`). Birth dates use the bounded birth-question rule.
  */
 function keyRelevant(key: string, concepts: ReadonlySet<string>, query: string): boolean {
-  if (key === "birth_date") return BIRTH_ALIASES.some((word) => concepts.has(stem(word)));
+  if (key === "birth_date") return BIRTH_QUESTION.test(query) && !NOT_BIRTH_DATE_QUESTION.test(query);
   const words = fold(key.replace(/^other:/u, "")).split(/[^\p{L}\p{N}]+/u)
     .filter((word) => word.length > 1 && !QUESTION_FILLER.has(word));
   return words.length > 0 && words.every((word) => concepts.has(stem(word)));
