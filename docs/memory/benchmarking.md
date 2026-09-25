@@ -400,7 +400,7 @@ Other provider errors stay visible per trial without stopping the run. A retaine
 category is routing evidence for a later bounded diagnostic, not proof of
 invalid credentials, exhausted quota, or zero billable work.
 
-Reader input admission uses an estimated 16,384-token ceiling (extractor 8,192):
+Reader input admission uses an estimated 16,384-token ceiling (extractor 10,240):
 UTF-8 controlled-text bytes divided by three plus a fixed 4,096-token
 framing/tool-schema allowance. These are **estimates, not exact native payload
 caps**. Dynamic tool results, schemas, tokenizer differences and provider framing
