@@ -96,6 +96,7 @@ export class ExplicitMemoryCurateError extends Error {
     readonly code: ExplicitMemoryCurateErrorCode,
     readonly backupPath?: string,
     cause?: unknown,
+    readonly recoveryError?: unknown,
   ) {
     super(`memory-curate: ${code}`, cause === undefined ? undefined : { cause });
     this.name = "ExplicitMemoryCurateError";
@@ -150,7 +151,7 @@ export async function applyExplicitMemoryCurate(
     db.checkpoint();
     // The plan fingerprint identifies its preparation snapshot, not the live store.
     // Only selected source lines must still match; merge constraints are checked on the current graph.
-    previewCurateMutations(root, options.proposals);
+    previewCurateMutations(root, options.proposals, db);
     const currentSourceFingerprint = readBujoCanonicalSourceFingerprint(root);
     db.close();
     db = undefined;
@@ -234,11 +235,11 @@ export async function applyExplicitMemoryCurate(
         CURATE_OPERATION,
       );
       writer = undefined;
-      throw new ExplicitMemoryCurateError("apply_failed_recovered", backup.path);
+      throw new ExplicitMemoryCurateError("apply_failed_recovered", backup.path, error);
     } catch (recoveryError) {
       if (recoveryError instanceof ExplicitMemoryCurateError
         && recoveryError.code === "apply_failed_recovered") throw recoveryError;
-      throw new ExplicitMemoryCurateError("apply_recovery_failed", backup.path);
+      throw new ExplicitMemoryCurateError("apply_recovery_failed", backup.path, error, recoveryError);
     }
   } finally {
     try { writer?.release(); } finally { maintenance.release(); }
