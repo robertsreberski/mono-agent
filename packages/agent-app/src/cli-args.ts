@@ -168,6 +168,8 @@ export interface ParsedCliArgs {
   readonly curateMergeFile?: string;
   /** memory curate prepare/review: operator merges may join different entity types. */
   readonly allowCrossType?: boolean;
+  /** memory curate prepare: propose reviewed `person:owner` associations for owner-subject lines. */
+  readonly ownerBackfill?: boolean;
   /** memory entities: list folded names shared by more than one entity id. */
   readonly duplicates?: boolean;
   /** memory forget restore: owner-private backup directory. */
@@ -273,6 +275,7 @@ const CLI_BOOLEAN_FLAGS = new Set([
   "--include-extras",
   "--allow-pending",
   "--allow-cross-type",
+  "--owner-backfill",
   "--duplicates",
   "--accept-derived-association-drift",
   "--loopback",
@@ -408,6 +411,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   const curateMerges: string[] = [];
   let curateMergeFile: string | undefined;
   let allowCrossType = false;
+  let ownerBackfill = false;
   let duplicates = false;
   let backupPath: string | undefined;
   let bundlePath: string | undefined;
@@ -514,7 +518,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         const raw = requireValue(rest, ++i, flag);
         const parsed = Number(raw);
         const maximum = cmd === "continuations" ? 500 : positionals[0] === "curate" ? 8192 : 100;
-        // `curate prepare --limit 0` prepares operator merges without a model pass.
+        // `curate prepare --limit 0` prepares operator merges or an owner backfill without a model pass.
         const minimum = cmd === "memory" && positionals[0] === "curate" ? 0 : 1;
         if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
           throw new Error(`--limit must be an integer between ${String(minimum)} and ${String(maximum)}.`);
@@ -549,6 +553,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         break;
       case "--allow-cross-type":
         allowCrossType = true;
+        break;
+      case "--owner-backfill":
+        ownerBackfill = true;
         break;
       case "--duplicates":
         duplicates = true;
@@ -913,6 +920,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     && (cmd !== "memory" || positionals[0] !== "curate" || (positionals[1] !== "prepare" && positionals[1] !== "review"))) {
     throw new Error("--merge, --merge-file and --allow-cross-type require `mono-agent memory curate prepare|review`.");
   }
+  if (ownerBackfill && (cmd !== "memory" || positionals[0] !== "curate" || positionals[1] !== "prepare")) {
+    throw new Error("--owner-backfill requires `mono-agent memory curate prepare`.");
+  }
   if (duplicates && (cmd !== "memory" || positionals[0] !== "entities")) {
     throw new Error("--duplicates requires `mono-agent memory entities`.");
   }
@@ -1020,6 +1030,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(curateMerges.length === 0 ? {} : { curateMerges }),
     ...(curateMergeFile === undefined ? {} : { curateMergeFile }),
     ...(allowCrossType ? { allowCrossType } : {}),
+    ...(ownerBackfill ? { ownerBackfill } : {}),
     ...(duplicates ? { duplicates } : {}),
     ...(backupPath === undefined ? {} : { backupPath }),
     ...(bundlePath === undefined ? {} : { bundlePath }),

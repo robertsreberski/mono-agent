@@ -263,7 +263,7 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
       "mono-agent memory labels [--kind fact|preference|lesson] [--about entity] [--scope scope] [--json]\n" +
       "mono-agent memory lessons --propose [--json]\n" +
       "mono-agent memory entities --duplicates [--limit N] [--json]\n" +
-      "mono-agent memory curate prepare --plan <file> [--model provider:model] [--limit N] [--dry-run]\n" +
+      "mono-agent memory curate prepare --plan <file> [--model provider:model] [--limit N] [--owner-backfill] [--dry-run]\n" +
       "mono-agent memory curate review --plan <file> [--accept drop:generic-advice,label:*] [--reject id:<id>]\n" +
       "                  curate prepare|review also take [--merge <fromId>=<toId>]... [--merge-file <file>] [--allow-cross-type]\n" +
       "mono-agent memory curate apply --plan <file> | curate restore --backup <dir>\n" +
@@ -289,6 +289,9 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
       "entities --duplicates is read-only: names held by several ids, with association",
       "counts. --merge adds pre-accepted operator merges (any name; other types only",
       "with --allow-cross-type); --limit 0 prepares merges without a model pass.",
+      "--owner-backfill proposes person:owner links (associate:owner) for live lines",
+      "whose own text starts with \"The user\" or whose label is owner-attributed;",
+      "bare \"User ...\" lines are associate:owner-bare and start rejected. No model call.",
       "apply and restore require the configured agent to be stopped.",
       "export writes a portable canonical bundle and does not require stopping the",
       "agent; import merges one into this store and does require a stopped agent.",

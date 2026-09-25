@@ -3,6 +3,8 @@ export { applyExplicitMemoryCurate, restoreExplicitMemoryCurate, resolveExplicit
 export type { ApplyExplicitMemoryCurateOptions, RestoreExplicitMemoryCurateOptions } from "./explicit-curate.js";
 export { inspectCurateSource, curateEstimate, proposeCurate, validateCurateProposal, previewCurateMutations, CURATE_DISCARD_REASONS,
   MAX_CURATE_OPERATOR_MERGES, OWNER_ENTITY_ID, parseCurateOperatorMerges, validateCurateOperatorMerge } from "./curate.js";
+export { MAX_CURATE_OWNER_ASSOCIATIONS, ownerAssociationReason, proposeOwnerAssociations, validateCurateOwnerAssociation } from "./curate-owner.js";
+export type { CurateOwnerAssociation, CurateOwnerAssociationReason, CurateOwnerBackfillScan } from "./curate-owner.js";
 export type { CurateOperatorMerge, CurateLine, CurateProposal, CurateSnapshot, CurateAction, CurateReason, CurateDiscard, CurateSuggestionResult } from "./curate.js";
 export {
   AUTO_RECALL_BACKEND_HITS,
@@ -13,7 +15,7 @@ export {
   composeRecallBlock,
   selectAutomaticRecallHits,
 } from "./recall.js";
-export { isConversationRelativeQuery } from "./recall-evidence.js";
+export { hasConflictingAutomaticRecallEvidence, isConversationRelativeQuery } from "./recall-evidence.js";
 export {
   rebuildFromMarkdown,
   rollbackMemoryIndex,

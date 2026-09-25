@@ -544,6 +544,9 @@ CurateAction
 CurateDiscard
 CurateLine
 CurateOperatorMerge
+CurateOwnerAssociation
+CurateOwnerAssociationReason
+CurateOwnerBackfillScan
 CurateProposal
 CurateReason
 CurateSnapshot
@@ -577,6 +580,7 @@ MAX_CAPTURE_ENTITIES
 MAX_CAPTURE_MEMORIES
 MAX_CAPTURE_RELATIONS
 MAX_CURATE_OPERATOR_MERGES
+MAX_CURATE_OWNER_ASSOCIATIONS
 MAX_KNOWN_ENTITY_HINTS
 MEMORY_BUNDLE_EXTRAS_DIR
 MEMORY_BUNDLE_MANIFEST_FILE
@@ -651,12 +655,14 @@ extractCapturePlanStrict
 findCanonicalMemoryBullet
 findDuplicateEntityNames
 foldEntityName
+hasConflictingAutomaticRecallEvidence
 inspectCompletedTurnIntake
 inspectCurateSource
 isConversationRelativeQuery
 migrate
 normalizeMemoryText
 normalizedContentHash
+ownerAssociationReason
 parseBullet
 parseCurateOperatorMerges
 parseDailyFile
@@ -665,6 +671,7 @@ prepareMemoryBundleImport
 previewCanonicalExplicitForgetMemories
 previewCurateMutations
 proposeCurate
+proposeOwnerAssociations
 pruneExplicitMemoryForgetBackups
 readBujoCanonicalSourceFingerprint
 readBujoRuntimeSnapshot
@@ -690,6 +697,7 @@ selectKnownEntityHints
 serializeBullet
 serializeDailyFile
 validateCurateOperatorMerge
+validateCurateOwnerAssociation
 validateCurateProposal
 writeFutureLog
 writeIndex

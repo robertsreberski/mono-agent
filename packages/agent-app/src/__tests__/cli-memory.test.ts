@@ -2387,4 +2387,47 @@ describe("memory entity identity CLI", { timeout: 30_000 }, () => {
     const after = await invoke(["memory", "entities", "--duplicates"]);
     expect(after.stdout).toBe("No entity name is shared by more than one id.\n");
   });
+
+  it("backfills reviewed person:owner associations for owner-subject lines without a model", async () => {
+    expect(parseCliArgs(["memory", "curate", "prepare", "--plan", "p.json", "--limit", "0", "--owner-backfill"]))
+      .toMatchObject({ limit: 0, ownerBackfill: true });
+    expect(() => parseCliArgs(["memory", "curate", "review", "--plan", "p.json", "--owner-backfill"])).toThrow(/--owner-backfill/u);
+    const memoryRoot = join(await tempDir(), "memory");
+    await mkdir(memoryRoot, { recursive: true });
+    const at = "2026-07-12T10:00:00.000Z";
+    for (const [id, text] of [["fictional-a", "The user prefers Maple tea."], ["fictional-b", "The user's zorbel likes Maple tea."],
+      ["fictional-c", "User rides a bike to work."], ["fictional-d", "Morgan likes Maple tea."]]) {
+      bujoMemory.appendBullet(memoryRoot, { id: id!, type: "note", status: "open", text: text!, salience: 0.5, isInsight: false,
+        createdAt: at, refs: [] }, new Date(at));
+    }
+    await safeRebuildMemoryIndex({ root: memoryRoot, tier: "bujo", embeddings: deterministicEmbeddings("ollama:test-embed", 8), dim: 8 });
+    const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
+      embeddings: { provider: "ollama", model: "test-embed", dim: 8 }, llm: { provider: "ollama", model: "test-capture" } } });
+    const invoke = (args: string[]) => captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(args))));
+    const planPath = join(dir, "owner-plan.json");
+    const prepared = await invoke(["memory", "curate", "prepare", "--plan", planPath, "--limit", "0", "--owner-backfill", "--json"]);
+    expect(prepared.code, prepared.stderr).toBe(0);
+    expect(JSON.parse(prepared.stdout)).toMatchObject({ status: "prepared", count: 0, operatorMerges: 0,
+      ownerBackfill: { live: 4, alreadyLinked: 0, proposed: 2, bare: 1 } });
+    // Bare "User ..." lines are proposed but start rejected; the operator opts in.
+    const reviewed = await invoke(["memory", "curate", "review", "--plan", planPath, "--json"]);
+    expect(JSON.parse(reviewed.stdout)).toMatchObject({ counts: { "associate:owner": { total: 1, accepted: 1 },
+      "associate:owner-bare": { total: 1, accepted: 0 } } });
+    expect((await invoke(["memory", "curate", "review", "--plan", planPath, "--accept", "associate:owner-bare", "--json"])).code).toBe(0);
+    let plan = JSON.parse(await readFile(planPath, "utf8")) as { ownerAssociations: { id: string; accepted: boolean }[] };
+    expect(plan.ownerAssociations.map(({ id, accepted }) => [id, accepted])).toEqual([["fictional-a", true], ["fictional-c", true]]);
+    expect((await invoke(["memory", "curate", "review", "--plan", planPath, "--reject", "id:fictional-c", "--json"])).code).toBe(0);
+    plan = JSON.parse(await readFile(planPath, "utf8")) as { ownerAssociations: { id: string; accepted: boolean }[] };
+    expect(plan.ownerAssociations.map(({ id, accepted }) => [id, accepted])).toEqual([["fictional-a", true], ["fictional-c", false]]);
+
+    stubOllamaEmbeddings(8);
+    const applied = await invoke(["memory", "curate", "apply", "--plan", planPath, "--json"]);
+    expect(applied.code, applied.stderr).toBe(0);
+    expect(JSON.parse(applied.stdout)).toMatchObject({ status: "applied", count: 1 });
+    const graph = bujoMemory.readGraph(memoryRoot);
+    expect(graph.associations.filter(({ entityId }) => entityId === "person:owner").map(({ memoryId }) => memoryId)).toEqual(["fictional-a"]);
+    // Applied links are not proposed again.
+    const again = await invoke(["memory", "curate", "prepare", "--plan", join(dir, "owner-plan-2.json"), "--limit", "0", "--owner-backfill", "--json"]);
+    expect(JSON.parse(again.stdout)).toMatchObject({ ownerBackfill: { alreadyLinked: 1, proposed: 1 } });
+  });
 });

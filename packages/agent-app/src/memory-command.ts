@@ -30,6 +30,7 @@ import type {
   CurateProposal,
   CurateDiscard,
   CurateOperatorMerge,
+  CurateOwnerAssociation,
   MemoryBundleExportErrorCode,
   MemoryBundleImportErrorCode,
 } from "@mono-agent/memory/bujo";
@@ -121,6 +122,8 @@ export interface RunMemoryCommandInput {
   readonly curateMerges?: readonly string[];
   readonly curateMergeFile?: string;
   readonly allowCrossType?: boolean;
+  /** `memory curate prepare --owner-backfill`. */
+  readonly ownerBackfill?: boolean;
   /** `memory entities --duplicates`. */
   readonly duplicates?: boolean;
   readonly model?: string;
@@ -312,8 +315,11 @@ function memoryCommandUsageError(input: RunMemoryCommandInput): string | undefin
     return "--merge, --merge-file and --allow-cross-type require `mono-agent memory curate prepare|review`.";
   }
   if (input.allowCrossType === true && !operatorMerges) return "--allow-cross-type requires --merge or --merge-file.";
-  if (input.limit === 0 && !(subcommand === "curate" && rest[0] === "prepare" && operatorMerges)) {
-    return "--limit 0 is only supported for `mono-agent memory curate prepare` with operator merges.";
+  if (input.ownerBackfill === true && !(subcommand === "curate" && rest[0] === "prepare")) {
+    return "--owner-backfill requires `mono-agent memory curate prepare`.";
+  }
+  if (input.limit === 0 && !(subcommand === "curate" && rest[0] === "prepare" && (operatorMerges || input.ownerBackfill === true))) {
+    return "--limit 0 is only supported for `mono-agent memory curate prepare` with operator merges or --owner-backfill.";
   }
   if (input.duplicates === true && subcommand !== "entities") return "--duplicates requires `mono-agent memory entities`.";
   switch (subcommand) {
@@ -2948,12 +2954,15 @@ interface CuratePlan {
   readonly discarded: readonly CurateDiscard[];
   /** Operator-authoritative entity merges; absent in plans without any. */
   readonly operatorMerges?: readonly CurateOperatorMerge[];
+  /** Reviewed `person:owner` association backfill (`--owner-backfill`); absent otherwise. */
+  readonly ownerAssociations?: readonly CurateOwnerAssociation[];
   readonly planDigest: string;
 }
 
 function curatePlanDigest(plan: Omit<CuratePlan, "planDigest">): string {
   return createHash("sha256").update(JSON.stringify({ ...plan, proposals: plan.proposals.map(({ accepted: _accepted, ...immutable }) => immutable),
-    ...(plan.operatorMerges === undefined ? {} : { operatorMerges: plan.operatorMerges.map(({ accepted: _accepted, ...immutable }) => immutable) }) })).digest("hex");
+    ...(plan.operatorMerges === undefined ? {} : { operatorMerges: plan.operatorMerges.map(({ accepted: _accepted, ...immutable }) => immutable) }),
+    ...(plan.ownerAssociations === undefined ? {} : { ownerAssociations: plan.ownerAssociations.map(({ accepted: _accepted, ...immutable }) => immutable) }) })).digest("hex");
 }
 
 /** Operator merges from repeated `--merge` flags and an optional private merge file. */
@@ -2967,8 +2976,10 @@ async function readCurateOperatorMerges(context: MemoryCommandContext, input: Ru
 
 function parseCuratePlan(value: unknown): CuratePlan {
   const planKeys = ["schemaVersion", "operation", "rootFingerprint", "sourceFingerprint", "model", "createdAt", "proposals", "discarded", "planDigest"];
-  if (!isObject(value) || !(hasExactKeys(value, planKeys) || hasExactKeys(value, [...planKeys, "operatorMerges"]))
+  const optionalKeys = ["operatorMerges", "ownerAssociations"].filter((key) => isObject(value) && Object.hasOwn(value, key));
+  if (!isObject(value) || !hasExactKeys(value, [...planKeys, ...optionalKeys])
     || (value.operatorMerges !== undefined && (!Array.isArray(value.operatorMerges) || value.operatorMerges.length > 512))
+    || (value.ownerAssociations !== undefined && (!Array.isArray(value.ownerAssociations) || value.ownerAssociations.length > 8192))
     || value.schemaVersion !== 1 || value.operation !== "curate" || !isSha256(value.rootFingerprint)
     || !isSha256(value.sourceFingerprint) || typeof value.model !== "string" || value.model.length > 160
     || typeof value.createdAt !== "string" || !isCanonicalIso(value.createdAt)
@@ -3008,11 +3019,14 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
     const root = bujo.resolveExplicitMemoryCurateRoot(resolve(context.cwd, memory.path));
     if (operation === "prepare") {
       const operatorMerges = await readCurateOperatorMerges(context, input, bujo);
-      // `--limit 0` prepares only the operator merges: no line is sent to a model.
+      // Deterministic and model-free: only lines whose own source proves the owner is the subject.
+      const ownerScan = input.ownerBackfill === true ? bujo.proposeOwnerAssociations(root) : undefined;
+      const ownerAssociations = ownerScan?.associations ?? [];
+      // `--limit 0` prepares only the operator merges / owner backfill: no line is sent to a model.
       const modelPass = input.limit !== 0;
       const inspected = bujo.inspectCurateSource(root, modelPass ? input.limit ?? 120 : 1);
       const snapshot = modelPass ? inspected : { ...inspected, lines: [] };
-      bujo.previewCurateMutations(root, [], undefined, operatorMerges);
+      bujo.previewCurateMutations(root, [], undefined, operatorMerges, ownerAssociations);
       if (Buffer.byteLength(JSON.stringify(snapshot.lines), "utf8") > MAX_CURATE_PLAN_BYTES / 2) {
         throw new Error("curate source exceeds private plan bound");
       }
@@ -3021,7 +3035,9 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       if (model === undefined) throw new Error("memory LLM not configured");
       const estimateText = `Curate estimate: ${estimate.lines} lines, ${estimate.calls} calls, ~${estimate.inputTokens} input / ~${estimate.outputTokens} output tokens; cost unknown. Skipped canonical lines: ${JSON.stringify(snapshot.skipped)}.\n`;
       if (input.dryRun) {
-        write(input.json, { operation: "curate-prepare", status: "estimated", model, estimate, skipped: snapshot.skipped }, () => estimateText);
+        write(input.json, { operation: "curate-prepare", status: "estimated", model, estimate, skipped: snapshot.skipped,
+          ...(ownerScan === undefined ? {} : { ownerBackfill: ownerScan.counts }) },
+          () => `${estimateText}${ownerScan === undefined ? "" : `Owner backfill: ${JSON.stringify(ownerScan.counts)}.\n`}`);
         return 0;
       }
       process.stderr.write(estimateText);
@@ -3034,7 +3050,7 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       // An invalid individual suggestion cannot discard the rest of a paid pass.
       const admit = (group: readonly CurateProposal[]): void => {
         if (group.length === 0) return;
-        try { bujo.previewCurateMutations(root, [...proposals, ...group], undefined, operatorMerges); proposals.push(...group); }
+        try { bujo.previewCurateMutations(root, [...proposals, ...group], undefined, operatorMerges, ownerAssociations); proposals.push(...group); }
         catch {
           if (group.length === 1) { discarded.push({ id: group[0]!.source.id, reason: "invalid-preview" }); return; }
           const middle = Math.floor(group.length / 2);
@@ -3046,14 +3062,16 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       if (isSameOrUnderDirectory(root, planPath)) throw new Error("plan cannot be inside memory root");
       const payload = { schemaVersion: 1, operation: "curate", rootFingerprint: memoryRootFingerprint(root),
         sourceFingerprint: snapshot.fingerprint, model, createdAt: new Date().toISOString(), proposals, discarded,
-        ...(operatorMerges.length === 0 ? {} : { operatorMerges }) } as const;
+        ...(operatorMerges.length === 0 ? {} : { operatorMerges }),
+        ...(ownerScan === undefined ? {} : { ownerAssociations }) } as const;
       const plan: CuratePlan = { ...payload, planDigest: curatePlanDigest(payload) };
       await writePrivateJsonExclusive(planPath, plan, MAX_CURATE_PLAN_BYTES);
       const discardedByReason = Object.fromEntries([...new Set(discarded.map(({ reason }) => reason))].map((reason) => [reason,
         discarded.filter((item) => item.reason === reason).length]));
       write(input.json, { operation: "curate-prepare", status: "prepared", planPath, count: proposals.length,
-        operatorMerges: operatorMerges.length, discarded: discarded.length, discardedByReason, skipped: snapshot.skipped },
-        () => `Curate plan prepared: ${proposals.length} proposals, ${operatorMerges.length} operator merges, ${discarded.length} discarded (${JSON.stringify(discardedByReason)}); skipped canonical lines: ${JSON.stringify(snapshot.skipped)} at ${planPath}. Review before applying.\n`);
+        operatorMerges: operatorMerges.length, ...(ownerScan === undefined ? {} : { ownerBackfill: ownerScan.counts }),
+        discarded: discarded.length, discardedByReason, skipped: snapshot.skipped },
+        () => `Curate plan prepared: ${proposals.length} proposals, ${operatorMerges.length} operator merges, ${ownerScan === undefined ? "" : `${ownerAssociations.length} owner associations (${JSON.stringify(ownerScan.counts)}), `}${discarded.length} discarded (${JSON.stringify(discardedByReason)}); skipped canonical lines: ${JSON.stringify(snapshot.skipped)} at ${planPath}. Review before applying.\n`);
       return 0;
     }
     if (operation === "review" || operation === "apply") {
@@ -3063,6 +3081,7 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       const plan = parseCuratePlan(await readPrivateJson(planPath, MAX_CURATE_PLAN_BYTES));
       for (const item of plan.proposals) bujo.validateCurateProposal(item);
       for (const merge of plan.operatorMerges ?? []) bujo.validateCurateOperatorMerge(merge);
+      for (const association of plan.ownerAssociations ?? []) bujo.validateCurateOwnerAssociation(association);
       if (plan.rootFingerprint !== memoryRootFingerprint(root)) throw new Error("plan belongs to another root");
       const replacePlan = async (updated: CuratePlan): Promise<void> => {
         const temp = `${planPath}.${process.pid.toString(36)}.tmp`;
@@ -3077,7 +3096,7 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
         const added = await readCurateOperatorMerges(context, input, bujo);
         const existing = plan.operatorMerges ?? [];
         const merged = [...existing.filter((merge) => !added.some((next) => next.from === merge.from)), ...added];
-        bujo.previewCurateMutations(root, plan.proposals.filter(({ accepted }) => accepted), undefined, merged);
+        bujo.previewCurateMutations(root, plan.proposals.filter(({ accepted }) => accepted), undefined, merged, plan.ownerAssociations);
         const { planDigest: _digest, ...payload } = { ...plan, operatorMerges: merged };
         await replacePlan({ ...payload, planDigest: curatePlanDigest(payload) });
         const { curateMerges: _merges, curateMergeFile: _file, allowCrossType: _cross, ...remainder } = input;
@@ -3087,7 +3106,7 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
         const accept = input.curateAccept?.split(",") ?? [];
         const reject = input.curateReject?.split(",") ?? [];
         const selectors = [...accept, ...reject];
-        if (selectors.some((selector) => !/^(keep|drop|rewrite|label|merge):(?:\*|[a-z][a-z-]{0,40})$|^id:[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/u.test(selector))
+        if (selectors.some((selector) => !/^(keep|drop|rewrite|label|merge|associate):(?:\*|[a-z][a-z-]{0,40})$|^id:[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/u.test(selector))
           || new Set(selectors).size !== selectors.length) throw new Error("invalid or duplicate review selector");
         const matches = (selector: string, proposal: CurateProposal) => selector === `id:${proposal.source.id}`
           || selector === `${proposal.action}:*` || selector === `${proposal.action}:${proposal.reason ?? "none"}`;
@@ -3095,20 +3114,29 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
         const matchesMerge = (selector: string, merge: CurateOperatorMerge) => selector === `id:${merge.from}`
           || selector === "merge:*" || selector === "merge:operator";
         const merges = plan.operatorMerges ?? [];
+        // Owner associations are selected as `associate:owner` (text/label evidence),
+        // `associate:owner-bare` (bare "User ..." lines, opt-in), `associate:*` or `id:<memoryId>`.
+        const ownerCategory = (association: CurateOwnerAssociation) => association.reason === "owner-bare" ? "owner-bare" : "owner";
+        const matchesOwner = (selector: string, association: CurateOwnerAssociation) => selector === `id:${association.id}`
+          || selector === "associate:*" || selector === `associate:${ownerCategory(association)}`;
+        const owners = plan.ownerAssociations ?? [];
         if (selectors.some((selector) => !plan.proposals.some((proposal) => matches(selector, proposal))
-          && !merges.some((merge) => matchesMerge(selector, merge)))) throw new Error("review selector matched no proposals");
+          && !merges.some((merge) => matchesMerge(selector, merge))
+          && !owners.some((association) => matchesOwner(selector, association)))) throw new Error("review selector matched no proposals");
         if (selectors.length > 0) {
           const decide = <T extends { readonly accepted: boolean }>(item: T, test: (selector: string, item: T) => boolean): T => ({ ...item,
             accepted: reject.some((selector) => test(selector, item)) ? false
               : accept.some((selector) => test(selector, item)) ? true : item.accepted });
           const updated = { ...plan, proposals: plan.proposals.map((proposal) => decide(proposal, matches)),
-            ...(plan.operatorMerges === undefined ? {} : { operatorMerges: plan.operatorMerges.map((merge) => decide(merge, matchesMerge)) }) };
+            ...(plan.operatorMerges === undefined ? {} : { operatorMerges: plan.operatorMerges.map((merge) => decide(merge, matchesMerge)) }),
+            ...(plan.ownerAssociations === undefined ? {} : { ownerAssociations: plan.ownerAssociations.map((association) => decide(association, matchesOwner)) }) };
           await replacePlan(updated);
           const { curateAccept: _accept, curateReject: _reject, ...remainder } = input;
           return await runMemoryCurate(context, rest, remainder);
         }
         const counts: Record<string, { total: number; accepted: number }> = {};
-        for (const item of [...plan.proposals, ...merges.map((merge) => ({ action: "merge", reason: "operator", accepted: merge.accepted }))]) {
+        for (const item of [...plan.proposals, ...merges.map((merge) => ({ action: "merge", reason: "operator", accepted: merge.accepted })),
+          ...owners.map((association) => ({ action: "associate", reason: ownerCategory(association), accepted: association.accepted }))]) {
           const key = `${item.action}:${item.reason ?? "none"}`;
           const count = counts[key] ?? { total: 0, accepted: 0 };
           count.total++;
@@ -3117,6 +3145,7 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
         }
         write(input.json, { operation: "curate-review", counts, discarded: plan.discarded,
           operatorMerges: merges.map(({ from, to, allowCrossType, accepted }) => ({ from, to, allowCrossType, accepted })).slice(0, 50),
+          ...(plan.ownerAssociations === undefined ? {} : { ownerAssociations: owners.map(({ id, reason, accepted }) => ({ id, reason, accepted })).slice(0, 50) }),
           examples: plan.proposals.slice(0, 5).map(({ source, action, reason, accepted }) => ({ id: source.id, action, reason, accepted })) },
           () => `Curate review: ${JSON.stringify(counts)}\nDiscarded suggestions (${plan.discarded.length}): ${JSON.stringify(plan.discarded.slice(0, 20))}${plan.discarded.length > 20 ? " (more in private plan)" : ""}\nExamples: ${JSON.stringify(plan.proposals.slice(0, 5).map(({ source, action, reason, accepted }) => ({ id: source.id, action, reason, accepted })))}${merges.length === 0 ? "" : `\nOperator merges (${merges.length}): ${merges.slice(0, 20).map(({ from, to, accepted }) => `${from} -> ${to}${accepted ? "" : " (rejected)"}`).join(", ")}${merges.length > 20 ? " (more in private plan)" : ""}`}\nUse --accept drop:generic-advice,label:* or --reject id:<id>; review the private plan before applying.\n`);
         return 0;
@@ -3125,7 +3154,8 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       // must be allowed through this CLI gate even when mutation changed the source:
       // only its matching durable transaction can restore the pre-apply tree.
       const operatorMerges = (plan.operatorMerges ?? []).filter(({ accepted }) => accepted);
-      if (plan.proposals.every((item) => !item.accepted || item.action === "keep") && operatorMerges.length === 0) {
+      const ownerAssociations = (plan.ownerAssociations ?? []).filter(({ accepted }) => accepted);
+      if (plan.proposals.every((item) => !item.accepted || item.action === "keep") && operatorMerges.length === 0 && ownerAssociations.length === 0) {
         write(input.json, { operation: "curate-apply", status: "no-op" }, () => "No proposals accepted; memory unchanged.\n");
         return 0;
       }
@@ -3137,9 +3167,11 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       const embeddings = await createMemoryEmbeddingProvider(settings.embeddings);
       const result = await bujo.applyExplicitMemoryCurate({ root, proposals: selected,
         ...(operatorMerges.length === 0 ? {} : { operatorMerges }),
+        ...(ownerAssociations.length === 0 ? {} : { ownerAssociations }),
         expectedRootFingerprint: plan.rootFingerprint, expectedSourceFingerprint: plan.sourceFingerprint,
-        planDigest: createHash("sha256").update(JSON.stringify(operatorMerges.length === 0 ? { planDigest: plan.planDigest, selected }
-          : { planDigest: plan.planDigest, selected, operatorMerges })).digest("hex"),
+        planDigest: createHash("sha256").update(JSON.stringify({ planDigest: plan.planDigest, selected,
+          ...(operatorMerges.length === 0 ? {} : { operatorMerges }),
+          ...(ownerAssociations.length === 0 ? {} : { ownerAssociations }) })).digest("hex"),
         embeddings, dimension: settings.embeddings.dim ?? 768 });
       write(input.json, { operation: "curate-apply", status: "applied", count: result.changed, backupPath: result.backupPath },
         () => `Curated ${result.changed} memory lines; restore backup: ${result.backupPath}.\n`);
@@ -3183,6 +3215,9 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       "memory-curate: operator merge refers to an unknown entity",
       "memory-curate: cross-type merge requires --allow-cross-type",
       "memory-curate: merge invalidates a fact label",
+      "memory-curate: invalid owner association", "memory-curate: too many owner associations",
+      "memory-curate: conflicting owner association", "memory-curate: stale owner association",
+      "memory-curate: owner association already exists", "memory-curate: rewrite invalidates owner association",
       "memory-forget: canonical source changed after the plan was prepared.",
       "memory-forget: ids must be a non-empty set without duplicates.",
     ]);

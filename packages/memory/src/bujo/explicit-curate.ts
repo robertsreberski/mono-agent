@@ -38,6 +38,7 @@ import {
   type CurateOperatorMerge,
   type CurateProposal,
 } from "./curate.js";
+import { MAX_CURATE_OWNER_ASSOCIATIONS, type CurateOwnerAssociation } from "./curate-owner.js";
 import { recoverDurableMutationState } from "./mutation-lock.js";
 import {
   assertCanonicalGraphRepairBaseParity,
@@ -58,6 +59,8 @@ export interface ApplyExplicitMemoryCurateOptions {
   readonly proposals: readonly CurateProposal[];
   /** Operator-authoritative entity merges applied in the same transaction. */
   readonly operatorMerges?: readonly CurateOperatorMerge[];
+  /** Operator-reviewed `person:owner` association backfill applied in the same transaction. */
+  readonly ownerAssociations?: readonly CurateOwnerAssociation[];
   readonly expectedRootFingerprint: string;
   readonly expectedSourceFingerprint: string;
   readonly planDigest: string;
@@ -159,7 +162,7 @@ export async function applyExplicitMemoryCurate(
     db.checkpoint();
     // The plan fingerprint identifies its preparation snapshot, not the live store.
     // Only selected source lines must still match; merge constraints are checked on the current graph.
-    previewCurateMutations(root, options.proposals, db, options.operatorMerges);
+    previewCurateMutations(root, options.proposals, db, options.operatorMerges, options.ownerAssociations);
     const currentSourceFingerprint = readBujoCanonicalSourceFingerprint(root);
     db.close();
     db = undefined;
@@ -192,7 +195,7 @@ export async function applyExplicitMemoryCurate(
 
     db = openMemoryDb({ path: dbPath, embeddings: options.embeddings, dim: options.dimension });
     const result = await applyCurateMutations(root, db, options.proposals, currentSourceFingerprint, options.now ?? (() => new Date()),
-      options.operatorMerges);
+      options.operatorMerges, options.ownerAssociations);
     db.checkpoint();
     db.close();
     db = undefined;
@@ -334,8 +337,10 @@ export async function restoreExplicitMemoryCurate(
 function assertApplyOptions(options: ApplyExplicitMemoryCurateOptions): void {
   resolveExplicitMemoryCurateRoot(options.root);
   const merges = options.operatorMerges ?? [];
-  if (options.proposals.length + merges.filter(({ accepted }) => accepted).length === 0
+  const owners = options.ownerAssociations ?? [];
+  if (options.proposals.length + merges.filter(({ accepted }) => accepted).length + owners.filter(({ accepted }) => accepted).length === 0
     || options.proposals.length > MAX_PROPOSALS || merges.length > MAX_CURATE_OPERATOR_MERGES
+    || owners.length > MAX_CURATE_OWNER_ASSOCIATIONS
     || !isSha256(options.expectedRootFingerprint) || !isSha256(options.expectedSourceFingerprint)
     || !isSha256(options.planDigest) || !Number.isInteger(options.dimension) || options.dimension <= 0) {
     throw new ExplicitMemoryCurateError("apply_failed");

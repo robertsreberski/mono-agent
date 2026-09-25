@@ -96,7 +96,7 @@ function preferenceSupported(text: string, user: string): boolean {
 }
 // Only finite owner properties have a supported grammatical binding. A bare
 // first-person pronoun elsewhere in a message cannot assign a relative's fact.
-const OWNER_PROPERTY: Readonly<Record<string, RegExp>> = {
+export const OWNER_PROPERTY: Readonly<Record<string, RegExp>> = {
   birth_date: /\b(?:my|the (?:user|owner)'s)\s+(?:birthday|birth\s+date)\b|\b(?:i|the (?:user|owner))\s+(?:was|am|'m)\s+born\b/iu,
   full_name: /\b(?:my|the (?:user|owner)'s)\s+(?:full\s+)?name\b|\b(?:i\s+am|i'm|the (?:user|owner)\s+is)\s+(?:named|called)\b/iu,
   preferred_name: /\b(?:my|the (?:user|owner)'s)\s+(?:preferred\s+)?name\b|\b(?:i|the (?:user|owner))\s+(?:prefer|prefers|go\s+by|goes\s+by)\b/iu,

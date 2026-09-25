@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- `MemoryRecall` returns fewer weak hits on the local hybrid store. It drops
+  hits more than `0.15` below the best one and, when the best hit clears the
+  `0.65` floor, hits below the floor; the best hit is always kept. Hits carry
+  `currentness` (`current`/`superseded`), and the result says
+  `Insufficient evidence` or `Conflicting values` (structured `evidence`) when
+  the best hit is weak or the top candidates disagree. The new fields are
+  optional; remote and degraded results are unchanged.
+
+- `mono-agent memory curate prepare --owner-backfill` proposes `person:owner`
+  associations for older live lines where the owner is the subject: the text
+  starts with "The user" plus a verb or "The user's" plus an owner property
+  (name, birthday, home, work), or the labels already attribute the line to the
+  owner. No model is called. Proposals are reviewed as `associate:owner`; bare
+  "User ..." lines are `associate:owner-bare` and must be accepted explicitly.
+  Apply uses the usual curate backup and restore.
+
 - Memory recall scores are clamped to `[0, 1]`; salience and insight
   tie-breakers can no longer push a score above a perfect match.
 
