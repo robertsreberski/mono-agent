@@ -82,7 +82,7 @@ export function inspectCurateSource(root: string, limit = 120): CurateSnapshot {
   }
   const graph = readCanonicalGraphStrictSnapshot(root).records;
   if (readBujoCanonicalSourceFingerprint(root) !== fingerprint) throw new Error("memory-curate: source changed");
-  return { fingerprint, lines, entityNames: graph.entities.slice(0, 128).map(({ id, name }) => ({ id, name })) };
+  return { fingerprint, lines, skipped, entityNames: graph.entities.slice(0, 128).map(({ id, name }) => ({ id, name })) };
 }
 
 export function validateCurateProposal(proposal: CurateProposal): void {
@@ -304,7 +304,7 @@ function mergePairs(root: string, proposals: readonly CurateProposal[]): Map<str
   return pairs;
 }
 /** Exact pre-backup source check; every proposed source is pinned to one canonical bullet. */
-export function previewCurateMutations(root: string, proposals: readonly CurateProposal[]): void {
+export function previewCurateMutations(root: string, proposals: readonly CurateProposal[], activeDb?: MemoryDb): void {
   const seen = new Set<string>();
   const selected = new Set(proposals.map(({ source }) => source.id));
   const counts = new Map<string, number>();
@@ -318,6 +318,7 @@ export function previewCurateMutations(root: string, proposals: readonly CurateP
   for (const proposal of proposals) {
     validateCurateProposal(proposal);
     const { source } = proposal;
+    if (activeDb && !activeDb.get(source.id)) throw new Error("memory-curate: selected id is not in the active index");
     if (seen.has(source.id) || counts.get(source.id) !== 1) throw new Error("memory-curate: duplicate or missing source");
     seen.add(source.id);
     const snapshot = readCanonicalFileSnapshot(root, source.file);

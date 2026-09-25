@@ -3082,9 +3082,22 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       "memory-curate: content-addressed Remember lines cannot be rewritten in place",
       "memory-curate: unsupported attribution rewrite", "memory-curate: unsupported date rewrite",
       "memory-curate: label refers to an unknown entity",
+      "memory-curate: selected id is not in the active index",
+      "memory-forget: canonical source changed after the plan was prepared.",
+      "memory-forget: ids must be a non-empty set without duplicates.",
     ]);
-    const reason = (operation === "prepare" || operation === "review") && error instanceof Error
-      && safeCurateReasons.has(error.message) ? error.message : undefined;
+    const safeReason = (value: unknown): string | undefined => {
+      if (!(value instanceof Error)) return undefined;
+      if (safeCurateReasons.has(value.message)) return value.message;
+      // Forget owns these diagnostics, but ids are omitted from public output.
+      if (/^memory-forget: unknown memory id [A-Za-z0-9][A-Za-z0-9:._-]{0,127}\.$/u.test(value.message)) return "memory-forget: unknown memory id";
+      if (/^memory-forget: memory [A-Za-z0-9][A-Za-z0-9:._-]{0,127} (?:requires exactly one canonical source bullet|is already terminal)\.$/u.test(value.message)) {
+        return value.message.endsWith("is already terminal.") ? "memory-forget: memory is already terminal" : "memory-forget: memory requires exactly one canonical source bullet";
+      }
+      return undefined;
+    };
+    const reason = safeReason(error) ?? (error instanceof Error && error.name === "ExplicitMemoryCurateError"
+      ? safeReason(error.cause) : undefined);
     write(input.json, { operation: `curate-${operation ?? "unknown"}`, status: "failed", code: `curate_${code}`,
       ...(reason === undefined ? {} : { reason }), ...(backupPath === undefined ? {} : { backupPath }) },
       () => `${messages[code]}${reason === undefined ? "" : ` ${reason}`}${backupPath === undefined ? "" : ` Backup: ${backupPath}.`}\n`);
