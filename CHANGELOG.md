@@ -23,6 +23,27 @@
   full, and recovery and rebuild keep full parity checks. Per-turn capture on a
   large store drops from seconds to well under two seconds of host CPU.
 
+- Add `mono-agent memory entities --duplicates` to list entity names held by
+  several ids, with types and association counts. `memory curate prepare|review`
+  now accept operator merges (`--merge <fromId>=<toId>`, `--merge-file`,
+  `--allow-cross-type`). These may join different names, and different types
+  when allowed. They run through the same reviewed apply, backup and restore as
+  other curation. `curate prepare --limit 0` prepares merges without a model call.
+  Merges that would leave an invalid fact label (a relationship to itself, or a
+  person label on a non-person id) are refused before backup; labels that
+  become identical collapse to one. Capture binds `person:owner` only on
+  host-verified owner turns.
+
+- On the operator's own turns, automatic recall reads a first-person question
+  that names nobody else (`When was I born?`) as a question about the canonical
+  owner id `person:owner` and answers from its labelled facts.
+
+- Memory capture tells the model which id to reuse when several known entities
+  share one name: the most-associated id is marked preferred and the others
+  point at it. Equally matching hints now rank the most-used entity first, so an
+  established person is not crowded out by newer one-off tasks that share a
+  word. Owner turns offer the canonical `person:owner` id first.
+
 - Keep `memory curate prepare` limited to rebuild-indexed lines and report
   skipped canonical-line counts by reason. Refuse unindexed selections before
   backup and show safe failure reasons after recovered apply errors.

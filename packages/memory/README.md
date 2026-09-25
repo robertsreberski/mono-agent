@@ -543,12 +543,14 @@ CompletedTurnIntakeSnapshot
 CurateAction
 CurateDiscard
 CurateLine
+CurateOperatorMerge
 CurateProposal
 CurateReason
 CurateSnapshot
 CurateSuggestionResult
 DEFAULT_MEMORY_FORGET_BACKUP_MAX_AGE_DAYS
 DEFAULT_MEMORY_FORGET_BACKUP_MAX_COUNT
+DuplicateEntityName
 ExplicitForgetPreview
 ExplicitMemoryCurateError
 ExplicitMemoryForgetApplyResult
@@ -564,6 +566,8 @@ GraphBatchResult
 JournalBrowseCapableStore
 JournalBrowseInput
 JournalBrowseSnapshot
+KnownEntity
+KnownEntityHint
 LegacyReplayAdoptionOptions
 LegacyReplayAdoptionResult
 LlmComplete
@@ -572,6 +576,7 @@ MARKER_FOR
 MAX_CAPTURE_ENTITIES
 MAX_CAPTURE_MEMORIES
 MAX_CAPTURE_RELATIONS
+MAX_CURATE_OPERATOR_MERGES
 MAX_KNOWN_ENTITY_HINTS
 MEMORY_BUNDLE_EXTRAS_DIR
 MEMORY_BUNDLE_MANIFEST_FILE
@@ -614,6 +619,7 @@ MemoryRememberPartialWriteError
 MemoryRememberResult
 MigrateDeps
 MigrateResult
+OWNER_ENTITY_ID
 PrepareMemoryBundleImportOptions
 ReconcileAction
 ReconcileDeps
@@ -643,6 +649,8 @@ dailyFilePath
 exportMemoryBundle
 extractCapturePlanStrict
 findCanonicalMemoryBullet
+findDuplicateEntityNames
+foldEntityName
 inspectCompletedTurnIntake
 inspectCurateSource
 isConversationRelativeQuery
@@ -650,6 +658,7 @@ migrate
 normalizeMemoryText
 normalizedContentHash
 parseBullet
+parseCurateOperatorMerges
 parseDailyFile
 parseMemoryExportBundleManifest
 prepareMemoryBundleImport
@@ -680,6 +689,7 @@ selectAutomaticRecallHits
 selectKnownEntityHints
 serializeBullet
 serializeDailyFile
+validateCurateOperatorMerge
 validateCurateProposal
 writeFutureLog
 writeIndex

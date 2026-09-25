@@ -34,6 +34,9 @@ export function guidanceScoreFloor(scores: readonly number[]): number {
   return Math.max(GUIDANCE_FLOOR, median + GUIDANCE_MARGIN);
 }
 const PERSON_ID = /^person:[a-z0-9]+(?:-[a-z0-9]+)*$/u;
+/** Canonical host-owner entity id used by owner-turn capture. */
+const OWNER_ID = "person:owner";
+const OWNER_FIRST_PERSON = /\b(?:I|my|mine|myself)\b/iu;
 const scopeId = (value: string): boolean => /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,95}$/u.test(value);
 export const safeLine = (text: string): string => text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").replace(/\s+/gu, " ").trim();
 const fold = (text: string): string => text.normalize("NFD").replace(/\p{M}/gu, "").toLocaleLowerCase("und");
@@ -192,6 +195,12 @@ export function formatMemoryBackground(
     .filter((hit, index, all) => all.findIndex((other) => other.text === hit.text) === index);
 
   const entities = resolveMemoryEntities(store, query);
+  // The host owner has one canonical id. On a host-stamped owner turn a
+  // first-person question that names nobody else (`When was I born?`) is
+  // about that person.
+  if (options.ownerTurn === true && entities.length === 0 && OWNER_FIRST_PERSON.test(query)) {
+    entities.unshift({ id: OWNER_ID, name: "You" });
+  }
   const explicitIds = new Set(query.match(/\bperson:[a-z0-9]+(?:-[a-z0-9]+)*\b/gu) ?? []);
   const ambiguous = new Set(entities.filter((entity) => !explicitIds.has(entity.id)
     && entities.some((other) => other.id !== entity.id && fold(other.name) === fold(entity.name)))

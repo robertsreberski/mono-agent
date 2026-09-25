@@ -268,6 +268,30 @@ describe("label relevance and agreement", () => {
     expect(agreed?.content).toContain("Morgan — phone number: 555-0100 (you said");
   });
 
+  it("reads a first-person owner-turn question as one about the canonical owner id", () => {
+    const asked: string[] = [];
+    const ownerStore: LabelRecallStore = {
+      guidanceForScope() { return []; },
+      labelsForEntity(id) {
+        asked.push(id);
+        return id === "person:owner" ? [{ ...fact("owner-birth", "1990-05-17"), text: "The user was born 1990-05-17.",
+          label: { v: 1, kind: "fact", entityId: "person:owner", key: "birth_date",
+            value: { type: "date", date: "1990-05-17" }, attribution: "user-stated" } }] : [];
+      },
+      findMemoryEntitiesByNames(names) { return names.includes("morgan")
+        ? [{ id: "person:morgan", name: "Morgan", createdAt: "2026-09-06T00:00:00Z" }] : []; },
+    };
+    expect(formatBlock(ownerStore, "When was I born?", "conv", owner, [])?.facts)
+      .toEqual(["You — born: 1990-05-17 (you said, recorded 2026-09-06); age 36"]);
+    expect(formatBlock(ownerStore, "how old am i", "conv", owner, [])?.facts)
+      .toEqual(["You — born: 1990-05-17 (you said, recorded 2026-09-06); age 36"]);
+    // Not the owner's turn, or a question naming someone else: no owner card.
+    asked.length = 0;
+    expect(formatBlock(ownerStore, "When was I born?", "conv", options, [])?.facts).toBeUndefined();
+    expect(formatBlock(ownerStore, "When was my friend Morgan born?", "conv", owner, [])?.facts).toBeUndefined();
+    expect(asked).not.toContain("person:owner");
+  });
+
   it("keeps relevant labels background-only on turns that are not the owner's", () => {
     const person = store([], [labelled("other:home-city", "Lisbon", "city")]);
     const result = formatBlock(person, "What is Morgan's home city?", "conv", options, []);

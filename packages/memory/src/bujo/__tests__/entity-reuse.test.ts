@@ -73,6 +73,41 @@ describe("selectKnownEntityHints", () => {
       .toEqual(["person:alex-operations", "person:alex-design"]);
   });
 
+  it("names the most-associated id as preferred when several ids share one folded name", () => {
+    // Fictional: one person captured three times under different ids and types.
+    const graph = [
+      { id: "concept:morgan", name: "Morgan", type: "concept", createdAt: "2026-03-01T00:00:00.000Z", associations: 2 },
+      { id: "person:morgan", name: "Morgan", type: "person", createdAt: "2026-01-01T00:00:00.000Z", associations: 9 },
+      { id: "person:morgan-2", name: "morgan ", type: "person", createdAt: "2026-04-01T00:00:00.000Z", associations: 1 },
+      { id: "place:maple-street", name: "Maple Street", type: "place", createdAt: "2026-04-01T00:00:00.000Z", associations: 5 },
+    ];
+    const hints = selectKnownEntityHints("Morgan walked down Maple Street", graph);
+
+    expect(hints.map((hint) => hint.id)).toEqual(["place:maple-street", "person:morgan", "concept:morgan", "person:morgan-2"]);
+    expect(hints.map((hint) => hint.preferredId)).toEqual([undefined, undefined, "person:morgan", "person:morgan"]);
+    const block = renderKnownEntityHints(hints);
+    expect(block).toContain("- person:morgan — Morgan (person) — preferred id for this name");
+    expect(block).toContain("- concept:morgan — Morgan (concept) — duplicate name; reuse person:morgan unless this is a different thing");
+    expect(block).toContain("- place:maple-street — Maple Street (place)\n");
+    expect(selectKnownEntityHints("Morgan walked down Maple Street", [...graph].reverse())).toEqual(hints);
+  });
+
+  it("keeps an established entity ahead of many newer one-off ids that share a word", () => {
+    const tasks = Array.from({ length: 40 }, (_, index) => ({ id: `task:morgan-errand-${index}`, name: `Morgan errand ${index}`,
+      type: "task", createdAt: `2026-09-${String(10 + (index % 20)).padStart(2, "0")}T00:00:00.000Z`, associations: index % 2 }));
+    const graph = [{ id: "person:morgan", name: "Morgan", type: "person", createdAt: "2026-01-01T00:00:00.000Z", associations: 50 }, ...tasks];
+    expect(selectKnownEntityHints("Morgan has a cold", graph)[0]?.id).toBe("person:morgan");
+  });
+
+  it("breaks an association tie with the ordinary deterministic order", () => {
+    const graph = [
+      { id: "person:morgan-a", name: "Morgan", type: "person", createdAt: "2026-01-01T00:00:00.000Z", associations: 3 },
+      { id: "person:morgan-b", name: "Morgan", type: "person", createdAt: "2026-02-01T00:00:00.000Z", associations: 3 },
+    ];
+    const hints = selectKnownEntityHints("Morgan called", graph);
+    expect(hints.map((hint) => [hint.id, hint.preferredId])).toEqual([["person:morgan-b", undefined], ["person:morgan-a", "person:morgan-b"]]);
+  });
+
   it("bounds how many hints reach the prompt", () => {
     const many = Array.from({ length: 200 }, (_, index) => ({
       id: `topic:curtain-${index}`,
@@ -179,6 +214,35 @@ describe("capture extraction with reuse hints", () => {
       expect(plan.entities.map((entity) => entity.id)).toEqual(["project:black-curtains"]);
       expect(plan.candidates[0]?.entityIds).toEqual(["project:black-curtains"]);
     }
+  });
+
+  it("never binds the canonical owner id from model output on a turn that is not the host-verified owner's", async () => {
+    const output = JSON.stringify({
+      memories: [{ type: "note", text: "Morgan met the user at Maple Street.", salience: 0.8, isInsight: false,
+        entityIds: ["person:owner", "person:morgan"],
+        labels: [{ v: 1, kind: "fact", entityId: "person:morgan", key: "relationship",
+          value: { type: "relationship", role: "friend", targetEntityId: "person:owner" }, attribution: "unknown" }] }],
+      entities: [{ id: "person:owner", name: "Owner", type: "person" }, { id: "person:morgan", name: "Morgan", type: "person" }],
+      relations: [{ src: "person:morgan", dst: "person:owner", relation: "met" }],
+    });
+    const turn = "User: Morgan met me at Maple Street.\nAssistant: Noted.";
+    const evidence = (ownerTurn: boolean) => ({ observedAt: "2026-07-12T10:00:00.000Z", captureSpeakerKind: "human-turn" as const,
+      captureEvidence: { userText: "Morgan met me at Maple Street.", toolOutcomes: [], ...(ownerTurn ? { ownerTurn: true as const } : {}) } });
+    const plan = (ownerTurn: boolean) => extractCapturePlanStrict(turn, fakeLlm([["Extract one bounded", output]]), undefined, [], evidence(ownerTurn));
+
+    const peer = await plan(false);
+    expect(peer.entities.map(({ id }) => id)).toEqual(["person:morgan"]);
+    expect(peer.relations).toEqual([]);
+    expect(peer.candidates[0]?.entityIds).toEqual(["person:morgan"]);
+    expect(peer.candidates[0]?.labels).toBeUndefined();
+    const trigger = await extractCapturePlanStrict(turn, fakeLlm([["Extract one bounded", output]]), undefined, [],
+      { observedAt: "2026-07-12T10:00:00.000Z", captureSpeakerKind: "trigger" });
+    expect(trigger.entities.map(({ id }) => id)).toEqual(["person:morgan"]);
+
+    const owner = await plan(true);
+    expect(owner.entities.map(({ id }) => id)).toEqual(["person:owner", "person:morgan"]);
+    expect(owner.relations).toHaveLength(1);
+    expect(owner.candidates[0]?.entityIds).toContain("person:owner");
   });
 
   it("hints never relax validation of what the model returns", async () => {

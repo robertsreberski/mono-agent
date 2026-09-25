@@ -2307,3 +2307,84 @@ describe("curate paid-run isolation", () => {
     expect(JSON.parse(reviewed.stdout).discarded).toEqual(plan.discarded);
   });
 });
+
+describe("memory entity identity CLI", { timeout: 30_000 }, () => {
+  it("parses operator merge and duplicate flags only where they apply", () => {
+    expect(parseCliArgs(["memory", "curate", "prepare", "--plan", "p.json", "--limit", "0", "--merge", "person:a=person:b",
+      "--merge", "concept:a=person:b", "--merge-file", "merges.txt", "--allow-cross-type"]))
+      .toMatchObject({ limit: 0, curateMerges: ["person:a=person:b", "concept:a=person:b"], curateMergeFile: "merges.txt", allowCrossType: true });
+    expect(parseCliArgs(["memory", "entities", "--duplicates", "--json"])).toMatchObject({ positionals: ["entities"], duplicates: true });
+    expect(() => parseCliArgs(["memory", "curate", "apply", "--plan", "p.json", "--merge", "a:b=c:d"])).toThrow(/--merge/u);
+    expect(() => parseCliArgs(["memory", "stats", "--duplicates"])).toThrow(/--duplicates/u);
+    expect(() => parseCliArgs(["memory", "stats", "--limit", "0"])).toThrow(/--limit/u);
+  });
+
+  it("lists duplicate names, then merges a fictional person's three ids through a reviewed plan", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    await mkdir(memoryRoot, { recursive: true });
+    const at = "2026-07-12T10:00:00.000Z";
+    for (const [id, text] of [["fictional-a", "Morgan was born on 1990-05-17."], ["fictional-b", "Morgan likes Maple tea."],
+      ["fictional-c", "The user asked about Maple tea."]]) {
+      bujoMemory.appendBullet(memoryRoot, { id: id!, type: "note", status: "open", text: text!, salience: 0.5, isInsight: false,
+        createdAt: at, refs: [] }, new Date(at));
+    }
+    bujoMemory.appendGraphBatch(memoryRoot, { entities: [
+      { id: "person:morgan", name: "Morgan", type: "person", createdAt: at },
+      { id: "person:morgan-2", name: "morgan", type: "person", createdAt: at },
+      { id: "concept:morgan", name: "Morgan", type: "concept", createdAt: at },
+      { id: "person:the-user", name: "the user", type: "person", createdAt: at },
+    ], associations: [
+      { memoryId: "fictional-a", entityId: "person:morgan", provenance: "capture", createdAt: at },
+      { memoryId: "fictional-b", entityId: "person:morgan", provenance: "capture", createdAt: at },
+      { memoryId: "fictional-b", entityId: "concept:morgan", provenance: "capture", createdAt: at },
+      { memoryId: "fictional-c", entityId: "person:the-user", provenance: "capture", createdAt: at },
+    ] });
+    await safeRebuildMemoryIndex({ root: memoryRoot, tier: "bujo", embeddings: deterministicEmbeddings("ollama:test-embed", 8), dim: 8 });
+    const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
+      embeddings: { provider: "ollama", model: "test-embed", dim: 8 }, llm: { provider: "ollama", model: "test-capture" } } });
+    const invoke = (args: string[]) => captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(args))));
+
+    const listed = await invoke(["memory", "entities", "--duplicates", "--json"]);
+    expect(listed.code, listed.stderr).toBe(0);
+    expect(JSON.parse(listed.stdout)).toMatchObject({ summary: { names: 1, crossType: 1, ids: 3 }, truncated: false,
+      duplicates: [{ name: "morgan", types: ["concept", "person"], associations: 3,
+        ids: [{ id: "person:morgan", associations: 2 }, { id: "concept:morgan", associations: 1 }, { id: "person:morgan-2", associations: 0 }] }] });
+    const human = await invoke(["memory", "entities", "--duplicates"]);
+    expect(human.stdout).toContain("1 names map to more than one id (1 across types, 3 ids).");
+    expect(human.stdout).toContain("  person:morgan (person, 2)");
+
+    const planPath = join(dir, "identity-plan.json");
+    const mergeFile = join(dir, "merges.txt");
+    await writeFile(mergeFile, "# fictional owner aliases\nperson:morgan-2=person:morgan\n", { mode: 0o600 });
+    // Cross-type needs explicit consent; nothing is written on refusal.
+    const refused = await invoke(["memory", "curate", "prepare", "--plan", planPath, "--limit", "0",
+      "--merge", "concept:morgan=person:morgan", "--json"]);
+    expect(refused.code).toBe(1);
+    expect(JSON.parse(refused.stdout)).toMatchObject({ code: "curate_prepare_failed", reason: "memory-curate: cross-type merge requires --allow-cross-type" });
+    await expect(stat(planPath)).rejects.toThrow();
+    const prepared = await invoke(["memory", "curate", "prepare", "--plan", planPath, "--limit", "0", "--merge-file", mergeFile, "--json"]);
+    expect(prepared.code, prepared.stderr).toBe(0);
+    expect(JSON.parse(prepared.stdout)).toMatchObject({ status: "prepared", count: 0, operatorMerges: 1 });
+    const added = await invoke(["memory", "curate", "review", "--plan", planPath, "--merge", "concept:morgan=person:morgan",
+      "--merge", "person:the-user=person:morgan", "--allow-cross-type", "--json"]);
+    expect(added.code, added.stderr).toBe(0);
+    expect(JSON.parse(added.stdout)).toMatchObject({ counts: { "merge:operator": { total: 3, accepted: 3 } } });
+    // Operator merges are reviewable like any other proposal.
+    expect((await invoke(["memory", "curate", "review", "--plan", planPath, "--reject", "id:person:the-user", "--json"])).code).toBe(0);
+    const plan = JSON.parse(await readFile(planPath, "utf8")) as { operatorMerges: { from: string; accepted: boolean }[] };
+    expect(plan.operatorMerges.map(({ from, accepted }) => [from, accepted]))
+      .toEqual([["person:morgan-2", true], ["concept:morgan", true], ["person:the-user", false]]);
+
+    stubOllamaEmbeddings(8);
+    const applied = await invoke(["memory", "curate", "apply", "--plan", planPath, "--json"]);
+    expect(applied.code, applied.stderr).toBe(0);
+    expect(JSON.parse(applied.stdout)).toMatchObject({ status: "applied", count: 2 });
+    const graph = bujoMemory.readGraph(memoryRoot);
+    expect(graph.entities.map(({ id }) => id).sort()).toEqual(["person:morgan", "person:the-user"]);
+    expect(bujoMemory.findDuplicateEntityNames(graph)).toEqual([]);
+    expect(graph.associations.filter(({ entityId }) => entityId === "person:morgan").map(({ memoryId }) => memoryId).sort())
+      .toEqual(["fictional-a", "fictional-b"]);
+    const after = await invoke(["memory", "entities", "--duplicates"]);
+    expect(after.stdout).toBe("No entity name is shared by more than one id.\n");
+  });
+});

@@ -9,7 +9,7 @@ import {
   type CaptureIntentHandle,
 } from "./capture-outbox.js";
 import type { ExtractedEntity } from "./entities.js";
-import { selectKnownEntityHints } from "./entity-reuse.js";
+import { selectKnownEntityHints, type KnownEntityHint } from "./entity-reuse.js";
 import { readGraph, type GraphBatchInput } from "./graph.js";
 import { withSerializedBujoMutation } from "./mutation-lock.js";
 import { reconcileBatch, type ReconcileAction, type ReconcileDeps } from "./reconcile.js";
@@ -32,9 +32,12 @@ export async function captureTurnStrict(text: string, deps: ReconcileDeps): Prom
  * must never fail because the reuse hint could not be read, and an unreadable
  * graph simply reverts to today's behaviour of minting a fresh id.
  */
-function knownEntityHints(root: string, text: string): ExtractedEntity[] {
+function knownEntityHints(root: string, text: string): KnownEntityHint[] {
   try {
-    return selectKnownEntityHints(text, readGraph(root).entities);
+    const graph = readGraph(root);
+    const associations = new Map<string, number>();
+    for (const { entityId } of graph.associations) associations.set(entityId, (associations.get(entityId) ?? 0) + 1);
+    return selectKnownEntityHints(text, graph.entities.map((entity) => ({ ...entity, associations: associations.get(entity.id) ?? 0 })));
   } catch {
     return [];
   }
@@ -50,10 +53,16 @@ async function captureTurnUnlocked(
   // Strict capture samples the host-owned clock once, before extraction, and
   // uses that same instant for the observation anchor and capture metadata.
   // Durable intake retries replace this clock with immutable admittedAt.
-  const knownEntities = knownEntityHints(deps.root, text);
-  if (deps.captureSpeakerKind === "human-turn" && deps.captureEvidence?.ownerTurn === true
-    && !knownEntities.some((entity) => entity.id === "person:owner")) {
-    knownEntities.push({ id: "person:owner", name: "Owner", type: "person" });
+  const ownerTurn = deps.captureSpeakerKind === "human-turn" && deps.captureEvidence?.ownerTurn === true;
+  // Only a host-verified owner turn may bind the canonical owner id; never offer it elsewhere.
+  const knownEntities: ExtractedEntity[] = knownEntityHints(deps.root, text)
+    .filter((entity) => ownerTurn || entity.id !== "person:owner");
+  if (ownerTurn) {
+    // The host owner has exactly one canonical id. Offer it first so owner
+    // facts bind there rather than to a name-based duplicate further down.
+    const index = knownEntities.findIndex((entity) => entity.id === "person:owner");
+    const owner = index < 0 ? { id: "person:owner", name: "Owner", type: "person" } : knownEntities.splice(index, 1)[0]!;
+    knownEntities.unshift(owner);
   }
   const observedAt = deps.now();
   const key = deps.captureRetentionKey;
