@@ -275,11 +275,12 @@ describe("host-validated capture labels", () => {
     })).candidates[0]?.labels).toEqual([lesson]);
   });
 
-  it("drops a fact whose supported value was clamped away and rejects malformed label array structure", async () => {
-    const text = `${"Morgan keeps notes. ".repeat(12)} Morgan was born May 17, 1990.`;
+  it("retains a supported fact from a separate tail sentence and rejects malformed label arrays", async () => {
+    const text = `${"Morgan keeps fictional archive notes on a deliberately long bounded opening sentence with extensive references to safe written examples and fictional projects."} Morgan was born May 17, 1990.`;
     const plan = await extract(text, [fact], { captureSpeakerKind: "human-turn",
       captureEvidence: evidence("Morgan was born May 17, 1990.") });
     expect(plan.candidates[0]?.labels).toBeUndefined();
+    expect(plan.candidates[1]?.labels).toEqual([fact]);
     await expect(extractCapturePlanStrict("turn", { id: "bad-structure", complete: async () => JSON.stringify({
       memories: [{ type: "note", text: "Morgan keeps notes.", salience: 0.8, isInsight: false,
         entityIds: [], labels: {} }], entities: [], relations: [],

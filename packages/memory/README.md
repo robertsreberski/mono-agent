@@ -141,8 +141,10 @@ Host-verified owner turns can bind first-person facts to `person:owner` and keep
 agent-wide preferences even without a sender id. Unidentified senders remain
 conversation-scoped, including colon-containing conversation ids (hashed for
 safe scope keys). Newer dated updates supersede the prior line without erasing
-its history. Capture and reconcile use a 160-code-point bound and prefer the
-last complete sentence when trimming a multi-fact candidate.
+its history. Capture and reconcile use a 160-code-point bound; multi-sentence
+memories are split into separate candidates up to the eight-memory plan limit
+rather than silently discarding later sentences. Overlong individual sentences
+still clamp at a word or clause boundary.
 
 ### Automatic direct-fact evidence
 

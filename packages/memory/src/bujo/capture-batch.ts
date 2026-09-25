@@ -165,7 +165,7 @@ Rules:
 - Label contract (v is the JSON integer 1; no extra fields): fact = {"v":1,"kind":"fact","entityId":"person:morgan","key":"birth_date","value":{"type":"date","date":"1990-05-17"},"attribution":"user-stated"} (optional validFrom and validTo are YYYY-MM-DD). Fact entityId must be a person: id listed in entities[]. Keys are exactly birth_date, full_name, preferred_name, relationship, home_location, work_location, or other: followed by a lowercase ASCII letter and up to 31 lowercase ASCII letters/digits or single internal hyphens (e.g. other:favorite-color). Never use an unprefixed custom key. birth_date uses date; relationship uses {"type":"relationship","role":"partner","targetEntityId":"person:alex"} with one of parent, child, partner, spouse, sibling, friend, colleague, other and a different person id; other keys use {"type":"text","text":"..."}, and other: may also use date or {"type":"entity","entityId":"person:alex"}. Attribution is user-stated, document, assistant-inferred, or unknown.
 - Preference = {"v":1,"kind":"preference","scope":"agent","attribution":"user-stated"}; lesson = {"v":1,"kind":"lesson","scope":"agent","verified":true}. Scopes: agent, project:<safe-id>, user:<host-sender-token>, conversation:<safe-id>. Do not invent a sender token or scope from text. A fact label's value must occur in its memory sentence (including an unambiguous written civil date). A preference requires an outer human request; assistant recap or scheduled/webhook trigger is not a human request. A verified lesson requires a host-observed failed tool category followed by a successful retry in the HOST-OBSERVED TOOL OUTCOMES block; absence of that block means no verified lesson. Keep the existing speaker and relative-date rules below.
 - salience MUST be a finite JSON number from 0 to 1 inclusive, such as 0.8. Never use a 0-10, 0-100, or percentage scale.
-- LENGTH: every memory text is at most ${MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS} Unicode code points. Aim for ${Math.floor(MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS * 0.75)}. Text beyond the bound is trimmed by the host, so an overrun silently loses its own tail — split a long fact into two shorter facts, or keep only its durable half, rather than relying on the trim.
+- LENGTH: every memory text is at most ${MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS} Unicode code points. Aim for ${Math.floor(MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS * 0.75)}. The host splits multiple complete sentences into separate candidates (up to ${MAX_CAPTURE_MEMORIES} total) and clamps any individual overlong sentence. Write short atomic sentences to avoid losing a single overlong sentence's tail.
 - Every memory text is one distinct durable fact: non-empty, no leading/trailing whitespace, no control, formatting, surrogate, line-separator, or paragraph-separator characters, and no reserved <!--mem delimiter.
 - Every entity object has exactly id, name, and type. id is lowercase ASCII type:name-kebab including the colon, at most 96 characters, and its 1-32 character prefix before : exactly matches type. name is non-empty, at most 160 Unicode code points, trimmed, and contains none of the unsafe character classes forbidden for memory text.
 - Every relation object has exactly src, dst, and relation. src and dst are copied entity ids. relation is non-empty, at most 96 characters, and contains lowercase ASCII letters/digits separated only by single spaces or hyphens.
@@ -260,12 +260,13 @@ export async function extractCapturePlanStrict(
   }
   const entityNames = new Map(entities.map((entity) => [entity.id, entity.name]));
   const labelContext = { ...observationContext, entityNames };
-  const parsedCandidates = parsed.memories.map((value, index) => strictCandidate(value, index, entityIds, labelContext));
+  const parsedCandidates = parsed.memories.flatMap((value, index) => strictCandidate(value, index, entityIds, labelContext));
   const candidates: CandidateMemory[] = [];
   const clampedTokenSets: string[][] = [];
   const fullTokenSets: string[][] = [];
   let lessonBudget = verifiedRetryCount(observationContext?.captureEvidence);
   for (const { candidate, fullText } of parsedCandidates) {
+    if (candidates.length >= MAX_CAPTURE_MEMORIES) break;
     const tokens = candidateTokens(candidate.text);
     const fullTokens = candidateTokens(fullText);
     if (indistinctFrom(clampedTokenSets, tokens)) {
@@ -317,7 +318,7 @@ function strictCandidate(
   index: number,
   entityIds: ReadonlySet<string>,
   context: CaptureLabelContext,
-): { candidate: CandidateMemory; fullText: string } {
+): Array<{ candidate: CandidateMemory; fullText: string }> {
   if (!isRecord(value) || !hasExactKeys(value, ["type", "text", "salience", "isInsight", "entityIds"], ["labels"])) {
     throw outputError("capture-extract", `memory ${index} has missing or unknown fields`);
   }
@@ -345,12 +346,41 @@ function strictCandidate(
   if (value.labels !== undefined && (!Array.isArray(value.labels) || value.labels.length > 32)) {
     throw outputError("capture-extract", `memory ${index} labels structure is invalid`);
   }
-  const labels = captureLabels((value.labels ?? []) as readonly unknown[], text, context);
-  return {
-    candidate: { type: value.type, text, salience: value.salience, isInsight: value.isInsight, entityIds: associated,
-      ...(labels.length === 0 ? {} : { labels }) },
-    fullText,
-  };
+  const sentences = splitCaptureSentences(fullText);
+  return sentences.map((sentence) => {
+    const bounded = clampedCaptureText(sentence, `memory ${index} sentence`).text;
+    // A fact in one sentence does not give the adjacent sentence the same
+    // graph subjects or labels. Re-evaluate each against only its own text.
+    const specificIds = sentences.length === 1 ? associated : associated.filter((id) => {
+      const name = context.entityNames?.get(id)?.toLowerCase();
+      const slug = id.slice(id.indexOf(":") + 1).replaceAll("-", " ");
+      const content = bounded.toLowerCase();
+      return (name !== undefined && content.includes(name)) || content.includes(slug)
+        || (id === "person:owner" && /\b(?:the user|the owner|i|my)\b/iu.test(bounded));
+    });
+    const labels = captureLabels((value.labels ?? []) as readonly unknown[], bounded, context);
+    return { candidate: { type: value.type as CandidateMemory["type"], text: bounded,
+      salience: value.salience as number, isInsight: value.isInsight as boolean, entityIds: specificIds,
+      ...(labels.length === 0 ? {} : { labels }) }, fullText: sentence };
+  });
+}
+
+/** Keep sentence boundaries, not abbreviations or decimal points, within one bounded capture plan. */
+function splitCaptureSentences(text: string): string[] {
+  if ([...text].length <= MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS) return [text];
+  const parts: string[] = [];
+  let start = 0;
+  for (const match of text.matchAll(/[.!?](?=\s|$)/gu)) {
+    const end = match.index! + 1;
+    const prior = text.slice(Math.max(start, end - 8), end);
+    if (/(?:\b(?:dr|st|mr|ms|mrs|prof|e\.g|i\.e)|\b[a-z])\.$/iu.test(prior)) continue;
+    const sentence = text.slice(start, end).trim();
+    if (sentence) parts.push(sentence);
+    start = end;
+  }
+  const tail = text.slice(start).trim();
+  if (tail) parts.push(tail);
+  return parts.length > 0 ? parts : [text];
 }
 
 function strictEntity(value: unknown, index: number): ExtractedEntity {

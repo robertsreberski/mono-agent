@@ -345,6 +345,15 @@ describe("strict completed-turn extraction", () => {
     expect(called).toBe(false);
   });
 
+  it("splits complete sentences without treating abbreviations or decimals as boundaries", async () => {
+    const first = "Dr. Morgan planned a fictional archive visit on St. Maple Road for 3.5 hours.";
+    const second = "Morgan also documented the fictional archive's 1990-05-17 opening date, e.g. in its catalog.";
+    const plan = await extractCapturePlanStrict("completed turn", { id: "split-sentences",
+      complete: async () => planWithMemoryTexts([`${first} ${second}`]),
+    });
+    expect(plan.candidates.map((item) => item.text)).toEqual([first, second]);
+  });
+
   it("clamps multi-fact text at a complete sentence instead of mid-phrase", async () => {
     const first = "Morgan chose blue for the fictional project.";
     const second = `Morgan also chose ${"a".repeat(160)} for the other project.`;
