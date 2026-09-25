@@ -10,9 +10,10 @@ import { forgetExplicitMemories, previewCanonicalExplicitForgetMemories } from "
 import { writeCanonicalFileAtomic } from "./path-safety.js";
 import type { MemoryDb, MemoryStatus } from "../store/index.js";
 import { readBujoCanonicalSourceFingerprint } from "./replay-projection.js";
-import { validateMemoryLabel, labelsOf, withMemoryLabels, type MemoryLabel } from "./labels.js";
+import { encodeMemoryLabel, validateMemoryLabel, labelsOf, withMemoryLabels, type MemoryLabel } from "./labels.js";
 import type { LlmComplete } from "./llm.js";
 import type { Bullet } from "./types.js";
+import { OWNER_ENTITY_ID } from "./entity-reuse.js";
 
 const MAX_LINES = 8192;
 const BATCH = 12;
@@ -54,11 +55,9 @@ export interface CurateOperatorMerge {
   readonly accepted: boolean;
 }
 export const MAX_CURATE_OPERATOR_MERGES = 512;
-/**
- * The canonical host-owner id used by owner-turn capture. An operator merge
- * may target it before any capture has minted it; apply then creates it.
- */
-export const OWNER_ENTITY_ID = "person:owner";
+// The canonical host-owner id. An operator merge may target it before any
+// capture has minted it; apply then creates it.
+export { OWNER_ENTITY_ID };
 const OWNER_ENTITY = { id: OWNER_ENTITY_ID, name: "Owner", type: "person" } as const;
 const ENTITY_ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/u;
 
@@ -414,17 +413,47 @@ export function previewCurateMutations(root: string, proposals: readonly CurateP
       throw new Error("memory-curate: label refers to an unknown entity");
     }
   }
-  mergePairs(root, proposals, operatorMerges);
+  const pairs = mergePairs(root, proposals, operatorMerges);
+  // Every daily reference and fact label a merge rewrites must still be valid
+  // afterwards; find that out here, before the backup, not mid-transaction.
+  if (pairs.size > 0) {
+    for (const file of allDailyPaths(root)) {
+      const snapshot = readCanonicalFileSnapshot(root, file);
+      if (!snapshot) continue;
+      for (const bullet of parseDailyFile(snapshot.content).bullets) mergedBulletRefs(bullet, pairs);
+    }
+  }
   const drops = proposals.filter((item) => item.action === "drop").map(({ source }) => source.id);
   if (drops.length > 0) previewCanonicalExplicitForgetMemories(root, drops);
 }
 function remapLabel(label: MemoryLabel, pairs: ReadonlyMap<string, string>): MemoryLabel {
   if (label.kind !== "fact") return label;
   const value = label.value;
+  const entityId = pairs.get(label.entityId) ?? label.entityId;
   const mappedValue = value.type === "entity" ? { ...value, entityId: pairs.get(value.entityId) ?? value.entityId }
     : value.type === "relationship" ? { ...value, targetEntityId: pairs.get(value.targetEntityId) ?? value.targetEntityId }
       : value;
-  return validateMemoryLabel({ ...label, entityId: pairs.get(label.entityId) ?? label.entityId, value: mappedValue });
+  // A relationship fact between the two merged ids would become one about itself.
+  if (mappedValue.type === "relationship" && mappedValue.targetEntityId === entityId) {
+    throw new Error("memory-curate: merge creates self-relation");
+  }
+  try { return validateMemoryLabel({ ...label, entityId, value: mappedValue }); }
+  catch { throw new Error("memory-curate: merge invalidates a fact label"); }
+}
+/**
+ * The bullet's references after a merge: ids remapped, labels remapped, and
+ * references or labels that became identical collapsed to one. Throws before
+ * any write when the result would not be a valid bullet.
+ */
+function mergedBulletRefs(bullet: Bullet, pairs: ReadonlyMap<string, string>): readonly string[] {
+  const refs = [...new Set(bullet.refs.filter((ref) => !ref.startsWith("label:"))
+    .map((ref) => pairs.get(ref) ?? (ref.startsWith("entity:") && pairs.has(ref.slice(7)) ? `entity:${pairs.get(ref.slice(7))!}` : ref)))];
+  let current: readonly MemoryLabel[];
+  try { current = labelsOf(bullet); } catch { throw new Error("memory-curate: merge invalidates a fact label"); }
+  const labels = [...new Map(current.map((label) => remapLabel(label, pairs))
+    .map((label) => [encodeMemoryLabel(label), label] as const)).values()];
+  try { return withMemoryLabels({ ...bullet, refs }, labels).refs; }
+  catch { throw new Error("memory-curate: merge invalidates a fact label"); }
 }
 function rewriteMergedEntities(root: string, pairs: ReadonlyMap<string, string>, now: () => Date): void {
   if (pairs.size === 0) return;
@@ -447,10 +476,8 @@ function rewriteMergedEntities(root: string, pairs: ReadonlyMap<string, string>,
     const snapshot = readCanonicalFileSnapshot(root, file);
     if (!snapshot) continue;
     for (const bullet of parseDailyFile(snapshot.content).bullets) {
-      const refs = bullet.refs.map((ref) => pairs.get(ref) ?? (ref.startsWith("entity:") && pairs.has(ref.slice(7)) ? `entity:${pairs.get(ref.slice(7))!}` : ref));
-      const labels = labelsOf(bullet).map((label) => remapLabel(label, pairs));
-      const remapped = withMemoryLabels({ ...bullet, refs }, labels);
-      if (JSON.stringify(remapped.refs) !== JSON.stringify(bullet.refs) && !rewriteBullet(root, file, bullet.id, { refs: remapped.refs })) throw new Error("memory-curate: missing merged daily reference");
+      const refs = mergedBulletRefs(bullet, pairs);
+      if (JSON.stringify(refs) !== JSON.stringify(bullet.refs) && !rewriteBullet(root, file, bullet.id, { refs })) throw new Error("memory-curate: missing merged daily reference");
     }
   }
 }

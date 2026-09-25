@@ -3182,6 +3182,7 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       "memory-curate: invalid operator merge", "memory-curate: too many operator merges",
       "memory-curate: operator merge refers to an unknown entity",
       "memory-curate: cross-type merge requires --allow-cross-type",
+      "memory-curate: merge invalidates a fact label",
       "memory-forget: canonical source changed after the plan was prepared.",
       "memory-forget: ids must be a non-empty set without duplicates.",
     ]);

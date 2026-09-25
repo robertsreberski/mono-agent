@@ -16,6 +16,9 @@ import type { ExtractedEntity } from "./entities.js";
  * exactly as today, rather than corrupting an existing one.
  */
 
+/** Canonical id of the host-verified owner; only owner turns and operator merges may bind it. */
+export const OWNER_ENTITY_ID = "person:owner";
+
 /** Hints offered per turn. Enough to cover a topic, small enough to stay cheap. */
 export const MAX_KNOWN_ENTITY_HINTS = 24;
 /** Names are bounded at 160 in the graph; the prompt only needs the gist. */

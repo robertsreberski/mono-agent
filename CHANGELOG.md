@@ -29,6 +29,10 @@
   `--allow-cross-type`). These may join different names, and different types
   when allowed. They run through the same reviewed apply, backup and restore as
   other curation. `curate prepare --limit 0` prepares merges without a model call.
+  Merges that would leave an invalid fact label (a relationship to itself, or a
+  person label on a non-person id) are refused before backup; labels that
+  become identical collapse to one. Capture binds `person:owner` only on
+  host-verified owner turns.
 
 - On the operator's own turns, automatic recall reads a first-person question
   that names nobody else (`When was I born?`) as a question about the canonical

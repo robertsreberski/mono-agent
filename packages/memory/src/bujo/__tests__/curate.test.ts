@@ -515,6 +515,51 @@ describe("operator entity merges", { timeout: 20_000 }, () => {
     try { expect(auditCanonicalGraphParity(path, db).status).toBe("match"); } finally { db.close(); }
   });
 
+  it("collapses labels and references that become identical, and refuses label self-relations before backup", async () => {
+    const { mkdirSync, realpathSync, readdirSync } = await import("node:fs");
+    const { createHash } = await import("node:crypto");
+    const { appendGraphBatch } = await import("../graph.js");
+    const { initializeReplayProjection, readBujoCanonicalSourceFingerprint } = await import("../replay-projection.js");
+    const { safeRebuildMemoryIndex } = await import("../rebuild.js");
+    const { fakeEmbeddings } = await import("./helpers.js");
+    const { applyExplicitMemoryCurate } = await import("../explicit-curate.js");
+    const { previewCurateMutations } = await import("../curate.js");
+    const { encodeMemoryLabel, labelsOf } = await import("../labels.js");
+    const { rewriteBullet } = await import("../daily.js");
+    const parent = root(); const path = join(parent, "memory"); mkdirSync(path, { mode: 0o700 });
+    initializeReplayProjection(path);
+    seed(path, "fictional-a", "Morgan, also called Maple, is a sibling of the user.");
+    const line = inspectCurateSource(path).lines[0]!;
+    const nickname = (entityId: string) => encodeMemoryLabel({ v: 1, kind: "fact", entityId, key: "preferred_name",
+      value: { type: "text", text: "Maple" }, attribution: "unknown" });
+    const sibling = encodeMemoryLabel({ v: 1, kind: "fact", entityId: "person:morgan", key: "relationship",
+      value: { type: "relationship", role: "sibling", targetEntityId: "person:the-user" }, attribution: "unknown" });
+    rewriteBullet(path, line.file, line.id, { refs: ["entity:person:morgan", "entity:concept:morgan", nickname("person:morgan"), nickname("person:the-user"), sibling] });
+    appendGraphBatch(path, morganGraph);
+    const embeddings = fakeEmbeddings(16);
+    await safeRebuildMemoryIndex({ root: path, tier: "bujo", embeddings, dim: 16 });
+    const options = { root: path, proposals: [], expectedRootFingerprint: createHash("sha256").update(realpathSync(path)).digest("hex"),
+      expectedSourceFingerprint: readBujoCanonicalSourceFingerprint(path), planDigest: createHash("sha256").update("label-plan").digest("hex"),
+      embeddings, dimension: 16 };
+    // The relationship label between the two ids would become a self-relationship: refused before any backup.
+    expect(() => previewCurateMutations(path, [], undefined, [merge("person:the-user", "person:morgan")])).toThrow(/self-relation/u);
+    await expect(applyExplicitMemoryCurate({ ...options, operatorMerges: [merge("person:the-user", "person:morgan")] }))
+      .rejects.toMatchObject({ code: "apply_failed", backupPath: undefined });
+    expect(readdirSync(parent).filter((name) => name !== "memory")).toEqual([]);
+    // A person fact label cannot move onto a non-person id.
+    expect(() => previewCurateMutations(path, [], undefined, [merge("person:morgan", "concept:morgan", true)]))
+      .toThrow(/merge invalidates a fact label/u);
+    // Without the relationship label, two identical labels and references collapse to one.
+    rewriteBullet(path, line.file, line.id, { refs: ["entity:person:morgan", "entity:person:the-user", nickname("person:morgan"), nickname("person:the-user")] });
+    await safeRebuildMemoryIndex({ root: path, tier: "bujo", embeddings, dim: 16 });
+    const applied = await applyExplicitMemoryCurate({ ...options, expectedSourceFingerprint: readBujoCanonicalSourceFingerprint(path),
+      operatorMerges: [merge("person:the-user", "person:morgan")] });
+    expect(applied.status).toBe("applied");
+    const after = inspectCurateSource(path).lines[0]!;
+    expect(after.refs.filter((ref) => ref.startsWith("entity:"))).toEqual(["entity:person:morgan"]);
+    expect(labelsOf(after as never)).toEqual([expect.objectContaining({ entityId: "person:morgan", key: "preferred_name" })]);
+  });
+
   it("creates the canonical person:owner target when an operator merges into it before capture minted it", async () => {
     const { mkdirSync, realpathSync } = await import("node:fs");
     const { createHash } = await import("node:crypto");
