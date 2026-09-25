@@ -669,6 +669,39 @@ describe("reconcile", () => {
 });
 
 describe("reconcileBatch", () => {
+  it("keeps a supported fact label when a newer dated UPDATE supersedes its old line", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    const old = "Morgan likes blue as of 2026-07-12.";
+    const next = "Morgan likes blue as of 2026-07-15.";
+    const label: MemoryLabel = { v: 1, kind: "fact", entityId: "person:morgan", key: "other:favorite-color",
+      value: { type: "text", text: "blue" }, attribution: "user-stated" };
+    await seed(db, root, "OLD-BLUE", old, { labels: [label] });
+    db.findSimilarMany = async () => [[{ record: db.get("OLD-BLUE")!, distance: 0.1 }]];
+    const actions = await reconcileBatch([{ type: "note", text: next, salience: 0.8, isInsight: false }],
+      makeDeps(db, root, { id: "dated", complete: async () => JSON.stringify([
+        { index: 0, action: "update", targetId: "OLD-BLUE", text: next },
+      ]) }, { nextId: () => "NEW-BLUE", labelsForAction: () => [] }));
+    expect(actions).toEqual([{ kind: "supersede", oldId: "OLD-BLUE", newId: "NEW-BLUE" }]);
+    expect(db.listLabels({ entityId: "person:morgan" }).hits.filter((hit) => hit.active && hit.memoryId === "NEW-BLUE")
+      .map((hit) => hit.label)).toEqual([label]);
+    db.close();
+  });
+
+  it("keeps merged context when a partial negation is an UPDATE, not a supersession", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "OLD-NOTE", "Morgan prefers blue and concise notes.");
+    db.findSimilarMany = async () => [[{ record: db.get("OLD-NOTE")!, distance: 0.1 }]];
+    const merged = "Morgan no longer prefers blue but still prefers concise notes.";
+    const actions = await reconcileBatch([{ type: "note", text: "Morgan no longer prefers blue.", salience: 0.8, isInsight: false }],
+      makeDeps(db, root, { id: "partial", complete: async () => JSON.stringify([
+        { index: 0, action: "update", targetId: "OLD-NOTE", text: merged },
+      ]) }));
+    expect(actions).toEqual([{ kind: "update", id: "OLD-NOTE" }]);
+    expect(db.get("OLD-NOTE")?.text).toBe(merged);
+    db.close();
+  });
   it.each([
     "Morgan is 7.5 months old", "Morgan ha 7,5 mesi", "Morgan is 7,5 maanden oud",
   ])("converts a time-sensitive UPDATE to dated supersession preserving the original as history: %s", async (text) => {

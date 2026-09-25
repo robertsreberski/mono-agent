@@ -21,7 +21,8 @@ import type { CanonicalGraphRepairGuard } from "./graph.js";
 import { MemoryModelError, MemoryModelOutputError } from "./model-error.js";
 import { withSerializedBujoMutation } from "./mutation-lock.js";
 import type { Bullet } from "./types.js";
-import { labelsOf, withMemoryLabels, type MemoryLabel } from "./labels.js";
+import { canonicalMemoryLabel, labelsOf, withMemoryLabels, type MemoryLabel } from "./labels.js";
+import { factSupported, valueSupported } from "./capture-labels.js";
 
 /** The outcome of reconciling a single candidate against the existing index. */
 export type ReconcileAction =
@@ -386,7 +387,7 @@ function planBatchAction(
       // neighbour by the shared ADD path).
       if (isRememberedUpdateTarget(decision, deps)) return planAddWithoutIndex(candidate, similar, deps, threadThreshold);
       if (isNewTimeSensitiveSnapshot(candidate, decision, deps)) {
-        return planSupersede(candidate, { ...decision, action: "supersede", text: candidate.text }, deps);
+        return planSupersede(candidate, { ...decision, action: "supersede", text: decision.text ?? candidate.text }, deps);
       }
       return planUpdate(candidate, decision, deps);
     case "supersede":
@@ -479,8 +480,6 @@ function isNewTimeSensitiveSnapshot(candidate: CandidateMemory, decision: Classi
   const oldDates = dates(old.text);
   const newDates = dates(candidate.text);
   if (oldDates.length > 0 && newDates.length > 0 && newDates[0]! > oldDates[0]!) return true;
-  const negated = (text: string): boolean => /\b(?:not|no longer|never|doesn't|isn't|stopped|ceased)\b/iu.test(text);
-  if (negated(old.text) !== negated(candidate.text)) return true;
   return AGE_SNAPSHOT.test(candidate.text) || CURRENT_SNAPSHOT.test(candidate.text);
 }
 
@@ -541,16 +540,32 @@ function planSupersede(
   // never precede the memory it invalidates.
   const effectiveAt = new Date(Math.max(admittedAt.getTime(), Date.parse(beforeOld.createdAt)));
   const id = deps.nextId();
+  const replacement = decision.text ?? candidate.text;
+  const proposedLabels = deps.labelsForAction?.("supersede", candidate, beforeOld, replacement) ?? [];
+  // A dated replacement may still contain facts carried forward from the old
+  // line. Keep only labels still supported by that replacement; do not transfer
+  // a stale value merely because the old line had a label.
+  const carried = labelsOf(beforeOld).filter((label) => label.kind === "fact"
+    ? (label.key !== "preferred_name" || /\b(?:called|named|name is|goes by|addressed as)\b/iu.test(replacement))
+      && (factSupported(label, replacement) || (label.entityId === "person:owner"
+      && /\b(?:the user|the owner|i|my)\b/iu.test(replacement) && valueSupported(label, replacement)))
+    : replacement.includes(beforeOld.text));
+  const labels = [...proposedLabels];
+  const seen = new Set(labels.map(canonicalMemoryLabel));
+  for (const label of carried) {
+    const key = canonicalMemoryLabel(label);
+    if (!seen.has(key) && labels.length < 8) { labels.push(label); seen.add(key); }
+  }
   const bullet: Bullet = withMemoryLabels({
     id,
     type: candidate.type,
     status: "open",
-    text: decision.text ?? candidate.text,
+    text: replacement,
     salience: candidate.salience,
     isInsight: candidate.isInsight,
     createdAt: effectiveAt.toISOString(),
     refs: [],
-  }, deps.labelsForAction?.("supersede", candidate, beforeOld, decision.text ?? candidate.text) ?? []);
+  }, labels);
   const record = recordFor(bullet, deps.root, effectiveAt);
   const newSourceFile = record.source.file!;
   return {
