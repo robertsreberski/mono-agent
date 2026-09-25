@@ -174,7 +174,8 @@ export function formatMemoryBackground(
       if (!bare && !relevant) continue;
       const candidates = facts.filter((hit) => hit.label.kind === "fact" && hit.label.key === key && hit.currentAt);
       if (candidates.length === 0) continue;
-      if (candidates.some((hit) => hit.conflict)) {
+      const distinct = new Set(candidates.map((hit) => hit.label.kind === "fact" ? fold(factValueText(hit.label.value)) : ""));
+      if (candidates.some((hit) => hit.conflict) || distinct.size > 1) {
         parts.push(`${keyText(key)}: conflicting values — ask`);
         continue;
       }

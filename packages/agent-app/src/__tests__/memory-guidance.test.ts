@@ -226,4 +226,12 @@ describe("label relevance and agreement", () => {
     expect(formatBlock(person, "What is Morgan's favorite color?", "conv", owner, [])?.facts)
       .toEqual(["Morgan — favorite color: teal (you said, recorded 2026-09-06)"]);
   });
+
+  it("treats two current distinct values for one key as a conflict, not a direct answer", () => {
+    const person = store([], [labelled("other:home-city", "Lisbon", "one"), labelled("other:home-city", "Porto", "two")]);
+    const result = formatBlock(person, "What is Morgan's home city?", "conv", owner, []);
+    expect(result?.facts).toBeUndefined();
+    expect(result?.content).toContain("home city: conflicting values — ask");
+    expect(result?.content).not.toContain("Lisbon");
+  });
 });
