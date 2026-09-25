@@ -128,6 +128,21 @@ function dailyContent(root: string): string {
 }
 
 describe("reconcile", () => {
+  it("adds on a malformed legacy classifier reply when only an entity anchor was offered", async () => {
+    const root = newRoot(); const db = openDb(root);
+    await seed(db, root, "OLD", "Morgan lives in Maple Town.");
+    db.upsertEntity({ id: "person:morgan", name: "Morgan", type: "person", createdAt: FIXED.toISOString() });
+    db.associateMemory({ memoryId: "OLD", entityId: "person:morgan", provenance: "capture", createdAt: FIXED.toISOString() });
+    db.findSimilar = async () => [];
+    let prompt = "";
+    const actions = await reconcile([{ type: "note", text: "Morgan moved to Cedar City.", salience: 0.8,
+      isInsight: false, entityIds: ["person:morgan"] }], makeDeps(db, root, { id: "malformed",
+      complete: async (input) => { prompt = input; return "not JSON"; },
+    }, { canonicalGraphRepairGuard: () => {} }));
+    expect(prompt).toContain("sameEntityTopic=home_location (no vector score)");
+    expect(actions[0]?.kind).toBe("add");
+    expect(db.get("OLD")?.status).toBe("open");
+  });
   it("offers a bounded same-entity state neighbour even when vectors disagree", async () => {
     const root = newRoot();
     const db = openDb(root);
@@ -144,6 +159,8 @@ describe("reconcile", () => {
       ]); },
     }, { strictModelOutput: true, deferBatchCommit: true, beforeBatchCommit: () => {} }));
     expect(offered).toContain("HOME-OLD");
+    expect(offered).toContain('"sameEntityTopic":"home_location"');
+    expect(offered).not.toContain('"distance":0.49');
     expect(offered).not.toContain('"id":"OTHER"');
     expect(result[0]?.kind).toBe("supersede");
     expect(db.get("HOME-OLD")?.status).toBe("open"); // deferred capture owns the commit

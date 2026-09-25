@@ -73,6 +73,8 @@ export interface ReconcileDeps {
 
 const VALID_ACTIONS = new Set(["add", "update", "supersede", "noop"]);
 
+type ReconcileNeighbour = SimilarHit & { readonly sameEntityTopic?: string };
+
 interface Classification {
   readonly action: string;
   readonly targetId?: string;
@@ -106,7 +108,7 @@ async function reconcileUnlocked(
     try {
       // findSimilar embeds the query, so a down embedding model throws here for EVERY candidate —
       // a systemic outage, not a per-item data problem. Tag it so the catch below surfaces it.
-      let similar: readonly SimilarHit[];
+      let similar: readonly ReconcileNeighbour[];
       try {
         similar = await deps.db.findSimilar(candidate.text, 5, {
           ...(deps.abortSignal === undefined ? {} : { abortSignal: deps.abortSignal }),
@@ -119,7 +121,7 @@ async function reconcileUnlocked(
       similar = withEntityStateNeighbours(candidate, similar, deps.db);
 
       // Clearly novel (nothing close enough) → ADD outright, no LLM.
-      if (similar.length === 0 || (similar[0]?.distance ?? Infinity) > dupThreshold) {
+      if (!similar.some((hit) => hit.sameEntityTopic !== undefined || hit.distance <= dupThreshold)) {
         plan = planAddWithoutIndex(candidate, similar, deps, threadThreshold);
       } else {
         const decision = await classify(candidate, similar, deps);
@@ -164,7 +166,7 @@ async function reconcileBatchUnlocked(
 ): Promise<Array<ReconcileAction | undefined>> {
   const threadThreshold = deps.threadThreshold ?? 0.35;
   const dupThreshold = deps.dupThreshold ?? 0.5;
-  let neighbours: readonly SimilarHit[][];
+  let neighbours: readonly ReconcileNeighbour[][];
   try {
     neighbours = await deps.db.findSimilarMany(candidates.map((candidate) => candidate.text), 5, {
       ...(deps.abortSignal === undefined ? {} : { abortSignal: deps.abortSignal }),
@@ -178,7 +180,7 @@ async function reconcileBatchUnlocked(
 
   const reconcileIndexes = candidates.flatMap((_candidate, index) => {
     const similar = neighbours[index] ?? [];
-    return similar.length > 0 && (similar[0]?.distance ?? Infinity) <= dupThreshold ? [index] : [];
+    return similar.some((hit) => hit.sameEntityTopic !== undefined || hit.distance <= dupThreshold) ? [index] : [];
   });
   const reconcileIndexSet = new Set(reconcileIndexes);
   let decisions: Map<number, Classification>;
@@ -265,7 +267,7 @@ async function reconcileBatchUnlocked(
  * failing the entire turn or attaching its graph evidence to another fact. */
 function resolveConflictingTargets(
   decisions: Map<number, Classification>,
-  neighbours: readonly (readonly SimilarHit[])[],
+  neighbours: readonly (readonly ReconcileNeighbour[])[],
 ): void {
   const byTarget = new Map<string, number[]>();
   for (const [index, decision] of decisions) {
@@ -313,23 +315,35 @@ function stateTopics(text: string, labels: readonly MemoryLabel[] = []): Set<str
   for (const [key, pattern] of STATE_TOPICS) if (pattern.test(text)) topics.add(key);
   return topics;
 }
-function withEntityStateNeighbours(candidate: CandidateMemory, similar: readonly SimilarHit[], db: MemoryDb): SimilarHit[] {
-  const topics = stateTopics(candidate.text, candidate.labels);
-  if (topics.size === 0 || (candidate.entityIds?.length ?? 0) === 0) return [...similar];
+function withEntityStateNeighbours(candidate: CandidateMemory, similar: readonly ReconcileNeighbour[], db: MemoryDb): ReconcileNeighbour[] {
+  if ((candidate.entityIds?.length ?? 0) === 0) return [...similar];
   const seen = new Set(similar.map((hit) => hit.record.id));
-  const anchored: SimilarHit[] = [];
+  const anchored: ReconcileNeighbour[] = [];
   for (const entityId of (candidate.entityIds ?? []).slice(0, 3)) {
+    const topics = stateTopics(candidate.text, candidate.labels?.filter((label) =>
+      label.kind === "fact" && label.entityId === entityId));
+    if (topics.size === 0) continue;
+    const keysByMemory = new Map<string, string[]>();
+    for (const hit of db.listLabels({ kind: "fact", entityId }, 200).hits) {
+      if (!hit.active || hit.label.kind !== "fact") continue;
+      keysByMemory.set(hit.memoryId, [...(keysByMemory.get(hit.memoryId) ?? []), hit.label.key]);
+    }
     for (const record of db.memoriesForEntity(entityId)) {
       if (seen.has(record.id)) continue;
       const oldTopics = stateTopics(record.text);
-      if (![...topics].some((topic) => oldTopics.has(topic))) continue;
+      for (const key of keysByMemory.get(record.id) ?? []) oldTopics.add(key);
+      const topic = [...topics].find((key) => oldTopics.has(key));
+      if (topic === undefined) continue;
       seen.add(record.id);
-      anchored.push({ record, distance: 0.49 });
+      // Infinity means no measured vector distance: it is never exposed as a
+      // score, threaded, or used by the duplicate threshold. The explicit
+      // marker is the sole reason this bounded neighbour is offered.
+      anchored.push({ record, distance: Number.POSITIVE_INFINITY, sameEntityTopic: topic });
       if (anchored.length >= 3) break;
     }
     if (anchored.length >= 3) break;
   }
-  return [...similar, ...anchored].sort((a, b) => a.distance - b.distance).slice(0, 8);
+  return [...similar, ...anchored];
 }
 
 interface BatchActionPlan {
@@ -343,11 +357,12 @@ interface BatchActionPlan {
 function planLegacyAction(
   candidate: CandidateMemory,
   decision: Classification | undefined,
-  similar: readonly SimilarHit[],
+  similar: readonly ReconcileNeighbour[],
   deps: ReconcileDeps,
   threadThreshold: number,
 ): Omit<BatchActionPlan, "index"> {
-  const resolved = decision ?? closestNoop(similar);
+  const resolved = decision ?? closestNoop(similar.filter((hit) => Number.isFinite(hit.distance)
+    && hit.distance <= (deps.dupThreshold ?? 0.5)));
   return resolved === undefined
     ? planAddWithoutIndex(candidate, similar, deps, threadThreshold)
     : planBatchAction(candidate, resolved, similar, deps, threadThreshold);
@@ -418,7 +433,7 @@ function intentCreatedAt(action: CaptureIntentAction): string {
 function planBatchAction(
   candidate: CandidateMemory,
   decision: Classification,
-  similar: readonly SimilarHit[],
+  similar: readonly ReconcileNeighbour[],
   deps: ReconcileDeps,
   threadThreshold: number,
 ): Omit<BatchActionPlan, "index"> {
@@ -463,7 +478,7 @@ function planBatchAction(
 
 function planAddWithoutIndex(
   candidate: CandidateMemory,
-  similar: readonly SimilarHit[],
+  similar: readonly ReconcileNeighbour[],
   deps: ReconcileDeps,
   threadThreshold: number,
 ): Omit<BatchActionPlan, "index"> {
@@ -672,7 +687,7 @@ function withPreparedVector(
 
 function strictReconciliationOutputSchema(
   indexes: readonly number[],
-  neighbours: readonly (readonly SimilarHit[])[],
+  neighbours: readonly (readonly ReconcileNeighbour[])[],
 ): Readonly<Record<string, unknown>> {
   const variants = indexes.flatMap((index) => {
     const indexSchema = { type: "integer", const: index } as const;
@@ -726,7 +741,7 @@ function strictReconciliationOutputSchema(
 
 async function classifyBatch(
   candidates: readonly CandidateMemory[],
-  neighbours: readonly (readonly SimilarHit[])[],
+  neighbours: readonly (readonly ReconcileNeighbour[])[],
   indexes: readonly number[],
   deps: ReconcileDeps,
 ): Promise<Map<number, Classification>> {
@@ -735,7 +750,8 @@ async function classifyBatch(
     candidate: candidates[index],
     existing: (neighbours[index] ?? []).map((hit) => ({
       id: hit.record.id,
-      distance: Number(hit.distance.toFixed(6)),
+      ...(hit.sameEntityTopic === undefined ? { distance: Number(hit.distance.toFixed(6)) }
+        : { sameEntityTopic: hit.sameEntityTopic }),
       text: hit.record.text,
     })),
   }));
@@ -755,7 +771,7 @@ Use exactly one of these decision object shapes:
 - supersede: {"index":N,"action":"supersede","targetId":"existing-id","text":"complete replacement memory"}
 
 Rules:
-- add means genuinely new; noop means duplicate; update means refinement; supersede means contradiction.
+- add means genuinely new; noop means duplicate; update means refinement; supersede means contradiction or a real replacement of a stable state. An existing item with sameEntityTopic has a shared graph entity and property but no measured vector distance; compare its actual content, not a fabricated similarity score.
 - Compare the meaning as well as the topic: speaker attribution, stated scope, evidence limits, temporal qualification, and correction-versus-state-change qualification are durable information.
 - Material dates, times, timezones, year/month boundaries, resolved calendar intervals, observation anchors, uncertainty, negation, speaker/event association, and event scope must survive update or supersede text. Resolve directly stated relative time against a supplied host-owned observation anchor when unambiguous; preserve the observation date for an age snapshot as 'was N months old as of YYYY-MM-DD'. Never reinterpret a capture/observation anchor as the event time or invent a more exact event date than the input and trusted anchor support. Do not rebase a stored old observation on the current capture clock.
 - Distinct repeated events remain distinct when their temporal qualifiers or anchors differ. Do not choose noop or merge them merely because their non-temporal wording is similar.
@@ -819,7 +835,7 @@ ${JSON.stringify(input)}`,
 function parseStrictBatchClassifications(
   raw: string,
   indexes: readonly number[],
-  neighbours: readonly (readonly SimilarHit[])[],
+  neighbours: readonly (readonly ReconcileNeighbour[])[],
 ): Map<number, Classification> {
   let parsed: unknown;
   try {
@@ -906,7 +922,7 @@ function strictClassificationText(value: unknown, maxLength = MAX_RECONCILIATION
  */
 async function classify(
   candidate: CandidateMemory,
-  similar: readonly SimilarHit[],
+  similar: readonly ReconcileNeighbour[],
   deps: ReconcileDeps,
 ): Promise<Classification | undefined> {
   let raw: string;
@@ -938,9 +954,10 @@ async function classify(
   };
 }
 
-const classifyPrompt = (candidate: CandidateMemory, similar: readonly SimilarHit[]): string => {
+const classifyPrompt = (candidate: CandidateMemory, similar: readonly ReconcileNeighbour[]): string => {
   const neighbours = similar
-    .map((h) => `- id=${h.record.id} distance=${h.distance.toFixed(3)} text="${h.record.text}"`)
+    .map((h) => `- id=${h.record.id} ${h.sameEntityTopic === undefined
+      ? `distance=${h.distance.toFixed(3)}` : `sameEntityTopic=${h.sameEntityTopic} (no vector score)`} text="${h.record.text}"`)
     .join("\n");
   return `CLASSIFY a new candidate memory against existing memories. Decide whether it is novel,
 a duplicate, a refinement, or a contradiction. Return ONLY JSON:
@@ -948,7 +965,7 @@ a duplicate, a refinement, or a contradiction. Return ONLY JSON:
 - add: genuinely new information.
 - noop: an exact duplicate of an existing memory (no change needed).
 - update: refines/merges an existing memory; set targetId and text to the merged sentence.
-- supersede: contradicts/replaces an existing memory; set targetId and text to the new sentence.
+- supersede: contradicts/replaces an existing memory or stable state; set targetId and text to the new sentence. sameEntityTopic denotes a shared graph entity and property, not a measured vector distance; compare the actual claims.
 - Compare speaker attribution, stated scope, evidence limits, and correction-versus-state-change meaning, not just topic similarity.
 - Merged or replacement text must not promote an attributed or unchecked claim to fact, infer a cause from an observed outcome, or describe an erroneous report as a former real-world state. Preserve an explicit rename or other real state change as history when material.
 - If the User stated a fact which the Assistant merely repeated, preserve the User's attribution rather than marking it an Assistant report. Explicit user reports and preferences may remain useful without outside proof; preserve their speaker and scope. Do not invent verification doubt, earlier-conversation claims, or durable facts from generic Assistant advice.
@@ -960,7 +977,7 @@ EXISTING:
 ${neighbours}`;
 };
 
-function closestNoop(similar: readonly SimilarHit[]): Classification | undefined {
+function closestNoop(similar: readonly ReconcileNeighbour[]): Classification | undefined {
   const id = similar[0]?.record.id;
   return id === undefined ? undefined : { action: "noop", targetId: id };
 }
