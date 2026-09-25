@@ -137,3 +137,25 @@ describe("embedding-first recall ranking", () => {
     }
   });
 });
+
+describe("name-anchor calibration", () => {
+  it("does not let a name alone lift an unrelated record above the true answer to the same query", async () => {
+    // One query, two hits: a record that only shares the person's name, and the
+    // true answer, which does not repeat the name. A full 0.15 name bonus put
+    // the name-only record first (0.76 + 0.15 > 0.86).
+    const named = note("named", "Morgan reviewed the quarterly garden plan.");
+    const answer = note("answer", "The team retrospective happens every second Friday.");
+    const result = await scores([named, answer], { [named.text]: 0.76, [answer.text]: 0.86 },
+      "How often does Morgan's team retrospective happen?");
+    expect(result.get("answer")!).toBeGreaterThan(result.get("named")!);
+  });
+
+  it("keeps the full bonus for numbers and dates and a smaller one for names", async () => {
+    const { anchorBoost, ANCHOR_BOOST, NAME_ANCHOR_BOOST } = await import("../anchors.js");
+    expect(anchorBoost(new Set(["1988-11-02"]), "Taylor was born on 1988-11-02.")).toBeCloseTo(ANCHOR_BOOST, 6);
+    expect(anchorBoost(new Set(["morgan"]), "Morgan likes tea.")).toBeCloseTo(NAME_ANCHOR_BOOST, 6);
+    expect(anchorBoost(new Set(["morgan", "4471"]), "Morgan paid invoice 4471."))
+      .toBeCloseTo((ANCHOR_BOOST + NAME_ANCHOR_BOOST) / 2, 6);
+    expect(anchorBoost(new Set(), "Morgan")).toBe(0);
+  });
+});

@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Memory recall gives a name match a smaller bonus (`0.08`) than an exact
+  number or date (`0.15`), so records that only share a person's name no longer
+  outscore true answers to other questions.
+
+- Automatic memory recall injects only the labelled person facts a question asks
+  about, instead of the whole person card for every name mention. On the
+  operator's own turns they answer directly when the question names the whole
+  key and no other value or recalled record disagrees; elsewhere they stay
+  background. Fact keys drop the `other:` prefix and values render as text, not
+  JSON, in automatic recall and the `MemoryRecall` fact sheet.
+
+- Automatic memory recall reads lower-case and `what's` questions, and on the
+  operator's own web/TUI/ACP turns it answers first-person questions (`What is
+  my phone number?`) from owner facts and `The user reports that …` records.
+  Multi-clause and hedged records still abstain.
+
 - Add `memory.embeddings.instructions` so each embedding model gets the
   query/document prefixes it was trained for (`bge-m3` none, Snowflake Arctic
   Embed 2 `query: `, Qwen3 its instruction; nomic and other models keep

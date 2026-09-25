@@ -35,6 +35,22 @@
  * ambiguous relations, unsafe clauses, negation, and unknown values
  * fail closed instead of being automatically injected.
  *
+ * Owner turns (host-stamped `ownerTurn`, never model text) add two narrow
+ * forms. A first-person question with exactly one `my` and no other first-person
+ * word is read as a question about the owner, whom capture records as `the
+ * user`: `What is my tax residence?` -> `The user's tax residence is Poland.`
+ * And the owner-report envelope `The user reports|reported|said|stated|
+ * confirmed [that] <inner>` is unwrapped, where `<inner>` must itself be one of
+ * the canonical shapes above (`their` reads as the owner). The unwrapped record
+ * counts as attributed, so a disagreeing answer in the cohort abstains. On any
+ * other turn these forms stay rejected: `my` could be anyone in a group chat.
+ *
+ * Questions are normalized before parsing: `what's`/`where's`/`when's` expand,
+ * a trailing `now`/`right now`/`currently` is dropped, and in an all-lower-case
+ * question a possessive (`morgan's`) is read as the name it marks. The owner
+ * subject `User` counts as that one name, so `The user's employer is Initech`
+ * still abstains (a second proper name) exactly as for any other subject.
+ *
  * This is intentionally not a general natural-language parser. A semantically
  * relevant record outside these shapes remains available through the default-on
  * MemoryRecall tool.
@@ -43,6 +59,20 @@
 export interface RecallEvidenceHit {
   readonly record: { readonly text: string };
 }
+
+/** Host-stamped turn facts; never derived from model or record text. */
+export interface RecallEvidenceContext {
+  /** The operator's own authenticated turn (web/tui/acp human turn). */
+  readonly ownerTurn?: boolean;
+}
+
+/** Lower-case possessors that never name a subject (`today's`, `everyone's`). */
+const NON_NAME_POSSESSORS = new Set([
+  "today", "tomorrow", "yesterday", "tonight", "everyone", "everybody", "someone", "somebody",
+  "anyone", "anybody", "nobody", "it", "that", "this", "one", "user",
+]);
+
+const OWNER_REPORT = /^(?:the\s+)?user\s+(?:reports|reported|says|said|states|stated|confirms|confirmed)\s+(?:that\s+)?(.+)$/iu;
 
 const STOP_CONCEPTS = new Set([
   "a", "about", "an", "and", "are", "as", "at", "be", "by", "did", "do", "does",
@@ -124,7 +154,9 @@ const TRAILING_S_SINGULARS = new Set([
 
 type AnswerKind = "generic" | "location" | "temporal" | "time";
 
-type DirectFactQuery =
+type DirectFactQuery = DirectFactQueryShape & { readonly ownerTurn?: boolean };
+
+type DirectFactQueryShape =
   | { readonly kind: "named-property"; readonly subject: string; readonly reporterSubject: string; readonly property: string; readonly answerKind: AnswerKind }
   | { readonly kind: "choice"; readonly subject: string; readonly reporterSubject: string; readonly property: string }
   | { readonly kind: "scoped-choice"; readonly subject: string; readonly reporterSubject: string; readonly property: string; readonly scope: string }
@@ -136,9 +168,10 @@ type DirectFactQuery =
 export function selectAnswerBearingRecallHits<T extends RecallEvidenceHit>(
   query: string,
   hits: readonly T[],
+  context: RecallEvidenceContext = {},
 ): readonly T[] {
   if (hits.length === 0 || isConversationRelativeQuery(query)) return [];
-  const directFact = parseDirectFactQuery(query);
+  const directFact = parseDirectFactQuery(query, context);
   if (directFact === undefined) return [];
   // Two different answers to the same scoped or explicitly scheduled question
   // cannot both be injected. The same applies when at least one answer uses the
@@ -158,8 +191,9 @@ export function selectAnswerBearingRecallHits<T extends RecallEvidenceHit>(
 export function hasConflictingScopedChoiceEvidence(
   query: string,
   hits: readonly RecallEvidenceHit[],
+  context: RecallEvidenceContext = {},
 ): boolean {
-  const directFact = parseDirectFactQuery(query);
+  const directFact = parseDirectFactQuery(query, context);
   if (directFact === undefined || directFact.kind !== "scoped-choice") return false;
   return hasConflictingValues(directFact, hits, true);
 }
@@ -173,8 +207,9 @@ export function hasConflictingScopedChoiceEvidence(
 export function hasConflictingAutomaticRecallEvidence(
   query: string,
   hits: readonly RecallEvidenceHit[],
+  context: RecallEvidenceContext = {},
 ): boolean {
-  const directFact = parseDirectFactQuery(query);
+  const directFact = parseDirectFactQuery(query, context);
   if (directFact === undefined) return false;
   return hasConflictingValues(directFact, hits, requiresCanonicalConflictGuard(directFact));
 }
@@ -213,13 +248,23 @@ function hasConflictingValues(
   return false;
 }
 
-export function hasAutomaticRecallEvidence(query: string, hits: readonly RecallEvidenceHit[]): boolean {
-  return selectAnswerBearingRecallHits(query, hits).length > 0;
+export function hasAutomaticRecallEvidence(
+  query: string,
+  hits: readonly RecallEvidenceHit[],
+  context: RecallEvidenceContext = {},
+): boolean {
+  return selectAnswerBearingRecallHits(query, hits, context).length > 0;
 }
 
-function parseDirectFactQuery(rawQuery: string): DirectFactQuery | undefined {
-  const query = normalizeQuestion(rawQuery);
+function parseDirectFactQuery(rawQuery: string, context: RecallEvidenceContext = {}): DirectFactQuery | undefined {
+  const query = normalizeQuestion(rawQuery, context);
   if (query === undefined || ACTOR_OR_RELATION_QUERY.test(query)) return undefined;
+  const parsed = parseDirectFactShape(query);
+  if (parsed === undefined) return undefined;
+  return context.ownerTurn === true ? { ...parsed, ownerTurn: true } : parsed;
+}
+
+function parseDirectFactShape(query: string): DirectFactQueryShape | undefined {
 
   // A final standalone `scheduled` is a predicate marker, not a named property.
   // Parse this anchored form before the single-name property grammar can consume
@@ -297,7 +342,7 @@ function parseDirectFactQuery(rawQuery: string): DirectFactQuery | undefined {
   return undefined;
 }
 
-function parseNamedPropertyQuery(query: string): DirectFactQuery | undefined {
+function parseNamedPropertyQuery(query: string): DirectFactQueryShape | undefined {
   const anchor = singleNamedAnchor(query);
   if (anchor === undefined) return undefined;
 
@@ -370,6 +415,13 @@ function firstPartyReportInner(query: DirectFactQuery, rawText: string): string 
   if (!("reporterSubject" in query) || !attributedReportIsSafe(rawText)) return undefined;
   const text = rawText.trim().replace(/[?!.]+$/u, "").replace(/\s+/gu, " ");
 
+  // Owner-report envelope: only on a host-stamped owner turn. The inner clause
+  // must itself be a canonical shape; `their` reads as the owner.
+  if (query.ownerTurn === true) {
+    const owner = OWNER_REPORT.exec(text);
+    if (owner !== null) return ownerSubjectText(owner[1]!.replace(/^their\s+/iu, "User's "));
+  }
+
   const property = /^([A-Z][A-Za-z0-9-]*)\s+reports\s+that\s+their\s+(.+?)\s+(is|was)\s+(.+)$/iu.exec(text);
   if (property !== null && textualReporterIdentity(property[1]!) === query.reporterSubject) {
     return `${property[1]}'s ${property[2]} ${property[3]} ${property[4]}`;
@@ -425,7 +477,7 @@ function normalizedDirectFact(
   rawText: string,
 ): { readonly text: string; readonly attributed: boolean } | undefined {
   const inner = firstPartyReportInner(query, rawText);
-  const text = normalizeFactText(inner ?? rawText);
+  const text = normalizeFactText(inner ?? (query.ownerTurn === true ? ownerSubjectText(rawText) : rawText));
   if (text === undefined) return undefined;
   return { text, attributed: inner !== undefined };
 }
@@ -524,9 +576,27 @@ function matchesDirectFact(query: DirectFactQuery, rawText: string): boolean {
   return directFactValue(query, rawText) !== undefined;
 }
 
-function normalizeQuestion(value: string): string | undefined {
-  const normalized = value.trim().replace(/[?!.]+$/u, "").replace(/\s+/gu, " ");
+function normalizeQuestion(value: string, context: RecallEvidenceContext = {}): string | undefined {
+  let normalized = value.trim().replace(/[?!.]+$/u, "").replace(/\s+/gu, " ")
+    .replace(/^(what|where|when)['’]s\b/iu, "$1 is")
+    .replace(/\s+(?:right\s+now|now|currently)$/iu, "");
+  // An all-lower-case question still marks its subject with a possessive.
+  if (!/\p{Lu}/u.test(normalized)) {
+    normalized = normalized.replace(/\b([a-z][a-z0-9-]*)(?=['’]s\b)/gu,
+      (name) => ENTITY_EXCLUSIONS.has(name) || NON_NAME_POSSESSORS.has(name)
+        ? name : `${name[0]!.toUpperCase()}${name.slice(1)}`);
+  }
+  // Owner turn: one `my` and no other first-person word asks about the owner.
+  if (context.ownerTurn === true && (normalized.match(/\bmy\b/giu) ?? []).length === 1
+    && !/\b(?:i|me|mine|we|us|our|ours)\b/iu.test(normalized)) {
+    normalized = normalized.replace(/\bmy\b/iu, "User's");
+  }
   return normalized.length === 0 ? undefined : normalized;
+}
+
+/** Owner records say `the user`; read `The user's X` as the canonical `User's X`. */
+function ownerSubjectText(value: string): string {
+  return value.trim().replace(/^the\s+user(?=['’]s\b)/iu, "User");
 }
 
 function normalizeFactText(value: string): string | undefined {
@@ -604,7 +674,9 @@ function answerKindForProperty(property: string): AnswerKind {
 }
 
 function possessiveSubject(token: string): string {
-  const lower = token.toLowerCase().replace(/[’']/gu, "");
+  // Strip the possessive suffix itself: dropping only the apostrophe left
+  // short names (`Alex's` -> `alexs`) unequal to their own anchor.
+  const lower = token.toLowerCase().replace(/[’']s$/u, "").replace(/[’']/gu, "");
   return canonicalName(lower);
 }
 

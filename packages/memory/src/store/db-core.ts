@@ -26,7 +26,7 @@ import {
   type RecallWeights,
   type SimilarHit,
 } from "./types.js";
-import { ANCHOR_BOOST, anchorCoverage, queryAnchors } from "./anchors.js";
+import { anchorBoost, queryAnchors } from "./anchors.js";
 import { lexicalEvidence, relevanceTokens } from "./db-relation-evidence.js";
 import { isCanonicalDailySourcePath } from "./journal-source.js";
 import {
@@ -664,9 +664,9 @@ export class MemoryDbCore {
         evidence = Math.min(1, lexical);
       } else {
         // Semantic similarity is the signal; only exact names, numbers and
-        // dates add a bounded bonus. Shared generic words add nothing.
+        // dates add a bounded bonus (names less). Shared generic words add nothing.
         const semantic = semanticSimilarity >= MIN_SEMANTIC_SIMILARITY ? semanticSimilarity : 0;
-        evidence = Math.min(1, semantic + ANCHOR_BOOST * anchorCoverage(anchors, record.text));
+        evidence = Math.min(1, semantic + anchorBoost(anchors, record.text));
       }
       // Normalize the small RRF value into a bounded rank hint. It may break ties,
       // but cannot make a no-evidence vector neighbour look relevant.

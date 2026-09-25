@@ -1,6 +1,6 @@
 import type { MemoryLoadOptions } from "@mono-agent/agent-contracts";
 import type { MemoryDb } from "@mono-agent/memory/store";
-import { memoryGuidanceScopes, resolveMemoryEntities, safeLine, type LabelRecallStore } from "./memory-guidance.js";
+import { factKeyLabel, factValueText, memoryGuidanceScopes, resolveMemoryEntities, safeLine, type LabelRecallStore } from "./memory-guidance.js";
 
 type LabelHit = ReturnType<MemoryDb["labelsForEntity"]>[number];
 export type LabelKind = "fact" | "preference" | "lesson";
@@ -67,7 +67,7 @@ export function readLabelSections(store: LabelRecallStore, request: LabelSection
     Object.assign(result, { factSheet: facts, factSheetTruncated });
     if (ambiguous) lines.push(`Ambiguous name — ${entities.length} entities, specify an entity id.`);
     if (facts.length > 0) lines.push("Fact sheet:", ...facts.map((fact) =>
-      `- ${safeLine(fact.name)} [${fact.entityId}] ${safeLine(fact.key)}: ${safeLine(JSON.stringify(fact.value))} (${fact.attribution}, recorded ${fact.recordedAt}; ${fact.current ? "current" : "historical"}${fact.conflict ? "; conflicting values" : ""})`));
+      `- ${safeLine(fact.name)} [${fact.entityId}] ${safeLine(factKeyLabel(fact.key))}: ${safeLine(factValueText(fact.value))} (${fact.attribution}, recorded ${fact.recordedAt}; ${fact.current ? "current" : "historical"}${fact.conflict ? "; conflicting values" : ""})`));
     if (factSheetTruncated) lines.push("Fact sheet truncated; request a narrower entity or kind.");
   }
   if (request.kind === undefined || request.kind !== "fact") {

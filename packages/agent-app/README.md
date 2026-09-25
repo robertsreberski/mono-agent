@@ -725,7 +725,8 @@ capability-free programmatic recall servers do not advertise original-query mode
 because they do not own that per-turn lookup. Optional `kind` (`fact`, `preference`,
 `lesson`) filters labelled sections without changing the ordinary dated hits;
 `about` selects one exact person entity ID/name. Local BuJo results prepend a
-fact sheet with attribution, date, current/historical state and conflicts, plus
+fact sheet (keys without the `other:` namespace, values as text) with
+attribution, date, current/historical state and conflicts, plus
 scoped preferences and verified lessons. Ambiguous names display entity IDs;
 `factSheetTruncated` and `preferencesAndLessonsTruncated` flag capped views.
 An explicit `about` focuses on facts, not guidance. Remote stores without labels keep their

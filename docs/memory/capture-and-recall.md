@@ -327,9 +327,44 @@ Recall fuses two retrievers and re-ranks the result:
 
 - **BM25 keyword (FTS)** over the markdown entries.
 - **Vector similarity** over the configured embeddings.
-- With embeddings, ranking is **embedding-first**: every candidate from either retriever is scored by its stored vector's cosine similarity (below `0.5` counts as no semantic evidence). Shared words add nothing by themselves; only exact names, numbers and dates earn a bounded bonus (up to `0.15`). A query word is such an anchor when it is a whole number, date or numeric identifier (`1988-11-02` never matches `1988-12-02`), is capitalized and is not a question word, or is spelled as a proper noun by a candidate record; matching normalizes Unicode and ignores case and accents (`Zoe` matches `Zoë`). A small **Reciprocal Rank Fusion (RRF)** rank hint breaks ties; salience/insight are small tie-breakers. `lastAccessedAt` and access counts are telemetry only and never affect ranking.
+- With embeddings, ranking is **embedding-first**: every candidate from either retriever is scored by its stored vector's cosine similarity (below `0.5` counts as no semantic evidence). Shared words add nothing by themselves; only exact names, numbers and dates earn a bounded bonus: each query anchor carries an equal share of up to `0.15` for numbers and dates and `0.08` for names. The embedding already reflects a name, so the smaller name bonus keeps records that only share a name from being lifted as far. A query word is such an anchor when it is a whole number, date or numeric identifier (`1988-11-02` never matches `1988-12-02`), is capitalized and is not a question word, or is spelled as a proper noun by a candidate record; matching normalizes Unicode and ignores case and accents (`Zoe` matches `Zoë`). A small **Reciprocal Rank Fusion (RRF)** rank hint breaks ties; salience/insight are small tie-breakers. `lastAccessedAt` and access counts are telemetry only and never affect ranking.
 - Without embeddings (Lite, or a temporary embedding outage), and for a record still waiting for its vector, evidence remains lexical term overlap as before.
 - Automatic recall treats raw embedding similarity as ranking evidence, not a calibrated probability: it first considers the `0.65` absolute / `77%` top-relative score band, then applies a deterministic direct-fact gate to a bounded candidate window. The gate admits only canonical, unambiguous shapes: an explicitly named possessive property (`Morgan's phone number is ...`), a direct choice (`Morgan selected ... as the deployment color`), a scope-qualified choice (`What color did Mira select for the Velin launch?` answered by `Mira selected cobalt as the color for the Velin launch.`), a direct event date/time, or a direct work/live location. A scope is not a property: a record that only says `Mira selected cobalt for the Velin launch` never states that cobalt is the *color* and still abstains. Scope identity is compared conservatively, so `Project A`/`Project B`, `launch 1`/`launch 2`, `Bora Bora`/`Bora` and `A-team`/`-team` stay distinct. Only case, whitespace, Unicode compatibility forms and a single *standalone* leading article are normalized; an article merges only when followed by whitespace or by nothing, so an identifying prefix such as `A-team` survives. Compatibility normalization (NFKC) is the same folding the query already receives before the gate and the backend cache, so it also treats `release²` and `release2` as one scope. When the bounded candidate window holds contradictory values for the same subject, property and scope, automatic recall abstains entirely rather than injecting both or letting retrieval score pick a winner. Three finite first-party forms may preserve an explicit report around an otherwise supported property, choice, or work/live location, such as `Avery reports that their service port is 8443` or `Avery reports working in Amsterdam`. The textual reporter must equal the query subject exactly apart from case; the broader canonical-name stemming used by legacy direct facts is not used at this attributed boundary. NFKC is applied only as a safety check for compatibility characters that conceal quotation, separators, or punctuation, never to sanitize such text into an admissible report, and the original qualified sentence is injected unchanged. This is query-to-evidence matching: it does not authenticate that Avery is the current user, establish identity from a same-name match, or verify the reported proposition. Conflicting canonical/attributed or attributed/attributed values abstain before score slicing. A matching same-property correction blocks automatic selection even when its leading value equals a canonical record; the selector does not infer either the old or replacement value. Coordination, all other reported or ditransitive speech, assistant/third-party/quoted claims, uncertainty, correction, negation/unknown values, causal or conditional clauses, actor/relationship questions, subordinate clauses, and multi-hop evidence abstain. Those records remain available through the default-on `MemoryRecall` tool, where the model can inspect separate results and provenance instead of receiving a fabricated binding. The gate adds no embedding or chat-model call, works across provider score scales, injects nothing for unsupported questions, and remains capped at five hits / 8 KB. Deliberate tool calls may inspect more results (up to the requested limit).
+
+Questions are normalized before the gate: `what's` expands, a trailing `now`,
+`right now` or `currently` is dropped, and in an all-lower-case question a
+possessive marks the name (`what is morgan's phone number` reads as `Morgan's`).
+On an owner turn, a human turn from the operator's own web, TUI or ACP surface
+that the host stamps as `ownerTurn` (the same rule capture uses), two more
+forms apply. A question with exactly one `my` and no other first-person word is
+about the owner, whom capture records as `the user`: `What is my phone number?`
+can use `The user's phone number is 555-0100.` The owner-report envelope `The
+user reports|reported|said|stated|confirmed [that] …` is unwrapped when its
+inner clause is itself one of the canonical shapes above (`their` reads as the
+owner), and it counts as attributed evidence, so a disagreeing answer in the
+candidate window abstains. On other turns `my` could be anyone in a group chat,
+so neither form applies. Most captured prose is multi-clause and still abstains;
+labelled facts are the main automatic path for it.
+
+Labelled facts answer directly on owner turns. When a question names one
+unambiguous person entity and asks about a property a current, user-stated or
+document fact label covers, that value is added to the recalled block as
+`Morgan — home city: Lisbon (you said, recorded 2026-09-06)`. A key covers the
+question only when every content word of the key appears in it:
+`other:home-city` answers `Where is Morgan's home city?`, but
+`other:favorite_color` does not answer `What color did Morgan choose for the
+launch?`. A birth date answers only birth-date and current-age questions
+(`birthday`, `date of birth`, `When was … born?`, `How old is …?`), never
+`Where was … born?` or a historical age such as `How old was Morgan in 2015?`.
+Keys the question does not ask about are never injected. Two or more current
+distinct values for the same key, or a label that disagrees with the records
+the direct-fact gate selected, are never direct: neither is injected directly
+and the background card says the values conflict and asks. On other turns
+(group, trigger, peer or unidentified) relevant labels stay in the background
+card. A bare mention (`Morgan`, `Tell me about Morgan`) still gets the whole
+card as background. Keys drop the `other:` namespace and values render as text,
+not JSON, in both the automatic block and the explicit `MemoryRecall` fact
+sheet.
 
 Scheduled temporal questions are one bounded copular-time form. For example,
 `When is the Project Atlas production migration scheduled?` can use a direct

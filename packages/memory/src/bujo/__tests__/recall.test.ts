@@ -809,3 +809,63 @@ describe("composeRecallBlock", () => {
     db.close();
   });
 });
+
+describe("owner-turn and normalized direct-fact questions", () => {
+  const owner = { ownerTurn: true } as const;
+  const has = (query: string, text: string, context: { ownerTurn?: boolean } = {}): boolean =>
+    selectAnswerBearingRecallHits(query, [{ record: { text } }], context).length > 0;
+
+  it("reads an all-lower-case possessive question as naming its subject", () => {
+    expect(has("what is morgan's phone number", "Morgan's phone number is 555-0100.")).toBe(true);
+    expect(has("what's morgan's phone number?", "Morgan's phone number is 555-0100.")).toBe(true);
+    expect(has("what is today's phone number", "Today's phone number is 555-0100.")).toBe(false);
+  });
+
+  it("drops a trailing now/currently from the question", () => {
+    expect(has("What is Morgan's phone number right now?", "Morgan's phone number is 555-0100.")).toBe(true);
+  });
+
+  it("answers a first-person question about the owner only on an owner turn", () => {
+    const record = "The user's phone number is 555-0100.";
+    expect(has("What is my phone number?", record, owner)).toBe(true);
+    expect(has("what's my phone number", record, owner)).toBe(true);
+    expect(has("What is my phone number?", record)).toBe(false);
+    // More than one first-person word is not a single owner subject.
+    expect(has("What is my phone number that I gave you?", record, owner)).toBe(false);
+    expect(has("What is my partner's phone number?", record, owner)).toBe(false);
+  });
+
+  it("unwraps the owner-report envelope only on an owner turn", () => {
+    for (const text of [
+      "The user reports that their phone number is 555-0100.",
+      "User reported that their phone number is 555-0100.",
+      "The user said their phone number is 555-0100.",
+    ]) {
+      expect(has("What is my phone number?", text, owner)).toBe(true);
+      expect(has("What is my phone number?", text)).toBe(false);
+    }
+    expect(has("Where does Morgan live?", "The user reports that Morgan lives in Lisbon.", owner)).toBe(true);
+    expect(has("Where does Morgan live?", "The user reports that Morgan lives in Lisbon.")).toBe(false);
+  });
+
+  it("keeps the envelope's inner clause under the ordinary fact grammar", () => {
+    for (const text of [
+      "The user reports that their phone number is 555-0100 but may change it.",
+      "The user reports that their phone number is not 555-0100.",
+      "The user reports that their phone number is probably 555-0100.",
+      "The assistant reports that their phone number is 555-0100.",
+      "The user reports that the assistant's phone number is 555-0100.",
+      "The user reports that their employer's phone number is 555-0100.",
+    ]) expect(has("What is my phone number?", text, owner)).toBe(false);
+  });
+
+  it("abstains when an owner report disagrees with another answer in the cohort", () => {
+    const hits = [
+      { score: 0.9, record: { text: "The user reports that their phone number is 555-0100." } },
+      { score: 0.6, record: { text: "The user's phone number is 555-0199." } },
+    ];
+    expect(selectAutomaticRecallHits(hits, { query: "What is my phone number?", ownerTurn: true })).toEqual([]);
+    expect(selectAutomaticRecallHits(hits.slice(0, 1), { query: "What is my phone number?", ownerTurn: true }))
+      .toHaveLength(1);
+  });
+});
