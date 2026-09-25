@@ -297,6 +297,31 @@ programmatic recall servers that do not own the bound automatic lookup.
 The shared writable store counts only delivered memory IDs, once per logical
 turn, in either mode, including tiers without graph expansion.
 
+For the local store's hybrid results, `MemoryRecall` returns fewer weak hits and
+says when the evidence is weak. Scores are ranking evidence, not probabilities:
+
+- **Tail cut.** A hit more than `0.15` below the best hit is dropped. When the
+  best hit clears the calibrated `0.65` automatic-recall floor, hits below that
+  floor are dropped too. The best hit is always kept. Direct hits are cut before
+  one-hop graph expansion and the final list once more after it.
+- **Source date and currentness.** Each hit shows its recorded date and any
+  validity interval. A value whose validity has ended, or whose record is
+  invalidated, is marked `superseded`; current values stay unmarked. Structured
+  hits carry `currentness: "current" | "superseded"`.
+- **Evidence note.** When the fact sheet holds conflicting current values, or
+  the top candidates give different values for the same subject, property and
+  scope, the result starts with `Conflicting values:`. Conflicts are checked on
+  at least the top eight candidates before the tail cut, so the note stays even
+  when the cut removes one of the values; structured content
+  carries `evidence: "conflicting"`. When the best hit is below the floor it
+  starts with `Insufficient evidence:` and carries `evidence: "insufficient"`.
+
+The change is additive. The existing text and structured fields keep their
+meaning; `currentness` and `evidence` are new optional fields. Original-query
+mode keeps the automatic lookup's hit list uncut but adds the same notes. A
+degraded lexical-only result and array-only backends that do not report a
+retrieval mode keep their previous output unchanged.
+
 The endpoint is allocated only after the turn acquires a provider-concurrency slot, so queued turns do not accumulate listeners. If endpoint startup fails, the host warns and omits the explicit tool for that turn; automatic recall and the provider response continue. If the memory backend itself fails during a tool call, `MemoryRecall` returns an explicit degraded result instead of fabricated hits.
 
 ```json

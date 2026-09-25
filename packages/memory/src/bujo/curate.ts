@@ -14,6 +14,7 @@ import { encodeMemoryLabel, validateMemoryLabel, labelsOf, withMemoryLabels, typ
 import type { LlmComplete } from "./llm.js";
 import type { Bullet } from "./types.js";
 import { OWNER_ENTITY_ID } from "./entity-reuse.js";
+import { applyOwnerAssociations, previewOwnerAssociations, type CurateOwnerAssociation } from "./curate-owner.js";
 
 const MAX_LINES = 8192;
 const BATCH = 12;
@@ -366,10 +367,13 @@ function mergePairs(root: string, proposals: readonly CurateProposal[], operator
 }
 /** Exact pre-backup source check; every proposed source is pinned to one canonical bullet. */
 export function previewCurateMutations(root: string, proposals: readonly CurateProposal[], activeDb?: MemoryDb,
-  operatorMerges: readonly CurateOperatorMerge[] = []): void {
+  operatorMerges: readonly CurateOperatorMerge[] = [], ownerAssociations: readonly CurateOwnerAssociation[] = []): readonly string[] {
   const seen = new Set<string>();
   const selected = new Set(proposals.map(({ source }) => source.id));
   const counts = new Map<string, number>();
+  // Final text and references of lines this plan rewrites or labels; an owner
+  // association on such a line must still qualify after the change.
+  const finals = new Map<string, Pick<Bullet, "text" | "refs">>();
   for (const file of allDailyPaths(root)) {
     const snapshot = readCanonicalFileSnapshot(root, file);
     if (!snapshot) continue;
@@ -389,9 +393,12 @@ export function previewCurateMutations(root: string, proposals: readonly CurateP
     if (!bullet || bullet.id !== source.id || bullet.text !== source.text || bullet.createdAt !== source.createdAt
       || JSON.stringify(bullet.refs) !== JSON.stringify(source.refs)
       || bullet.status !== source.status) throw new Error("memory-curate: stale source line");
-    if (proposal.action === "label") withMemoryLabels(bullet, [...labelsOf(bullet), ...proposal.labels!]);
+    if (proposal.action === "label") {
+      finals.set(source.id, { text: bullet.text, refs: withMemoryLabels(bullet, [...labelsOf(bullet), ...proposal.labels!]).refs });
+    }
     if (proposal.action === "rewrite") {
-      withMemoryLabels(bullet, labelsOf(bullet).filter((label) => label.kind === "fact" && factSupported(label, proposal.text!)));
+      finals.set(source.id, { text: proposal.text!,
+        refs: withMemoryLabels(bullet, labelsOf(bullet).filter((label) => label.kind === "fact" && factSupported(label, proposal.text!))).refs });
       if (isRememberedMemoryId(source.id, source.text)) throw new Error("memory-curate: content-addressed Remember lines cannot be rewritten in place");
       // A legacy summary is not authority to change the speaker or invent dates.
       const before = source.text;
@@ -425,6 +432,7 @@ export function previewCurateMutations(root: string, proposals: readonly CurateP
   }
   const drops = proposals.filter((item) => item.action === "drop").map(({ source }) => source.id);
   if (drops.length > 0) previewCanonicalExplicitForgetMemories(root, drops);
+  return previewOwnerAssociations(root, ownerAssociations, new Set(drops), activeDb, finals);
 }
 function remapLabel(label: MemoryLabel, pairs: ReadonlyMap<string, string>): MemoryLabel {
   if (label.kind !== "fact") return label;
@@ -483,9 +491,9 @@ function rewriteMergedEntities(root: string, pairs: ReadonlyMap<string, string>,
 }
 /** Runs only inside the durable root-swap transaction with the writer lease held. */
 export async function applyCurateMutations(root: string, db: MemoryDb, proposals: readonly CurateProposal[], expectedSourceFingerprint: string, now: () => Date,
-  operatorMerges: readonly CurateOperatorMerge[] = []) {
+  operatorMerges: readonly CurateOperatorMerge[] = [], ownerAssociations: readonly CurateOwnerAssociation[] = []) {
   if (readBujoCanonicalSourceFingerprint(root) !== expectedSourceFingerprint) throw new Error("memory-curate: source changed");
-  previewCurateMutations(root, proposals, undefined, operatorMerges);
+  const ownerIds = previewCurateMutations(root, proposals, undefined, operatorMerges, ownerAssociations);
   const drops = proposals.filter((item) => item.action === "drop").map(({ source }) => source.id);
   if (drops.length > 0) await forgetExplicitMemories({ root, db, ids: drops, now, expectedSourceFingerprint });
   for (const proposal of proposals) {
@@ -500,6 +508,7 @@ export async function applyCurateMutations(root: string, db: MemoryDb, proposals
     if (!rewriteBullet(root, file, id, updated)) throw new Error("memory-curate: missing source");
   }
   rewriteMergedEntities(root, mergePairs(root, proposals, operatorMerges), now);
-  return { changed: proposals.length + operatorMerges.filter(({ accepted }) => accepted).length,
+  const associated = applyOwnerAssociations(root, db, ownerIds, now);
+  return { changed: proposals.length + operatorMerges.filter(({ accepted }) => accepted).length + associated,
     sourceFingerprint: readBujoCanonicalSourceFingerprint(root) };
 }

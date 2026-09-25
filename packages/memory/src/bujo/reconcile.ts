@@ -21,7 +21,7 @@ import type { CanonicalGraphRepairGuard } from "./graph.js";
 import { MemoryModelError, MemoryModelOutputError } from "./model-error.js";
 import { withSerializedBujoMutation } from "./mutation-lock.js";
 import type { Bullet } from "./types.js";
-import { canonicalMemoryLabel, labelsOf, withMemoryLabels, type MemoryLabel } from "./labels.js";
+import { canonicalMemoryLabel, labelsOf, MEMORY_RELATIONSHIP_ROLES, withMemoryLabels, type MemoryLabel } from "./labels.js";
 import { factSupported, ownerFactSupported } from "./capture-labels.js";
 
 /** The outcome of reconciling a single candidate against the existing index. */
@@ -307,7 +307,7 @@ function resolveConflictingTargets(
 const STATE_TOPICS: ReadonlyArray<readonly [string, RegExp]> = [
   ["home_location", /\b(?:lives?|living|resides?|residing|moved|home|based)\b/iu],
   ["work_location", /\b(?:works?|working|employed|employer|job|joined)\b/iu],
-  ["relationship", /\b(?:partner|spouse|married|dating|divorced|wife|husband)\b/iu],
+  ["relationship", new RegExp(`\\b(?:${MEMORY_RELATIONSHIP_ROLES.join("|")})\\b`, "iu")],
   ["status", /\b(?:status|active|inactive|paused|resumed|completed|cancelled|canceled)\b/iu],
 ];
 function stateTopics(text: string, labels: readonly MemoryLabel[] = []): Set<string> {

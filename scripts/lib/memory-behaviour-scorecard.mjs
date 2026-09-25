@@ -14,20 +14,20 @@ const candidate = (text, labels = []) => ({ type: "note", text, salience: 0.8,
   isInsight: false, entityIds: [], labels });
 export const TURNS = [
   { user: "I live in Lisbon.", memories: [candidate("The user lives in Lisbon.", [fact("person:owner", "home_location", "Lisbon")])], kind: "owner" },
-  { user: "My sister Taylor lives in Porto.", memories: [candidate("The user's sister Taylor lives in Porto.", [fact("person:taylor", "home_location", "Porto")])], kind: "relative" },
+  { user: "My colleague Taylor lives in Porto.", memories: [candidate("The user's colleague Taylor lives in Porto.", [fact("person:taylor", "home_location", "Porto")])], kind: "other-person" },
   { user: "I prefer concise fictional project notes.", memories: [candidate("The user prefers concise fictional project notes.", [{ v: 1, kind: "preference", scope: "agent", attribution: "user-stated" }])], kind: "preference" },
   { user: "I moved to Braga, not Lisbon.", memories: [candidate("The user lives in Braga.", [fact("person:owner", "home_location", "Braga")])], decision: "supersede", target: "The user lives in Lisbon.", kind: "state-change" },
-  { user: "Correction: Taylor lives in Coimbra, not Porto.", memories: [candidate("The user's sister Taylor lives in Coimbra.", [fact("person:taylor", "home_location", "Coimbra")])], decision: "supersede", target: "The user's sister Taylor lives in Porto.", kind: "correction" },
+  { user: "Correction: Taylor lives in Coimbra, not Porto.", memories: [candidate("The user's colleague Taylor lives in Coimbra.", [fact("person:taylor", "home_location", "Coimbra")])], decision: "supersede", target: "The user's colleague Taylor lives in Porto.", kind: "correction" },
   { user: "My appointment is tomorrow, October 12.", memories: [candidate("The user's appointment is on 2026-10-12.")], kind: "relative-date" },
   { user: "My access token is fake-secret-123. The build finished and I said thanks.", memories: [], kind: "chatter-credentials" },
-  { user: "My sister doubts that I live in Madrid.", memories: [candidate("The user's sister doubts that the user lives in Madrid.", [fact("person:owner", "home_location", "Madrid")])], kind: "doubt" },
+  { user: "My colleague doubts that I live in Madrid.", memories: [candidate("The user's colleague doubts that the user lives in Madrid.", [fact("person:owner", "home_location", "Madrid")])], kind: "doubt" },
   { user: "I was born May 17, 1990.", memories: [candidate("The user was born May 17, 1990.", [{ v: 1, kind: "fact", entityId: "person:owner", key: "birth_date", value: { type: "date", date: "1990-05-17" }, attribution: "user-stated" }])], kind: "owner-date" },
   { user: "Morgan says their home is in Naples.", memories: [candidate("Morgan's home is in Naples.", [fact("person:owner", "home_location", "Naples")])], ownerTurn: false, kind: "non-owner" },
 ];
 export const QUESTIONS = [
   { kind: "owner-positive", query: "Where does the user live?", expected: "The user lives in Braga." },
   { kind: "first-person", query: "Where do I live?", expected: "The user lives in Braga." },
-  { kind: "relative-positive", query: "Where does Taylor live?", expected: "The user's sister Taylor lives in Coimbra." },
+  { kind: "other-person-positive", query: "Where does Taylor live?", expected: "The user's colleague Taylor lives in Coimbra." },
   { kind: "negative", query: "What is the user's phone number?" },
   { kind: "negative", query: "When was Morgan born?" },
   { kind: "non-owner", query: "Where do I live?", ownerTurn: false },
@@ -49,14 +49,14 @@ const embeddings = { id: "fixture:behaviour-v1", async embed(texts) {
 
 export function scoreBehaviour({ records, labels, questions, pending, before, after, cpuMs }) {
   const active = records.filter((r) => r.status !== "invalidated");
-  const ownerBindingOfRelatives = labels.filter((row) => row.active && row.label.kind === "fact"
-    && row.label.entityId === "person:owner" && /(?:sister Taylor|Morgan's home)/iu.test(records.find((r) => r.id === row.memoryId)?.text ?? "")).length;
+  const ownerBindingOfOthers = labels.filter((row) => row.active && row.label.kind === "fact"
+    && row.label.entityId === "person:owner" && /(?:colleague Taylor|Morgan's home)/iu.test(records.find((r) => r.id === row.memoryId)?.text ?? "")).length;
   const credentialStored = records.filter((r) => /fake-secret-123/iu.test(r.text)).length;
   const falseAutomaticRecall = questions.reduce((sum, q) => sum + q.falseHits, 0);
   const parity = JSON.stringify(before) === JSON.stringify(after);
   const gates = {
     falseAutomaticRecall: falseAutomaticRecall === 0,
-    ownerBindingOfRelatives: ownerBindingOfRelatives === 0,
+    ownerBindingOfOthers: ownerBindingOfOthers === 0,
     credentialStored: credentialStored === 0,
     pendingTurns: pending === 0,
     rebuildParity: parity,
@@ -68,7 +68,7 @@ export function scoreBehaviour({ records, labels, questions, pending, before, af
     superseded: records.filter((row) => row.status === "invalidated").length,
     categories: Object.fromEntries([...new Set(TURNS.map((t) => t.kind))].map((kind) => [kind, 1])),
     cpuMs: { total: cpuMs.reduce((a, b) => a + b, 0), perTurn: cpuMs },
-    falseAutomaticRecall, ownerBindingOfRelatives, credentialStored, pendingTurns: pending,
+    falseAutomaticRecall, ownerBindingOfOthers, credentialStored, pendingTurns: pending,
     rebuildParity: parity, gates, passed: Object.values(gates).every(Boolean) };
 }
 
