@@ -126,11 +126,15 @@ export function formatMemoryBackground(
   options: MemoryLoadOptions,
   hits: readonly MemoryRecallHit[],
   byteBudget = MAX_BACKGROUND_BYTES,
+  /** Texts of records the direct-fact gate already selected for this question. */
+  directEvidence: readonly string[] = [],
 ): {
   readonly content: string;
   readonly truncated: boolean;
   /** Owner turns only: current fact labels whose key the question asks about. */
   readonly facts?: readonly string[];
+  /** A relevant label disagrees with the selected records: inject neither directly. */
+  readonly recallConflict?: true;
 } | undefined {
   if (store.guidanceForScope === undefined || store.labelsForEntity === undefined) return undefined;
   const date = options.hostDate;
@@ -166,6 +170,8 @@ export function formatMemoryBackground(
   // direct-fact gate selected, stay background and prompt a question.
   const concepts = questionConcepts(query, entities.map((entity) => entity.name));
   const bare = concepts.size === 0;
+  const evidence = directEvidence.map((text) => fold(text));
+  let recallConflict = false;
   const cards: string[] = [];
   const direct: string[] = [];
   for (const entity of entities.filter((entry) => !ambiguous.has(entry.id)).slice(0, 3)) {
@@ -180,6 +186,12 @@ export function formatMemoryBackground(
       const distinct = new Set(candidates.map((hit) => hit.label.kind === "fact" ? fold(factValueText(hit.label.value)) : ""));
       if (candidates.some((hit) => hit.conflict) || distinct.size > 1) {
         parts.push(`${keyText(key)}: conflicting values — ask`);
+        continue;
+      }
+      // Every selected record must state the labelled value, or neither is direct.
+      if (relevant && evidence.length > 0 && ![...distinct].every((value) => evidence.every((text) => text.includes(value)))) {
+        recallConflict = true;
+        parts.push(`${keyText(key)}: labelled value and recalled memory disagree — ask`);
         continue;
       }
       for (const hit of candidates) {
@@ -213,7 +225,7 @@ export function formatMemoryBackground(
   addSection("Person card:", cards);
   const facts = direct.slice(0, 3).map((line) => line.slice(0, 240));
   truncated ||= direct.length > 3;
-  const withFacts = facts.length > 0 ? { facts } : {};
+  const withFacts = { ...(facts.length > 0 ? { facts } : {}), ...(recallConflict ? { recallConflict: true as const } : {}) };
   return selected.length > 1 ? { content: selected.join("\n"), truncated, ...withFacts }
-    : truncated || facts.length > 0 ? { content: "", truncated, ...withFacts } : undefined;
+    : truncated || facts.length > 0 || recallConflict ? { content: "", truncated, ...withFacts } : undefined;
 }

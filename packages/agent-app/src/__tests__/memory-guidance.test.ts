@@ -243,4 +243,21 @@ describe("label relevance and agreement", () => {
     expect(formatBlock(person, "How old was Morgan in 2015?", "conv", owner, [])).toBeUndefined();
     expect(formatBlock(person, "What is Morgan's age?", "conv", owner, [])).toBeUndefined();
   });
+
+  it("injects neither directly when a selected record and a label disagree", async () => {
+    const recall = (text: string): SharedRecallStore => ({ async load() { return undefined; }, async close() {},
+      async recall() { return [{ score: 0.95, record: { id: "direct", text } }]; } });
+    const query = "What is Morgan's phone number?";
+    const disagree = { ...recall("Morgan's phone number is 555-0100."),
+      ...store([], [labelled("other:phone-number", "555-0199", "phone")]) };
+    const block = await new MemoryRetrievalService(disagree).load("conv", query, owner);
+    expect(block?.content).not.toContain("## Memory (recalled)");
+    expect(block?.content).toContain("phone number: labelled value and recalled memory disagree — ask");
+    expect(block?.content).not.toContain("555-0100");
+    const agree = { ...recall("Morgan's phone number is 555-0100."),
+      ...store([], [labelled("other:phone-number", "555-0100", "phone")]) };
+    const agreed = await new MemoryRetrievalService(agree).load("conv", query, owner);
+    expect(agreed?.content).toContain("## Memory (recalled)");
+    expect(agreed?.content).toContain("Morgan — phone number: 555-0100 (you said");
+  });
 });

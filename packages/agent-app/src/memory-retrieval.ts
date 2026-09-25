@@ -192,15 +192,19 @@ export class MemoryRetrievalService implements MemoryStore {
       if (hits.length === 0 && outcome.degradation?.code === "embedding_unavailable") {
         throw new Error("Semantic memory retrieval is unavailable; lexical-only recall found no eligible automatic evidence.");
       }
-      const block = hits.length > 0 ? formatRecallBlock(hits, this.source, this.maxBytes, outcome.degradation) : undefined;
+      let block = hits.length > 0 ? formatRecallBlock(hits, this.source, this.maxBytes, outcome.degradation) : undefined;
       let background: ReturnType<typeof formatMemoryBackground>;
       try {
         const available = this.maxBytes - (block === undefined ? 0 : Buffer.byteLength(block.content, "utf8") + 2);
-        background = formatMemoryBackground(this.store, evidenceQuery, conversationId, options, outcome.hits, available);
+        background = formatMemoryBackground(this.store, evidenceQuery, conversationId, options, outcome.hits, available,
+          hits.map((hit) => hit.record.text));
       } catch {
         // Corrupt or temporarily unavailable labels must not erase ordinary recall.
         background = undefined;
       }
+      // A labelled value that disagrees with the selected records: neither is
+      // injected as direct evidence; the background card asks instead.
+      if (background?.recallConflict === true) block = undefined;
       // Label-backed direct facts: current labelled values whose key the
       // question asks about join the recalled evidence, inside the byte budget.
       let recalled = block?.content;
@@ -213,7 +217,7 @@ export class MemoryRetrievalService implements MemoryStore {
         recalled = next;
       }
       if (recalled === undefined && !background?.content) return undefined;
-      if (hits.length > 0) this.recordServed(turnId, hits);
+      if (block !== undefined) this.recordServed(turnId, hits);
       return { kind: "markdown", source: this.source,
         content: [recalled, background?.content].filter((text) => text !== undefined && text.length > 0).join("\n\n"),
         truncated: (block?.truncated ?? false) || (background?.truncated ?? false) || factsTruncated };
