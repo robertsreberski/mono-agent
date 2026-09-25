@@ -55,6 +55,8 @@ export interface ReconcileDeps {
   readonly strictModelOutput?: boolean;
   /** Capture intake only: preserve extracted candidates if classifier cannot settle. */
   readonly fallbackOnClassifierFailure?: boolean;
+  /** Only the intake's last automatic attempt may degrade to deduplicated ADD. */
+  readonly isFinalCaptureAttempt?: boolean;
   /** Run-owned capture plans remain replayable until durable intake resolution. */
   readonly captureRetentionKey?: string;
   readonly canonicalGraphRepairGuard?: CanonicalGraphRepairGuard;
@@ -184,7 +186,8 @@ async function reconcileBatchUnlocked(
       : await classifyBatch(candidates, neighbours, reconcileIndexes, deps);
   } catch (error) {
     deps.abortSignal?.throwIfAborted();
-    if (deps.fallbackOnClassifierFailure !== true || !(error instanceof MemoryModelOutputError
+    if (deps.fallbackOnClassifierFailure !== true || deps.isFinalCaptureAttempt !== true
+      || !(error instanceof MemoryModelOutputError
       || (error instanceof MemoryModelError && error.kind === "llm"))) throw error;
     // Extraction already succeeded. A failed classifier must not erase it;
     // avoid exact duplicate lines while preserving every novel candidate.

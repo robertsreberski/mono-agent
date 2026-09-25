@@ -567,17 +567,18 @@ describe("strict completed-turn reconciliation", () => {
     }
   });
 
-  it("preserves novel extracted candidates when capture classification fails", async () => {
-    const fixture = await reconcileFixture();
+  it("retries a failed classifier before the final attempt and deduplicates only at the limit", async () => {
+    const fixture = await reconcileFixture(true);
+    const candidates = [{ ...fixture.candidates[0]!, text: "Morgan prefers strict durable capture" }, fixture.candidates[1]!];
+    const failing = { ...fixture.deps, strictModelOutput: true, fallbackOnClassifierFailure: true,
+      llm: { id: "offline", complete: async () => { throw new Error("fictional model failure"); } } };
     try {
-      const actions = await reconcileBatch(fixture.candidates, {
-        ...fixture.deps,
-        strictModelOutput: true,
-        fallbackOnClassifierFailure: true,
-        llm: { id: "offline", complete: async () => { throw new Error("fictional model failure"); } },
-      });
-      expect(actions.map((action) => action?.kind)).toEqual(["add", "add"]);
-      expect(fixture.db.count()).toBe(3);
+      await expect(reconcileBatch(candidates, { ...failing, isFinalCaptureAttempt: false }))
+        .rejects.toMatchObject({ name: "MemoryModelError" });
+      expect(fixture.db.count()).toBe(1);
+      const actions = await reconcileBatch(candidates, { ...failing, isFinalCaptureAttempt: true });
+      expect(actions.map((action) => action?.kind)).toEqual(["noop", "add"]);
+      expect(fixture.db.count()).toBe(2);
     } finally { fixture.db.close(); }
   });
 

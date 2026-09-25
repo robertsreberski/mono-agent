@@ -90,6 +90,7 @@ async function captureTurnUnlocked(
     now: () => observedAt,
     strictModelOutput: true,
     fallbackOnClassifierFailure: true,
+    isFinalCaptureAttempt: deps.isFinalCaptureAttempt === true,
     labelsForAction: (_action, candidate, _previous, finalText) => candidate.labels === undefined ? undefined
       : captureLabels(candidate.labels, finalText ?? candidate.text, labelContext),
     // Once the intent exists it is the single commit owner. Writing the same

@@ -841,6 +841,7 @@ export class BujoMemoryStore implements MemoryStore {
     intakeId: string,
     admittedAt: string,
     abortSignal: AbortSignal,
+    isFinalAttempt: boolean,
   ): Promise<"captured" | "summary_only"> {
     return await withSerializedBujoMutation({
       root: this.root,
@@ -869,6 +870,7 @@ export class BujoMemoryStore implements MemoryStore {
         now: () => new Date(admittedAt),
         abortSignal,
         captureRetentionKey: intakeId,
+        isFinalCaptureAttempt: isFinalAttempt,
         conversationId: turn.conversationId,
         ...(this.captureSettings === undefined ? {} : { captureSettings: this.captureSettings }),
         ...(turn.captureSpeakerKind === undefined ? {} : { captureSpeakerKind: turn.captureSpeakerKind }),
@@ -1053,11 +1055,12 @@ export class BujoMemoryStore implements MemoryStore {
       writeSummary: async (turn, id, admittedAt, signal) => {
         await this.appendCompletedTurnSummary(turn, id, admittedAt, signal);
       },
-      capture: async (turn, id, admittedAt, signal) => await this.captureCompletedTurn(
+      capture: async (turn, id, admittedAt, signal, isFinalAttempt) => await this.captureCompletedTurn(
         turn,
         id,
         admittedAt,
         signal,
+        isFinalAttempt,
       ),
       afterResolved: async (id) => await withSerializedBujoMutation({
         root: this.root,
