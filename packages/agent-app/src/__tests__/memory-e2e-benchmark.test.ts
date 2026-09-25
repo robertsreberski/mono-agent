@@ -454,7 +454,7 @@ describe("fictional E2E production-path contract, not model quality", () => {
       }
     };
     try {
-      // Historical behavior: reconciliation fell back to the 8,192-token
+      // Historical behavior: reconciliation fell back to the 10,240-token
       // extraction ceiling and failed before a meter/provider dispatch.
       const old = await runAtLimit(null);
       const oldPreflight = old.budget.events.find((event: any) => event.stage === "reconciliation_preflight");
@@ -462,7 +462,7 @@ describe("fictional E2E production-path contract, not model quality", () => {
       expect(old.dispatch).not.toHaveBeenCalled();
       expect(oldPreflight).toMatchObject({
         status: "rejected", errorClass: "capture_context_budget_exceeded",
-        estimatedInputTokensLimit: 8_192,
+        estimatedInputTokensLimit: 10_240,
       });
       // Product structured-reconciliation guidance adds schema-bound prompt text;
       // pin the integrated prompt's actual conservative estimate.
