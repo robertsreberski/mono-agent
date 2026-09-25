@@ -44,7 +44,7 @@ export function echoesTurnInstruction(candidate: string, instruction: string): b
   if (proposed.size < 5 || original.size < 5) return false;
   let shared = 0;
   for (const token of proposed) if (original.has(token)) shared++;
-  return shared >= 5 && shared / proposed.size >= 0.8;
+  return shared >= 5 && shared / proposed.size >= 0.6;
 }
 
 /** Lone surrogates, C0 controls (tab/LF/CR excluded), DEL, and C1 controls. */

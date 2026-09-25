@@ -23,11 +23,26 @@ describe("extractCapturePlanStrict intra-turn precision", () => {
     const factual = await extractCapturePlanStrict("User: Morgan chose the Maple build log as the final artifact.\nAssistant: Noted.",
       { id: "durable-decision", complete: async () => planJson(["Morgan chose the Maple build log as the final artifact."]) });
     expect(factual.candidates).toHaveLength(1);
+    const ownerRequest = "User: Please remember Morgan completed the Maple migration on 2026-07-12 after a successful review.\nAssistant: Morgan completed the Maple migration on 2026-07-12 after a successful review.";
+    const preserved = await extractCapturePlanStrict(ownerRequest, { id: "owner-request", complete: async (prompt) => {
+      expect(prompt).toContain("preserve each durable fact");
+      expect(prompt).toContain("even when the Assistant merely restates it");
+      expect(prompt).toContain("additional acceptance message is not required");
+      return planJson(["Morgan completed the Maple migration on 2026-07-12 after a successful review."]);
+    } });
+    expect(preserved.candidates).toHaveLength(1);
+    const qualified = await extractCapturePlanStrict(ownerRequest, { id: "mixed-request", complete: async () => planJson([
+      "The assistant was instructed to remember Morgan completed the Maple migration on 2026-07-12 after a successful review.",
+      "Morgan completed the Maple migration on 2026-07-12 after a successful review.",
+    ]) });
+    expect(qualified.candidates.map(({ text }) => text)).toEqual([
+      "Morgan completed the Maple migration on 2026-07-12 after a successful review.",
+    ]);
   });
   it("does not pretend an omitted trigger can be compared with an instruction", async () => {
     const turn = "Scheduled task trigger (not a user message; trigger text omitted):\nAssistant: The Maple build completed on 2026-07-12.";
     const plan = await extractCapturePlanStrict(turn, { id: "trigger-outcome", complete: async (prompt) => {
-      expect(prompt).toContain("require a verified outcome or dated state change");
+      expect(prompt).toContain("require verified outcomes or dated consequential state changes");
       return planJson(["The Maple build completed on 2026-07-12."]);
     } }, undefined, [], { observedAt: "2026-07-12T10:00:00.000Z", captureSpeakerKind: "trigger" });
     expect(plan.candidates).toHaveLength(1);
