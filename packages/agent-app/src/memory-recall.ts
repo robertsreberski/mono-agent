@@ -5,7 +5,7 @@ import type {
   EmbeddingProviderConfig,
 } from "@mono-agent/memory/search";
 import type { MemoryStatus, MemoryType } from "@mono-agent/memory/store";
-import { isConversationRelativeQuery } from "@mono-agent/memory/bujo";
+import { AUTO_RECALL_MIN_SCORE, hasConflictingAutomaticRecallEvidence, isConversationRelativeQuery } from "@mono-agent/memory/bujo";
 import { normalizeOptionalString } from "@mono-agent/agent-contracts";
 import * as z from "zod/v4";
 import { readLabelSections, type LabelKind, type LabelSectionRequest, type LabelSections } from "./memory-label-sections.js";
@@ -147,14 +147,67 @@ export async function createRecallStore(settings: MemoryRecallSettings): Promise
   });
 }
 
-function formatHitDates(hit: MemoryRecallHit): string {
+function formatHitDates(hit: MemoryRecallHit, currentness: RecallHitCurrentness | undefined): string {
   const parts = [
     hit.record.createdAt === undefined ? undefined : `recorded ${hit.record.createdAt}`,
     hit.record.validFrom === undefined ? undefined : `valid from ${hit.record.validFrom}`,
     hit.record.validTo === undefined ? undefined : `valid to ${hit.record.validTo}`,
+    // "current" is the default and costs no tokens; only a closed value is marked.
+    currentness === "superseded" ? currentness : undefined,
   ].filter((part) => part !== undefined);
   return parts.length === 0 ? "" : `[${parts.join("; ")}] `;
 }
+
+/**
+ * Explicit recall calibration. Raw scores are ranking evidence, not
+ * probabilities. A tail hit is dropped when it is more than
+ * {@link RECALL_TAIL_MARGIN} below the best hit or, when the best hit clears
+ * the calibrated automatic-recall floor, below that floor. When nothing clears
+ * the floor only the relative margin applies (and the result is marked
+ * insufficient evidence). The best hit is always kept.
+ */
+export const RECALL_TAIL_MARGIN = 0.15;
+export type RecallHitCurrentness = "current" | "superseded";
+export type RecallEvidenceNote = "insufficient" | "conflicting";
+
+export function calibrateRecallHits<T extends { readonly score: number }>(hits: readonly T[]): readonly T[] {
+  if (hits.length <= 1) return hits;
+  const top = Math.max(...hits.map((hit) => hit.score));
+  const cutoff = top >= AUTO_RECALL_MIN_SCORE ? Math.max(top - RECALL_TAIL_MARGIN, AUTO_RECALL_MIN_SCORE) : top - RECALL_TAIL_MARGIN;
+  return hits.filter((hit) => hit.score >= cutoff);
+}
+
+/** Only records that carry lifecycle metadata get a currentness marker. */
+export function recallHitCurrentness(hit: MemoryRecallHit, today: string): RecallHitCurrentness | undefined {
+  const { status, validTo, createdAt } = hit.record;
+  if (status === undefined && validTo === undefined && createdAt === undefined) return undefined;
+  if (status === "invalidated" || status === "dropped") return "superseded";
+  return validTo !== undefined && validTo.slice(0, 10) < today ? "superseded" : "current";
+}
+
+/** Candidates inspected for conflicting values: at least the top eight, uncut. */
+export const RECALL_CONFLICT_WINDOW = 8;
+
+/**
+ * `conflicting` when the top candidates or the fact sheet hold different
+ * current values for one question; `insufficient` when the best hit is below
+ * the calibrated floor. Otherwise no note: the hits are ordinary evidence.
+ *
+ * `candidates` is the bounded candidate set BEFORE the tail cut, so a
+ * disagreeing value the cut removes still produces the conflict note.
+ */
+export function recallEvidenceNote(query: string, hits: readonly MemoryRecallHit[], sections?: LabelSections,
+  candidates: readonly MemoryRecallHit[] = hits.slice(0, RECALL_CONFLICT_WINDOW)): RecallEvidenceNote | undefined {
+  if (hits.length === 0) return undefined;
+  if (sections?.factSheet?.some((fact) => fact.current && fact.conflict) === true
+    || hasConflictingAutomaticRecallEvidence(query, candidates)) return "conflicting";
+  return Math.max(...hits.map((hit) => hit.score)) < AUTO_RECALL_MIN_SCORE ? "insufficient" : undefined;
+}
+
+const EVIDENCE_TEXT: Readonly<Record<RecallEvidenceNote, string>> = {
+  insufficient: "Insufficient evidence: no memory matches this closely; treat these hits as related context, not as an answer.",
+  conflicting: "Conflicting values: memories disagree on this; say so, and prefer the most recently recorded current value only when it clearly supersedes the others.",
+};
 
 /** Build the configured embedding provider used by recall and safe index maintenance. */
 export async function createMemoryEmbeddingProvider(
@@ -259,13 +312,20 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
     const topK = clampLimit(args.limit, 8);
     let hits: readonly MemoryRecallHit[];
     let degradation: MemoryRecallOutcome["degradation"];
+    // Only outcome-capable local stores report hybrid scores on the calibrated
+    // BuJo scale; array-only (remote) backends keep their exact previous output.
+    let calibrated = false;
+    // The bounded, uncut candidate set used for conflict detection.
+    let candidates: readonly MemoryRecallHit[] = [];
     try {
       const graphEnabled = store.expandGraph !== undefined && store.supportsGraphExpansion?.() !== false;
       if (originalOutcome !== undefined) {
         degradation = originalOutcome.degradation;
+        calibrated = originalOutcome.retrievalMode === "hybrid" && degradation === undefined;
         // The bound capability already applies the same graph policy while
         // reusing its original direct lookup, so never expand it a second time.
         hits = originalOutcome.hits.slice(0, topK);
+        candidates = originalOutcome.hits.slice(0, Math.max(RECALL_CONFLICT_WINDOW, topK));
       } else {
         const direct = store.recallWithOutcome === undefined
           ? {
@@ -282,9 +342,16 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
               trackAccess: false,
             });
         degradation = direct.degradation;
+        calibrated = store.recallWithOutcome !== undefined && direct.retrievalMode === "hybrid" && degradation === undefined;
+        // Drop weak tail hits before graph expansion, and again after it:
+        // a graph addition is scored just below its seeds, so only an
+        // addition hanging off weak seeds falls under the same cutoff.
+        candidates = direct.hits.slice(0, Math.max(RECALL_CONFLICT_WINDOW, topK));
+        const directHits = calibrated ? calibrateRecallHits(direct.hits) : direct.hits;
         hits = !graphEnabled || store.expandGraph === undefined
-          ? direct.hits.slice(0, topK)
-          : await store.expandGraph(effectiveQuery, direct.hits, { topK });
+          ? directHits.slice(0, topK)
+          : await store.expandGraph(effectiveQuery, directHits, { topK });
+        if (calibrated) hits = calibrateRecallHits(hits);
       }
       // Record only the final served set. Read-only BuJo recall stores make
       // this a no-op; shared writable stores deduplicate it for the turn.
@@ -340,16 +407,19 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
         },
       };
     }
+    const today = new Date().toISOString().slice(0, 10);
+    const currentness = hits.map((hit) => calibrated ? recallHitCurrentness(hit, today) : undefined);
+    const evidence = calibrated ? recallEvidenceNote(effectiveQuery, hits, sections, candidates) : undefined;
     const hitText = hits
-      .map((hit) => `${hit.score.toFixed(3)}  ${formatHitDates(hit)}${lifecyclePrefix(hit)}${hit.record.text}`)
+      .map((hit, index) => `${hit.score.toFixed(3)}  ${formatHitDates(hit, currentness[index])}${lifecyclePrefix(hit)}${hit.record.text}`)
       .join("\n");
     const text = degraded
       ? `Memory recall is degraded: showing lexical-only matches because semantic retrieval is unavailable.\n${hitText}`
-      : hitText;
+      : evidence === undefined ? hitText : `${EVIDENCE_TEXT[evidence]}\n${hitText}`;
     return {
       content: [{ type: "text" as const, text: `${originalPrefix}${sectionPrefix}${text}` }],
       structuredContent: {
-        hits: hits.map((hit) => ({
+        hits: hits.map((hit, index) => ({
           id: hit.record.id,
           score: hit.score,
           text: hit.record.text,
@@ -360,7 +430,9 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
           ...(hit.record.createdAt === undefined ? {} : { createdAt: hit.record.createdAt }),
           ...(hit.record.validFrom === undefined ? {} : { validFrom: hit.record.validFrom }),
           ...(hit.record.validTo === undefined ? {} : { validTo: hit.record.validTo }),
+          ...(currentness[index] === undefined ? {} : { currentness: currentness[index] }),
         })),
+        ...(evidence === undefined ? {} : { evidence }),
         ...sectionFields,
         ...originalMetadata,
         ...(degraded ? {
