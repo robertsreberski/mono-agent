@@ -92,6 +92,13 @@ describe("selectKnownEntityHints", () => {
     expect(selectKnownEntityHints("Morgan walked down Maple Street", [...graph].reverse())).toEqual(hints);
   });
 
+  it("keeps an established entity ahead of many newer one-off ids that share a word", () => {
+    const tasks = Array.from({ length: 40 }, (_, index) => ({ id: `task:morgan-errand-${index}`, name: `Morgan errand ${index}`,
+      type: "task", createdAt: `2026-09-${String(10 + (index % 20)).padStart(2, "0")}T00:00:00.000Z`, associations: index % 2 }));
+    const graph = [{ id: "person:morgan", name: "Morgan", type: "person", createdAt: "2026-01-01T00:00:00.000Z", associations: 50 }, ...tasks];
+    expect(selectKnownEntityHints("Morgan has a cold", graph)[0]?.id).toBe("person:morgan");
+  });
+
   it("breaks an association tie with the ordinary deterministic order", () => {
     const graph = [
       { id: "person:morgan-a", name: "Morgan", type: "person", createdAt: "2026-01-01T00:00:00.000Z", associations: 3 },

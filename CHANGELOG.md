@@ -36,7 +36,9 @@
 
 - Memory capture tells the model which id to reuse when several known entities
   share one name: the most-associated id is marked preferred and the others
-  point at it. Owner turns offer the canonical `person:owner` id first.
+  point at it. Equally matching hints now rank the most-used entity first, so an
+  established person is not crowded out by newer one-off tasks that share a
+  word. Owner turns offer the canonical `person:owner` id first.
 
 - Keep `memory curate prepare` limited to rebuild-indexed lines and report
   skipped canonical-line counts by reason. Refuse unindexed selections before

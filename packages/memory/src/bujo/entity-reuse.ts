@@ -92,9 +92,12 @@ export function selectKnownEntityHints(
     scored.push({ entity, score, createdAt: entity.createdAt ?? "", associations });
   }
 
-  // Strongest overlap first, then most recent, then id — fully deterministic so
-  // the same turn against the same graph always produces the same prompt.
+  // Strongest overlap first, then the most-used (associated) node, then most
+  // recent, then id — fully deterministic so the same turn against the same
+  // graph always produces the same prompt. Usage before recency keeps an
+  // established person ahead of many fresh one-off tasks that share a word.
   scored.sort((left, right) => right.score - left.score
+    || right.associations - left.associations
     || right.createdAt.localeCompare(left.createdAt)
     || left.entity.id.localeCompare(right.entity.id));
 
