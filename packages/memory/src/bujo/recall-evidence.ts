@@ -248,6 +248,15 @@ function hasConflictingValues(
   return false;
 }
 
+/**
+ * True for choice, scoped-choice and scheduled questions. Their property, scope
+ * and conflict identity rules are the whole point, so only this grammar decides them.
+ */
+export function isIdentityBoundDirectFactQuery(query: string, context: RecallEvidenceContext = {}): boolean {
+  const parsed = parseDirectFactQuery(query, context);
+  return parsed !== undefined && (parsed.kind === "choice" || requiresCanonicalConflictGuard(parsed));
+}
+
 export function hasAutomaticRecallEvidence(
   query: string,
   hits: readonly RecallEvidenceHit[],

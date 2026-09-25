@@ -23,6 +23,9 @@
  *    least `CLEAR_MARGIN`. Close hits that pass both are injected with it, up
  *    to `CLEAR_MARGIN_MAX_HITS`; more close candidates abstain.
  *
+ * Choice, scoped-choice and scheduled questions never reach this gate: the
+ * grammar in `recall-evidence.ts` decides their scope and conflict identity alone.
+ *
  * Precision over recall: anything else abstains and stays available through
  * the MemoryRecall tool.
  */
@@ -30,6 +33,7 @@
 import {
   ATTRIBUTED_REPORT_EXCLUSION,
   isConversationRelativeQuery,
+  isIdentityBoundDirectFactQuery,
   NEGATION_OR_UNKNOWN,
   REPORTED_OR_DITRANSITIVE,
 } from "./recall-evidence.js";
@@ -129,6 +133,9 @@ export function selectClearMarginHit<T extends MarginHit>(
   hits: readonly T[],
   options: { readonly ownerTurn?: boolean; readonly window?: number } = {},
 ): readonly T[] {
+  // Choice, scoped-choice and scheduled questions are decided by the canonical
+  // grammar alone: its scope, conflict and identity rules must not be bypassed.
+  if (isIdentityBoundDirectFactQuery(query, options.ownerTurn === true ? { ownerTurn: true } : {})) return [];
   const question = questionConcepts(query, options.ownerTurn === true);
   const top = hits[0];
   if (question === undefined || top?.record === undefined) return [];
