@@ -13,6 +13,28 @@ function planJson(texts: readonly string[]): string {
 }
 
 describe("extractCapturePlanStrict intra-turn precision", () => {
+  it("preserves contact addresses, May dates and secret-named entities but drops credential identifiers", async () => {
+    const memories = [
+      { type: "note", text: "Morgan's contact address is morgan@example.test.", salience: 0.7,
+        isInsight: false, entityIds: ["concept:secret-garden"] },
+      { type: "note", text: "May is a good month to visit the Secret Garden.", salience: 0.7,
+        isInsight: false, entityIds: ["concept:secret-garden"] },
+      { type: "note", text: "MY favorite garden is the Secret Garden.", salience: 0.7,
+        isInsight: false, entityIds: ["concept:secret-garden"] },
+      { type: "note", text: "Morgan's login email is login@example.test.", salience: 0.7,
+        isInsight: false, entityIds: ["login:demo"] },
+      { type: "note", text: "The test token is sk-ABCDEFGHIJKLMN.", salience: 0.7,
+        isInsight: false, entityIds: [] },
+    ];
+    const plan = await extractCapturePlanStrict("User: Morgan shared contact details for May.", {
+      id: "safe-contacts", complete: async () => JSON.stringify({ memories, entities: [
+        { id: "concept:secret-garden", name: "Secret Garden", type: "concept" },
+        { id: "login:demo", name: "demo@example.test", type: "login" },
+      ], relations: [] }),
+    });
+    expect(plan.candidates.map((candidate) => candidate.text)).toEqual(memories.slice(0, 2).map((memory) => memory.text));
+    expect(plan.entities.map((entity) => entity.id)).toEqual(["concept:secret-garden"]);
+  });
   it("keeps durable when/how/what/why lead-ins and drops questions or imperative requests", async () => {
     const texts = ["When Morgan moved, the project changed hands.", "How Morgan works has changed.",
       "What Morgan chose became final.", "Why Morgan moved remains documented.",

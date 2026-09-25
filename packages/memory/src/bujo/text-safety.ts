@@ -12,12 +12,17 @@
 /** Capture-specific content guard. Never apply this heuristic to explicit Remember
  * writes: the completed-turn source/speaker context is required. */
 export function unsafeCaptureContent(text: string, source = ""): boolean {
-  if (/\b(?:I|I'm|I've|my|mine)\b/u.test(text)) return true;
-  if (/\b(?:unclear whether|not clear whether|may(?: or may not)?|possibly|unverified|cannot confirm)\b/iu.test(text)
-    && !/\b(?:unclear whether|not clear whether|may(?: or may not)?|possibly|unverified|cannot confirm)\b/iu.test(source)) return true;
+  if (/\b(?:i|i'm|i've)\b/iu.test(text) || /^\s*my\b/iu.test(text)) return true;
+  const inventedDoubt = /\b(?:unclear whether|not clear whether|possibly|unverified|cannot confirm)\b/iu;
+  if ((inventedDoubt.test(text) && !inventedDoubt.test(source))
+    || (/\bmay\b/u.test(text) && !/\bmay\b/u.test(source))) return true;
   if (/\b(?:\d+(?:[.,]\d+)?\s*(?:years?|months?)\s*old|aged?\s+\d+(?:[.,]\d+)?\s*(?:years?|months?))\b/iu.test(text)) return true;
-  if (/\b(?:password|passphrase|api[ -]?key|access[ -]?token|secret|login|username|credential)\b/iu.test(text)
-    || /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/iu.test(text)) return true;
+  const credential = /\b(?:password|passphrase|passcode|pin|api[ -]?key|access[ -]?token|secret[ -]?key|credential)\b/iu;
+  const login = /\b(?:login|log[ -]?in|sign[ -]?in|account|username)\b/iu;
+  const identifier = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/iu;
+  const token = /\b(?:sk-[A-Za-z0-9_-]{12,}|ghp_[A-Za-z0-9]{12,}|xox[a-z]-[A-Za-z0-9-]{12,}|AKIA[A-Z0-9]{16})\b/u;
+  if (credential.test(text) || token.test(text) || (login.test(text) && (identifier.test(text)
+    || /\b(?:username|user\s*id|handle|email|address)\b/iu.test(text)))) return true;
   return false;
 }
 

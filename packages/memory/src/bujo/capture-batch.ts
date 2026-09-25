@@ -271,7 +271,7 @@ export async function extractCapturePlanStrict(
     && !(/\?\s*$/u.test(candidate.text)
       || /^\s*(?:please|can you|could you|would you)\b/iu.test(candidate.text)));
   const unsafeIds = new Set(entities.filter((entity) => unsafeCaptureContent(entity.name)
-    || /(?:credential|password|username|login|token|secret|api-key)/iu.test(entity.id)).map((entity) => entity.id));
+    || /^(?:credential|password|passcode|pin|username|login|token|secret-key|api-key):/iu.test(entity.id)).map((entity) => entity.id));
   // An identifier proposed only by a filtered unsafe line is not a real-world
   // graph subject; discard it rather than persisting it as an orphan entity.
   const safeIds = new Set(safeCandidates.flatMap(({ candidate }) => candidate.entityIds ?? []));
