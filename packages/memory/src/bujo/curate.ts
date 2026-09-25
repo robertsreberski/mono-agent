@@ -183,6 +183,12 @@ export async function proposeCurate(snapshot: CurateSnapshot, llm: LlmComplete, 
         const raw = await llm.complete(prompt, { label: "curate:propose", outputSchema: curateOutputSchema(batch), structuredResultKey: "proposals" });
         if (raw.length > 32768) throw new SyntaxError("response exceeds bound");
         parsed = JSON.parse(raw) as unknown;
+        // Schema-aware hosts select the proposals property for us. Text-only
+        // providers may ignore that hint and return the object wrapper itself.
+        if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+          && Object.keys(parsed).length === 1 && Object.hasOwn(parsed, "proposals")) {
+          parsed = (parsed as { proposals: unknown }).proposals;
+        }
         if (!Array.isArray(parsed) || parsed.length > BATCH * 2) throw new SyntaxError("invalid response envelope");
         failure = undefined;
         break;

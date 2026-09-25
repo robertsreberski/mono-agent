@@ -53,6 +53,9 @@ describe("curation preparation", () => {
       return JSON.stringify([{ id: "fictional-a", action: "keep" }]);
     } });
     expect(result.proposals).toHaveLength(1);
+    const textOnly = await proposeCurate(snapshot, { id: "text-only", complete: async () =>
+      JSON.stringify({ proposals: [{ id: "fictional-a", action: "keep" }] }) });
+    expect(textOnly.proposals).toHaveLength(1);
   });
   it("retries individual failed batches once and records safe bounded reasons", async () => {
     const path = root();
