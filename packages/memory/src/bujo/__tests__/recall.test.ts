@@ -46,7 +46,7 @@ describe("selectAutomaticRecallHits", () => {
     };
     const adjacent = {
       score: 0.798,
-      record: { text: "Morgan's office is in Amsterdam." },
+      record: { text: "Morgan's office is in Quillmere." },
     };
 
     expect(selectAutomaticRecallHits([answer, adjacent], {
@@ -60,7 +60,7 @@ describe("selectAutomaticRecallHits", () => {
   it("does not splice a query subject and requested attribute across disjoint records", () => {
     const office = {
       score: 0.91,
-      record: { text: "Morgan's office is in Amsterdam." },
+      record: { text: "Morgan's office is in Quillmere." },
     };
     const unrelatedPhone = {
       score: 0.89,
@@ -84,7 +84,7 @@ describe("selectAutomaticRecallHits", () => {
     ],
     [
       "What is Morgans phone number?",
-      "Morgan works in Amsterdam; Taylors phone number is 555-0100.",
+      "Morgan works in Quillmere; Taylors phone number is 555-0100.",
     ],
     [
       "Who approved the blue-green deployment strategy?",
@@ -113,8 +113,8 @@ describe("bounded first-party report evidence", () => {
   it.each([
     ["What is Avery's service port?", "Avery reports that their service port is 8443."],
     ["What is Avery's service port?", "aVeRy reports that their service port is 8443."],
-    ["Where does Avery work?", "Avery reports working in Amsterdam."],
-    ["Where does Avery live?", "Avery reports living at Porto."],
+    ["Where does Avery work?", "Avery reports working in Quillmere."],
+    ["Where does Avery live?", "Avery reports living at Fernhollow."],
     ["What deployment color did Avery select?", "Avery reports selecting cobalt as the deployment color."],
     ["Which vendor did Avery choose?", "Avery reports choosing acme as the vendor."],
     ["What color did Avery pick?", "Avery reports picking amber as the color."],
@@ -145,8 +145,8 @@ describe("bounded first-party report evidence", () => {
     ["What is Avery's service port?", "Avery reports that their service port is reported as 8443."],
     ["What is Avery's service port?", "Avery reports that their service port is 8443, correcting an earlier report."],
     ["What is Avery's phone number?", "Avery reports that their phone number is 555-0199 and was never 555-0100."],
-    ["Where does Avery work?", "Avery reports quoting “working in Amsterdam”."],
-    ["Where does Avery work?", "Avery reports working in Amsterdam; Morgan works in Berlin."],
+    ["Where does Avery work?", "Avery reports quoting “working in Quillmere”."],
+    ["Where does Avery work?", "Avery reports working in Quillmere; Morgan works in Ostwick."],
     ["What deployment color did Morgan select?", "Avery reports selecting amber as the deployment color."],
     ["What deployment color did Morgan select?", "Avery reports that a pasted note says Morgan selected amber as the deployment color."],
     ["What is Avery's service port?", "Avery's report says that their service port is 8443."],
@@ -215,8 +215,8 @@ describe("bounded first-party report evidence", () => {
     ], { query: "What is Avery's phone number?" })).toEqual([]);
 
     expect(selectAutomaticRecallHits([
-      { id: "canonical", score: 0.95, record: { text: "Avery works in Amsterdam." } },
-      { id: "attributed", score: 0.7, record: { text: "Avery reports working in Berlin." } },
+      { id: "canonical", score: 0.95, record: { text: "Avery works in Quillmere." } },
+      { id: "attributed", score: 0.7, record: { text: "Avery reports working in Ostwick." } },
     ], { query: "Where does Avery work?" })).toEqual([]);
 
     expect(selectAutomaticRecallHits([
@@ -331,9 +331,9 @@ describe("hasAutomaticRecallEvidence", () => {
     "The API launch date is 2026-08-14.",
     "Morgan's phone number is 555-0100.",
     "Morgan's car color is red.",
-    "Morgan works in Amsterdam.",
+    "Morgan works in Quillmere.",
     "Project Atlas is led by Morgan.",
-    "Morgan's office is in Amsterdam.",
+    "Morgan's office is in Quillmere.",
     "The team orders soup for lunch on rainy days.",
   ].map((text) => ({ record: { text } }));
 
@@ -455,14 +455,14 @@ describe("hasAutomaticRecallEvidence", () => {
 
   describe("scheduled temporal evidence", () => {
     const query = "When is the Project Atlas production migration scheduled?";
-    const target = "Project Atlas production migration is scheduled for 20 November 2026 at 08:30 Europe/Paris.";
+    const target = "Project Atlas production migration is scheduled for 20 November 2026 at 08:30 CET.";
 
     it("selects one bounded scheduled fact while excluding adjacent direct facts", () => {
       const hit = { record: { text: target } };
       const distractors = [
         "Priya owns the Project Atlas database cutover.",
         "The approved downtime budget for Project Atlas is 30 minutes.",
-        "Project Boreal production migration is scheduled for 20 November 2026 at 08:30 Europe/Paris.",
+        "Project Boreal production migration is scheduled for 20 November 2026 at 08:30 CET.",
       ].map((text) => ({ record: { text } }));
 
       expect(selectAnswerBearingRecallHits(query, [hit, ...distractors])).toEqual([hit]);
@@ -592,10 +592,10 @@ describe("hasAutomaticRecallEvidence", () => {
     });
 
     it.each([
-      "Project Atlas production migration is scheduled for 20 November 2026 at 25:30 Europe/Paris.",
-      "Project Atlas production migration is scheduled for 20 November 2026 at 09:99 Europe/Paris.",
-      "Project Atlas production migration is scheduled for 20 November 2026 at 9:3 Europe/Paris.",
-      "Project Atlas production migration is scheduled for 20 November 2026 at 09:30:00 Europe/Paris.",
+      "Project Atlas production migration is scheduled for 20 November 2026 at 25:30 CET.",
+      "Project Atlas production migration is scheduled for 20 November 2026 at 09:99 CET.",
+      "Project Atlas production migration is scheduled for 20 November 2026 at 9:3 CET.",
+      "Project Atlas production migration is scheduled for 20 November 2026 at 09:30:00 CET.",
       "Project Atlas production migration is scheduled for note:09:30 on 20 November 2026.",
       "Project Atlas production migration is scheduled for 20 November 2026 at 25：30.",
       "Project Atlas production migration is scheduled for 20 November 2026 at 09：30.",
@@ -608,11 +608,11 @@ describe("hasAutomaticRecallEvidence", () => {
     it.each([
       [
         "different date",
-        "Project Atlas production migration is scheduled for 21 November 2026 at 08:30 Europe/Paris.",
+        "Project Atlas production migration is scheduled for 21 November 2026 at 08:30 CET.",
       ],
       [
         "equivalent date in a different representation",
-        "Project Atlas production migration is scheduled for 2026-11-20 at 08:30 Europe/Paris.",
+        "Project Atlas production migration is scheduled for 2026-11-20 at 08:30 CET.",
       ],
       [
         "date-only versus date-time",
@@ -635,7 +635,7 @@ describe("hasAutomaticRecallEvidence", () => {
       const hits = [
         { id: "first", score: 0.99, record: { text: target } },
         { id: "duplicate", score: 0.9, record: {
-          text: "Project Atlas production migration was scheduled on  20 NOVEMBER 2026 at 08:30 Europe/Paris.",
+          text: "Project Atlas production migration was scheduled on  20 NOVEMBER 2026 at 08:30 CET.",
         } },
       ];
       expect(selectAutomaticRecallHits(hits, { query })).toEqual(hits);
@@ -657,7 +657,7 @@ describe("hasAutomaticRecallEvidence", () => {
 
   it("never synthesizes automatic evidence across records or clauses", () => {
     expect(hasAutomaticRecallEvidence("What is Morgans phone number?", [
-      { record: { text: "Morgan's office is in Amsterdam." } },
+      { record: { text: "Morgan's office is in Quillmere." } },
       { record: { text: "Taylor's phone number is 555-0100." } },
     ])).toBe(false);
 
@@ -675,10 +675,10 @@ describe("hasAutomaticRecallEvidence", () => {
       text: "Morgan selected cobalt as the deployment color and Morgan drives a hatchback car.",
     } }])).toBe(false);
     expect(hasAutomaticRecallEvidence("What is Morgans phone number?", [{ record: {
-      text: "Morgan works in Amsterdam; Taylors phone number is 555-0100.",
+      text: "Morgan works in Quillmere; Taylors phone number is 555-0100.",
     } }])).toBe(false);
     expect(hasAutomaticRecallEvidence("What is Morgans phone number?", [{ record: {
-      text: "Morgan works in Amsterdam, Taylor's phone number is 555-0100.",
+      text: "Morgan works in Quillmere, Taylor's phone number is 555-0100.",
     } }])).toBe(false);
     expect(hasAutomaticRecallEvidence("Who approved the blue-green deployment strategy?", [{ record: {
       text: "Database rollouts use a blue-green deployment strategy; Taylor approved the travel policy.",
@@ -689,11 +689,11 @@ describe("hasAutomaticRecallEvidence", () => {
     // automatic context must not guess which side of the relation is requested.
     expect(hasAutomaticRecallEvidence("Where is Morgans manager based?", [
       { record: { text: "Morgan manages Taylor." } },
-      { record: { text: "Taylor is based in Paris." } },
+      { record: { text: "Taylor is based in Larkmoor." } },
     ])).toBe(false);
     expect(selectAutomaticRecallHits([
       { score: 0.94, record: { text: "Morgan leads Taylor." } },
-      { score: 0.9, record: { text: "Taylor is based in Paris." } },
+      { score: 0.9, record: { text: "Taylor is based in Larkmoor." } },
     ], { query: "Where is the person who leads Morgan based?" })).toEqual([]);
 
     expect(hasAutomaticRecallEvidence("Which city is the person leading Atlas based in?", records)).toBe(false);
@@ -718,7 +718,7 @@ describe("hasAutomaticRecallEvidence", () => {
     ],
     [
       "Where is Morgans manager based?",
-      "Morgan manages Taylor and Taylor is based in Paris.",
+      "Morgan manages Taylor and Taylor is based in Larkmoor.",
     ],
     [
       "What is Morgans phone number?",
@@ -757,14 +757,14 @@ describe("composeRecallBlock", () => {
       source: {},
     };
     await db.upsertMany([
-      { ...base, id: "schedule", text: "Project Atlas production migration is scheduled for 20 November 2026 at 08:30 Europe/Paris." },
+      { ...base, id: "schedule", text: "Project Atlas production migration is scheduled for 20 November 2026 at 08:30 CET." },
       { ...base, id: "owner", text: "Priya owns the Project Atlas database cutover." },
       { ...base, id: "downtime", text: "The approved downtime budget for Project Atlas is 30 minutes." },
-      { ...base, id: "other", text: "Project Boreal production migration is scheduled for 21 November 2026 at 09:30 Europe/Paris." },
+      { ...base, id: "other", text: "Project Boreal production migration is scheduled for 21 November 2026 at 09:30 CET." },
     ]);
 
     const block = await composeRecallBlock(db, "When is the Project Atlas production migration scheduled?", { topK: 5 });
-    expect(block?.content).toContain("Project Atlas production migration is scheduled for 20 November 2026 at 08:30 Europe/Paris.");
+    expect(block?.content).toContain("Project Atlas production migration is scheduled for 20 November 2026 at 08:30 CET.");
     expect(block?.content).not.toContain("owns");
     expect(block?.content).not.toContain("downtime");
     expect(block?.content).not.toContain("Boreal");
@@ -844,8 +844,8 @@ describe("owner-turn and normalized direct-fact questions", () => {
       expect(has("What is my phone number?", text, owner)).toBe(true);
       expect(has("What is my phone number?", text)).toBe(false);
     }
-    expect(has("Where does Morgan live?", "The user reports that Morgan lives in Lisbon.", owner)).toBe(true);
-    expect(has("Where does Morgan live?", "The user reports that Morgan lives in Lisbon.")).toBe(false);
+    expect(has("Where does Morgan live?", "The user reports that Morgan lives in Thistlemoor.", owner)).toBe(true);
+    expect(has("Where does Morgan live?", "The user reports that Morgan lives in Thistlemoor.")).toBe(false);
   });
 
   it("keeps the envelope's inner clause under the ordinary fact grammar", () => {

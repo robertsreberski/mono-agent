@@ -39,7 +39,7 @@ function fakeStore(options: { readonly fail?: boolean; readonly disputed?: boole
       if (query.includes("velin")) {
         const hits = [
           { score: 1.005, record: { id: "scoped", text: "Mira selected cobalt as the color for the Velin launch." } },
-          { score: 0.751, record: { id: "adjacent", text: "Mira's office is in Amsterdam." } },
+          { score: 0.751, record: { id: "adjacent", text: "Mira's office is in Quillmere." } },
         ];
         // A contradictory record that score order alone would have hidden.
         if (options.disputed === true) {
@@ -50,7 +50,7 @@ function fakeStore(options: { readonly fail?: boolean; readonly disputed?: boole
       if (query.includes("launch color")) {
         return [
           { score: 1.005, record: { id: "answer", text: "Morgan selected cobalt as the launch color." } },
-          { score: 0.751, record: { id: "adjacent", text: "Morgan's office is in Amsterdam." } },
+          { score: 0.751, record: { id: "adjacent", text: "Morgan's office is in Quillmere." } },
           { score: 0.708, record: { id: "other", text: "The launch date is 2026-08-14." } },
         ];
       }
@@ -76,7 +76,7 @@ describe("MemoryRetrievalService", () => {
       const sentence = "The assistant should keep concise fictional notes.";
       const plan = await extractCapturePlanStrict(`User: ${sentence}`, {
         id: "fictional-scope", complete: async () => JSON.stringify({ memories: [{ type: "note", text: sentence,
-          salience: 0.8, isInsight: false, entityIds: [],
+          salience: 0.8, isInsight: false, entityIds: [], source: "user",
           labels: [{ v: 1, kind: "preference", scope: "agent", attribution: "user-stated" }] }],
         entities: [], relations: [] }),
       }, undefined, [], { observedAt: "2026-07-12T09:00:00.000Z", captureSpeakerKind: "human-turn",
@@ -373,7 +373,7 @@ describe("MemoryRetrievalService", () => {
     const hits = await service.recallForTurn("turn-velin", "what color did mira select for the velin launch?", { topK: 8 });
 
     expect(block?.content).toContain("Mira selected cobalt as the color for the Velin launch.");
-    expect(block?.content).not.toContain("Amsterdam");
+    expect(block?.content).not.toContain("Quillmere");
     expect(hits).toHaveLength(2);
     expect(store.queries).toEqual(["what color did mira select for the velin launch?"]);
   });
@@ -413,13 +413,13 @@ describe("MemoryRetrievalService", () => {
       score: 0.99,
       record: {
         id: "atlas-schedule",
-        text: "Project Atlas production migration is scheduled for 20 November 2026 at 08:30 Europe/Paris.",
+        text: "Project Atlas production migration is scheduled for 20 November 2026 at 08:30 CET.",
       },
     };
     const distractors = [
       { score: 0.98, record: { id: "owner", text: "Priya owns the Project Atlas database cutover." } },
       { score: 0.97, record: { id: "downtime", text: "The approved downtime budget for Project Atlas is 30 minutes." } },
-      { score: 0.96, record: { id: "other-project", text: "Project Boreal production migration is scheduled for 20 November 2026 at 08:30 Europe/Paris." } },
+      { score: 0.96, record: { id: "other-project", text: "Project Boreal production migration is scheduled for 20 November 2026 at 08:30 CET." } },
     ];
 
     const cleanStore = fakeStore();
@@ -439,7 +439,7 @@ describe("MemoryRetrievalService", () => {
       score: 0.1,
       record: {
         id: "atlas-late-conflict",
-        text: "Project Atlas production migration is scheduled for 21 November 2026 at 08:30 Europe/Paris.",
+        text: "Project Atlas production migration is scheduled for 21 November 2026 at 08:30 CET.",
       },
     };
     const lateFillers = Array.from({ length: 48 }, (_, index) => ({

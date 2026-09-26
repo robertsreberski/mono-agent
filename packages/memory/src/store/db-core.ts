@@ -660,7 +660,7 @@ export class MemoryDbCore {
     }
     const anchors = queryVector === undefined
       ? new Set<string>()
-      : queryAnchors(query, rows.map((row) => String(row.text)));
+      : queryAnchors(query, this.anchorEntityNames(fused.map((f) => f.id)));
     for (const row of rows) {
       const record = this.fromRow(row);
       if (!options.includeInvalid && (record.status === "invalidated" || record.status === "dropped")) continue;
@@ -761,6 +761,16 @@ export class MemoryDbCore {
   }
 
   /** Cosine similarity for already-fused candidates that have a stored vector. */
+  /** Names (and id slugs) of the entities associated with candidate records. */
+  private anchorEntityNames(ids: readonly string[]): string[] {
+    if (ids.length === 0) return [];
+    const rows = this.db.prepare(
+      `SELECT DISTINCT e.id AS id, e.name AS name FROM memory_entities me JOIN entities e ON e.id = me.entity_id
+       WHERE me.memory_id IN (${ids.map(() => "?").join(",")})`,
+    ).all(...ids) as Array<{ id: string; name: string }>;
+    return rows.flatMap((row) => [row.name, row.id.slice(row.id.indexOf(":") + 1).replaceAll("-", " ")]);
+  }
+
   private candidateSimilarities(vector: readonly number[], ids: readonly string[]): Map<string, number> {
     const out = new Map<string, number>();
     if (ids.length === 0) return out;

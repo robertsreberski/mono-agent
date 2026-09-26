@@ -100,8 +100,15 @@ async function captureTurnUnlocked(
     strictModelOutput: true,
     fallbackOnClassifierFailure: true,
     isFinalCaptureAttempt: deps.isFinalCaptureAttempt === true,
+    // A candidate without a source (a plan retained before `source` existed)
+    // keeps the labels its extraction already validated while its text is
+    // unchanged; changed text is re-checked under the current rules, which
+    // never make it user-stated without a source.
     labelsForAction: (_action, candidate, _previous, finalText) => candidate.labels === undefined ? undefined
-      : captureLabels(candidate.labels, finalText ?? candidate.text, { ...labelContext, ...(candidate.entityIds === undefined ? {} : { entityIds: candidate.entityIds }) }),
+      : candidate.source === undefined && (finalText ?? candidate.text) === candidate.text ? candidate.labels
+      : captureLabels(candidate.labels, finalText ?? candidate.text, { ...labelContext,
+        ...(candidate.entityIds === undefined ? {} : { entityIds: candidate.entityIds }),
+        ...(candidate.source === undefined ? {} : { source: candidate.source }) }),
     // Once the intent exists it is the single commit owner. Writing the same
     // records directly here and then replaying the intent would duplicate the
     // SQLite/canonical transaction without improving durability.

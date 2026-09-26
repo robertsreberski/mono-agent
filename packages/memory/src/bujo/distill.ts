@@ -1,5 +1,6 @@
 import type { MemoryType } from "../store/index.js";
 import type { MemoryLabel } from "./labels.js";
+import type { CaptureSource } from "./capture-labels.js";
 
 export interface CandidateMemory {
   readonly type: MemoryType;          // task | event | note
@@ -9,6 +10,8 @@ export interface CandidateMemory {
   /** Candidate-specific canonical entity ids emitted by batched BuJo capture. */
   readonly entityIds?: readonly string[];
   readonly labels?: readonly MemoryLabel[];
+  /** Host-bounded origin of the claim in its captured turn, when known. */
+  readonly source?: CaptureSource;
 }
 
 export const MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS = 160;
@@ -39,7 +42,7 @@ export function clampCaptureText(value: string): string {
   return (wordEnd >= 40 ? prefix.slice(0, wordEnd) : prefix).trim();
 }
 
-/** Sentence boundaries shared by extraction, owner evidence, and length clamping. */
+/** Sentence boundaries shared by extraction and length clamping. */
 export function splitCaptureSentences(text: string): string[] {
   const parts: string[] = [];
   let start = 0;
@@ -57,8 +60,8 @@ function sentenceEnds(text: string): number[] {
   const ends: number[] = [];
   for (const match of text.matchAll(/[.!?](?=\s|$)/gu)) {
     const end = match.index!;
-    const prior = text.slice(Math.max(0, end - 8), end + 1);
-    if (/(?:\b(?:dr|st|mr|ms|mrs|prof|e\.g|i\.e)|\b[a-z])\.$/iu.test(prior)) continue;
+    // Length bound only: a period after a single letter is an initial.
+    if (/(?:^|[^\p{L}])\p{L}\.$/u.test(text.slice(Math.max(0, end - 2), end + 1))) continue;
     ends.push(end);
   }
   return ends;

@@ -21,8 +21,8 @@ import type { CanonicalGraphRepairGuard } from "./graph.js";
 import { MemoryModelError, MemoryModelOutputError } from "./model-error.js";
 import { withSerializedBujoMutation } from "./mutation-lock.js";
 import type { Bullet } from "./types.js";
-import { canonicalMemoryLabel, labelsOf, withMemoryLabels, type MemoryLabel } from "./labels.js";
-import { factSupported, ownerFactSupported } from "./capture-labels.js";
+import { canonicalMemoryLabel, isStructuredFact, labelsOf, withMemoryLabels, type MemoryLabel } from "./labels.js";
+import { factSupported, valueSupported } from "./capture-labels.js";
 
 /** The outcome of reconciling a single candidate against the existing index. */
 export type ReconcileAction =
@@ -73,7 +73,7 @@ export interface ReconcileDeps {
 
 const VALID_ACTIONS = new Set(["add", "update", "supersede", "noop"]);
 
-type ReconcileNeighbour = SimilarHit & { readonly sameEntityTopic?: string };
+type ReconcileNeighbour = SimilarHit & { readonly sameEntity?: string };
 
 interface Classification {
   readonly action: string;
@@ -121,7 +121,7 @@ async function reconcileUnlocked(
       similar = withEntityStateNeighbours(candidate, similar, deps.db);
 
       // Clearly novel (nothing close enough) → ADD outright, no LLM.
-      if (!similar.some((hit) => hit.sameEntityTopic !== undefined || hit.distance <= dupThreshold)) {
+      if (!similar.some((hit) => hit.sameEntity !== undefined || hit.distance <= dupThreshold)) {
         plan = planAddWithoutIndex(candidate, similar, deps, threadThreshold);
       } else {
         const decision = await classify(candidate, similar, deps);
@@ -180,7 +180,7 @@ async function reconcileBatchUnlocked(
 
   const reconcileIndexes = candidates.flatMap((_candidate, index) => {
     const similar = neighbours[index] ?? [];
-    return similar.some((hit) => hit.sameEntityTopic !== undefined || hit.distance <= dupThreshold) ? [index] : [];
+    return similar.some((hit) => hit.sameEntity !== undefined || hit.distance <= dupThreshold) ? [index] : [];
   });
   const reconcileIndexSet = new Set(reconcileIndexes);
   let decisions: Map<number, Classification>;
@@ -301,50 +301,38 @@ function resolveConflictingTargets(
   }
 }
 
-// Do not treat a shared person's unrelated notes as a state change. Only a
-// finite, recognizable property of the same graph entity can widen the vector
-// neighbourhood. The classifier still decides whether the value changed.
-const STATE_TOPICS: ReadonlyArray<readonly [string, RegExp]> = [
-  ["home_location", /\b(?:lives?|living|resides?|residing|moved|home|based)\b/iu],
-  ["work_location", /\b(?:works?|working|employed|employer|job|joined)\b/iu],
-  ["status", /\b(?:status|active|inactive|paused|resumed|completed|cancelled|canceled)\b/iu],
-];
-function stateTopics(text: string, labels: readonly MemoryLabel[] = []): Set<string> {
-  const topics = new Set(labels.flatMap((label) => label.kind === "fact" && label.key !== undefined ? [label.key] : []));
-  for (const [key, pattern] of STATE_TOPICS) if (pattern.test(text)) topics.add(key);
-  return topics;
-}
+// A state change about a known entity may be worded far from its old line.
+// Offer a few of that entity's own lines (those sharing a structured fact key
+// first, then the newest) without a vector score; the classifier compares the
+// actual claims. Selection uses graph associations and labels, not wording.
 function withEntityStateNeighbours(candidate: CandidateMemory, similar: readonly ReconcileNeighbour[], db: MemoryDb): ReconcileNeighbour[] {
   if ((candidate.entityIds?.length ?? 0) === 0) return [...similar];
   const seen = new Set(similar.map((hit) => hit.record.id));
   const anchored: ReconcileNeighbour[] = [];
   for (const entityId of (candidate.entityIds ?? []).slice(0, 3)) {
-    const topics = stateTopics(candidate.text, candidate.labels?.filter((label) =>
-      label.kind === "fact" && label.entityId === entityId));
-    if (topics.size === 0) continue;
-    const keysByMemory = new Map<string, string[]>();
-    for (const hit of (entityId.startsWith("person:")
-      ? db.listLabels({ kind: "fact", entityId }, 200).hits : [])) {
-      if (!hit.active || hit.label.kind !== "fact" || hit.label.key === undefined) continue;
-      keysByMemory.set(hit.memoryId, [...(keysByMemory.get(hit.memoryId) ?? []), hit.label.key]);
+    const keys = new Set(candidate.labels?.flatMap((label) =>
+      label.kind === "fact" && label.entityId === entityId && label.key !== undefined ? [label.key] : []) ?? []);
+    const keyed = new Set<string>();
+    if (keys.size > 0 && entityId.startsWith("person:")) {
+      for (const hit of db.listLabels({ kind: "fact", entityId }, 200).hits) {
+        if (hit.active && hit.label.kind === "fact" && hit.label.key !== undefined && keys.has(hit.label.key)) keyed.add(hit.memoryId);
+      }
     }
-    for (const record of db.memoriesForEntity(entityId)) {
+    const records = db.memoriesForEntity(entityId, ENTITY_NEIGHBOURS * 2);
+    for (const record of [...records.filter((item) => keyed.has(item.id)), ...records.filter((item) => !keyed.has(item.id))]) {
       if (seen.has(record.id)) continue;
-      const oldTopics = stateTopics(record.text);
-      for (const key of keysByMemory.get(record.id) ?? []) oldTopics.add(key);
-      const topic = [...topics].find((key) => oldTopics.has(key));
-      if (topic === undefined) continue;
       seen.add(record.id);
       // Infinity means no measured vector distance: it is never exposed as a
       // score, threaded, or used by the duplicate threshold. The explicit
       // marker is the sole reason this bounded neighbour is offered.
-      anchored.push({ record, distance: Number.POSITIVE_INFINITY, sameEntityTopic: topic });
-      if (anchored.length >= 3) break;
+      anchored.push({ record, distance: Number.POSITIVE_INFINITY, sameEntity: entityId });
+      if (anchored.length >= ENTITY_NEIGHBOURS) break;
     }
-    if (anchored.length >= 3) break;
+    if (anchored.length >= ENTITY_NEIGHBOURS) break;
   }
   return [...similar, ...anchored];
 }
+const ENTITY_NEIGHBOURS = 3;
 
 interface BatchActionPlan {
   readonly index: number;
@@ -547,19 +535,22 @@ function isRememberedUpdateTarget(decision: Classification, deps: ReconcileDeps)
   return target !== undefined && isRememberedMemoryId(target.id, target.text);
 }
 
-// Finite, deliberately conservative age/current-state grammar. An UPDATE to a
-// different snapshot would falsely date the new assertion to the old bullet.
-const AGE_SNAPSHOT = /\b(?:\d+(?:[.,]\d+)?\s*(?:months?|years?)\s*old|(?:is|was)\s+\d+(?:[.,]\d+)?\s*(?:months?|years?)\b|(?:ha|aveva)\s+\d+(?:[.,]\d+)?\s*(?:mesi|anni)\b|(?:is|was|heeft)\s+\d+(?:[.,]\d+)?\s*(?:maanden?|jaar|jaren)\s*(?:oud)?\b)\b/iu;
-const CURRENT_SNAPSHOT = /\b(?:currently|as of today|at present|attualmente|al momento|momenteel|op dit moment)\b/iu;
+function slugOf(text: string): string {
+  return text.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().match(/[\p{L}\p{N}]+/gu)?.join("-") ?? "";
+}
 
+// A dated candidate is a new snapshot, not a refinement of the old line, when
+// its ISO date is later than the old line's or the old line carries none:
+// rewriting an undated line in place would re-date its history. Structural
+// only; other time sensitivity is the classifier's observation-date rule.
 function isNewTimeSensitiveSnapshot(candidate: CandidateMemory, decision: Classification, deps: ReconcileDeps): boolean {
   const old = deps.db.get(decision.targetId ?? "");
   if (old === undefined || old.text === candidate.text) return false;
   const dates = (text: string): string[] => [...text.matchAll(/\b\d{4}-\d{2}-\d{2}\b/gu)].map(([date]) => date);
   const oldDates = dates(old.text);
   const newDates = dates(candidate.text);
-  if (oldDates.length > 0 && newDates.length > 0 && newDates[0]! > oldDates[0]!) return true;
-  return AGE_SNAPSHOT.test(candidate.text) || CURRENT_SNAPSHOT.test(candidate.text);
+  if (newDates.length === 0) return false;
+  return oldDates.length === 0 || newDates[0]! > oldDates[0]!;
 }
 
 function planUpdate(
@@ -624,11 +615,12 @@ function planSupersede(
   // A dated replacement may still contain facts carried forward from the old
   // line. Keep only labels still supported by that replacement; do not transfer
   // a stale value merely because the old line had a label.
+  // A text value that merely repeats the subject's own id is no evidence that
+  // the replacement still states it.
   const carried = labelsOf(beforeOld).filter((label) => label.kind === "fact"
-    ? (label.entityId === "person:owner" ? ownerFactSupported(label, replacement)
-      : (label.key !== "preferred_name" || /\b(?:called|named|name is|goes by|addressed as)\b/iu.test(replacement))
-        && factSupported(label, replacement))
-    : false);
+    && !(isStructuredFact(label) && label.value.type === "text"
+      && slugOf(label.value.text) === label.entityId.slice(label.entityId.indexOf(":") + 1))
+    && (label.entityId === "person:owner" ? valueSupported(label, replacement) : factSupported(label, replacement)));
   const labels = [...proposedLabels];
   const seen = new Set(labels.map(canonicalMemoryLabel));
   for (const label of carried) {
@@ -750,8 +742,8 @@ async function classifyBatch(
     candidate: candidates[index],
     existing: (neighbours[index] ?? []).map((hit) => ({
       id: hit.record.id,
-      ...(hit.sameEntityTopic === undefined ? { distance: Number(hit.distance.toFixed(6)) }
-        : { sameEntityTopic: hit.sameEntityTopic }),
+      ...(hit.sameEntity === undefined ? { distance: Number(hit.distance.toFixed(6)) }
+        : { sameEntity: hit.sameEntity }),
       text: hit.record.text,
     })),
   }));
@@ -771,7 +763,7 @@ Use exactly one of these decision object shapes:
 - supersede: {"index":N,"action":"supersede","targetId":"existing-id","text":"complete replacement memory"}
 
 Rules:
-- add means genuinely new; noop means duplicate; update means refinement; supersede means contradiction or a real replacement of a stable state. An existing item with sameEntityTopic has a shared graph entity and property but no measured vector distance; compare its actual content, not a fabricated similarity score.
+- add means genuinely new; noop means duplicate; update means refinement; supersede means contradiction or a real replacement of a stable state. An existing item with sameEntity shares that graph entity but has no measured vector distance; it is offered only so a changed state of that entity can be recognised. Compare its actual content, not a fabricated similarity score; an unrelated claim about the same entity is add.
 - Compare the meaning as well as the topic: speaker attribution, stated scope, evidence limits, temporal qualification, and correction-versus-state-change qualification are durable information.
 - Material dates, times, timezones, year/month boundaries, resolved calendar intervals, observation anchors, uncertainty, negation, speaker/event association, and event scope must survive update or supersede text. Resolve directly stated relative time against a supplied host-owned observation anchor when unambiguous; preserve the observation date for an age snapshot as 'was N months old as of YYYY-MM-DD'. Never reinterpret a capture/observation anchor as the event time or invent a more exact event date than the input and trusted anchor support. Do not rebase a stored old observation on the current capture clock.
 - Distinct repeated events remain distinct when their temporal qualifiers or anchors differ. Do not choose noop or merge them merely because their non-temporal wording is similar.
@@ -956,8 +948,8 @@ async function classify(
 
 const classifyPrompt = (candidate: CandidateMemory, similar: readonly ReconcileNeighbour[]): string => {
   const neighbours = similar
-    .map((h) => `- id=${h.record.id} ${h.sameEntityTopic === undefined
-      ? `distance=${h.distance.toFixed(3)}` : `sameEntityTopic=${h.sameEntityTopic} (no vector score)`} text="${h.record.text}"`)
+    .map((h) => `- id=${h.record.id} ${h.sameEntity === undefined
+      ? `distance=${h.distance.toFixed(3)}` : `sameEntity=${h.sameEntity} (no vector score)`} text="${h.record.text}"`)
     .join("\n");
   return `CLASSIFY a new candidate memory against existing memories. Decide whether it is novel,
 a duplicate, a refinement, or a contradiction. Return ONLY JSON:
@@ -965,7 +957,7 @@ a duplicate, a refinement, or a contradiction. Return ONLY JSON:
 - add: genuinely new information.
 - noop: an exact duplicate of an existing memory (no change needed).
 - update: refines/merges an existing memory; set targetId and text to the merged sentence.
-- supersede: contradicts/replaces an existing memory or stable state; set targetId and text to the new sentence. sameEntityTopic denotes a shared graph entity and property, not a measured vector distance; compare the actual claims.
+- supersede: contradicts/replaces an existing memory or stable state; set targetId and text to the new sentence. sameEntity denotes a shared graph entity, not a measured vector distance; compare the actual claims, and an unrelated claim about the same entity is add.
 - Compare speaker attribution, stated scope, evidence limits, and correction-versus-state-change meaning, not just topic similarity.
 - Merged or replacement text must not promote an attributed or unchecked claim to fact, infer a cause from an observed outcome, or describe an erroneous report as a former real-world state. Preserve an explicit rename or other real state change as history when material.
 - If the User stated a fact which the Assistant merely repeated, preserve the User's attribution rather than marking it an Assistant report. Explicit user reports and preferences may remain useful without outside proof; preserve their speaker and scope. Do not invent verification doubt, earlier-conversation claims, or durable facts from generic Assistant advice.

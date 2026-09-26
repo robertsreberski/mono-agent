@@ -112,20 +112,20 @@ describe("expandEntityRelations", () => {
     const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
     try {
       await db.upsert(note("morgan-seed", "Morgan has durable team context."));
-      await db.upsert(note("taylor-manager", "Taylor is based in Porto."));
-      await db.upsert(note("casey-report", "Casey is based in Rotterdam."));
-      await db.upsert(note("amsterdam-distractor", "Amsterdam is Morgan's current home."));
+      await db.upsert(note("taylor-manager", "Taylor is based in Fernhollow."));
+      await db.upsert(note("casey-report", "Casey is based in Brindlecove."));
+      await db.upsert(note("quillmere-distractor", "Quillmere is Morgan's current home."));
       addEntity(db, "person:morgan", "Morgan");
       addEntity(db, "person:taylor", "Taylor");
       addEntity(db, "person:casey", "Casey");
-      addEntity(db, "city:amsterdam", "Amsterdam");
+      addEntity(db, "city:quillmere", "Quillmere");
       associate(db, "morgan-seed", "person:morgan");
       associate(db, "taylor-manager", "person:taylor");
       associate(db, "casey-report", "person:casey");
-      associate(db, "amsterdam-distractor", "city:amsterdam");
+      associate(db, "quillmere-distractor", "city:quillmere");
       db.addEntityRelation("person:taylor", "person:morgan", "manages");
       db.addEntityRelation("person:morgan", "person:casey", "manages");
-      db.addEntityRelation("person:morgan", "city:amsterdam", "lives in");
+      db.addEntityRelation("person:morgan", "city:quillmere", "lives in");
 
       expect(expandIds(db, ["morgan-seed"], "Where is Morgan's manager based?")).toEqual(["taylor-manager"]);
       expect(expandIds(db, ["morgan-seed"], "Who manages Morgan?")).toEqual(["taylor-manager"]);
@@ -142,15 +142,15 @@ describe("expandEntityRelations", () => {
     try {
       await db.upsert(note("morgan-memory", "Morgan has durable project context."));
       await db.upsert(note("atlas-memory", "Project Atlas has a budget of 200."));
-      await db.upsert(note("amsterdam-memory", "Amsterdam has a quiet office."));
+      await db.upsert(note("quillmere-memory", "Quillmere has a quiet office."));
       addEntity(db, "person:morgan", "Morgan");
       addEntity(db, "project:atlas", "Project Atlas");
-      addEntity(db, "city:amsterdam", "Amsterdam");
+      addEntity(db, "city:quillmere", "Quillmere");
       associate(db, "morgan-memory", "person:morgan");
       associate(db, "atlas-memory", "project:atlas");
-      associate(db, "amsterdam-memory", "city:amsterdam");
+      associate(db, "quillmere-memory", "city:quillmere");
       db.addEntityRelation("person:morgan", "project:atlas", "leads");
-      db.addEntityRelation("person:morgan", "city:amsterdam", "lives in");
+      db.addEntityRelation("person:morgan", "city:quillmere", "lives in");
 
       expect(expandIds(db, ["morgan-memory"], "What does Morgan lead?")).toEqual(["atlas-memory"]);
     } finally {
@@ -201,11 +201,11 @@ describe("expandEntityRelations", () => {
     const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
     try {
       await db.upsert(note("morgan-seed", "Morgan has durable project context."));
-      await db.upsert(note("atlas-target", "Project Atlas is based in Paris."));
+      await db.upsert(note("atlas-target", "Project Atlas is based in Larkmoor."));
       addEntity(db, "person:morgan", "Morgan");
       addEntity(db, "project:atlas", "Project Atlas");
       addEntity(db, "project:apollo", "Project Apollo");
-      addEntity(db, "city:amsterdam", "Amsterdam");
+      addEntity(db, "city:quillmere", "Quillmere");
       associate(db, "morgan-seed", "person:morgan");
       associate(db, "atlas-target", "project:atlas");
       db.addEntityRelation("person:morgan", "project:atlas", "leads");
@@ -213,7 +213,7 @@ describe("expandEntityRelations", () => {
 
       expect(expandIds(db, ["morgan-seed"], "Does Morgan lead Project Atlas?")).toEqual(["atlas-target"]);
       expect(expandIds(db, ["morgan-seed"], "Does Morgan lead Project Apollo?")).toEqual([]);
-      expect(expandIds(db, ["morgan-seed"], "Does Morgan lead Amsterdam?")).toEqual([]);
+      expect(expandIds(db, ["morgan-seed"], "Does Morgan lead Quillmere?")).toEqual([]);
       expect(expandIds(db, ["morgan-seed"], "Does Morgan lead Project Unknown?")).toEqual([]);
       expect(expandIds(db, ["morgan-seed"], "Does Morgan lead the garden club?")).toEqual([]);
       expect(expandIds(db, ["morgan-seed"], "Morgan leads Unknown?")).toEqual([]);
@@ -268,14 +268,14 @@ describe("expandEntityRelations", () => {
     const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
     try {
       await db.upsert(note("morgan-memory", "Morgan has durable location context."));
-      await db.upsert(note("amsterdam-memory", "Amsterdam is Morgan's current home."));
+      await db.upsert(note("quillmere-memory", "Quillmere is Morgan's current home."));
       addEntity(db, "person:morgan", "Morgan");
-      addEntity(db, "city:amsterdam", "Amsterdam");
+      addEntity(db, "city:quillmere", "Quillmere");
       associate(db, "morgan-memory", "person:morgan");
-      associate(db, "amsterdam-memory", "city:amsterdam");
-      db.addEntityRelation("person:morgan", "city:amsterdam", "lives in");
+      associate(db, "quillmere-memory", "city:quillmere");
+      db.addEntityRelation("person:morgan", "city:quillmere", "lives in");
 
-      expect(expandIds(db, ["morgan-memory"], "Where does Morgan live?")).toEqual(["amsterdam-memory"]);
+      expect(expandIds(db, ["morgan-memory"], "Where does Morgan live?")).toEqual(["quillmere-memory"]);
     } finally {
       db.close();
     }

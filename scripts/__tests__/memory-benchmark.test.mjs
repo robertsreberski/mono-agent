@@ -107,7 +107,7 @@ describe("memory benchmark", () => {
           question_type: "fact",
           question: "Where is the launch office?",
           haystack_session_ids: ["session-alpha"],
-          haystack_sessions: [[{ content: "The launch office is in Amsterdam." }]],
+          haystack_sessions: [[{ content: "The launch office is in Quillmere." }]],
           answer_session_ids: ["session-alpha"],
         },
         {
@@ -122,7 +122,7 @@ describe("memory benchmark", () => {
       await writeFile(locomo, JSON.stringify([{
         conversation: {
           speaker_a: "Morgan",
-          session_1: [{ dia_id: "D1:1", text: "The launch office is in Amsterdam." }],
+          session_1: [{ dia_id: "D1:1", text: "The launch office is in Quillmere." }],
         },
         qa: [
           {
@@ -340,7 +340,7 @@ describe("memory benchmark", () => {
         question_type: "fact",
         question: "Where is the launch office?",
         haystack_session_ids: ["session-alpha"],
-        haystack_sessions: [[{ content: "The launch office is in Amsterdam." }]],
+        haystack_sessions: [[{ content: "The launch office is in Quillmere." }]],
         answer_session_ids: ["missing-session"],
       }]));
       await expect(runMemoryBenchmark({ suite: "longmemeval", datasetPath: dataset }))

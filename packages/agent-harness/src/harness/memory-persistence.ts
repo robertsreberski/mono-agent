@@ -92,7 +92,7 @@ export async function persistSuccessfulMemory(
 ): Promise<void> {
     const mode = harnessOptions.memoryWriteMode;
     if (harnessOptions.memory !== undefined && (mode === "append-host-summary" || mode === "capture")) {
-      if (shouldSkipMemoryPersistence(userMessage, assistantText, persistenceOptions)) {
+      if (shouldSkipMemoryPersistence(assistantText)) {
         return;
       }
       const memory = harnessOptions.memory;
@@ -224,25 +224,9 @@ function isTriggerSource(source: string | undefined): boolean {
   return source === "cron" || source === "webhook";
 }
 
-const MAX_TRIVIAL_MEMORY_TURN_CHARS = 48;
-const TRIVIAL_MEMORY_ANCHOR_TOKENS = new Set([
-  "ping",
-  "pong",
-  "test",
-  "testing",
-]);
-const TRIVIAL_MEMORY_FILLER_TOKENS = new Set([
-  "ok",
-  "okay",
-  "works",
-]);
-
-function shouldSkipMemoryPersistence(
-  userMessage: string,
-  assistantText: string,
-  options: MemoryTurnOptions = {},
-): boolean {
-  return isNothingToReportSentinel(assistantText) || isTrivialMemoryTurn(userMessage, assistantText, options);
+// No word lists: a probe or filler turn goes to extraction, which may return empty.
+function shouldSkipMemoryPersistence(assistantText: string): boolean {
+  return isNothingToReportSentinel(assistantText);
 }
 
 // Deliberately not `suppressesNotification`, which also treats empty text as
@@ -251,27 +235,4 @@ function shouldSkipMemoryPersistence(
 function isNothingToReportSentinel(assistantText: string): boolean {
   const suppression = classifyNotifySuppression(assistantText);
   return suppression === "sentinel" || suppression === "narrated-sentinel";
-}
-
-function isTrivialMemoryTurn(
-  userMessage: string,
-  assistantText: string,
-  options: MemoryTurnOptions = {},
-): boolean {
-  const candidate = isTriggerSource(options.source) || options.captureSpeakerKind === "trigger"
-    ? assistantText : `${userMessage} ${assistantText}`;
-  const compact = candidate.replace(/\s+/gu, " ").trim();
-  if (compact.length === 0 || compact.length > MAX_TRIVIAL_MEMORY_TURN_CHARS) {
-    return false;
-  }
-  const tokens = compact
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/gu, " ")
-    .trim()
-    .split(/\s+/u)
-    .filter((token) => token.length > 0);
-  return (
-    tokens.some((token) => TRIVIAL_MEMORY_ANCHOR_TOKENS.has(token)) &&
-    tokens.every((token) => TRIVIAL_MEMORY_ANCHOR_TOKENS.has(token) || TRIVIAL_MEMORY_FILLER_TOKENS.has(token))
-  );
 }

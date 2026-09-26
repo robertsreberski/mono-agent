@@ -88,7 +88,7 @@ function firstPageArguments(over: Record<string, unknown> = {}): Record<string, 
   return {
     fromDate: "2026-09-01",
     throughDate: "2026-09-07",
-    timeZone: "Europe/Amsterdam",
+    timeZone: "CET",
     ...over,
   };
 }
@@ -111,8 +111,8 @@ function cursorWithOffset(cursor: string, offset: number): string {
 describe("MemoryJournal calendar range", () => {
   it.each([
     ["UTC", "2026-09-01", "2026-09-01", "2026-09-01T00:00:00.000Z", "2026-09-02T00:00:00.000Z"],
-    ["Europe/Amsterdam", "2026-03-29", "2026-03-29", "2026-03-28T23:00:00.000Z", "2026-03-29T22:00:00.000Z"],
-    ["Europe/Amsterdam", "2026-10-25", "2026-10-25", "2026-10-24T22:00:00.000Z", "2026-10-25T23:00:00.000Z"],
+    ["CET", "2026-03-29", "2026-03-29", "2026-03-28T23:00:00.000Z", "2026-03-29T22:00:00.000Z"],
+    ["CET", "2026-10-25", "2026-10-25", "2026-10-24T22:00:00.000Z", "2026-10-25T23:00:00.000Z"],
     ["Asia/Kathmandu", "2026-09-01", "2026-09-01", "2026-08-31T18:15:00.000Z", "2026-09-01T18:15:00.000Z"],
     ["America/Sao_Paulo", "2018-11-04", "2018-11-04", "2018-11-04T03:00:00.000Z", "2018-11-05T02:00:00.000Z"],
     ["UTC", "2028-02-29", "2028-02-29", "2028-02-29T00:00:00.000Z", "2028-03-01T00:00:00.000Z"],
@@ -203,7 +203,7 @@ describe("MemoryJournal MCP contract", () => {
       expect(firstNavigation).toContain("MemoryJournal navigation");
       expect(firstNavigation).toContain(`Exact arguments: ${JSON.stringify({ cursor: nextCursor })}`);
       expect(firstNavigation).toMatch(/returned 2 of 3 snapshot entries; more pages remain/u);
-      expect(firstNavigation).toMatch(/2026-09-01 through 2026-09-07 \(Europe\/Amsterdam\)/u);
+      expect(firstNavigation).toMatch(/2026-09-01 through 2026-09-07 \(CET\)/u);
       expect(firstNavigation).toContain("The requested range was fully scanned.");
       const second = await connection.client.callTool({
         name: MEMORY_JOURNAL_TOOL_NAME,

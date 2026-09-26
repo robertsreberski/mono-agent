@@ -10,21 +10,21 @@ function note(id: string, text: string, over: Partial<MemoryRecord> = {}): Memor
 describe("findSimilar", () => {
   it("returns nearest live memories by vector distance, closest first", async () => {
     const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
-    await db.upsert(note("a", "morgan lives in lisbon"));
+    await db.upsert(note("a", "morgan lives in thistlemoor"));
     await db.upsert(note("b", "the weather is sunny today"));
-    await db.upsert(note("c", "morgan moved to lisbon last year"));
-    const hits = await db.findSimilar("morgan lisbon home", 3);
+    await db.upsert(note("c", "morgan moved to thistlemoor last year"));
+    const hits = await db.findSimilar("morgan thistlemoor home", 3);
     expect(hits.length).toBeGreaterThan(0);
-    expect(["a", "c"]).toContain(hits[0]?.record.id); // a morgan/lisbon memory is nearest
+    expect(["a", "c"]).toContain(hits[0]?.record.id); // a morgan/thistlemoor memory is nearest
     expect(hits[0]?.distance).toBeLessThanOrEqual(hits[hits.length - 1]?.distance ?? 1);
     db.close();
   });
 
   it("excludes invalidated/dropped memories", async () => {
     const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
-    await db.upsert(note("old", "morgan lisbon", { status: "invalidated" }));
-    await db.upsert(note("live", "morgan lisbon"));
-    const hits = await db.findSimilar("morgan lisbon", 5);
+    await db.upsert(note("old", "morgan thistlemoor", { status: "invalidated" }));
+    await db.upsert(note("live", "morgan thistlemoor"));
+    const hits = await db.findSimilar("morgan thistlemoor", 5);
     expect(hits.map((h) => h.record.id)).toEqual(["live"]);
     db.close();
   });

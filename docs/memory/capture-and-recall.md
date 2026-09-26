@@ -19,7 +19,7 @@ For tier selection (lite / journal / bujo) and embeddings setup, start at the [M
 | `append-host-summary` | Admit one deterministic host observation by provider run id, then fsync and project it. | Lite/Journal/BuJo | no |
 | `capture` | Admit the host summary plus full approved capture text by provider run id, then curate it in the background. | BuJo | configured chat model |
 
-The host deliberately skips memory writes for two low-signal successful turns, in every write mode: final answers that are `NOTHING_TO_REPORT` (the cron/webhook no-op sentinel), or that end with it on their final line, and tiny explicit test/ping probes such as `test` / `test ok`. Short contextual acknowledgements are not skipped by this default.
+The host deliberately skips memory writes for one low-signal successful turn, in every write mode: final answers that are `NOTHING_TO_REPORT` (the cron/webhook no-op sentinel), or that end with it on their final line. There is no host word list for probes or filler such as `test` / `ping`; those turns reach capture, whose extraction may return an empty plan.
 
 Cron and webhook turns omit their trigger prompt and webhook pre-instructions from memory. Intelligent capture receives an honest scheduled-task or webhook source label (not `User`) plus the assistant answer; the deterministic host summary remains assistant-answer-only. The extractor must not treat an assistant recap as a first-party report. There is no deterministic recap classifier, so model-guided capture may still make mistakes; the no-op sentinel remains the deterministic skip.
 
@@ -190,7 +190,7 @@ Key properties:
 - **Reconcile is intelligent**, not append-only: the pipeline classifies each observation as `ADD` / `UPDATE` / `SUPERSEDE` / `NOOP` against existing memories to avoid duplication.
 - **Crash-idempotent semantic commit.** Run-derived fact ids, a retained semantic plan, and the exact replay projection make a post-commit/pre-receipt replay converge without another model call, duplicate fact, or unattested lifecycle/edge.
 - **Associations are precise.** Each curated fact carries only the entity IDs explicitly extracted for that fact; the implementation never creates a turn-wide memory/entity Cartesian product.
-- **Time is observation-grounded.** Capture asks the model to resolve unambiguous relative calendar dates against the immutable host-owned UTC admission instant, retain broad intervals when precision is unavailable, and express an age snapshot as historical (`was 14.5 months old as of 2026-09-08`), not a permanent current age. When the anchor is absent it must not fabricate one. Reconciliation converts a recognizably new age/current-status UPDATE to a newly dated ADD rather than rewriting an older daily bullet. These are model instructions plus a finite snapshot guard, not factual verification.
+- **Time is observation-grounded.** Capture asks the model to resolve unambiguous relative calendar dates against the immutable host-owned UTC admission instant, retain broad intervals when precision is unavailable, and express an age snapshot as historical (`was 14.5 months old as of 2026-09-08`), not a permanent current age. When the anchor is absent it must not fabricate one. Reconciliation converts an UPDATE whose text carries an ISO date into a dated supersession, rather than rewriting an older daily bullet, when its target is undated or carries an earlier date; other time sensitivity is the classifier's observation-date rule, with no age or "currently" word lists. Reconciliation also offers up to three of a candidate's same-entity lines (those sharing a structured fact key first, then the newest) without a vector score, so the classifier can recognise a changed state. These are model instructions plus structural guards, not factual verification.
 
 This path uses a chat LLM, so `writeMode: "capture"` **requires
 `mode: "bujo"`** and fails config validation otherwise—there is no silent fallback
@@ -352,7 +352,7 @@ Recall fuses two retrievers and re-ranks the result:
 
 - **BM25 keyword (FTS)** over the markdown entries.
 - **Vector similarity** over the configured embeddings.
-- With embeddings, ranking is **embedding-first**: every candidate from either retriever is scored by its stored vector's cosine similarity (below `0.5` counts as no semantic evidence). Shared words add nothing by themselves; only exact names, numbers and dates earn a bounded bonus: each query anchor carries an equal share of up to `0.15` for numbers and dates and `0.08` for names. The embedding already reflects a name, so the smaller name bonus keeps records that only share a name from being lifted as far. A query word is such an anchor when it is a whole number, date or numeric identifier (`1988-11-02` never matches `1988-12-02`), is capitalized and is not a question word, or is spelled as a proper noun by a candidate record; matching normalizes Unicode and ignores case and accents (`Zoe` matches `Zoë`). A small **Reciprocal Rank Fusion (RRF)** rank hint breaks ties; salience/insight are small tie-breakers. `lastAccessedAt` and access counts are telemetry only and never affect ranking.
+- With embeddings, ranking is **embedding-first**: every candidate from either retriever is scored by its stored vector's cosine similarity (below `0.5` counts as no semantic evidence). Shared words add nothing by themselves; only exact names, numbers and dates earn a bounded bonus: each query anchor carries an equal share of up to `0.15` for numbers and dates and `0.08` for names. The embedding already reflects a name, so the smaller name bonus keeps records that only share a name from being lifted as far. A query word is such an anchor when it is a whole number, date or numeric identifier (`1988-11-02` never matches `1988-12-02`), or a word of at least three letters in the name of an entity associated with a candidate record; there is no question-word or stop-word list; matching normalizes Unicode and ignores case and accents (`Zoe` matches `Zoë`). A small **Reciprocal Rank Fusion (RRF)** rank hint breaks ties; salience/insight are small tie-breakers. `lastAccessedAt` and access counts are telemetry only and never affect ranking.
 - Without embeddings (Lite, or a temporary embedding outage), and for a record still waiting for its vector, evidence remains lexical term overlap as before.
 - Automatic recall at the start of a turn shows a small **possibly relevant** block. The main agent model decides what matters; the block never claims to answer:
 
@@ -414,7 +414,7 @@ The first call requires all three range fields:
 {
   "fromDate": "2026-09-01",
   "throughDate": "2026-09-07",
-  "timeZone": "Europe/Amsterdam",
+  "timeZone": "CET",
   "limit": 10
 }
 ```

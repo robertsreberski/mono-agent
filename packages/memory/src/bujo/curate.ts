@@ -275,7 +275,7 @@ export function proposeCoarseCurate(root: string, options: CoarseCurateOptions =
       const existing = labelsOf(bullet);
       const fresh = deriveCoarseFactLabels(source.text, bullet.type, {
         entityIds: byMemory.get(source.id) ?? [], entityNames: names,
-        ...(ownerLine ? { captureEvidence: { userText: "", ownerTurn: true as const, toolOutcomes: [] } } : {}),
+        ...(ownerLine ? { ownerLine: true } : {}),
       }).flatMap((label) => label.kind === "fact" ? [{ ...label, attribution: "assistant-inferred" as const }] : [])
         .filter((label) => !existing.some((old) => old.kind === "fact" && old.entityId === label.entityId))
         .slice(0, Math.max(0, 8 - existing.length));
@@ -340,7 +340,7 @@ export function validateCurateProposal(proposal: CurateProposal, names?: Readonl
 // assistant-inferred; it never mints user-stated labels, preferences or lessons.
 function curateCaptureLabels(raw: readonly unknown[], text: string, names?: ReadonlyMap<string, string>): readonly MemoryLabel[] {
   const labels = captureLabels(raw, text, { ...(names === undefined ? {} : { entityNames: names }),
-    ...(OWNER_LINE.test(text) ? { captureEvidence: { userText: "", ownerTurn: true as const, toolOutcomes: [] } } : {}) });
+    ...(OWNER_LINE.test(text) ? { ownerLine: true } : {}) });
   return labels.filter((label) => label.kind === "fact").map((label) => ({ ...label, attribution: "assistant-inferred" as const }));
 }
 function safeText(text: string): boolean {

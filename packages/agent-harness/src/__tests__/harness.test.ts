@@ -2563,7 +2563,6 @@ describe("AgentHarness", () => {
 
   for (const [label, userMessage, assistantText] of [
     ["nothing sentinel", "Run scan", "NOTHING_TO_REPORT"],
-    ["trivial probe", "ping", "pong"],
   ] as const) {
     it(`keeps the strong admission boundary untouched for a skipped ${label}`, async () => {
       const dir = await tempDir();
@@ -2786,7 +2785,7 @@ describe("AgentHarness", () => {
     }
 
     for (const [probe, answer] of [["test", "test ok"], ["ping", "pong"]] as const) {
-      it(`writeMode '${mode}' skips memory writes for tiny ${probe} turns`, async () => {
+      it(`writeMode '${mode}' hands tiny ${probe} turns to memory without a host word list`, async () => {
         const dir = await tempDir();
         const identityPath = join(dir, "IDENTITY.md");
         await writeFile(identityPath, "You are Mono.", "utf8");
@@ -2822,11 +2821,12 @@ describe("AgentHarness", () => {
           createRunId: () => `run-trivial-${mode}-${probe}`,
         }).run({ conversationId: "telegram:9", userMessage: probe, abortSignal: new AbortController().signal });
 
-        expect(calls).toEqual([]);
+        // Extraction may return an empty plan; the host no longer skips by vocabulary.
+        expect(calls[0]).toBe("append:telegram:9");
       });
     }
 
-    it(`writeMode '${mode}' skips trigger probes even when the trigger prompt is prefixed`, async () => {
+    it(`writeMode '${mode}' hands prefixed trigger probes to memory without a host word list`, async () => {
       const dir = await tempDir();
       const identityPath = join(dir, "IDENTITY.md");
       await writeFile(identityPath, "You are Mono.", "utf8");
@@ -2867,7 +2867,7 @@ describe("AgentHarness", () => {
         abortSignal: new AbortController().signal,
       });
 
-      expect(calls).toEqual([]);
+      expect(calls[0]).toBe("append:webhook:probe");
     });
   }
 
