@@ -27,7 +27,7 @@ const job = {
   id: "digest",
   enabled: true,
   expression: "*/5 * * * *",
-  timezone: "Europe/Amsterdam",
+  timezone: "CET",
   prompt: "Prepare digest",
 };
 

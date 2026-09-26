@@ -212,14 +212,14 @@ describe("automatic labelled background", () => {
 describe("explicit fact sheet rendering", () => {
   it("renders reader-facing keys and value text instead of JSON", async () => {
     const { readLabelSections } = await import("../memory-label-sections.js");
-    const city: MemoryLabelHit = { ...fact("city", "1990-05-17"), text: "Morgan's home city is Lisbon.",
+    const city: MemoryLabelHit = { ...fact("city", "1990-05-17"), text: "Morgan's home city is Thistlemoor.",
       label: { v: 1, kind: "fact", entityId: "person:morgan", key: "other:home-city",
-        value: { type: "text", text: "Lisbon" }, attribution: "user-stated" } };
+        value: { type: "text", text: "Thistlemoor" }, attribution: "user-stated" } };
     const sections = readLabelSections(store([], [city]), { query: "Morgan", kind: "fact" }, { hostDate: "2026-09-24" });
-    expect(sections?.text).toContain("Morgan [person:morgan] home city: Lisbon (user-stated");
+    expect(sections?.text).toContain("Morgan [person:morgan] home city: Thistlemoor (user-stated");
     expect(sections?.text).not.toContain("{");
     // The structured entry keeps the stored key and typed value.
-    expect(sections?.factSheet?.[0]).toMatchObject({ key: "other:home-city", value: { type: "text", text: "Lisbon" } });
+    expect(sections?.factSheet?.[0]).toMatchObject({ key: "other:home-city", value: { type: "text", text: "Thistlemoor" } });
   });
 
   it("never lets keyless person lines push a structured conflict past the cut", async () => {

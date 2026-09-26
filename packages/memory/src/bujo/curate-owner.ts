@@ -5,7 +5,6 @@ import { isLegacyHostObservation, projectCanonicalGraph, readCanonicalGraphStric
 import { isSkippedRawBujoRecord } from "./rebuild-source-validation.js";
 import { labelsOf } from "./labels.js";
 import { OWNER_ENTITY_ID } from "./entity-reuse.js";
-import { OWNER_PROPERTY } from "./capture-labels.js";
 import type { MemoryDb } from "../store/index.js";
 import type { Bullet } from "./types.js";
 
@@ -65,7 +64,17 @@ const ADVERBS = ["also", "now", "still", "often", "never", "always", "just", "al
 const OWNER_VERB = new RegExp(`^(?:the\\s+)?user\\s+(?:(?:[a-z]+ly|${ADVERBS.join("|")})\\s+)?(?:[a-z]+[a-z](?:s|ed)|${AUXILIARIES.join("|")})\\b(?!['’])`, "iu");
 const OWNER_POSSESSIVE = /^(?:the\s+)?user(?:'s|’s)\s/iu;
 
-/** "The user's <owner property> ..." using capture's finite owner-property grammar. */
+// Legacy owner backfill only: English owner-property shapes for existing
+// "the user's ..." lines. Capture no longer uses subject grammar.
+const OWNER_PROPERTY: Readonly<Record<string, RegExp>> = {
+  birth_date: /\b(?:my|the (?:user|owner)'s)\s+(?:birthday|birth\s+date)\b|\b(?:i|the (?:user|owner))\s+(?:was|am|'m)\s+born\b/iu,
+  full_name: /\b(?:my|the (?:user|owner)'s)\s+(?:full\s+)?name\b|\b(?:i\s+am|i'm|the (?:user|owner)\s+is)\s+(?:named|called)\b/iu,
+  preferred_name: /\b(?:my|the (?:user|owner)'s)\s+(?:preferred\s+)?name\b|\b(?:i|the (?:user|owner))\s+(?:prefer|prefers|go\s+by|goes\s+by)\b/iu,
+  home_location: /\b(?:my|the (?:user|owner)'s)\s+home\b|\b(?:i|the (?:user|owner))\s+(?:live|lives|lived|moved)\s+(?:in|to|at)\b|\b(?:i\s+am|i'm|the (?:user|owner)\s+is)\s+based\s+in\b/iu,
+  work_location: /\b(?:my|the (?:user|owner)'s)\s+(?:work|job|employer)\b|\b(?:i|the (?:user|owner))\s+(?:work|works|worked)\s+(?:at|for|as|in)\b/iu,
+};
+
+/** "The user's <owner property> ..." using the legacy owner-property grammar. */
 function ownerPropertyPossessive(text: string): boolean {
   if (!OWNER_POSSESSIVE.test(text)) return false;
   const normalized = text.replace(/[’]/gu, "'").replace(/\s+/gu, " ").replace(/^user's /iu, "the user's ");

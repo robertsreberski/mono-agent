@@ -219,7 +219,7 @@ describe("capture extraction with reuse hints", () => {
   it("never binds the canonical owner id from model output on a turn that is not the host-verified owner's", async () => {
     const output = JSON.stringify({
       memories: [{ type: "note", text: "Morgan met the user at Maple Street.", salience: 0.8, isInsight: false,
-        entityIds: ["person:owner", "person:morgan"],
+        entityIds: ["person:owner", "person:morgan"], source: "user",
         labels: [{ v: 1, kind: "fact", entityId: "person:morgan", key: "relationship",
           value: { type: "relationship", role: "zorbel", targetEntityId: "person:owner" }, attribution: "unknown" }] }],
       entities: [{ id: "person:owner", name: "Owner", type: "person" }, { id: "person:morgan", name: "Morgan", type: "person" }],

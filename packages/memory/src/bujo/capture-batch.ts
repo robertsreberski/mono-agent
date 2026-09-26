@@ -9,7 +9,10 @@ import { OWNER_ENTITY_ID, renderKnownEntityHints } from "./entity-reuse.js";
 import { MAX_MODEL_JSON_CHARS, parseJsonExact } from "./json.js";
 import type { LlmComplete } from "./llm.js";
 import type { MemoryCaptureEvidence, MemoryCaptureSpeakerKind } from "@mono-agent/agent-contracts";
-import { captureLabels, deriveCoarseFactLabels, verifiedOutcomeCount, type CaptureLabelContext } from "./capture-labels.js";
+import {
+  CAPTURE_SOURCES, boundedCaptureSource, captureLabels, deriveCoarseFactLabels, verifiedOutcomeCount,
+  type CaptureLabelContext, type CaptureSource,
+} from "./capture-labels.js";
 import { MemoryModelError, MemoryModelOutputError } from "./model-error.js";
 import { unsafeCaptureContent } from "./text-safety.js";
 
@@ -51,9 +54,10 @@ export const STRICT_CAPTURE_OUTPUT_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["type", "text", "salience", "isInsight", "entityIds"],
+        required: ["type", "text", "salience", "isInsight", "entityIds", "source"],
         properties: {
           type: { type: "string", enum: ["task", "event", "note"] },
+          source: { type: "string", enum: CAPTURE_SOURCES },
           // No maxLength: an over-long body is clamped by the host, because a
           // tool-call rejection would discard every sibling memory with it.
           text: { type: "string", minLength: 1 },
@@ -154,17 +158,18 @@ const prompt = (
 ): string => `Extract one bounded, durable memory plan from the completed turn below.
 ${renderObservationContext(observationContext)}
 Return ONLY one exact JSON object with exactly these root keys:
-{"memories":[{"type":"note","text":"Morgan was born on May 17, 1990.","salience":0.8,"isInsight":false,"entityIds":["person:morgan"],"labels":[{"v":1,"kind":"fact","entityId":"person:morgan","key":"birth_date","value":{"type":"date","date":"1990-05-17"},"attribution":"user-stated"}]}],"entities":[{"id":"person:morgan","name":"Morgan","type":"person"},{"id":"project:example","name":"example project","type":"project"}],"relations":[{"src":"person:morgan","dst":"project:example","relation":"works on"}]}
+{"memories":[{"type":"note","text":"Morgan was born on 1990-05-17.","salience":0.8,"isInsight":false,"entityIds":["person:morgan"],"source":"user","labels":[{"v":1,"kind":"fact","entityId":"person:morgan","key":"birth_date","value":{"type":"date","date":"1990-05-17"},"attribution":"user-stated"}]}],"entities":[{"id":"person:morgan","name":"Morgan","type":"person"},{"id":"project:example","name":"example project","type":"project"}],"relations":[{"src":"person:morgan","dst":"project:example","relation":"works on"}]}
 
 Rules:
 - At most ${MAX_CAPTURE_MEMORIES} memories, ${MAX_CAPTURE_ENTITIES} entities, and ${MAX_CAPTURE_RELATIONS} relations.
 - Highest priority: preserve each durable fact, preference, decision, or consequential dated state directly stated by the outer owner User, even when the Assistant merely restates it. An Assistant restatement of an owner-stated fact is not an independent Assistant recap to discard: store the owner's fact once with its original attribution. Do not require outside verification or later acceptance for an owner statement. Keep substantive user-specific findings and estimates supplied in direct response to the owner's request, attributed to the Assistant if not independently verified; an additional acceptance message is not required for these findings. Omit only generic advice, instructions to the agent, unperformed plans, assistant self-recaps without a substantive finding or outcome, and tool/progress chatter. For non-human triggers require verified outcomes or dated consequential state changes; never turn scheduled-task rules echoed by the Assistant into facts. If the trigger body was omitted by the host, do not infer its contents from the Assistant reply.
 - Omit chit-chat and transient tool output. Use third-person narration naming the speaker; NEVER store a line beginning with first-person I/my. Do not invent meta-doubt ("unclear whether", "may", speculative suffixes) when the outer speaker did not express it. Omit request-only lines (a question/request alone is not a fact), but retain explicit durable preferences. Never store an assistant-stated age or a relative age as a fact; store an explicitly stated birth date instead, or skip. Exclude credentials and login identifiers, including email logins, usernames with passwords, tokens and keys; never mint entities from them.
 - All three root arrays are required, even when empty. Other than optional memory labels, every shown object field is required; emit no other fields.
-- Every memory has type, text, salience, isInsight, entityIds, and optional labels ([] when none). Labels are L1 fact, preference, or lesson objects; do not invent claims or speaker/tool authority. type is task, event, or note; isInsight is boolean.
-- IMPORTANT: Emit a valid labels[] item for EACH explicit user preference or verified lesson, not merely an unlabelled memory. A preference about how the assistant should work is a preference label, NOT a fact about the user. Decisions, policies, plans, and likes about how things should be done are PREFERENCE labels when explicitly requested by the outer human (otherwise plain memory lines). The host labels person facts itself; propose a fact label only for a built-in key stated in that memory sentence.
+- Every memory has type, text, salience, isInsight, entityIds, source, and optional labels ([] when none). Labels are L1 fact, preference, or lesson objects; do not invent claims or speaker/tool authority. type is task, event, or note; isInsight is boolean.
+- source says where the memory's claim came from in this turn, whatever the language: "user" when the outer User stated or asserted it (not when the User only asked about it and the Assistant answered); "assistant" for the Assistant's own statements, findings, or recaps; "tool" for an outcome a tool call produced in this turn; "document" for the content of a pasted or attached document. Examples: User "Maple vive en Quillmere." gives {"text":"Maple lives in Quillmere.","source":"user"}; User "Czy Maple lubi herbatę?" answered by Assistant "Maple drinks green tea daily." gives {"text":"The assistant said Maple drinks green tea daily.","source":"assistant"}.
+- Labels are optional, but give each explicit standing preference of the outer human its own preference label, not merely an unlabelled memory. A preference about how the assistant should work is a preference label, not a fact about the user. Decisions, policies, plans, and likes about how things should be done are preference labels when the outer human explicitly requested them (otherwise plain memory lines). The host labels person facts itself; propose a fact label only for a built-in key stated in that memory sentence.
 - Label contract (v is the JSON integer 1; no extra fields): fact = {"v":1,"kind":"fact","entityId":"person:morgan","key":"birth_date","value":{"type":"date","date":"1990-05-17"},"attribution":"user-stated"} (optional validFrom and validTo are YYYY-MM-DD). Fact entityId must be a person: id listed in entities[]. Keys are exactly birth_date, full_name, preferred_name, home_location, or work_location; birth_date uses date, the others use {"type":"text","text":"..."}. Attribution is user-stated, document, assistant-inferred, or unknown.
-- Preference = {"v":1,"kind":"preference","scope":"agent","attribution":"user-stated"}; lesson = {"v":1,"kind":"lesson","scope":"agent","verified":true}. Scopes: agent, project:<safe-id>, user:<host-sender-token>, conversation:<safe-id>. Do not invent a sender token or scope from text. Copy each fact label's value verbatim from that same memory sentence (including an unambiguous written civil date); never paraphrase or expand a text value only in the label. If the memory text supports a fact value that the outer User did not state, label its attribution assistant-inferred, never user-stated. A preference requires an outer human request; assistant recap or scheduled/webhook trigger is not a human request. A verified lesson requires a host-observed successful tool outcome and memory text stating a concrete verified result AND the technique ("by", "using", "instead", or "because"); it need not have failed first. Never mark mere execution chatter or an assistant-only claim as a verified lesson; absent host-observed tool outcomes means no verified lesson. Keep the existing speaker and relative-date rules below.
+- Preference = {"v":1,"kind":"preference","scope":"agent","attribution":"user-stated"}; lesson = {"v":1,"kind":"lesson","scope":"agent","verified":true}. Scopes: agent, project:<safe-id>, user:<host-sender-token>, conversation:<safe-id>. Do not invent a sender token or scope from text. Copy each fact label's value verbatim from that same memory sentence; a date value must appear in it as YYYY-MM-DD; never paraphrase or expand a text value only in the label. If the memory text supports a fact value that the outer User did not state, label its attribution assistant-inferred, never user-stated. A preference requires an outer human request; assistant recap or scheduled/webhook trigger is not a human request. A verified lesson requires a host-observed successful tool outcome and memory text stating a concrete verified result and the technique that produced it; it need not have failed first. Never mark mere execution chatter or an assistant-only claim as a verified lesson; absent host-observed tool outcomes means no verified lesson. Keep the existing speaker and relative-date rules below.
 - salience MUST be a finite JSON number from 0 to 1 inclusive, such as 0.8. Never use a 0-10, 0-100, or percentage scale.
 - LENGTH: every memory text is at most ${MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS} Unicode code points. Aim for ${Math.floor(MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS * 0.75)}. The host splits multiple complete sentences into separate candidates (up to ${MAX_CAPTURE_MEMORIES} total) and clamps any individual overlong sentence. Write short atomic sentences to avoid losing a single overlong sentence's tail.
 - Every memory text is one distinct durable fact: non-empty, no leading/trailing whitespace, no control, formatting, surrogate, line-separator, or paragraph-separator characters, and no reserved <!--mem delimiter.
@@ -267,9 +272,10 @@ export async function extractCapturePlanStrict(
   const entityNames = new Map(entities.map((entity) => [entity.id, entity.name]));
   const labelContext = { ...observationContext, entityNames };
   const parsedCandidates = output.memories.flatMap((value, index) => strictCandidate(value, index, entityIds, labelContext));
-  const safeCandidates = parsedCandidates.filter(({ candidate }) => !unsafeCaptureContent(candidate.text, text)
-    && !(/\?\s*$/u.test(candidate.text)
-      || /^\s*(?:please|can you|could you|would you)\b/iu.test(candidate.text)));
+  // A question is not a fact; the trailing mark is structural. Requests in any
+  // other form are the extraction model's admission judgement.
+  const safeCandidates = parsedCandidates.filter(({ candidate }) => !unsafeCaptureContent(candidate.text)
+    && !/[?？]\s*$/u.test(candidate.text));
   const unsafeIds = new Set(entities.filter((entity) => unsafeCaptureContent(entity.name)
     || /^(?:credential|password|passcode|pin|username|login|token|secret-key|api-key):/iu.test(entity.id)).map((entity) => entity.id));
   // An identifier proposed only by a filtered unsafe line is not a real-world
@@ -309,6 +315,7 @@ export async function extractCapturePlanStrict(
     });
     const derived = deriveCoarseFactLabels(candidate.text, candidate.type, {
       ...labelContext, ...(candidate.entityIds === undefined ? {} : { entityIds: candidate.entityIds }),
+      ...(candidate.source === undefined ? {} : { source: candidate.source }),
     });
     const combined = [...(labels ?? []), ...derived.filter((item) => !labels?.some((existing) =>
       existing.kind === "fact" && item.kind === "fact" && existing.entityId === item.entityId))].slice(0, 8);
@@ -346,9 +353,13 @@ function strictCandidate(
   entityIds: ReadonlySet<string>,
   context: CaptureLabelContext,
 ): Array<{ candidate: CandidateMemory; fullText: string; hostSplit: boolean }> {
-  if (!isRecord(value) || !hasExactKeys(value, ["type", "text", "salience", "isInsight", "entityIds"], ["labels"])) {
+  if (!isRecord(value) || !hasExactKeys(value, ["type", "text", "salience", "isInsight", "entityIds"], ["labels", "source"])) {
     throw outputError("capture-extract", `memory ${index} has missing or unknown fields`);
   }
+  if (value.source !== undefined && !CAPTURE_SOURCES.includes(value.source as CaptureSource)) {
+    throw outputError("capture-extract", `memory ${index} has an unknown source`);
+  }
+  const source = boundedCaptureSource(value.source as CaptureSource | undefined, context);
   if (value.type !== "task" && value.type !== "event" && value.type !== "note") {
     throw outputError("capture-extract", `memory ${index} has an unknown type`);
   }
@@ -375,21 +386,29 @@ function strictCandidate(
   }
   const sentences = [...fullText].length <= MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS
     ? [fullText] : splitCaptureSentences(fullText);
-  return sentences.map((sentence) => {
+  const rawLabels = (value.labels ?? []) as readonly unknown[];
+  // A preference or lesson label belongs to the memory's leading sentence; a
+  // host split never copies it onto a sibling. Facts are re-checked per sentence.
+  const factLabels = rawLabels.filter((label) => isRecord(label) && label.kind === "fact");
+  return sentences.map((sentence, sentenceIndex) => {
     const bounded = clampedCaptureText(sentence, `memory ${index} sentence`).text;
     // A fact in one sentence does not give the adjacent sentence the same
     // graph subjects or labels. Re-evaluate each against only its own text.
+    // The owner is not named in text, so the model's owner association holds
+    // for each of its own sentences; other entities need their name there.
     const specificIds = sentences.length === 1 ? associated : associated.filter((id) => {
       const name = context.entityNames?.get(id)?.toLowerCase();
       const slug = id.slice(id.indexOf(":") + 1).replaceAll("-", " ");
       const content = bounded.toLowerCase();
-      return (name !== undefined && content.includes(name)) || content.includes(slug)
-        || (id === "person:owner" && /\b(?:the user|the owner|i|my)\b/iu.test(bounded));
+      return id === OWNER_ENTITY_ID || (name !== undefined && content.includes(name)) || content.includes(slug);
     });
-    const labels = captureLabels((value.labels ?? []) as readonly unknown[], bounded, { ...context, entityIds: specificIds });
+    const labels = captureLabels(sentenceIndex === 0 ? rawLabels : factLabels, bounded, {
+      ...context, entityIds: specificIds, ...(source === undefined ? {} : { source }),
+    });
     return { candidate: { type: value.type as CandidateMemory["type"], text: bounded,
       salience: value.salience as number, isInsight: value.isInsight as boolean, entityIds: specificIds,
-      ...(labels.length === 0 ? {} : { labels }) }, fullText: sentence, hostSplit: sentences.length > 1 };
+      ...(labels.length === 0 ? {} : { labels }), ...(source === undefined ? {} : { source }) },
+    fullText: sentence, hostSplit: sentences.length > 1 };
   });
 }
 

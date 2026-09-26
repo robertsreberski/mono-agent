@@ -14,7 +14,7 @@
  * 5. scheduled copular-time: `When is the Atlas migration scheduled?`
  *    -> `The Atlas migration is scheduled for 2026-08-14 at 09:30.`
  * 6. location: `Where does Morgan work?`
- *    -> `Morgan works in Amsterdam.`
+ *    -> `Morgan works in Quillmere.`
  * 7. scoped-choice: `What color did Mira select for the Velin launch?`
  *    -> `Mira selected cobalt as the color for the Velin launch.`
  *    The record must name the property *and* the scope. A scope is not a

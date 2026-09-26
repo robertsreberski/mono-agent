@@ -323,7 +323,7 @@ describe("strict completed-turn extraction", () => {
   });
 
   it.each([
-    ["year/month and timezone boundary", "2025-12-31T23:30:00.000Z", "User: The Europe/Paris launch is next month, but its local date is uncertain."],
+    ["year/month and timezone boundary", "2025-12-31T23:30:00.000Z", "User: The CET launch is next month, but its local date is uncertain."],
     ["last week", "2026-01-01T00:30:00.000Z", "User: The review happened last week; no timezone was stated."],
     ["two weekends ago", "2026-03-01T00:30:00.000Z", "User: The hike was two weekends ago, though the exact day is uncertain."],
     ["this week", "2026-06-30T23:30:00.000Z", "User: The workshop is this week, with no exact date yet."],
@@ -360,8 +360,8 @@ describe("strict completed-turn extraction", () => {
     expect(called).toBe(false);
   });
 
-  it("splits complete sentences without treating abbreviations or decimals as boundaries", async () => {
-    const first = "Dr. Morgan planned a fictional archive visit on St. Maple Road for 3.5 hours.";
+  it("splits complete sentences without treating initials or decimals as boundaries", async () => {
+    const first = "M. Morgan planned a fictional archive visit on Maple Road for 3.5 hours.";
     const second = "Morgan also documented the fictional archive's 1990-05-17 opening date, e.g. in its catalog.";
     const plan = await extractCapturePlanStrict("completed turn", { id: "split-sentences",
       complete: async () => planWithMemoryTexts([`${first} ${second}`]),
@@ -453,7 +453,7 @@ describe("strict completed-turn extraction", () => {
 
   it("accepts independent attributed facts that share a speaker and project prefix", async () => {
     const texts = [
-      "The user reports that Project Atlas's production migration is scheduled for 20 November 2026 at 08:30 Europe/Paris.",
+      "The user reports that Project Atlas's production migration is scheduled for 20 November 2026 at 08:30 CET.",
       "The user reports that Project Atlas's approved downtime budget is 30 minutes.",
       "The user reports that Priya owns Project Atlas's database cutover.",
       "The user reports that Mateo owns Project Atlas's rollback checklist.",

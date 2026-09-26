@@ -9,20 +9,20 @@
  * surrounding context, not here.
  */
 
-/** Capture-specific content guard. Never apply this heuristic to explicit Remember
- * writes: the completed-turn source/speaker context is required. */
-export function unsafeCaptureContent(text: string, source = ""): boolean {
-  // A stored line must not *narrate* in the first person; reported speech
-  // ("Morgan said: I …") and quoted text are third-person lines and stay.
-  if (/^\s*(?:i|i'm|i've|i'd|i'll|my)\b/iu.test(text)) return true;
-  const inventedDoubt = /\b(?:unclear whether|not clear whether|possibly|unverified|cannot confirm)\b/iu;
-  if ((inventedDoubt.test(text) && !inventedDoubt.test(source))
-    || (/\bmay\b/u.test(text) && !/\bmay\b/u.test(source))) return true;
-  if (/\b(?:\d+(?:[.,]\d+)?\s*(?:years?|months?)\s*old|aged?\s+\d+(?:[.,]\d+)?\s*(?:years?|months?))\b/iu.test(text)) return true;
+/**
+ * Capture-specific safety deny path. Narration, doubt and age judgements are
+ * the extraction model's admission rubric; the host keeps only credential
+ * safety. Never apply this to explicit Remember writes.
+ */
+export function unsafeCaptureContent(text: string): boolean {
   return unsafeCredentialContext(text);
 }
 
-/** Credential-like content in a canonical line, independently of turn context. */
+/**
+ * Credential-like content in a canonical line, independently of turn context.
+ * Token formats are structural. The English credential/login context words are
+ * a deliberate, safety-only deny list kept pending an owner decision.
+ */
 export function unsafeCredentialContext(text: string): boolean {
   const credential = /\b(?:password|passphrase|passcode|pin|api[ -]?key|access[ -]?token|secret[ -]?key|credential)\b/iu;
   const login = /\b(?:login|log[ -]?in|sign[ -]?in|account|username)\b/iu;

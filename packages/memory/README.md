@@ -138,7 +138,7 @@ reconciliation failure never asks the model to extract the same turn again.
 Only on the final automatic intake attempt, if the capture classifier fails,
 the host writes novel candidates as ADDs and skips exact-text duplicates;
 embedding or durable-write failures still retry.
-Host-verified owner turns can bind first-person facts to `person:owner` and keep
+Host-verified owner turns can bind the owner's own facts to `person:owner` and keep
 agent-wide preferences even without a sender id. Unidentified senders remain
 conversation-scoped, including colon-containing conversation ids (hashed for
 safe scope keys). Newer dated updates supersede the prior line without erasing
@@ -191,13 +191,22 @@ requiring a model label proposal, while still validating any model-proposed
 structured facts and preferences. `memory curate prepare --limit 0` proposes
 assistant-inferred coarse fact labels on already-associated canonical lines in
 bounded, idempotent passes without a model; review and apply still require
-operator acceptance. Curate never mints user-stated labels or preferences. A fact
-needs support in the retained sentence; user-stated facts and preferences
-additionally require host-observed human turn evidence, and a coarse fact is
-user-stated only when a user sentence that is not a question names the person
-and shares part of the line's claim. Unidentified speakers' preferences are conversation-scoped, and a
-verified lesson requires a host-observed successful tool outcome and a concrete
-result with its technique; a failed retry is not required. Optional `capture.focus` (operator guidance) narrows extraction selection;
+operator acceptance. Curate never mints user-stated labels or preferences.
+Capture labels use no word lists or grammar, so they work in any language. The
+extraction model marks each memory's `source` (`user`, `assistant`, `tool` or
+`document`); the host trusts `user` only on a human turn with user text and
+`tool` only with host-observed tool outcomes. A person fact needs the capture's
+entity association plus the person's name in the line; an owner fact instead
+needs a `person:owner` association and a `user` source on a host-verified owner
+turn. A fact is user-stated only for a `user` source whose user text names the
+person (for the owner, the owner rule), and a structured value must also appear
+in that text. A structured date matches only as `YYYY-MM-DD` or an unambiguous
+numeric day/month/year, never a month written in words. A structured owner
+property falls back to the coarse owner fact when the line is also associated
+with, or names, another person entity. A capture plan retained before `source`
+existed keeps its already-validated labels while its text is unchanged. A preference needs a `user` source on a human turn; unidentified
+speakers' preferences are conversation-scoped. A verified lesson needs the
+model's lesson label and a host-observed successful tool outcome. Optional `capture.focus` (operator guidance) narrows extraction selection;
 `capture.only` filters curated capture to host-accepted label kinds after final
 reconcile text validation, including its graph. Because the host labels every
 person-associated note/event line with a coarse fact, `capture.only: ["fact"]`

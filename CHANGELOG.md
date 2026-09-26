@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- Memory capture no longer uses English grammar or word lists on the write
+  side, so it works the same in any language. The extraction model now marks
+  each memory's `source` (`user`, `assistant`, `tool` or `document`) in its
+  existing call, and the host trusts it only within structural bounds: `user`
+  on a human turn with user text, `tool` with host-observed tool outcomes.
+  Owner facts need a `person:owner` association and a `user` source on a
+  verified owner turn; other person facts need the entity association and the
+  name in the line; a fact is user-stated when the user's text names the
+  person (and contains a structured value). Preferences need a `user` source;
+  verified lessons need the model's label and a successful tool outcome.
+  Removed: owner-property, question, stop-word, preference-verb, lesson
+  connective and month word lists in labels; first-person, doubt and age
+  vocabularies in the capture safety filter (the extraction rubric covers
+  them); age/"currently" and state-topic vocabularies in reconcile, which now
+  offers a candidate's same-entity lines by graph association; question-word
+  lists in recall name anchors, which now come from associated entity names;
+  English title abbreviations in sentence splitting; and the ping/test skip
+  list in the harness. Credential token formats and the credential-context
+  deny list stay. Structured dates validate only in ISO or unambiguous numeric
+  form; a structured owner property on a line that also involves another
+  person stays a coarse owner fact; a dated UPDATE of an undated line becomes a
+  dated supersession instead of an in-place rewrite.
+
 - `mono-agent memory curate prepare --limit 0 --link-people` proposes reviewed
   person associations, without a model, for live note and event lines that
   contain a person entity's full proper display name, exactly as written.

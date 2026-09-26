@@ -654,7 +654,7 @@ for an existing local agent, with one backend-specific branch in step 6.
    lookup. Ask one specific durable question such as `Which release color did we choose?`
    to exercise `MemoryRecall`. On a local tier, call a broad retrospective with an
    explicit period such as `What did we work on from 2026-09-01 through 2026-09-07 in
-   Europe/Amsterdam?` to exercise `MemoryJournal`; treat its answer as a curated summary.
+   CET?` to exercise `MemoryJournal`; treat its answer as a curated summary.
    Ask for exact commands/results or interrupted recovery separately and require
    `RunHistory`/`SessionHistory`. These observations are provider behavior checks; prompt
    string tests alone do not prove autonomous routing.

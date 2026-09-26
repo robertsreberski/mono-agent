@@ -702,7 +702,7 @@ function graphFixture() {
   addAdversarialCase({
     id: "wrong-endpoint-city",
     category: "wrong-endpoint",
-    query: "Does EndpointCityMorgan lead Amsterdam?",
+    query: "Does EndpointCityMorgan lead Quillmere?",
     seed: ["adv-endpoint-city-seed", "EndpointCityMorgan", "person:endpoint-city-morgan"],
     targets: [["adv-endpoint-city-target", "Project EndpointCityAtlas", "project:endpoint-city-atlas", "open"]],
     relations: [["person:endpoint-city-morgan", "project:endpoint-city-atlas", "leads"]],

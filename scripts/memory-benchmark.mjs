@@ -43,7 +43,7 @@ const FAST_RECORDS = [
   record("launch-date", "The API launch date is 2026-08-14.", { type: "event" }),
   ...[1, 2, 3, 4].map((index) => record(`heartbeat-${index}`, "Nightly heartbeat completed with no action required.")),
   record("atlas-lead", "Project Atlas is led by Morgan."),
-  record("morgan-office", "Morgan's office is in Amsterdam."),
+  record("morgan-office", "Morgan's office is in Quillmere."),
   record("noise-lunch", "The team orders soup for lunch on rainy days."),
 ];
 
@@ -89,10 +89,10 @@ const PROVIDER_AUTOMATIC_RECORDS = [
   record("provider-car", "Morgan's car color is red."),
   record("provider-release", "The release train leaves on Thursday."),
   record("provider-launch", "The API launch date is 2026-08-14."),
-  record("provider-location", "Morgan works in Amsterdam."),
+  record("provider-location", "Morgan works in Quillmere."),
   record("provider-strategy", "Database rollouts use a blue-green deployment strategy."),
   record("provider-atlas-lead", "Project Atlas is led by Morgan."),
-  record("provider-morgan-office", "Morgan's office is in Amsterdam."),
+  record("provider-morgan-office", "Morgan's office is in Quillmere."),
 ];
 
 const PROVIDER_AUTOMATIC_CASES = [
@@ -119,9 +119,9 @@ const NAMES_DATES_RECORDS = [
   record("nd-morgan-born", "Morgan Reyes was born on 1990-05-17."),
   record("nd-taylor-born", "Taylor Brooks was born on 1988-11-02."),
   record("nd-morgan-party", "Morgan planned the birthday party playlist for the team offsite."),
-  record("nd-zoe-birthday", "Zoë de Vries viert haar verjaardag op 12 maart."),
-  record("nd-luca-birthday", "Il compleanno di Luca Bianchi è il 3 luglio."),
-  record("nd-jurgen-move", "Jürgen Weiß zieht am 2027-02-01 nach Leipzig."),
+  record("nd-zoe-birthday", "Zoë Nowak obchodzi urodziny 12 marca."),
+  record("nd-luca-birthday", "El cumpleaños de Luca Ortega es el 3 de julio."),
+  record("nd-jurgen-move", "Jürgen Weiß zieht am 2027-02-01 nach Fenwhistle."),
   record("nd-invoice", "Invoice 4471 for the garden service was paid in August."),
   record("nd-morgan-color", "Morgan selected teal as the dashboard color."),
   record("nd-color-trap", "The dashboard color review compared dashboard color palettes and color contrast."),
@@ -133,9 +133,9 @@ const NAMES_DATES_CASES = [
   testCase("name-date", "When was Taylor Brooks born?", ["nd-taylor-born"]),
   testCase("date-anchor", "Who was born on 1988-11-02?", ["nd-taylor-born"]),
   testCase("multilingual-name", "When is Zoe's birthday?", ["nd-zoe-birthday"]),
-  testCase("multilingual-name", "Quando è il compleanno di Luca?", ["nd-luca-birthday"]),
+  testCase("multilingual-name", "¿Cuándo es el cumpleaños de Luca?", ["nd-luca-birthday"]),
   testCase("multilingual-name", "When is Luca's birthday?", ["nd-luca-birthday"]),
-  testCase("multilingual-name", "When does Jürgen move to Leipzig?", ["nd-jurgen-move"]),
+  testCase("multilingual-name", "When does Jürgen move to Fenwhistle?", ["nd-jurgen-move"]),
   testCase("number-anchor", "Was invoice 4471 paid?", ["nd-invoice"]),
   testCase("generic-word-trap", "What dashboard color did Morgan select?", ["nd-morgan-color"]),
   testCase("lowercase-name", "what car does sam okafor drive", ["nd-sam-car"]),
@@ -159,7 +159,7 @@ const FAST_POLICY_CASES = [{
   ),
   hits: [
     scoredHit("probe-answer", "Morgan selected cobalt as the deployment color.", 1.005),
-    scoredHit("probe-adjacent", "Morgan's office is in Amsterdam.", 0.798),
+    scoredHit("probe-adjacent", "Morgan's office is in Quillmere.", 0.798),
     scoredHit("probe-other", "Database rollouts use a blue-green deployment strategy.", 0.751),
     scoredHit("probe-weak", "Project Atlas is led by Morgan.", 0.708),
   ],
@@ -187,7 +187,7 @@ const FAST_POLICY_CASES = [{
   {
     query: "Where does Morgan work?",
     id: "direct-location",
-    text: "Morgan works in Amsterdam.",
+    text: "Morgan works in Quillmere.",
   },
 ].map(({ query, id, text }) => ({
   item: testCase("direct-fact", query, [id], [], "direct-fact"),
@@ -216,7 +216,7 @@ const FAST_POLICY_CASES = [{
   {
     query: "Where is Morgans manager based?",
     id: "ambiguous-inverse",
-    text: "Morgan manages Taylor and Taylor is based in Paris.",
+    text: "Morgan manages Taylor and Taylor is based in Larkmoor.",
   },
   {
     query: "What is Morgans phone number?",
@@ -681,8 +681,8 @@ function canonicalToken(token) {
     leads: "led", leading: "led", selected: "select", preferred: "select", preference: "select",
     scheduled: "leave", leaves: "leave", launch: "launchdate", date: "launchdate",
     // A tiny multilingual lexicon stands in for a multilingual model.
-    verjaardag: "birthday", compleanno: "birthday", geburtstag: "birthday",
-    zieht: "move", nach: "to", quando: "when",
+    urodziny: "birthday", cumpleaños: "birthday", geburtstag: "birthday",
+    zieht: "move", nach: "to", cuándo: "when", kiedy: "when",
   };
   return aliases[token] ?? token;
 }

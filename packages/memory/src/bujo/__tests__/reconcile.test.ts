@@ -140,7 +140,7 @@ describe("reconcile", () => {
       complete: async (input) => { offered = input; return JSON.stringify([{ index: 0, action: "supersede",
         targetId: "PROJECT-OLD", text: "Project Maple resumed." }]); },
     }, { strictModelOutput: true, deferBatchCommit: true, beforeBatchCommit: () => {} }));
-    expect(offered).toContain('"sameEntityTopic":"status"');
+    expect(offered).toContain('"sameEntity":"project:maple"');
     expect(actions[0]?.kind).toBe("supersede");
   });
   it("matches an entity's labelled property by key even without an overlapping topic phrase", async () => {
@@ -158,10 +158,10 @@ describe("reconcile", () => {
       complete: async (prompt) => { offered = prompt; return JSON.stringify([{ index: 0, action: "supersede",
         targetId: "COLOR-OLD", text: "Morgan likes green." }]); },
     }, { strictModelOutput: true, deferBatchCommit: true, beforeBatchCommit: () => {} }));
-    expect(offered).toContain('"sameEntityTopic":"other:favorite-color"');
+    expect(offered).toContain('"sameEntity":"person:morgan"');
     expect(actions[0]?.kind).toBe("supersede");
   });
-  it("does not infer relationship state from a word-list role matcher", async () => {
+  it("selects same-entity neighbours by graph association, not by a word-list topic matcher", async () => {
     const root = newRoot(); const db = openDb(root);
     await seed(db, root, "ROLE-OLD", "Morgan's partner Cedar moved.");
     await seed(db, root, "OTHER-OLD", "Morgan admires Maple.");
@@ -175,9 +175,10 @@ describe("reconcile", () => {
       isInsight: false, entityIds: ["person:morgan"] }], makeDeps(db, root, { id: "role-topic",
       complete: async (input) => { offered = input; return JSON.stringify([{ index: 0, action: "add" }]); },
     }, { strictModelOutput: true, deferBatchCommit: true, beforeBatchCommit: () => {} }));
-    expect(offered).not.toContain('"sameEntityTopic":"relationship"');
-    expect(offered).not.toContain('"id":"ROLE-OLD"');
-    expect(offered).not.toContain('"id":"OTHER-OLD"');
+    expect(offered).not.toContain("relationship");
+    expect(offered).toContain('"id":"ROLE-OLD"');
+    expect(offered).toContain('"id":"OTHER-OLD"');
+    expect(offered.match(/"sameEntity":"person:morgan"/gu)).toHaveLength(2);
   });
   it("adds on a malformed legacy classifier reply when only an entity anchor was offered", async () => {
     const root = newRoot(); const db = openDb(root);
@@ -190,18 +191,22 @@ describe("reconcile", () => {
       isInsight: false, entityIds: ["person:morgan"] }], makeDeps(db, root, { id: "malformed",
       complete: async (input) => { prompt = input; return "not JSON"; },
     }, { canonicalGraphRepairGuard: () => {} }));
-    expect(prompt).toContain("sameEntityTopic=home_location (no vector score)");
+    expect(prompt).toContain("sameEntity=person:morgan (no vector score)");
     expect(actions[0]?.kind).toBe("add");
     expect(db.get("OLD")?.status).toBe("open");
   });
   it("offers a bounded same-entity state neighbour even when vectors disagree", async () => {
     const root = newRoot();
     const db = openDb(root);
+    // Newest same-entity lines are offered first (no vector score); ties by id.
+    await seed(db, root, "A-OTHER-3", "Morgan paints.");
+    await seed(db, root, "A-OTHER-2", "Morgan reads maps.");
+    await seed(db, root, "A-OTHER", "Morgan works at Cedar Company.");
     await seed(db, root, "HOME-OLD", "Morgan lives in Maple Town.");
-    await seed(db, root, "OTHER", "Morgan works at Cedar Company.");
     db.upsertEntity({ id: "person:morgan", name: "Morgan", type: "person", createdAt: FIXED.toISOString() });
-    db.associateMemory({ memoryId: "HOME-OLD", entityId: "person:morgan", provenance: "capture", createdAt: FIXED.toISOString() });
-    db.associateMemory({ memoryId: "OTHER", entityId: "person:morgan", provenance: "capture", createdAt: FIXED.toISOString() });
+    for (const memoryId of ["HOME-OLD", "A-OTHER", "A-OTHER-2", "A-OTHER-3"]) {
+      db.associateMemory({ memoryId, entityId: "person:morgan", provenance: "capture", createdAt: FIXED.toISOString() });
+    }
     db.findSimilarMany = async () => [[]];
     let offered = "";
     const result = await reconcileBatch([{ type: "note", text: "Morgan moved to Cedar City.",
@@ -211,9 +216,10 @@ describe("reconcile", () => {
       ]); },
     }, { strictModelOutput: true, deferBatchCommit: true, beforeBatchCommit: () => {} }));
     expect(offered).toContain("HOME-OLD");
-    expect(offered).toContain('"sameEntityTopic":"home_location"');
+    expect(offered).toContain('"sameEntity":"person:morgan"');
     expect(offered).not.toContain('"distance":0.49');
-    expect(offered).not.toContain('"id":"OTHER"');
+    // At most three same-entity lines are offered.
+    expect(offered.match(/"sameEntity":"person:morgan"/gu)).toHaveLength(3);
     expect(result[0]?.kind).toBe("supersede");
     expect(db.get("HOME-OLD")?.status).toBe("open"); // deferred capture owns the commit
   });
@@ -800,11 +806,11 @@ describe("reconcileBatch", () => {
     db.close();
   });
   it.each([
-    "Biscuit is 14.5 months old", "Biscuit ha 14,5 mesi", "Biscuit is 14,5 maanden oud",
-  ])("converts a time-sensitive UPDATE to dated supersession preserving the original as history: %s", async (text) => {
+    "Biscuit weighed 10 kg on 2026-07-14.", "Biscuit ważył 10 kg w dniu 2026-07-14.", "Biscuit pesaba 10 kg el 2026-07-14.",
+  ])("converts a later-dated UPDATE to dated supersession preserving the original as history: %s", async (text) => {
     const root = newRoot();
     const db = openDb(root);
-    await seed(db, root, "OLD-AGE", "Biscuit is 12 months old");
+    await seed(db, root, "OLD-AGE", "Biscuit weighed 9 kg on 2026-06-01.");
     const oldSource = dailyContent(root);
     db.findSimilarMany = async () => [[{ record: db.get("OLD-AGE")!, distance: 0.1 }]];
     const candidate: CandidateMemory = { type: "note", text, salience: 0.8, isInsight: false };
@@ -820,16 +826,40 @@ describe("reconcileBatch", () => {
     expect(actions).toEqual([{ kind: "supersede", oldId: "OLD-AGE", newId: "AGE-NEW" }]);
     expect(dailyContent(root)).not.toBe(oldSource);
     expect(db.get("OLD-AGE")?.status).toBe("invalidated");
-    expect(db.get("OLD-AGE")?.text).toBe("Biscuit is 12 months old");
+    expect(db.get("OLD-AGE")?.text).toBe("Biscuit weighed 9 kg on 2026-06-01.");
     expect(db.get("AGE-NEW")?.createdAt).toBe(nextDay.toISOString());
     expect(readFileSync(dailyFilePath(root, nextDay), "utf8")).toContain(text);
+  });
+  it("supersedes instead of rewriting an undated line when the UPDATE candidate carries a date", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "UNDATED", "Biscuit weighs 9 kg.");
+    db.findSimilarMany = async () => [[{ record: db.get("UNDATED")!, distance: 0.1 }]];
+    for (const [text, expected] of [
+      ["Biscuit waży 10 kg od 2026-07-14.", "supersede"],
+    ] as const) {
+      const actions = await reconcileBatch([{ type: "note", text, salience: 0.8, isInsight: false }], makeDeps(db, root,
+        { id: "undated", complete: async () => JSON.stringify([{ index: 0, action: "update", targetId: "UNDATED", text }]) },
+        { nextId: () => "DATED-NEW", strictModelOutput: true }));
+      expect(actions[0]?.kind).toBe(expected);
+    }
+    expect(db.get("UNDATED")?.text).toBe("Biscuit weighs 9 kg.");
+    expect(db.get("UNDATED")?.status).toBe("invalidated");
+    expect(db.get("DATED-NEW")?.text).toBe("Biscuit waży 10 kg od 2026-07-14.");
+    // An undated refinement of an undated line stays an in-place update.
+    await seed(db, root, "PLAIN", "Morgan keeps maps.");
+    db.findSimilarMany = async () => [[{ record: db.get("PLAIN")!, distance: 0.1 }]];
+    const update = await reconcileBatch([{ type: "note", text: "Morgan keeps old maps.", salience: 0.8, isInsight: false }],
+      makeDeps(db, root, { id: "plain", complete: async () => JSON.stringify([
+        { index: 0, action: "update", targetId: "PLAIN", text: "Morgan keeps old maps." }]) }, { strictModelOutput: true }));
+    expect(update).toEqual([{ kind: "update", id: "PLAIN" }]);
   });
   it("plans the same run-derived supersession identity on a deferred snapshot retry", async () => {
     const root = newRoot();
     const db = openDb(root);
-    await seed(db, root, "AGE-OLD", "Biscuit is 12 months old");
+    await seed(db, root, "AGE-OLD", "Biscuit weighed 9 kg on 2026-06-01.");
     db.findSimilarMany = async () => [[{ record: db.get("AGE-OLD")!, distance: 0.1 }]];
-    const candidate: CandidateMemory = { type: "note", text: "Biscuit is 14.5 months old", salience: 0.8, isInsight: false };
+    const candidate: CandidateMemory = { type: "note", text: "Biscuit weighed 10 kg on 2026-07-14.", salience: 0.8, isInsight: false };
     const llm: ReconcileDeps["llm"] = { id: "stable", complete: async () => JSON.stringify([
       { index: 0, action: "update", targetId: "AGE-OLD", text: candidate.text },
     ]) };
@@ -842,7 +872,7 @@ describe("reconcileBatch", () => {
     expect(await reconcileBatch([candidate], deps)).toEqual([{ kind: "supersede", oldId: "AGE-OLD", newId: "AGE-RUN-00" }]);
     expect(intents).toHaveLength(2);
     expect(intents[0]).toBe(intents[1]);
-    expect(db.get("AGE-OLD")?.text).toBe("Biscuit is 12 months old");
+    expect(db.get("AGE-OLD")?.text).toBe("Biscuit weighed 9 kg on 2026-06-01.");
     expect(db.get("AGE-RUN-00")).toBeUndefined();
   });
 

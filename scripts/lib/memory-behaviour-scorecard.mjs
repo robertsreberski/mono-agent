@@ -10,27 +10,30 @@ import { openMemoryDb } from "../../packages/memory/dist/store/index.js";
 // completed-turn intake, strict extraction, reconciliation, labels and index.
 const fact = (entityId, key, value) => ({ v: 1, kind: "fact", entityId, key,
   value: { type: "text", text: value }, attribution: "user-stated" });
-const candidate = (text, labels = []) => ({ type: "note", text, salience: 0.8,
-  isInsight: false, entityIds: [], labels });
+// `entityIds` and `source` stand in for the extraction model's association and
+// source judgement; the host only bounds them.
+const candidate = (text, labels = [], entityIds = [], source = "user") => ({ type: "note", text, salience: 0.8,
+  isInsight: false, entityIds, source, labels });
+const OWNER = ["person:owner"];
 export const TURNS = [
-  { user: "I live in Lisbon.", memories: [candidate("The user lives in Lisbon.", [fact("person:owner", "home_location", "Lisbon")])], kind: "owner" },
-  { user: "My colleague Taylor lives in Porto.", memories: [candidate("The user's colleague Taylor lives in Porto.", [fact("person:taylor", "home_location", "Porto")])], kind: "other-person" },
-  { user: "My favorite animal is an otter.", memories: [candidate("The user favors an otter as a favorite animal.", [fact("person:owner", "other:favorite-animal", "otter")])], kind: "owner-custom" },
+  { user: "I live in Thistlemoor.", memories: [candidate("The user lives in Thistlemoor.", [fact("person:owner", "home_location", "Thistlemoor")], OWNER)], kind: "owner" },
+  { user: "My colleague Taylor lives in Fernhollow.", memories: [candidate("The user's colleague Taylor lives in Fernhollow.", [fact("person:taylor", "home_location", "Fernhollow")], ["person:taylor"])], kind: "other-person" },
+  { user: "My favorite animal is an otter.", memories: [candidate("The user favors an otter as a favorite animal.", [fact("person:owner", "other:favorite-animal", "otter")], OWNER)], kind: "owner-custom" },
   { user: "I prefer concise fictional project notes.", memories: [candidate("The user prefers concise fictional project notes.", [{ v: 1, kind: "preference", scope: "agent", attribution: "user-stated" }])], kind: "preference" },
-  { user: "I moved to Braga, not Lisbon.", memories: [candidate("The user lives in Braga.", [fact("person:owner", "home_location", "Braga")])], decision: "supersede", target: "The user lives in Lisbon.", kind: "state-change" },
-  { user: "Correction: Taylor lives in Coimbra, not Porto.", memories: [candidate("The user's colleague Taylor lives in Coimbra.", [fact("person:taylor", "home_location", "Coimbra")])], decision: "supersede", target: "The user's colleague Taylor lives in Porto.", kind: "correction" },
+  { user: "I moved to Glimmerton, not Thistlemoor.", memories: [candidate("The user lives in Glimmerton.", [fact("person:owner", "home_location", "Glimmerton")], OWNER)], decision: "supersede", target: "The user lives in Thistlemoor.", kind: "state-change" },
+  { user: "Correction: Taylor lives in Wrenfield, not Fernhollow.", memories: [candidate("The user's colleague Taylor lives in Wrenfield.", [fact("person:taylor", "home_location", "Wrenfield")], ["person:taylor"])], decision: "supersede", target: "The user's colleague Taylor lives in Fernhollow.", kind: "correction" },
   { user: "My appointment is tomorrow, October 12.", memories: [candidate("The user's appointment is on 2026-10-12.")], kind: "relative-date" },
   { user: "My access token is fake-secret-123. The build finished and I said thanks.", memories: [], kind: "chatter-credentials" },
-  { user: "My colleague doubts that I live in Madrid.", memories: [candidate("The user's colleague doubts that the user lives in Madrid.", [fact("person:owner", "home_location", "Madrid")])], kind: "doubt" },
-  { user: "I was born May 17, 1990.", memories: [candidate("The user was born May 17, 1990.", [{ v: 1, kind: "fact", entityId: "person:owner", key: "birth_date", value: { type: "date", date: "1990-05-17" }, attribution: "user-stated" }])], kind: "owner-date" },
-  { user: "Morgan says their home is in Naples.", memories: [candidate("Morgan's home is in Naples.", [fact("person:owner", "home_location", "Naples")])], ownerTurn: false, kind: "non-owner" },
+  { user: "My colleague doubts that I live in Oakspire.", memories: [candidate("The user's colleague doubts that the user lives in Oakspire.", [fact("person:owner", "home_location", "Oakspire")])], kind: "doubt" },
+  { user: "I was born May 17, 1990.", memories: [candidate("The user was born May 17, 1990.", [{ v: 1, kind: "fact", entityId: "person:owner", key: "birth_date", value: { type: "date", date: "1990-05-17" }, attribution: "user-stated" }], OWNER)], kind: "owner-date" },
+  { user: "Morgan says their home is in Duskwater.", memories: [candidate("Morgan's home is in Duskwater.", [fact("person:owner", "home_location", "Duskwater")], OWNER)], ownerTurn: false, kind: "non-owner" },
   { user: "scheduled-demo", captureText: "Scheduled task trigger (not a user message; trigger text omitted):\nAssistant: The Maple build completed on 2026-10-11.",
-    memories: [candidate("The Maple build completed on 2026-10-11.")], kind: "trigger-outcome" },
+    memories: [candidate("The Maple build completed on 2026-10-11.", [], [], "assistant")], kind: "trigger-outcome" },
 ];
 export const QUESTIONS = [
-  { kind: "owner-positive", query: "Where does the user live?", expected: "The user lives in Braga." },
-  { kind: "first-person", query: "Where do I live?", expected: "The user lives in Braga." },
-  { kind: "other-person-positive", query: "Where does Taylor live?", expected: "The user's colleague Taylor lives in Coimbra." },
+  { kind: "owner-positive", query: "Where does the user live?", expected: "The user lives in Glimmerton." },
+  { kind: "first-person", query: "Where do I live?", expected: "The user lives in Glimmerton." },
+  { kind: "other-person-positive", query: "Where does Taylor live?", expected: "The user's colleague Taylor lives in Wrenfield." },
   { kind: "negative", query: "What is the user's phone number?" },
   { kind: "negative", query: "When was Morgan born?" },
   { kind: "non-owner", query: "Where do I live?", ownerTurn: false },
@@ -108,7 +111,9 @@ export async function runMemoryBehaviourScorecard({ turns = TURNS, questions = Q
       if (options.label === "capture:extract") {
         const turn = turns.find((item) => prompt.includes(item.captureText ?? `User: ${item.user}\nAssistant: Noted.`));
         if (!turn) throw new Error("scripted extraction turn missing");
-        return JSON.stringify({ memories: turn.memories, entities: [], relations: [] });
+        const ids = [...new Set(turn.memories.flatMap((memory) => memory.entityIds))];
+        const entities = ids.map((id) => ({ id, name: id === "person:owner" ? "Owner" : id.slice(7).replace(/^./u, (c) => c.toUpperCase()), type: "person" }));
+        return JSON.stringify({ memories: turn.memories, entities, relations: [] });
       }
       if (options.label === "capture:reconcile-batch") {
         const offered = JSON.parse(prompt.slice(prompt.lastIndexOf("INPUT:\n") + 7));

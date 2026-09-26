@@ -1,7 +1,13 @@
 import type { MemoryCaptureEvidence, MemoryCaptureSpeakerKind } from "@mono-agent/agent-contracts";
 import { createHash } from "node:crypto";
 import { encodeMemoryLabel, isStructuredFact, validateMemoryLabel, type FactMemoryLabel, type MemoryLabel } from "./labels.js";
-import { splitCaptureSentences } from "./distill.js";
+
+/**
+ * Where the extraction model says a memory's claim came from in this turn. The
+ * host trusts it only within structural bounds; see `boundedCaptureSource`.
+ */
+export type CaptureSource = "user" | "assistant" | "tool" | "document";
+export const CAPTURE_SOURCES: readonly CaptureSource[] = ["user", "assistant", "tool", "document"];
 
 export interface CaptureLabelContext {
   readonly captureSpeakerKind?: MemoryCaptureSpeakerKind;
@@ -9,42 +15,64 @@ export interface CaptureLabelContext {
   readonly captureEvidence?: MemoryCaptureEvidence;
   readonly entityNames?: ReadonlyMap<string, string>;
   readonly entityIds?: readonly string[];
+  /** The memory's host-bounded source. Absent means no first-party claim. */
+  readonly source?: CaptureSource;
+  /**
+   * Curate only: the stored line is already established as about the owner.
+   * Such labels are never user-stated, because there is no user turn.
+   */
+  readonly ownerLine?: boolean;
 }
 
-/** The same host rules apply before reconciliation and to its final merged text. */
+/**
+ * The model judges the source; the host only bounds it structurally. `user`
+ * needs a human turn that carries user text, and `tool` needs host-observed
+ * tool outcomes. An unsupported claim falls back to `assistant`.
+ */
+export function boundedCaptureSource(proposed: CaptureSource | undefined,
+  context: Pick<CaptureLabelContext, "captureSpeakerKind" | "captureEvidence">): CaptureSource | undefined {
+  if (proposed === "user") return humanUserText(context) === undefined ? "assistant" : "user";
+  if (proposed === "tool") return (context.captureEvidence?.toolOutcomes.length ?? 0) > 0 ? "tool" : "assistant";
+  return proposed;
+}
+
+function humanUserText(context: Pick<CaptureLabelContext, "captureSpeakerKind" | "captureEvidence">): string | undefined {
+  const user = context.captureSpeakerKind === "human-turn" ? context.captureEvidence?.userText : undefined;
+  return user === undefined || user.trim().length === 0 ? undefined : user;
+}
+
+/**
+ * The same host rules apply before reconciliation and to its final merged
+ * text. Every rule is structural: entity association, names and values as
+ * normalised substrings, the host-bounded source and host tool outcomes. The
+ * semantic judgements (who said it, whether it is a preference or a lesson)
+ * belong to the extraction model.
+ */
 export function captureLabels(raw: readonly unknown[], text: string, context: CaptureLabelContext): readonly MemoryLabel[] {
   const result: MemoryLabel[] = [];
   const seen = new Set<string>();
-  const user = context.captureSpeakerKind === "human-turn" ? context.captureEvidence?.userText : undefined;
+  const user = humanUserText(context);
+  const fromUser = context.source === "user" && user !== undefined;
   for (const candidate of raw) {
     if (result.length === 8) break;
     try {
       const label = validateMemoryLabel(candidate);
       let accepted: MemoryLabel | undefined;
       if (label.kind === "fact") {
-        const ownerFact = label.entityId === "person:owner";
-        const subject = ownerFact ? context.captureEvidence?.ownerTurn === true
-          && (ownerSubject(text) || isStructuredFact(label) && BUILTIN_FACT_KEYS.has(label.key) && ownerFactSupported(label, text))
-          : (context.entityIds === undefined || context.entityIds.includes(label.entityId))
-            && subjectSupported(text, label.entityId.slice(7), context.entityNames?.get(label.entityId));
-        if (context.captureSpeakerKind !== "trigger" && subject) {
-          const structured = isStructuredFact(label) && BUILTIN_FACT_KEYS.has(label.key)
-            && (ownerFact ? ownerFactSupported(label, text) : factSupported(label, text, context.entityNames));
-          const userSupported = user !== undefined && (structured && isStructuredFact(label)
-            ? ownerFact ? ownerFactSupported(label, user)
-              : subjectSupported(user, label.entityId.slice(7), context.entityNames?.get(label.entityId)) && valueSupported(label, user)
-            : userStatesCoarse(user, text, label.entityId, context));
-          const attribution = label.attribution === "user-stated" && userSupported ? "user-stated" : "assistant-inferred";
+        if (context.captureSpeakerKind !== "trigger" && factSubject(label.entityId, text, context)) {
+          const structured = isStructuredFact(label) && BUILTIN_FACT_KEYS.has(label.key) && valueSupported(label, text)
+            && !(label.entityId === OWNER && namesAnotherPerson(text, context));
+          const stated = userStates(label.entityId, context)
+            && (!structured || valueSupported(label, user ?? ""));
+          const attribution = label.attribution === "user-stated" && stated ? "user-stated" : "assistant-inferred";
           accepted = structured ? { ...label, attribution } : { v: 1, kind: "fact", entityId: label.entityId, attribution };
         }
       } else if (label.kind === "preference") {
-        if (user !== undefined && preferenceSupported(text, user)) {
+        if (fromUser && user !== undefined) {
           const scope = preferenceScope(label.scope, user, context);
           if (scope !== undefined) accepted = { ...label, scope, attribution: "user-stated" };
         }
-      } else if (label.verified === true && verifiedOutcomeCount(context.captureEvidence) > 0
-        && /\b(?:resolved|fixed|verified|passed|succeeded)\b/iu.test(text)
-        && /\b(?:by|using|instead|because)\b/iu.test(text)) {
+      } else if (label.verified === true && verifiedOutcomeCount(context.captureEvidence) > 0) {
         const project = user === undefined ? undefined : explicitProject(label.scope, user);
         accepted = { ...label, scope: project ?? "agent" };
       }
@@ -63,55 +91,64 @@ export function deriveCoarseFactLabels(
   text: string, type: "note" | "event" | "task", context: CaptureLabelContext,
 ): readonly MemoryLabel[] {
   if (type === "task" || context.captureSpeakerKind === "trigger") return [];
-  const user = context.captureSpeakerKind === "human-turn" ? context.captureEvidence?.userText : undefined;
   return [...new Set(context.entityIds ?? [])].filter((id) => id.startsWith("person:")).slice(0, 8)
-    .flatMap((id): MemoryLabel[] => {
-      const owner = id === "person:owner";
-      if (owner ? context.captureEvidence?.ownerTurn !== true || !ownerSubject(text)
-        : !subjectSupported(text, id.slice(7), context.entityNames?.get(id))) return [];
-      const stated = user !== undefined && userStatesCoarse(user, text, id, context);
-      return [{ v: 1, kind: "fact", entityId: id,
-        attribution: stated ? "user-stated" : "assistant-inferred" }];
-    });
+    .flatMap((id): MemoryLabel[] => factSubject(id, text, context)
+      ? [{ v: 1, kind: "fact", entityId: id, attribution: userStates(id, context) ? "user-stated" : "assistant-inferred" }]
+      : []);
 }
 
 /**
- * A coarse person fact is user-stated only when one of the user's own
- * sentences ASSERTS it: that sentence names the person, is not a question, and
- * shares a substantive part of the line's claim (a content word beyond the
- * name). Naming someone in a question is not stating a fact.
+ * Whether a line may carry a fact about this person. Any person needs the
+ * capture's entity association. The owner additionally needs a host-verified
+ * owner turn whose memory the model sourced to the user; another person needs
+ * their name in the line. No subject grammar, so this works in any language.
  */
-function userStatesCoarse(user: string, text: string, entityId: string, context: CaptureLabelContext): boolean {
-  const owner = entityId === "person:owner";
-  if (owner && context.captureEvidence?.ownerTurn !== true) return false;
-  const display = context.entityNames?.get(entityId);
-  const name = new Set(owner ? ["user", "owner"] : [...words(entityId.slice(7).replaceAll("-", " ")), ...words(display ?? "")]);
-  const claim = (value: string): string[] => words(value).filter((word) => word.length > 3 && !name.has(word)
-    && !CLAIM_FUNCTION_WORDS.has(word));
-  const line = claim(text);
-  return user.split(/(?<=[.!?])\s+/u).some((sentence) => !question(sentence)
-    && (owner ? ownerSubject(sentence) : subjectSupported(sentence, entityId.slice(7), display))
-    && claim(sentence).some((word) => line.includes(word)));
+function factSubject(entityId: string, text: string, context: CaptureLabelContext): boolean {
+  if (context.entityIds !== undefined && !context.entityIds.includes(entityId)) return false;
+  if (entityId === OWNER) {
+    return context.ownerLine === true || (context.entityIds !== undefined && context.captureEvidence?.ownerTurn === true
+      && context.source === "user" && humanUserText(context) !== undefined);
+  }
+  return subjectSupported(text, entityId.slice(7), context.entityNames?.get(entityId));
 }
-function question(sentence: string): boolean {
-  return /\?\s*$/u.test(sentence) || INTERROGATIVE.test(normalize(sentence).trim());
+
+/**
+ * A fact is user-stated only when the model sourced the memory to the user on a
+ * human turn and the user's own text names the person (normalised substring);
+ * for the owner, the owner rule in `factSubject` is the naming evidence.
+ */
+function userStates(entityId: string, context: CaptureLabelContext): boolean {
+  const user = humanUserText(context);
+  if (context.source !== "user" || user === undefined) return false;
+  if (entityId === OWNER) return context.captureEvidence?.ownerTurn === true;
+  return subjectSupported(user, entityId.slice(7), context.entityNames?.get(entityId));
 }
-const INTERROGATIVE = /^(?:what|who|whom|whose|which|when|where|why|how|is|are|was|were|do|does|did|can|could|will|would|should|has|have|had)\b/u;
-const CLAIM_FUNCTION_WORDS = new Set(["about", "what", "when", "where", "which", "who", "whom", "whose", "that", "this", "these",
-  "those", "with", "from", "into", "have", "has", "had", "been", "were", "will", "would", "could", "should", "their", "there",
-  "they", "them", "then", "than", "your", "yours", "also", "just", "some", "does", "said", "told", "says", "asked", "user", "owner"]);
+const OWNER = "person:owner";
+
+/**
+ * A structured owner property needs its subject to be unambiguous. When the
+ * line is also associated with, or names, another person entity, the value
+ * may be theirs: keep only the coarse owner fact. Associations and names only.
+ */
+function namesAnotherPerson(text: string, context: CaptureLabelContext): boolean {
+  const others = new Set([...(context.entityIds ?? []), ...(context.entityNames?.keys() ?? [])]
+    .filter((id) => id.startsWith("person:") && id !== OWNER));
+  return [...others].some((id) => (context.entityIds ?? []).includes(id)
+    || subjectSupported(text, id.slice(7), context.entityNames?.get(id)));
+}
 
 /**
  * Whether rewritten text still supports an existing fact label as stored:
  * its subject and, when structured, its value. Attribution is never
  * re-derived, so user-stated, document and legacy structured refs survive a
- * rewrite unchanged or are dropped, never downgraded.
+ * rewrite unchanged or are dropped, never downgraded. The owner is not named
+ * in text, so an owner label depends only on its structured value.
  */
 export function rewrittenTextSupportsFact(label: FactMemoryLabel, text: string, names?: ReadonlyMap<string, string>): boolean {
-  const mentions = (id: string): boolean => id === "person:owner"
-    ? ownerSubject(text) : subjectSupported(text, id.slice(id.indexOf(":") + 1), names?.get(id));
-  if (!isStructuredFact(label)) return mentions(label.entityId);
-  if (!mentions(label.entityId) && !(label.entityId === "person:owner" && ownerFactSupported(label, text))) return false;
+  const mentions = (id: string): boolean => id === OWNER
+    || subjectSupported(text, id.slice(id.indexOf(":") + 1), names?.get(id));
+  if (!mentions(label.entityId)) return false;
+  if (!isStructuredFact(label)) return true;
   const value = label.value;
   return value.type === "entity" ? mentions(value.entityId)
     : value.type === "relationship" ? mentions(value.targetEntityId) : valueSupported(label, text);
@@ -141,10 +178,10 @@ function preferenceScope(proposed: string, user: string, context: CaptureLabelCo
   if (senderToken === undefined) return explicitProject(proposed, user) ?? safeConversationScope(context.conversationId);
   return explicitProject(proposed, user) ?? `user:${senderToken}`;
 }
+/** A project scope needs the project's own name in the user's text. */
 function explicitProject(scope: string, user: string): string | undefined {
   if (!scope.startsWith("project:")) return undefined;
-  const named = scope.slice(8).replaceAll("-", " ");
-  return /\b(project|progetto|projekt)\b/iu.test(normalize(user)) && includesPhrase(user, named) ? scope : undefined;
+  return includesPhrase(user, scope.slice(8).replaceAll("-", " ")) ? scope : undefined;
 }
 export function safeConversationScope(id: string | undefined): string | undefined {
   if (id === undefined || id.length === 0) return undefined;
@@ -154,37 +191,7 @@ export function safeConversationScope(id: string | undefined): string | undefine
   // caller cannot choose a raw id that aliases some other conversation's hash.
   return `conversation:h_${createHash("sha256").update(id).digest("hex")}`;
 }
-function preferenceSupported(text: string, user: string): boolean {
-  const contentWords = (value: string): string[] => {
-    const tokens = words(value);
-    // A leading capitalized speaker/name alone is not evidence for the guidance.
-    if (/^\p{Lu}/u.test(value) && tokens.length > 1) tokens.shift();
-    return tokens.filter((word) => word.length > 3 && !["prefer", "prefers", "wants", "should"].includes(word));
-  };
-  const source = contentWords(user);
-  const standing = /\b(?:prefer|prefers|preferred|likes?|dislikes?|hate|never|always|avoid|again|don't|do not|should|want|wants|keep|use|preferisce|wil|chce)\b/iu;
-  return standing.test(user) && standing.test(text)
-    && contentWords(text).some((word) => source.includes(word));
-}
 const BUILTIN_FACT_KEYS = new Set(["birth_date", "full_name", "preferred_name", "home_location", "work_location"]);
-function ownerSubject(text: string): boolean {
-  return /(?:^|[.!?]\s+)(?:(?:the (?:user|owner)|i(?:'m|'ve)?)\s+(?!told\b|said\b|reported\b|mentioned\b)|my\s+)/iu.test(text);
-}
-// Only finite structured owner properties have a supported grammatical binding.
-export const OWNER_PROPERTY: Readonly<Record<string, RegExp>> = {
-  birth_date: /\b(?:my|the (?:user|owner)'s)\s+(?:birthday|birth\s+date)\b|\b(?:i|the (?:user|owner))\s+(?:was|am|'m)\s+born\b/iu,
-  full_name: /\b(?:my|the (?:user|owner)'s)\s+(?:full\s+)?name\b|\b(?:i\s+am|i'm|the (?:user|owner)\s+is)\s+(?:named|called)\b/iu,
-  preferred_name: /\b(?:my|the (?:user|owner)'s)\s+(?:preferred\s+)?name\b|\b(?:i|the (?:user|owner))\s+(?:prefer|prefers|go\s+by|goes\s+by)\b/iu,
-  home_location: /\b(?:my|the (?:user|owner)'s)\s+home\b|\b(?:i|the (?:user|owner))\s+(?:live|lives|lived|moved)\s+(?:in|to|at)\b|\b(?:i\s+am|i'm|the (?:user|owner)\s+is)\s+based\s+in\b/iu,
-  work_location: /\b(?:my|the (?:user|owner)'s)\s+(?:work|job|employer)\b|\b(?:i|the (?:user|owner))\s+(?:work|works|worked)\s+(?:at|for|as|in)\b/iu,
-};
-export function ownerFactSupported(label: FactMemoryLabel, text: string): boolean {
-  if (!isStructuredFact(label)) return false;
-  const property = OWNER_PROPERTY[label.key];
-  if (property === undefined) return false;
-  return splitCaptureSentences(text).some((sentence) => valueSupported(label, sentence)
-    && property.test(normalize(sentence).replace(/[’]/gu, "'")));
-}
 
 export function factSupported(label: FactMemoryLabel, text: string,
   names?: ReadonlyMap<string, string>): boolean {
@@ -217,36 +224,18 @@ function includesPhrase(text: string, phrase: string): boolean {
   return target.length > 0 && ` ${source} `.includes(` ${target} `);
 }
 
-const MONTHS: readonly (readonly string[])[] = [
-  ["january", "jan", "gennaio", "januari", "styczen", "stycznia"],
-  ["february", "feb", "febbraio", "februari", "luty", "lutego"],
-  ["march", "mar", "marzo", "maart", "marzec", "marca"],
-  ["april", "apr", "aprile", "kwiecien", "kwietnia"],
-  ["may", "maggio", "mei", "maj", "maja"],
-  ["june", "jun", "giugno", "juni", "czerwiec", "czerwca"],
-  ["july", "jul", "luglio", "juli", "lipiec", "lipca"],
-  ["august", "aug", "agosto", "augustus", "sierpien", "sierpnia"],
-  ["september", "sep", "settembre", "wrzesien", "wrzesnia"],
-  ["october", "oct", "ottobre", "oktober", "pazdziernik", "pazdziernika"],
-  ["november", "nov", "novembre", "listopad", "listopada"],
-  ["december", "dec", "dicembre", "grudzien", "grudnia"],
-];
+/**
+ * A structured date is supported only when its month can be compared
+ * structurally: the ISO form, or an unambiguous numeric day/month/year form.
+ * A month written in words (any language) is ambiguous and never matches.
+ */
 function civilDateAppears(expected: string, text: string): boolean {
   const [year, month, day] = expected.split("-").map(Number) as [number, number, number];
   if (new RegExp(`(?<!\\d)${expected}(?!\\d)`, "u").test(text)) return true;
-  const source = normalize(text);
-  const long = [...source.matchAll(/\b(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)\s*,?\s*(\d{4})\b|\b([a-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?\s*,?\s*(\d{4})\b/gu)];
-  for (const match of long) {
-    const d = Number(match[1] ?? match[5]);
-    const m = match[2] ?? match[4] ?? "";
-    const y = Number(match[3] ?? match[6]);
-    if (d === day && y === year && MONTHS[month - 1]?.includes(m)) return true;
-  }
-  for (const match of source.matchAll(/\b(\d{1,2})[./-](\d{1,2})[./-](\d{4})\b/gu)) {
+  for (const match of text.matchAll(/(?<!\d)(\d{1,2})[./-](\d{1,2})[./-](\d{4})(?!\d)/gu)) {
     const first = Number(match[1]); const second = Number(match[2]);
-    if (first <= 12 && second <= 12) continue; // locale ambiguous, even when it would match
-    if (Number(match[3]) === year && ((first === day && second === month && first > 12)
-      || (first === month && second === day && second > 12))) return true;
+    if (first <= 12 && second <= 12 && first !== second) continue; // locale ambiguous
+    if (Number(match[3]) === year && ((first === day && second === month) || (first === month && second === day))) return true;
   }
   return false;
 }
