@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `mono-agent memory curate` no longer produces a plan that both drops a line
+  and links it to the owner. `prepare --owner-backfill` leaves out lines the
+  plan proposes to drop, and `review` sets the owner link to not accepted when
+  the line's drop is accepted, reporting the count. Such plans used to fail at
+  `apply` with "conflicting owner association".
+
 - Embed large explicit memory plans (curate, forget) in bounded provider
   batches. Applying a plan with hundreds of dropped lines no longer sends one
   oversized request that a local Ollama runner rejects.
