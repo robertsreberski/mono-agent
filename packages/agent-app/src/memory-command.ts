@@ -2969,6 +2969,23 @@ function curatePlanDigest(plan: Omit<CuratePlan, "planDigest">): string {
     ...(plan.ownerAssociations === undefined ? {} : { ownerAssociations: plan.ownerAssociations.map(({ accepted: _accepted, ...immutable }) => immutable) }) })).digest("hex");
 }
 
+/** Ids of the plan's drop proposals, optionally only the accepted ones. */
+function curateDropIds(proposals: readonly CurateProposal[], acceptedOnly: boolean): Set<string> {
+  return new Set(proposals.filter(({ action, accepted }) => action === "drop" && (accepted || !acceptedOnly)).map(({ source }) => source.id));
+}
+
+/**
+ * Apply cannot both drop a line and link it to the owner. An accepted drop
+ * wins: the owner association for the same id is set to not accepted.
+ */
+function withAcceptedDropsWinning(plan: CuratePlan): CuratePlan {
+  if (plan.ownerAssociations === undefined) return plan;
+  const dropped = curateDropIds(plan.proposals, true);
+  if (!plan.ownerAssociations.some(({ id, accepted }) => accepted && dropped.has(id))) return plan;
+  return { ...plan, ownerAssociations: plan.ownerAssociations.map((association) => association.accepted && dropped.has(association.id)
+    ? { ...association, accepted: false } : association) };
+}
+
 /** Operator merges from repeated `--merge` flags and an optional private merge file. */
 async function readCurateOperatorMerges(context: MemoryCommandContext, input: RunMemoryCommandInput, bujo: BujoModule): Promise<CurateOperatorMerge[]> {
   const specs = [...(input.curateMerges ?? [])];
@@ -3025,13 +3042,18 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       const operatorMerges = await readCurateOperatorMerges(context, input, bujo);
       // Deterministic and model-free: only lines whose own source proves the owner is the subject.
       const ownerScan = input.ownerBackfill === true ? bujo.proposeOwnerAssociations(root) : undefined;
-      const ownerAssociations = ownerScan?.associations ?? [];
+      const scannedOwners = ownerScan?.associations ?? [];
+      // A line this plan proposes to drop gets no owner link proposal.
+      const ownersFor = (candidates: readonly CurateProposal[]): readonly CurateOwnerAssociation[] => {
+        const dropped = curateDropIds(candidates, false);
+        return dropped.size === 0 ? scannedOwners : scannedOwners.filter(({ id }) => !dropped.has(id));
+      };
       // `--limit 0` prepares only the operator merges / owner backfill: no line is sent to a model.
       const modelPass = input.limit !== 0;
       const inspected = bujo.inspectCurateSource(root, modelPass ? input.limit ?? 120 : 1,
         modelPass ? input.curateSelect : "oldest");
       const snapshot = modelPass ? inspected : { ...inspected, lines: [] };
-      bujo.previewCurateMutations(root, [], undefined, operatorMerges, ownerAssociations);
+      bujo.previewCurateMutations(root, [], undefined, operatorMerges, scannedOwners);
       if (Buffer.byteLength(JSON.stringify(snapshot.lines), "utf8") > MAX_CURATE_PLAN_BYTES / 2) {
         throw new Error("curate source exceeds private plan bound");
       }
@@ -3055,7 +3077,8 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       // An invalid individual suggestion cannot discard the rest of a paid pass.
       const admit = (group: readonly CurateProposal[]): void => {
         if (group.length === 0) return;
-        try { bujo.previewCurateMutations(root, [...proposals, ...group], undefined, operatorMerges, ownerAssociations); proposals.push(...group); }
+        const candidates = [...proposals, ...group];
+        try { bujo.previewCurateMutations(root, candidates, undefined, operatorMerges, ownersFor(candidates)); proposals.push(...group); }
         catch {
           if (group.length === 1) { discarded.push({ id: group[0]!.source.id, reason: "invalid-preview" }); return; }
           const middle = Math.floor(group.length / 2);
@@ -3063,6 +3086,10 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
         }
       };
       admit(suggested.proposals);
+      const ownerAssociations = ownersFor(proposals);
+      const ownerBackfill = ownerScan === undefined ? undefined : { ...ownerScan.counts, proposed: ownerAssociations.length,
+        bare: ownerAssociations.filter(({ reason }) => reason === "owner-bare").length,
+        supersededByDrop: scannedOwners.length - ownerAssociations.length };
       const planPath = await canonicalProspectivePath(resolve(context.cwd, input.planPath!));
       if (isSameOrUnderDirectory(root, planPath)) throw new Error("plan cannot be inside memory root");
       const payload = { schemaVersion: 1, operation: "curate", rootFingerprint: memoryRootFingerprint(root),
@@ -3074,16 +3101,16 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       const discardedByReason = Object.fromEntries([...new Set(discarded.map(({ reason }) => reason))].map((reason) => [reason,
         discarded.filter((item) => item.reason === reason).length]));
       write(input.json, { operation: "curate-prepare", status: "prepared", planPath, count: proposals.length,
-        operatorMerges: operatorMerges.length, ...(ownerScan === undefined ? {} : { ownerBackfill: ownerScan.counts }),
+        operatorMerges: operatorMerges.length, ...(ownerBackfill === undefined ? {} : { ownerBackfill }),
         discarded: discarded.length, discardedByReason, skipped: snapshot.skipped, selected: modelPass ? snapshot.selected : {} },
-        () => `Curate plan prepared: ${proposals.length} proposals, ${operatorMerges.length} operator merges, ${ownerScan === undefined ? "" : `${ownerAssociations.length} owner associations (${JSON.stringify(ownerScan.counts)}), `}${discarded.length} discarded (${JSON.stringify(discardedByReason)}); skipped canonical lines: ${JSON.stringify(snapshot.skipped)} at ${planPath}. Review before applying.\n`);
+        () => `Curate plan prepared: ${proposals.length} proposals, ${operatorMerges.length} operator merges, ${ownerBackfill === undefined ? "" : `${ownerAssociations.length} owner associations (${JSON.stringify(ownerBackfill)}), `}${discarded.length} discarded (${JSON.stringify(discardedByReason)}); skipped canonical lines: ${JSON.stringify(snapshot.skipped)} at ${planPath}. Review before applying.\n`);
       return 0;
     }
     if (operation === "review" || operation === "apply") {
       const planPath = resolve(context.cwd, input.planPath!);
       const safePath = await canonicalProspectivePath(planPath);
       if (isSameOrUnderDirectory(root, safePath)) throw new Error("plan cannot be inside memory root");
-      const plan = parseCuratePlan(await readPrivateJson(planPath, MAX_CURATE_PLAN_BYTES));
+      let plan = parseCuratePlan(await readPrivateJson(planPath, MAX_CURATE_PLAN_BYTES));
       for (const item of plan.proposals) bujo.validateCurateProposal(item);
       for (const merge of plan.operatorMerges ?? []) bujo.validateCurateOperatorMerge(merge);
       for (const association of plan.ownerAssociations ?? []) bujo.validateCurateOwnerAssociation(association);
@@ -3095,6 +3122,11 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
         catch (error) { await unlink(temp).catch(() => {}); throw error; }
         await fsyncParentDirectory(planPath);
       };
+      if (operation === "review") {
+        // Review keeps the plan applicable: an accepted drop wins over an owner link for the same line.
+        const consistent = withAcceptedDropsWinning(plan);
+        if (consistent !== plan) { await replacePlan(consistent); plan = consistent; }
+      }
       if (operation === "review" && ((input.curateMerges?.length ?? 0) > 0 || input.curateMergeFile !== undefined)) {
         // Operator merges join the private plan as pre-accepted decisions; the
         // same apply-time validation still guards them.
@@ -3132,9 +3164,9 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
           const decide = <T extends { readonly accepted: boolean }>(item: T, test: (selector: string, item: T) => boolean): T => ({ ...item,
             accepted: reject.some((selector) => test(selector, item)) ? false
               : accept.some((selector) => test(selector, item)) ? true : item.accepted });
-          const updated = { ...plan, proposals: plan.proposals.map((proposal) => decide(proposal, matches)),
+          const updated = withAcceptedDropsWinning({ ...plan, proposals: plan.proposals.map((proposal) => decide(proposal, matches)),
             ...(plan.operatorMerges === undefined ? {} : { operatorMerges: plan.operatorMerges.map((merge) => decide(merge, matchesMerge)) }),
-            ...(plan.ownerAssociations === undefined ? {} : { ownerAssociations: plan.ownerAssociations.map((association) => decide(association, matchesOwner)) }) };
+            ...(plan.ownerAssociations === undefined ? {} : { ownerAssociations: plan.ownerAssociations.map((association) => decide(association, matchesOwner)) }) });
           await replacePlan(updated);
           const { curateAccept: _accept, curateReject: _reject, ...remainder } = input;
           return await runMemoryCurate(context, rest, remainder);
@@ -3148,11 +3180,15 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
           if (item.accepted) count.accepted++;
           counts[key] = count;
         }
+        // Owner links held back because the same line's drop is accepted.
+        const droppedIds = curateDropIds(plan.proposals, true);
+        const ownerSupersededByDrop = owners.filter(({ id }) => droppedIds.has(id)).length;
         write(input.json, { operation: "curate-review", counts, discarded: plan.discarded,
           operatorMerges: merges.map(({ from, to, allowCrossType, accepted }) => ({ from, to, allowCrossType, accepted })).slice(0, 50),
-          ...(plan.ownerAssociations === undefined ? {} : { ownerAssociations: owners.map(({ id, reason, accepted }) => ({ id, reason, accepted })).slice(0, 50) }),
+          ...(plan.ownerAssociations === undefined ? {} : { ownerAssociations: owners.map(({ id, reason, accepted }) => ({ id, reason, accepted })).slice(0, 50),
+            ownerSupersededByDrop }),
           examples: plan.proposals.slice(0, 5).map(({ source, action, reason, accepted }) => ({ id: source.id, action, reason, accepted })) },
-          () => `Curate review: ${JSON.stringify(counts)}\nDiscarded suggestions (${plan.discarded.length}): ${JSON.stringify(plan.discarded.slice(0, 20))}${plan.discarded.length > 20 ? " (more in private plan)" : ""}\nExamples: ${JSON.stringify(plan.proposals.slice(0, 5).map(({ source, action, reason, accepted }) => ({ id: source.id, action, reason, accepted })))}${merges.length === 0 ? "" : `\nOperator merges (${merges.length}): ${merges.slice(0, 20).map(({ from, to, accepted }) => `${from} -> ${to}${accepted ? "" : " (rejected)"}`).join(", ")}${merges.length > 20 ? " (more in private plan)" : ""}`}\nUse --accept drop:generic-advice,label:* or --reject id:<id>; review the private plan before applying.\n`);
+          () => `Curate review: ${JSON.stringify(counts)}\nDiscarded suggestions (${plan.discarded.length}): ${JSON.stringify(plan.discarded.slice(0, 20))}${plan.discarded.length > 20 ? " (more in private plan)" : ""}\nExamples: ${JSON.stringify(plan.proposals.slice(0, 5).map(({ source, action, reason, accepted }) => ({ id: source.id, action, reason, accepted })))}${merges.length === 0 ? "" : `\nOperator merges (${merges.length}): ${merges.slice(0, 20).map(({ from, to, accepted }) => `${from} -> ${to}${accepted ? "" : " (rejected)"}`).join(", ")}${merges.length > 20 ? " (more in private plan)" : ""}`}${ownerSupersededByDrop === 0 ? "" : `\nOwner associations not accepted because the line is dropped: ${ownerSupersededByDrop}`}\nUse --accept drop:generic-advice,label:* or --reject id:<id>; review the private plan before applying.\n`);
         return 0;
       }
       // The package checks freshness under the writer lease. An interrupted root-swap

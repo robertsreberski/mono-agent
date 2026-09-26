@@ -1041,13 +1041,13 @@ describe("AssistantMessage grouped parts", () => {
           parts: [
             { type: "text", text: "The" },
             { type: "reasoning", text: "." },
-            { type: "text", text: " targeted search only surfaced daycare threads." },
+            { type: "text", text: " targeted search only surfaced invoice threads." },
           ],
         }}
       />,
     );
 
-    expect(await screen.findByText("The targeted search only surfaced daycare threads.")).toBeVisible();
+    expect(await screen.findByText("The targeted search only surfaced invoice threads.")).toBeVisible();
     // The content-free thought is not a step, and with nothing else to group
     // the band — and its "1 step" header — never renders.
     expect(screen.queryByRole("button", { name: /Activity/ })).not.toBeInTheDocument();

@@ -2425,12 +2425,12 @@ describe("WebStore", () => {
     store.applyStreamFrames(turn.turnId, [
       { kind: "append", delta: "The" },
       { kind: "event", event: { type: "assistant_thought", text: "." } },
-      { kind: "append", delta: " targeted search only surfaced daycare threads." },
+      { kind: "append", delta: " targeted search only surfaced invoice threads." },
     ]);
     const detail = store.completeTurn(turn.turnId, "");
 
     expect(detail.messages.at(-1)?.parts).toEqual([
-      { type: "text", text: "The targeted search only surfaced daycare threads." },
+      { type: "text", text: "The targeted search only surfaced invoice threads." },
       { type: "reasoning", text: "." },
     ]);
     store.close();

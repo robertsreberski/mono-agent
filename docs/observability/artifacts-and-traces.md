@@ -284,7 +284,7 @@ Because these events live in JSONL, local audit and replay retain the attributio
 
 The host periodically writes a heartbeat manifest describing this agent into `traceability.registryDir`. `mono-agent status` reads that directory to list known trace sources and mark any whose last heartbeat is older than `staleAfterMs` as stale. This is how the CLI discovers running agents on the machine without a central service.
 
-When `registryDir` is a config-local override (as `mono-agent init` scaffolds), the same manifest is ALSO best-effort mirrored into the global `~/.mono-agent/trace-sources` registry (`traceability.globalDiscovery`, default `true`), so `mono-agent status`, the web console, and other maintained discovery clients can still find this agent from outside the project directory.
+When `registryDir` is a config-local override (as `mono-agent init` scaffolds), the same manifest is ALSO best-effort mirrored into the global `~/.mono-agent/trace-sources` registry (`traceability.globalDiscovery`, default `true`), so `mono-agent status`, the web console, and other maintained discovery clients can still find this agent from outside the project directory. A relative `registryDir` is resolved against the current directory, so `mono-agent status --config <path>` run from another directory also looks for the agent's manifest in the global registry. Only `status` reads the mirror; `stop`, `restart` and `start` use `registryDir`. Source ids are expected to be unique per machine: two agents with the same configured `sourceId` overwrite each other's mirror entry.
 
 ```json
 {

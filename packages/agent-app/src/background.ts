@@ -9,8 +9,10 @@ import { listRecordedRuns, listTraceSources } from "@mono-agent/observability";
 import type { TraceSourceListItem } from "@mono-agent/observability";
 
 import {
+  resolveAppTraceGlobalDiscovery,
   resolveAppTraceRegistryDir,
   resolveAppTraceStaleAfterMs,
+  resolveGlobalTraceRegistryDir,
 } from "./app-config.js";
 import { formatChannelFactValue } from "./channel-fact-format.js";
 import { formatHumanChannelSections } from "./channel-status-display.js";
@@ -150,6 +152,14 @@ export interface InstanceTarget {
   readonly configPath: string;
   readonly label: string;
   readonly registryDir: string;
+  /**
+   * Machine-wide registry that holds the worker's best-effort manifest mirror
+   * when `registryDir` differs from it. A relative `traceability.registryDir`
+   * is resolved against the caller's cwd, so a control command run outside the
+   * agent folder finds the worker only through this mirror. Read by
+   * `status` only; lifecycle commands never act on mirror entries.
+   */
+  readonly mirrorRegistryDir?: string;
   readonly staleAfterMs: number;
   readonly paths: LaunchdPaths;
   readonly nodePath: string;
@@ -215,16 +225,19 @@ export async function resolveInstanceTarget(input: ResolveInstanceTargetInput): 
     canonicalBackgroundConfigPath(lexicalCwd, input.args.configPath),
   ]);
   const configInput = { env: input.env, cwd, configPath };
-  const [registryDir, staleAfterMs] = await Promise.all([
+  const [registryDir, staleAfterMs, globalDiscovery] = await Promise.all([
     resolveAppTraceRegistryDir(configInput),
     resolveAppTraceStaleAfterMs(configInput),
+    resolveAppTraceGlobalDiscovery(configInput),
   ]);
+  const globalRegistryDir = resolveGlobalTraceRegistryDir(input.env);
   const label = deriveLaunchdLabel(configPath);
   return {
     cwd,
     configPath,
     label,
     registryDir,
+    ...(globalDiscovery && resolve(registryDir) !== globalRegistryDir ? { mirrorRegistryDir: globalRegistryDir } : {}),
     staleAfterMs,
     paths: launchdPathsFor(label),
     nodePath: process.execPath,
@@ -1521,14 +1534,10 @@ export async function statusBackground(
   deps: BackgroundDeps,
   options: StatusBackgroundOptions = {},
 ): Promise<number> {
-  const [result, service] = await Promise.all([
-    deps.listTraceSources({ registryDir: target.registryDir, staleAfterMs: target.staleAfterMs }),
+  const [classified, service] = await Promise.all([
+    classifyStatusSources(target, deps),
     launchdServiceInfo(deps.runner, target.label, deps.getuid()),
   ]);
-  const classified = await Promise.all(result.sources.map(async (source) => ({
-    source,
-    matches: await matchesConfig(source, target.configPath),
-  })));
   const matchingSources = classified.filter((entry) => entry.matches).map((entry) => entry.source);
   const recorded = service.pid === undefined
     ? matchingSources[0]
@@ -1755,6 +1764,27 @@ export function printInstanceInfo(
   deps.stdout(`${ui.badge("ok")}${ui.style.bold(`mono-agent ${verb} in the background.`)}\n\n`);
   writeInstanceDetail(source, target, deps);
   deps.stdout("\n" + ui.hint(`Stop with: mono-agent stop${flag}   ·   Logs: mono-agent logs${flag} --follow`));
+}
+
+/**
+ * Status only (read-only): every source in the target's registry, classified
+ * against its config, plus every entry for the same config in the global
+ * mirror. Duplicates are kept; status picks the one whose pid is the launchd
+ * service pid. Lifecycle commands keep using {@link findInstances}.
+ */
+async function classifyStatusSources(
+  target: InstanceTarget,
+  deps: BackgroundDeps,
+): Promise<readonly { readonly source: TraceSourceListItem; readonly matches: boolean }[]> {
+  const classify = async (registryDir: string) => await Promise.all(
+    (await deps.listTraceSources({ registryDir, staleAfterMs: target.staleAfterMs })).sources.map(async (source) => ({
+      source,
+      matches: await matchesConfig(source, target.configPath),
+    })),
+  );
+  const local = await classify(target.registryDir);
+  if (target.mirrorRegistryDir === undefined) return local;
+  return [...local, ...(await classify(target.mirrorRegistryDir)).filter((entry) => entry.matches)];
 }
 
 async function findInstances(target: InstanceTarget, deps: BackgroundDeps): Promise<readonly TraceSourceListItem[]> {

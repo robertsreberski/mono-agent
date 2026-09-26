@@ -917,14 +917,14 @@ describe("convertWebMessage", () => {
         parts: [
           { type: "text", text: "The" },
           { type: "reasoning", text: "." },
-          { type: "text", text: " targeted search only surfaced daycare threads." },
+          { type: "text", text: " targeted search only surfaced invoice threads." },
         ],
       }));
       if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
       // One sentence, no thought row — and with nothing else to group, no
       // empty activity card either.
       expect(converted.content).toEqual([
-        { type: "text", text: "The targeted search only surfaced daycare threads." },
+        { type: "text", text: "The targeted search only surfaced invoice threads." },
       ]);
     },
   );

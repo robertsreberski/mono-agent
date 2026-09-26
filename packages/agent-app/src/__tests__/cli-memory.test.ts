@@ -2434,4 +2434,64 @@ describe("memory entity identity CLI", { timeout: 30_000 }, () => {
     const again = await invoke(["memory", "curate", "prepare", "--plan", join(dir, "owner-plan-2.json"), "--limit", "0", "--owner-backfill", "--json"]);
     expect(JSON.parse(again.stdout)).toMatchObject({ ownerBackfill: { alreadyLinked: 1, proposed: 1 } });
   });
+
+  it("keeps a dropped line out of owner backfill so the reviewed plan applies", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    await mkdir(memoryRoot, { recursive: true });
+    const at = "2026-07-12T10:00:00.000Z";
+    const lines = [["fictional-a", "The user prefers Maple tea."], ["fictional-c", "User rides a bike to work."],
+      ["fictional-e", "The user owns a red canoe."]] as const;
+    for (const [id, text] of lines) {
+      bujoMemory.appendBullet(memoryRoot, { id, type: "note", status: "open", text, salience: 0.5, isInsight: false,
+        createdAt: at, refs: [] }, new Date(at));
+    }
+    await safeRebuildMemoryIndex({ root: memoryRoot, tier: "bujo", embeddings: deterministicEmbeddings("ollama:test-embed", 8), dim: 8 });
+    const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
+      embeddings: { provider: "ollama", model: "test-embed", dim: 8 }, llm: { provider: "ollama", model: "test-capture" } } });
+    const invoke = (args: string[]) => captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(args))));
+    const planPath = join(dir, "drop-owner-plan.json");
+    // The model proposes dropping two lines that would otherwise qualify for owner backfill.
+    const prepared = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runMemoryCommand({
+      cwd: dir, env: {}, positionals: ["curate", "prepare"], planPath, json: true, strict: false, ownerBackfill: true, curateSelect: "oldest",
+      curateLlm: { id: "fake", complete: async () => JSON.stringify([
+        { id: "fictional-a", action: "drop", reason: "generic-advice" },
+        { id: "fictional-c", action: "drop", reason: "generic-advice" },
+      ]) },
+    }))));
+    expect(prepared.code, prepared.stderr).toBe(0);
+    // Only the unanswered line is discarded; neither drop is lost to an owner-link conflict.
+    expect(JSON.parse(prepared.stdout)).toMatchObject({ count: 2, discarded: 1, discardedByReason: { "missing-proposal": 1 },
+      ownerBackfill: { live: 3, proposed: 1, bare: 0, supersededByDrop: 2 } });
+    type Plan = { proposals: { source: { id: string }; accepted: boolean }[];
+      ownerAssociations: { id: string; textHash: string; reason: string; accepted: boolean }[]; planDigest?: string };
+    let plan = JSON.parse(await readFile(planPath, "utf8")) as Plan;
+    expect(plan.ownerAssociations.map(({ id, accepted }) => [id, accepted])).toEqual([["fictional-e", true]]);
+    expect((await invoke(["memory", "curate", "review", "--plan", planPath, "--accept", "drop:*", "--json"])).code).toBe(0);
+
+    // A plan written before this rule may carry an owner link for a dropped line;
+    // review sets it to not accepted and reports the count.
+    const { planDigest: _digest, ...payload } = JSON.parse(await readFile(planPath, "utf8")) as Plan;
+    payload.ownerAssociations.push({ id: "fictional-c", textHash: createHash("sha256").update(lines[1][1]).digest("hex"),
+      reason: "owner-bare", accepted: true });
+    const strip = <T extends { accepted: boolean }>({ accepted: _accepted, ...rest }: T) => rest;
+    const planDigest = createHash("sha256").update(JSON.stringify({ ...payload, proposals: payload.proposals.map(strip),
+      ownerAssociations: payload.ownerAssociations.map(strip) })).digest("hex");
+    await writeFile(planPath, JSON.stringify({ ...payload, planDigest }), { mode: 0o600 });
+    const reviewed = await invoke(["memory", "curate", "review", "--plan", planPath, "--json"]);
+    expect(reviewed.code, reviewed.stderr).toBe(0);
+    expect(JSON.parse(reviewed.stdout)).toMatchObject({ ownerSupersededByDrop: 1,
+      counts: { "drop:generic-advice": { total: 2, accepted: 2 }, "associate:owner": { total: 1, accepted: 1 },
+        "associate:owner-bare": { total: 1, accepted: 0 } } });
+    // Accepting the owner link again keeps the drop authoritative.
+    expect((await invoke(["memory", "curate", "review", "--plan", planPath, "--accept", "associate:owner-bare", "--json"])).code).toBe(0);
+    plan = JSON.parse(await readFile(planPath, "utf8")) as Plan;
+    expect(plan.ownerAssociations.map(({ id, accepted }) => [id, accepted])).toEqual([["fictional-e", true], ["fictional-c", false]]);
+
+    stubOllamaEmbeddings(8);
+    const applied = await invoke(["memory", "curate", "apply", "--plan", planPath, "--json"]);
+    expect(applied.code, applied.stderr).toBe(0);
+    expect(JSON.parse(applied.stdout)).toMatchObject({ status: "applied" });
+    const graph = bujoMemory.readGraph(memoryRoot);
+    expect(graph.associations.filter(({ entityId }) => entityId === "person:owner").map(({ memoryId }) => memoryId)).toEqual(["fictional-e"]);
+  });
 });

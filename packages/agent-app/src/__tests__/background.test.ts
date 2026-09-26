@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 
 import { describe, expect, it, vi } from "vitest";
 
+import { listTraceSources, registerTraceSource } from "@mono-agent/observability";
 import type { RecordedRunListItem, TraceSourceListItem } from "@mono-agent/observability";
 
 import {
@@ -2961,6 +2962,75 @@ describe("stopBackground", () => {
 });
 
 describe("statusBackground", () => {
+  it.skipIf(process.platform === "win32")("finds the running agent for an absolute --config from another cwd", async () => {
+    const home = await mkdtemp(join(tmpdir(), "mono-agent-status-elsewhere-"));
+    try {
+      const agent = join(home, "agent");
+      const elsewhere = join(home, "elsewhere");
+      const globalRegistryDir = join(home, "global-trace-sources");
+      await mkdir(agent, { mode: 0o700 });
+      await mkdir(elsewhere, { mode: 0o700 });
+      await writeFile(join(agent, "mono-agent.config.json"),
+        `${JSON.stringify({ traceability: { registryDir: "./.mono-agent/trace-sources" } })}\n`, "utf8");
+      const env = { PATH: "/usr/bin:/bin", MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: globalRegistryDir };
+      const cliPath = "/opt/app/dist/cli.js";
+      const fromAgent = await resolveInstanceTarget({ args: {}, cwd: agent, cliPath, env });
+      const fromElsewhere = await resolveInstanceTarget({ args: { configPath: fromAgent.configPath }, cwd: elsewhere, cliPath, env });
+      expect(fromElsewhere.configPath).toBe(fromAgent.configPath);
+      expect(fromElsewhere.label).toBe(fromAgent.label);
+      // The relative registry resolves against the caller's cwd, not the agent folder.
+      expect(fromElsewhere.registryDir).not.toBe(fromAgent.registryDir);
+      // The worker registers in its folder-local registry and mirrors the manifest globally.
+      for (const registryDir of [fromAgent.registryDir, globalRegistryDir]) {
+        await registerTraceSource({ registryDir, sourceId: "fictional-agent", label: "Fictional Agent",
+          artifactDir: join(agent, ".mono-agent", "artifacts"), pid: 4321, configPath: fromAgent.configPath });
+      }
+      for (const target of [fromAgent, fromElsewhere]) {
+        const { runner } = makeRunner({ loaded: true });
+        const harness = makeHarness({ runner, list: listTraceSources, isAlive: (pid) => pid === 4321 });
+        expect(await statusBackground(target, harness.deps, { json: true })).toBe(0);
+        expect(JSON.parse(harness.out.join(""))).toMatchObject({ ok: true, instance: { pid: 4321, health: "running" }, others: [] });
+      }
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("prefers the mirror entry with the launchd pid over a stale local manifest with the same sourceId", async () => {
+    const { runner } = makeRunner({ loaded: true });
+    const target = makeTarget({ registryDir: "/elsewhere/.mono-agent/trace-sources", mirrorRegistryDir: "/home/u/.mono-agent/trace-sources" });
+    const stale = makeSource(target, { pid: 1111, sourceId: "fictional-agent", status: "stopped", health: "stopped" });
+    const fresh = makeSource(target, { pid: 4321, sourceId: "fictional-agent" });
+    const harness = makeHarness({
+      runner,
+      isAlive: (pid) => pid === 4321,
+      list: (async (options: { registryDir: string }) => ({ registryDir: options.registryDir,
+        sources: options.registryDir === target.mirrorRegistryDir ? [fresh] : [stale], warnings: [] })) as unknown as BackgroundDeps["listTraceSources"],
+    });
+
+    expect(await statusBackground(target, harness.deps, { json: true })).toBe(0);
+    expect(JSON.parse(harness.out.join(""))).toMatchObject({ ok: true, instance: { pid: 4321, health: "running" }, others: [] });
+  });
+
+  it("keeps lifecycle commands off the global mirror", async () => {
+    const { runner, calls } = makeRunner({ loaded: true });
+    const target = makeTarget({ registryDir: "/elsewhere/.mono-agent/trace-sources", mirrorRegistryDir: "/home/u/.mono-agent/trace-sources" });
+    const listed: string[] = [];
+    const harness = makeHarness({
+      runner,
+      isAlive: () => false,
+      list: (async (options: { registryDir: string }) => {
+        listed.push(options.registryDir);
+        return { registryDir: options.registryDir, sources: [], warnings: [] };
+      }) as unknown as BackgroundDeps["listTraceSources"],
+    });
+
+    expect(await stopBackground(target, harness.deps, POLL)).toBe(0);
+    expect(calls.some((call) => call[0] === "bootout" && call[1]?.endsWith(target.label))).toBe(true);
+    expect(listed.length).toBeGreaterThan(0);
+    expect(listed).not.toContain(target.mirrorRegistryDir);
+  });
+
   it("prints this config's instance plus a brief list of others", async () => {
     const { runner } = makeRunner({ loaded: true });
     const target = makeTarget();

@@ -114,7 +114,7 @@ describe("bounded first-party report evidence", () => {
     ["What is Avery's service port?", "Avery reports that their service port is 8443."],
     ["What is Avery's service port?", "aVeRy reports that their service port is 8443."],
     ["Where does Avery work?", "Avery reports working in Amsterdam."],
-    ["Where does Avery live?", "Avery reports living at Utrecht."],
+    ["Where does Avery live?", "Avery reports living at Porto."],
     ["What deployment color did Avery select?", "Avery reports selecting cobalt as the deployment color."],
     ["Which vendor did Avery choose?", "Avery reports choosing acme as the vendor."],
     ["What color did Avery pick?", "Avery reports picking amber as the color."],

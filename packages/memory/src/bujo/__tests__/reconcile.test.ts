@@ -800,11 +800,11 @@ describe("reconcileBatch", () => {
     db.close();
   });
   it.each([
-    "Morgan is 7.5 months old", "Morgan ha 7,5 mesi", "Morgan is 7,5 maanden oud",
+    "Morgan is 14.5 months old", "Morgan ha 14,5 mesi", "Morgan is 14,5 maanden oud",
   ])("converts a time-sensitive UPDATE to dated supersession preserving the original as history: %s", async (text) => {
     const root = newRoot();
     const db = openDb(root);
-    await seed(db, root, "OLD-AGE", "Morgan is 6 months old");
+    await seed(db, root, "OLD-AGE", "Morgan is 12 months old");
     const oldSource = dailyContent(root);
     db.findSimilarMany = async () => [[{ record: db.get("OLD-AGE")!, distance: 0.1 }]];
     const candidate: CandidateMemory = { type: "note", text, salience: 0.8, isInsight: false };
@@ -820,16 +820,16 @@ describe("reconcileBatch", () => {
     expect(actions).toEqual([{ kind: "supersede", oldId: "OLD-AGE", newId: "AGE-NEW" }]);
     expect(dailyContent(root)).not.toBe(oldSource);
     expect(db.get("OLD-AGE")?.status).toBe("invalidated");
-    expect(db.get("OLD-AGE")?.text).toBe("Morgan is 6 months old");
+    expect(db.get("OLD-AGE")?.text).toBe("Morgan is 12 months old");
     expect(db.get("AGE-NEW")?.createdAt).toBe(nextDay.toISOString());
     expect(readFileSync(dailyFilePath(root, nextDay), "utf8")).toContain(text);
   });
   it("plans the same run-derived supersession identity on a deferred snapshot retry", async () => {
     const root = newRoot();
     const db = openDb(root);
-    await seed(db, root, "AGE-OLD", "Morgan is 6 months old");
+    await seed(db, root, "AGE-OLD", "Morgan is 12 months old");
     db.findSimilarMany = async () => [[{ record: db.get("AGE-OLD")!, distance: 0.1 }]];
-    const candidate: CandidateMemory = { type: "note", text: "Morgan is 7.5 months old", salience: 0.8, isInsight: false };
+    const candidate: CandidateMemory = { type: "note", text: "Morgan is 14.5 months old", salience: 0.8, isInsight: false };
     const llm: ReconcileDeps["llm"] = { id: "stable", complete: async () => JSON.stringify([
       { index: 0, action: "update", targetId: "AGE-OLD", text: candidate.text },
     ]) };
@@ -842,7 +842,7 @@ describe("reconcileBatch", () => {
     expect(await reconcileBatch([candidate], deps)).toEqual([{ kind: "supersede", oldId: "AGE-OLD", newId: "AGE-RUN-00" }]);
     expect(intents).toHaveLength(2);
     expect(intents[0]).toBe(intents[1]);
-    expect(db.get("AGE-OLD")?.text).toBe("Morgan is 6 months old");
+    expect(db.get("AGE-OLD")?.text).toBe("Morgan is 12 months old");
     expect(db.get("AGE-RUN-00")).toBeUndefined();
   });
 

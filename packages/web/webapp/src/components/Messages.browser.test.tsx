@@ -812,7 +812,7 @@ describe("reasoning-split reply in Chromium", () => {
   it.each([[1280, 800, "desktop"], [390, 844, "mobile"]] as const)(
     "renders a running sentence a thought interrupts as one block at %ipx (%s)", async (width, height, label) => {
       await page.viewport(width, height);
-      const sentence = "The targeted search only surfaced daycare/postpartum threads — let me look at Robin's full recent inbox and her calendar for this week to catch anything worded differently.";
+      const sentence = "The targeted search only surfaced invoice/receipt threads — let me look at Robin's full recent inbox and their calendar for this week to catch anything worded differently.";
       const runningSplit: WebMessage = {
         ...runningResponse,
         id: "running-split-response",
