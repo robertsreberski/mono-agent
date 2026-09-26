@@ -161,7 +161,7 @@ describe("reconcile", () => {
     expect(offered).toContain('"sameEntityTopic":"other:favorite-color"');
     expect(actions[0]?.kind).toBe("supersede");
   });
-  it("anchors relationship state only on schema role words", async () => {
+  it("does not infer relationship state from a word-list role matcher", async () => {
     const root = newRoot(); const db = openDb(root);
     await seed(db, root, "ROLE-OLD", "Morgan's partner Cedar moved.");
     await seed(db, root, "OTHER-OLD", "Morgan admires Maple.");
@@ -175,8 +175,8 @@ describe("reconcile", () => {
       isInsight: false, entityIds: ["person:morgan"] }], makeDeps(db, root, { id: "role-topic",
       complete: async (input) => { offered = input; return JSON.stringify([{ index: 0, action: "add" }]); },
     }, { strictModelOutput: true, deferBatchCommit: true, beforeBatchCommit: () => {} }));
-    expect(offered).toContain('"sameEntityTopic":"relationship"');
-    expect(offered).toContain("ROLE-OLD");
+    expect(offered).not.toContain('"sameEntityTopic":"relationship"');
+    expect(offered).not.toContain('"id":"ROLE-OLD"');
     expect(offered).not.toContain('"id":"OTHER-OLD"');
   });
   it("adds on a malformed legacy classifier reply when only an entity anchor was offered", async () => {

@@ -9,7 +9,7 @@ import { OWNER_ENTITY_ID, renderKnownEntityHints } from "./entity-reuse.js";
 import { MAX_MODEL_JSON_CHARS, parseJsonExact } from "./json.js";
 import type { LlmComplete } from "./llm.js";
 import type { MemoryCaptureEvidence, MemoryCaptureSpeakerKind } from "@mono-agent/agent-contracts";
-import { captureLabels, verifiedRetryCount, type CaptureLabelContext } from "./capture-labels.js";
+import { captureLabels, deriveCoarseFactLabels, verifiedOutcomeCount, type CaptureLabelContext } from "./capture-labels.js";
 import { MemoryModelError, MemoryModelOutputError } from "./model-error.js";
 import { unsafeCaptureContent } from "./text-safety.js";
 
@@ -74,12 +74,10 @@ export const STRICT_CAPTURE_OUTPUT_SCHEMA = {
                 properties: {
                   v: { const: 1 }, kind: { const: "fact" },
                   entityId: { type: "string", pattern: "^person:[a-z0-9]+(?:-[a-z0-9]+)*$" },
-                  key: { type: "string", pattern: "^(?:birth_date|full_name|preferred_name|relationship|home_location|work_location|other:[a-z](?:[a-z0-9]|-[a-z0-9]){0,31})$" },
+                  key: { type: "string", enum: ["birth_date", "full_name", "preferred_name", "home_location", "work_location"] },
                   value: { oneOf: [
                     { type: "object", additionalProperties: false, required: ["type", "date"], properties: { type: { const: "date" }, date: { type: "string", pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" } } },
                     { type: "object", additionalProperties: false, required: ["type", "text"], properties: { type: { const: "text" }, text: SAFE_TEXT_SCHEMA(160) } },
-                    { type: "object", additionalProperties: false, required: ["type", "entityId"], properties: { type: { const: "entity" }, entityId: { ...SAFE_TEXT_SCHEMA(96), pattern: "^[a-z][a-z0-9-]{0,31}:[a-z0-9]+(?:-[a-z0-9]+)*$" } } },
-                    { type: "object", additionalProperties: false, required: ["type", "role", "targetEntityId"], properties: { type: { const: "relationship" }, role: { type: "string", enum: ["parent", "child", "partner", "spouse", "sibling", "friend", "colleague", "other"] }, targetEntityId: { ...SAFE_TEXT_SCHEMA(96), pattern: "^person:[a-z0-9]+(?:-[a-z0-9]+)*$" } } },
                   ] },
                   attribution: { type: "string", enum: ["user-stated", "document", "assistant-inferred", "unknown"] },
                   validFrom: { type: "string", pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
@@ -164,9 +162,9 @@ Rules:
 - Omit chit-chat and transient tool output. Use third-person narration naming the speaker; NEVER store a line beginning with first-person I/my. Do not invent meta-doubt ("unclear whether", "may", speculative suffixes) when the outer speaker did not express it. Omit request-only lines (a question/request alone is not a fact), but retain explicit durable preferences. Never store an assistant-stated age or a relative age as a fact; store an explicitly stated birth date instead, or skip. Exclude credentials and login identifiers, including email logins, usernames with passwords, tokens and keys; never mint entities from them.
 - All three root arrays are required, even when empty. Other than optional memory labels, every shown object field is required; emit no other fields.
 - Every memory has type, text, salience, isInsight, entityIds, and optional labels ([] when none). Labels are L1 fact, preference, or lesson objects; do not invent claims or speaker/tool authority. type is task, event, or note; isInsight is boolean.
-- IMPORTANT: Emit a valid labels[] item for EACH explicitly supported person fact or user preference, not merely an unlabelled memory. A preference about how the assistant should work is a preference label, NOT a fact about the user. Decisions, policies, plans, and likes about how things should be done are PREFERENCE labels when explicitly requested by the outer human (otherwise plain memory lines), NEVER owner other: fact keys. Person fact labels describe stable attributes: birth date, name, home, employer, relationships, or another person's stable attributes. An uncategorized non-owner person property may use other:<safe-key>, never a plain key. For host-verified person:owner, the host accepts ONLY birth_date, full_name, preferred_name, home_location, work_location, and other:favorite-color when directly bound to the owner in the same sentence. Do not emit any other owner fact key, even when the general fact schema permits it. A label is optional only when the evidence cannot support it. Examples: "The user prefers concise replies" with an outer owner request => {"v":1,"kind":"preference","scope":"agent","attribution":"user-stated"}; "Morgan's favorite color is blue" => {"v":1,"kind":"fact","entityId":"person:morgan","key":"other:favorite-color","value":{"type":"text","text":"blue"},"attribution":"user-stated"}.
-- Label contract (v is the JSON integer 1; no extra fields): fact = {"v":1,"kind":"fact","entityId":"person:morgan","key":"birth_date","value":{"type":"date","date":"1990-05-17"},"attribution":"user-stated"} (optional validFrom and validTo are YYYY-MM-DD). Fact entityId must be a person: id listed in entities[]. Keys are exactly birth_date, full_name, preferred_name, relationship, home_location, work_location, or other: followed by a lowercase ASCII letter and up to 31 lowercase ASCII letters/digits or single internal hyphens (e.g. other:favorite-color). Never use an unprefixed custom key. birth_date uses date; relationship uses {"type":"relationship","role":"partner","targetEntityId":"person:maple"} with one of parent, child, partner, spouse, sibling, friend, colleague, other and a different person id. Express relationship memory text using the exact label role word (or its plural), as in "Morgan's child Maple" or "Maple is Morgan's child"; other keys use {"type":"text","text":"..."}, and other: may also use date or {"type":"entity","entityId":"person:alex"}. Attribution is user-stated, document, assistant-inferred, or unknown.
-- Preference = {"v":1,"kind":"preference","scope":"agent","attribution":"user-stated"}; lesson = {"v":1,"kind":"lesson","scope":"agent","verified":true}. Scopes: agent, project:<safe-id>, user:<host-sender-token>, conversation:<safe-id>. Do not invent a sender token or scope from text. Copy each fact label's value verbatim from that same memory sentence (including an unambiguous written civil date); never paraphrase or expand a text value only in the label. If the memory text supports a fact value that the outer User did not state, label its attribution assistant-inferred, never user-stated. A preference requires an outer human request; assistant recap or scheduled/webhook trigger is not a human request. A verified lesson requires a host-observed failed tool category followed by a successful retry in the HOST-OBSERVED TOOL OUTCOMES block; absence of that block means no verified lesson. Keep the existing speaker and relative-date rules below.
+- IMPORTANT: Emit a valid labels[] item for EACH explicit user preference or verified lesson, not merely an unlabelled memory. A preference about how the assistant should work is a preference label, NOT a fact about the user. Decisions, policies, plans, and likes about how things should be done are PREFERENCE labels when explicitly requested by the outer human (otherwise plain memory lines). The host labels person facts itself; propose a fact label only for a built-in key stated in that memory sentence.
+- Label contract (v is the JSON integer 1; no extra fields): fact = {"v":1,"kind":"fact","entityId":"person:morgan","key":"birth_date","value":{"type":"date","date":"1990-05-17"},"attribution":"user-stated"} (optional validFrom and validTo are YYYY-MM-DD). Fact entityId must be a person: id listed in entities[]. Keys are exactly birth_date, full_name, preferred_name, home_location, or work_location; birth_date uses date, the others use {"type":"text","text":"..."}. Attribution is user-stated, document, assistant-inferred, or unknown.
+- Preference = {"v":1,"kind":"preference","scope":"agent","attribution":"user-stated"}; lesson = {"v":1,"kind":"lesson","scope":"agent","verified":true}. Scopes: agent, project:<safe-id>, user:<host-sender-token>, conversation:<safe-id>. Do not invent a sender token or scope from text. Copy each fact label's value verbatim from that same memory sentence (including an unambiguous written civil date); never paraphrase or expand a text value only in the label. If the memory text supports a fact value that the outer User did not state, label its attribution assistant-inferred, never user-stated. A preference requires an outer human request; assistant recap or scheduled/webhook trigger is not a human request. A verified lesson requires a host-observed successful tool outcome and memory text stating a concrete verified result AND the technique ("by", "using", "instead", or "because"); it need not have failed first. Never mark mere execution chatter or an assistant-only claim as a verified lesson; absent host-observed tool outcomes means no verified lesson. Keep the existing speaker and relative-date rules below.
 - salience MUST be a finite JSON number from 0 to 1 inclusive, such as 0.8. Never use a 0-10, 0-100, or percentage scale.
 - LENGTH: every memory text is at most ${MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS} Unicode code points. Aim for ${Math.floor(MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS * 0.75)}. The host splits multiple complete sentences into separate candidates (up to ${MAX_CAPTURE_MEMORIES} total) and clamps any individual overlong sentence. Write short atomic sentences to avoid losing a single overlong sentence's tail.
 - Every memory text is one distinct durable fact: non-empty, no leading/trailing whitespace, no control, formatting, surrogate, line-separator, or paragraph-separator characters, and no reserved <!--mem delimiter.
@@ -285,7 +283,7 @@ export async function extractCapturePlanStrict(
   const clampedTokenSets: string[][] = [];
   const fullTokenSets: string[][] = [];
   const splitFlags: boolean[] = [];
-  let lessonBudget = verifiedRetryCount(observationContext?.captureEvidence);
+  let lessonBudget = verifiedOutcomeCount(observationContext?.captureEvidence);
   for (const { candidate, fullText, hostSplit } of safeCandidates) {
     if ((candidate.entityIds ?? []).some((id) => unsafeIds.has(id))) continue;
     if (candidates.length >= MAX_CAPTURE_MEMORIES) break;
@@ -309,8 +307,13 @@ export async function extractCapturePlanStrict(
       lessonBudget -= 1;
       return true;
     });
+    const derived = deriveCoarseFactLabels(candidate.text, candidate.type, {
+      ...labelContext, ...(candidate.entityIds === undefined ? {} : { entityIds: candidate.entityIds }),
+    });
+    const combined = [...(labels ?? []), ...derived.filter((item) => !labels?.some((existing) =>
+      existing.kind === "fact" && item.kind === "fact" && existing.entityId === item.entityId))].slice(0, 8);
     const { labels: _unfiltered, ...unlabelled } = candidate;
-    candidates.push({ ...unlabelled, ...(labels === undefined || labels.length === 0 ? {} : { labels }) });
+    candidates.push({ ...unlabelled, ...(combined.length === 0 ? {} : { labels: combined }) });
     clampedTokenSets.push(tokens);
     fullTokenSets.push(fullTokens);
     splitFlags.push(hostSplit);
@@ -383,7 +386,7 @@ function strictCandidate(
       return (name !== undefined && content.includes(name)) || content.includes(slug)
         || (id === "person:owner" && /\b(?:the user|the owner|i|my)\b/iu.test(bounded));
     });
-    const labels = captureLabels((value.labels ?? []) as readonly unknown[], bounded, context);
+    const labels = captureLabels((value.labels ?? []) as readonly unknown[], bounded, { ...context, entityIds: specificIds });
     return { candidate: { type: value.type as CandidateMemory["type"], text: bounded,
       salience: value.salience as number, isInsight: value.isInsight as boolean, entityIds: specificIds,
       ...(labels.length === 0 ? {} : { labels }) }, fullText: sentence, hostSplit: sentences.length > 1 };

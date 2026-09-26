@@ -172,8 +172,9 @@ abstain rather than invoking calendar or time-zone interpretation.
 
 A BuJo daily bullet may carry up to eight validated `label:v1:<base64url>` refs
 inside its existing `<!--mem ... refs=...-->` metadata comment. The encoded
-canonical JSON has one kind: `fact` (person entity, typed key/value, optional
-civil-date validity, attribution), `preference` (scope and attribution), or
+canonical JSON has one kind: `fact` (person entity and attribution, optionally
+paired typed key/value and civil-date validity for built-in properties),
+`preference` (scope and attribution), or
 `lesson` (scope and host-verified success boolean). The readable sentence remains
 the bullet's text; daily Markdown is canonical, and SQLite `memory_labels` is a
 rebuildable cache. Old versions parse the labelled line normally and ignore the
@@ -185,14 +186,22 @@ and `dropped` statuses make labels inactive; other statuses remain live. Interna
 and conflicts; `guidanceForScope(scope)` returns preferences and lessons.
 `listLabels` reads up to 200 labelled rows (including inactive history) with
 kind/entity/scope filters and indexed source file/line, without a writer lease.
-BuJo capture can attach labels in its existing extraction call, dropping unsupported
-individual labels while retaining the memory. A fact needs support in the retained
-sentence; user-stated facts and preferences additionally require host-observed human
-turn evidence. Unidentified speakers' preferences are conversation-scoped, and a
-verified lesson requires a host-observed failed tool category followed by a successful
-retry. Optional `capture.focus` (operator guidance) narrows extraction selection;
+BuJo capture derives coarse person facts from associated note/event lines without
+requiring a model label proposal, while still validating any model-proposed
+structured facts and preferences. `memory curate prepare --limit 0` proposes
+assistant-inferred coarse fact labels on already-associated canonical lines in
+bounded, idempotent passes without a model; review and apply still require
+operator acceptance. Curate never mints user-stated labels or preferences. A fact
+needs support in the retained sentence; user-stated facts and preferences
+additionally require host-observed human turn evidence, and a coarse fact is
+user-stated only when a user sentence that is not a question names the person
+and shares part of the line's claim. Unidentified speakers' preferences are conversation-scoped, and a
+verified lesson requires a host-observed successful tool outcome and a concrete
+result with its technique; a failed retry is not required. Optional `capture.focus` (operator guidance) narrows extraction selection;
 `capture.only` filters curated capture to host-accepted label kinds after final
-reconcile text validation, including its graph. Unset leaves capture unchanged;
+reconcile text validation, including its graph. Because the host labels every
+person-associated note/event line with a coarse fact, `capture.only: ["fact"]`
+keeps any such line, not only structured attribute facts. Unset leaves capture unchanged;
 explicit `Remember` writes are unaffected. Tool outcomes exposed to extraction contain only bounded fixed categories,
 never arguments, outputs, paths, URLs or raw error messages. App-owned automatic
 recall can append up to three relevant, scoped live preferences/verified lessons
@@ -204,7 +213,10 @@ conflicting values, and derive age from the UTC host observation date rather
 than storing it. The conservative direct-fact
 gate and ordinary recall hits do not change. UPDATE retains labels only when text is unchanged unless
 replacements are supplied; SUPERSEDE does not copy them by default. Lite and
-Journal ignore labels. Older
+Journal ignore labels. **Do not downgrade** to a binary without coarse fact
+support after writing keyless `fact` refs: older readers reject them on rebuild
+and when adding labels. New readers retain legacy structured `other:` and
+relationship refs, but new capture/curate writes them coarse-only. Older
 versions cannot safely replay pending label-changing UPDATE intents or read
 pending capture intake records containing `captureEvidence` after downgrade; drain
 pending intake before downgrading. Sender scope tokens are unsalted, local-only
@@ -670,6 +682,7 @@ parseMemoryExportBundleManifest
 prepareMemoryBundleImport
 previewCanonicalExplicitForgetMemories
 previewCurateMutations
+proposeCoarseCurate
 proposeCurate
 proposeOwnerAssociations
 pruneExplicitMemoryForgetBackups

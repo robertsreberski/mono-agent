@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { appendBullet } from "../daily.js";
 import { serializeBullet } from "../grammar.js";
-import { curateEstimate, inspectCurateSource, proposeCurate, validateCurateProposal } from "../curate.js";
+import { curateEstimate, inspectCurateSource, proposeCoarseCurate, proposeCurate, validateCurateProposal } from "../curate.js";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -54,6 +54,119 @@ describe("curation preparation", () => {
     expect(inspectCurateSource(path, 1, "oldest").lines.map(({ id }) => id)).toEqual(["fictional-first"]);
     expect(() => inspectCurateSource(path, 1)).toThrow(/inventory exceeds bound/u);
   }, 30_000);
+  it("prepares natural-person facts and user guidance with the capture label gate", async () => {
+    const path = root();
+    seed(path, "maple-class", "Maple attends art class on Monday mornings.");
+    seed(path, "owner-rule", "The user never wants long fictional summaries.");
+    seed(path, "assistant-rule", "The assistant suggested never using long fictional summaries.");
+    const snapshot = inspectCurateSource(path, 3, "oldest");
+    const fact = { v: 1, kind: "fact", entityId: "person:maple", key: "other:art-class",
+      value: { type: "text", text: "art class" }, attribution: "user-stated" };
+    const preference = { v: 1, kind: "preference", scope: "agent", attribution: "user-stated" };
+    const result = await proposeCurate(snapshot, { id: "natural-labels", complete: async () => JSON.stringify([
+      { id: "maple-class", action: "label", labels: [fact] },
+      { id: "owner-rule", action: "label", labels: [preference] },
+      { id: "assistant-rule", action: "label", labels: [preference] },
+    ]) });
+    // Curate has no user turn: it binds person facts as assistant-inferred and
+    // never mints a preference, even on a user-attributed line.
+    expect(result.proposals.map((proposal) => proposal.source.id)).toEqual(["maple-class"]);
+    expect(result.proposals[0]?.labels).toEqual([{ v: 1, kind: "fact", entityId: "person:maple",
+      attribution: "assistant-inferred" }]);
+    expect(result.discarded).toEqual([{ id: "owner-rule", reason: "invalid-label" }, { id: "assistant-rule", reason: "invalid-label" }]);
+  });
+  it("prepares coarse labels from already-associated canonical facts without a model", async () => {
+    const path = root();
+    seed(path, "maple-class", "Maple attends art class on Monday mornings.");
+    seed(path, "user-rule", "The user prefers concise fictional summaries.");
+    seed(path, "chatter", "The assistant completed a temporary check.");
+    const { appendGraphBatch } = await import("../graph.js");
+    appendGraphBatch(path, { entities: [
+      { id: "person:maple", name: "Maple", type: "person", createdAt: "2026-07-12T10:00:00.000Z" },
+      { id: "person:owner", name: "Owner", type: "person", createdAt: "2026-07-12T10:00:00.000Z" },
+    ], associations: [
+      { memoryId: "maple-class", entityId: "person:maple", provenance: "capture", createdAt: "2026-07-12T10:00:00.000Z" },
+      { memoryId: "user-rule", entityId: "person:owner", provenance: "capture", createdAt: "2026-07-12T10:00:00.000Z" },
+    ] });
+    const { proposals, discarded, truncated } = proposeCoarseCurate(path);
+    expect(proposals.map((proposal) => proposal.source.id)).toEqual(["maple-class", "user-rule"]);
+    expect(proposals.map((proposal) => proposal.labels)).toEqual([
+      [{ v: 1, kind: "fact", entityId: "person:maple", attribution: "assistant-inferred" }],
+      [{ v: 1, kind: "fact", entityId: "person:owner", attribution: "assistant-inferred" }],
+    ]);
+    expect(discarded).toEqual([]);
+    expect(truncated).toBe(false);
+  });
+  it("caps one model-free coarse pass at 1024 proposals and reports that more remain", async () => {
+    const path = root();
+    seed(path, "cap-first", "Morgan recorded the first example.");
+    const createdAt = "2026-07-12T10:00:00.000Z";
+    const ids = Array.from({ length: 1025 }, (_, index) => `cap-${index}`);
+    appendFileSync(join(path, "daily/2026-07-12.md"), `${ids.map((id, index) => serializeBullet({
+      id, text: `Morgan recorded example ${index}.`, type: "note", status: "open", salience: 0.5, isInsight: false, createdAt, refs: [],
+    })).join("\n")}\n`);
+    const { appendGraphBatch } = await import("../graph.js");
+    appendGraphBatch(path, { entities: [{ id: "person:morgan", name: "Morgan", type: "person", createdAt }],
+      associations: ["cap-first", ...ids].map((memoryId) => ({ memoryId, entityId: "person:morgan", provenance: "capture", createdAt })) });
+    const pass = proposeCoarseCurate(path);
+    expect(pass.proposals).toHaveLength(1024);
+    expect(pass.proposals.at(-1)?.source.id).toBe("cap-1022");
+    expect(pass.truncated).toBe(true);
+    expect(proposeCoarseCurate(path, { max: 1026 }).truncated).toBe(false);
+  }, 30_000);
+  it("validates model labels against every graph display name, not the prompt slice", async () => {
+    const path = root();
+    seed(path, "late-alias", "Quinn planted fictional tulips.");
+    const { appendGraphBatch } = await import("../graph.js");
+    const createdAt = "2026-07-12T10:00:00.000Z";
+    appendGraphBatch(path, { entities: [
+      ...Array.from({ length: 130 }, (_, index) => ({ id: `person:filler-${index}`, name: `Filler ${index}`, type: "person", createdAt })),
+      { id: "person:late-alias", name: "Quinn", type: "person", createdAt },
+    ] });
+    const snapshot = inspectCurateSource(path, 1, "oldest");
+    expect(snapshot.entityNames).toHaveLength(131);
+    const label = { v: 1, kind: "fact", entityId: "person:late-alias", attribution: "assistant-inferred" };
+    const result = await proposeCurate(snapshot, { id: "late-alias", complete: async (prompt) => {
+      expect(prompt).not.toContain("Quinn\""); // beyond the bounded prompt hint slice
+      return JSON.stringify([{ id: "late-alias", action: "label", labels: [label] }]);
+    } });
+    expect(result.discarded).toEqual([]);
+    expect(result.proposals[0]?.labels).toEqual([label]);
+  });
+  it("labels alias ids by display name, discards a bad line and covers a large store in bounded passes", async () => {
+    const path = root();
+    const at = (day: number) => `2026-07-${String(day).padStart(2, "0")}T10:00:00.000Z`;
+    const seedAt = (id: string, text: string, day: number, createdAt = at(day)) => appendBullet(path, { id, text, type: "note",
+      status: "open", salience: 0.5, isInsight: false, createdAt, refs: [] }, new Date(at(day)));
+    seedAt("alias-old", "Morgan planted fictional tulips.", 10);
+    // A legacy line whose timestamp is not canonical cannot form a valid proposal.
+    seedAt("broken", "Morgan painted a fictional fence.", 11, "2026-07-11T10:00:00Z");
+    seedAt("alias-mid", "Morgan repaired a fictional bicycle.", 12);
+    seedAt("alias-new", "Morgan visited the fictional harbour.", 13);
+    const { appendGraphBatch } = await import("../graph.js");
+    appendGraphBatch(path, { entities: [
+      { id: "person:morgan-alias", name: "Morgan", type: "person", createdAt: at(10) },
+    ], associations: ["alias-old", "broken", "alias-mid", "alias-new"].map((memoryId) => (
+      { memoryId, entityId: "person:morgan-alias", provenance: "capture", createdAt: at(10) })) });
+    const coarse = { v: 1, kind: "fact", entityId: "person:morgan-alias", attribution: "assistant-inferred" };
+    // The slug alone ("morgan alias") is not in the text; the display name is.
+    const first = proposeCoarseCurate(path, { max: 1 });
+    expect(first.proposals.map(({ source }) => source.id)).toEqual(["alias-old"]);
+    expect(first.proposals[0]?.labels).toEqual([coarse]);
+    expect(first.truncated).toBe(true);
+    expect(proposeCoarseCurate(path, { max: 1, select: "recent" }).proposals.map(({ source }) => source.id)).toEqual(["alias-new"]);
+    const all = proposeCoarseCurate(path);
+    expect(all.proposals.map(({ source }) => source.id)).toEqual(["alias-old", "alias-mid", "alias-new"]);
+    expect(all.discarded).toEqual([{ id: "broken", reason: "invalid-label" }]);
+    // Idempotent: a line that already carries the coarse fact is skipped, so
+    // the next bounded pass moves on to the remaining lines.
+    const { rewriteBullet } = await import("../daily.js");
+    const { encodeMemoryLabel } = await import("../labels.js");
+    const done = first.proposals[0]!.source;
+    rewriteBullet(path, done.file, done.id, { refs: [encodeMemoryLabel(coarse as never)] });
+    expect(proposeCoarseCurate(path, { max: 1 }).proposals.map(({ source }) => source.id)).toEqual(["alias-mid"]);
+    expect(() => proposeCoarseCurate(path, { fingerprint: "0".repeat(64) })).toThrow(/source changed/u);
+  });
   it("allows 8192 selected lines but refuses 8193", () => {
     const path = root();
     expect(inspectCurateSource(path, 8192).lines).toEqual([]);
@@ -275,7 +388,7 @@ describe("durable curation apply", { timeout: 20_000 }, () => {
     const source = inspectCurateSource(path).lines[0]!;
     const fingerprint = createHash("sha256").update(realpathSync(path)).digest("hex");
     const proposals = [{ source, action: "label" as const, accepted: true, labels: [{ v: 1 as const, kind: "fact" as const,
-      entityId: "person:morgan", key: "preferred_name", value: { type: "text" as const, text: "Maple" }, attribution: "unknown" as const }] }];
+      entityId: "person:morgan", key: "preferred_name", value: { type: "text" as const, text: "Maple" }, attribution: "assistant-inferred" as const }] }];
     const competing = acquireMemoryWriterLease(path);
     try {
       await expect(applyExplicitMemoryCurate({ root: path, proposals, expectedRootFingerprint: fingerprint,
@@ -369,7 +482,7 @@ describe("curate selection", { timeout: 20_000 }, () => {
 });
 
 describe("retrospective label support", { timeout: 20_000 }, () => {
-  it("keeps only facts still supported after an accepted rewrite", async () => {
+  it("keeps supported labels unchanged after an accepted rewrite and downgrades legacy relationships", async () => {
     const { mkdirSync, realpathSync } = await import("node:fs");
     const { createHash } = await import("node:crypto");
     const { initializeReplayProjection, readBujoCanonicalSourceFingerprint } = await import("../replay-projection.js");
@@ -387,6 +500,13 @@ describe("retrospective label support", { timeout: 20_000 }, () => {
         value: { type: "text", text: "Maple" }, attribution: "unknown" }),
       encodeMemoryLabel({ v: 1, kind: "fact", entityId: "person:morgan", key: "other:alias",
         value: { type: "text", text: "Brook" }, attribution: "unknown" }),
+      encodeMemoryLabel({ v: 1, kind: "fact", entityId: "person:morgan", key: "other:nickname",
+        value: { type: "text", text: "Maple" }, attribution: "user-stated" }),
+      encodeMemoryLabel({ v: 1, kind: "fact", entityId: "person:morgan", attribution: "document" }),
+      encodeMemoryLabel({ v: 1, kind: "fact", entityId: "person:morgan", key: "relationship",
+        value: { type: "relationship", role: "zorbel", targetEntityId: "person:maple" }, attribution: "user-stated" }),
+      encodeMemoryLabel({ v: 1, kind: "preference", scope: "agent", attribution: "user-stated" }),
+      encodeMemoryLabel({ v: 1, kind: "lesson", scope: "agent", verified: true }),
     ] });
     const embeddings = fakeEmbeddings(16);
     await safeRebuildMemoryIndex({ root: path, tier: "bujo", embeddings, dim: 16 });
@@ -396,7 +516,18 @@ describe("retrospective label support", { timeout: 20_000 }, () => {
     expectedRootFingerprint: createHash("sha256").update(realpathSync(path)).digest("hex"),
     expectedSourceFingerprint: readBujoCanonicalSourceFingerprint(path), planDigest: createHash("sha256").update("retained-fact").digest("hex"),
     embeddings, dimension: 16 });
-    expect(labelsOf(readBullet(path, source.file, source.id)!)).toMatchObject([{ kind: "fact", key: "preferred_name" }]);
+    // Supported labels survive exactly as stored: no re-derived attribution, no
+    // downgrade of legacy structured, user-stated or document refs.
+    expect(labelsOf(readBullet(path, source.file, source.id)!)).toEqual([
+      { v: 1, kind: "fact", entityId: "person:morgan", key: "preferred_name", value: { type: "text", text: "Maple" }, attribution: "unknown" },
+      { v: 1, kind: "fact", entityId: "person:morgan", key: "other:nickname", value: { type: "text", text: "Maple" }, attribution: "user-stated" },
+      { v: 1, kind: "fact", entityId: "person:morgan", attribution: "document" },
+      // A legacy relationship ref is downgraded to coarse, keeping its attribution.
+      { v: 1, kind: "fact", entityId: "person:morgan", attribution: "user-stated" },
+      // Preference and lesson refs are kept unchanged.
+      { v: 1, kind: "preference", scope: "agent", attribution: "user-stated" },
+      { v: 1, kind: "lesson", scope: "agent", verified: true },
+    ]);
   });
 });
 
@@ -408,7 +539,9 @@ describe("curate preview label capacity", () => {
     const path = root(); seed(path, "fictional-a", "Morgan used Maple as an alias.");
     const source = inspectCurateSource(path).lines[0]!;
     const label = { v: 1 as const, kind: "fact" as const, entityId: "person:morgan", key: "preferred_name",
-      value: { type: "text" as const, text: "Maple" }, attribution: "unknown" as const };
+      value: { type: "text" as const, text: "Maple" }, attribution: "assistant-inferred" as const };
+    // The label itself is admissible: only the duplicate or ninth label is refused.
+    expect(() => validateCurateProposal({ source, action: "label", labels: [label], accepted: true })).not.toThrow();
     rewriteBullet(path, source.file, source.id, { refs: [encodeMemoryLabel(label)] });
     const current = inspectCurateSource(path).lines[0]!;
     expect(() => previewCurateMutations(path, [{ source: current, action: "label", labels: [label], accepted: true }])).toThrow();
@@ -569,12 +702,12 @@ describe("operator entity merges", { timeout: 20_000 }, () => {
     const { rewriteBullet } = await import("../daily.js");
     const parent = root(); const path = join(parent, "memory"); mkdirSync(path, { mode: 0o700 });
     initializeReplayProjection(path);
-    seed(path, "fictional-a", "Morgan, also called Maple, is a sibling of the user.");
+    seed(path, "fictional-a", "Morgan, also called Maple, is a zorbel of the user.");
     const line = inspectCurateSource(path).lines[0]!;
     const nickname = (entityId: string) => encodeMemoryLabel({ v: 1, kind: "fact", entityId, key: "preferred_name",
       value: { type: "text", text: "Maple" }, attribution: "unknown" });
     const sibling = encodeMemoryLabel({ v: 1, kind: "fact", entityId: "person:morgan", key: "relationship",
-      value: { type: "relationship", role: "sibling", targetEntityId: "person:the-user" }, attribution: "unknown" });
+      value: { type: "relationship", role: "zorbel", targetEntityId: "person:the-user" }, attribution: "unknown" });
     rewriteBullet(path, line.file, line.id, { refs: ["entity:person:morgan", "entity:concept:morgan", nickname("person:morgan"), nickname("person:the-user"), sibling] });
     appendGraphBatch(path, morganGraph);
     const embeddings = fakeEmbeddings(16);

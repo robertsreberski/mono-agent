@@ -15,6 +15,7 @@ const candidate = (text, labels = []) => ({ type: "note", text, salience: 0.8,
 export const TURNS = [
   { user: "I live in Lisbon.", memories: [candidate("The user lives in Lisbon.", [fact("person:owner", "home_location", "Lisbon")])], kind: "owner" },
   { user: "My colleague Taylor lives in Porto.", memories: [candidate("The user's colleague Taylor lives in Porto.", [fact("person:taylor", "home_location", "Porto")])], kind: "other-person" },
+  { user: "My favorite animal is an otter.", memories: [candidate("The user favors an otter as a favorite animal.", [fact("person:owner", "other:favorite-animal", "otter")])], kind: "owner-custom" },
   { user: "I prefer concise fictional project notes.", memories: [candidate("The user prefers concise fictional project notes.", [{ v: 1, kind: "preference", scope: "agent", attribution: "user-stated" }])], kind: "preference" },
   { user: "I moved to Braga, not Lisbon.", memories: [candidate("The user lives in Braga.", [fact("person:owner", "home_location", "Braga")])], decision: "supersede", target: "The user lives in Lisbon.", kind: "state-change" },
   { user: "Correction: Taylor lives in Coimbra, not Porto.", memories: [candidate("The user's colleague Taylor lives in Coimbra.", [fact("person:taylor", "home_location", "Coimbra")])], decision: "supersede", target: "The user's colleague Taylor lives in Porto.", kind: "correction" },
@@ -49,6 +50,13 @@ const embeddings = { id: "fixture:behaviour-v1", async embed(texts) {
   });
 } };
 
+const LABELLED_SCENARIOS = [
+  { kind: "owner", label: "fact", entityId: "person:owner" },
+  { kind: "owner-custom", label: "fact", entityId: "person:owner" },
+  { kind: "preference", label: "preference" },
+  { kind: "owner-date", label: "fact", entityId: "person:owner" },
+];
+
 export function scoreBehaviour({ records, labels, questions, pending, before, after, cpuMs }) {
   const active = records.filter((r) => r.status !== "invalidated");
   const ownerBindingOfOthers = labels.filter((row) => row.active && row.label.kind === "fact"
@@ -65,6 +73,12 @@ export function scoreBehaviour({ records, labels, questions, pending, before, af
     pendingTurns: pending === 0,
     rebuildParity: parity,
     fixtureNonVacuous: records.length >= 5 && questions.length === QUESTIONS.length,
+    // Each scenario needs the right label kind on the right subject, not just any label.
+    labelledScenarios: LABELLED_SCENARIOS.every(({ kind, label, entityId }) => {
+      const text = TURNS.find((turn) => turn.kind === kind)?.memories[0]?.text;
+      return labels.some((row) => row.label.kind === label && (entityId === undefined || row.label.entityId === entityId)
+        && records.some((record) => record.id === row.memoryId && record.text === text));
+    }),
   };
   return { schema: 1, turns: TURNS.length, records: records.length, activeRecords: active.length,
     labels: labels.length, questions: questions.map(({ kind, hit, explicitHit, automaticHits, falseHits }) => ({ kind, hit, explicitHit, automaticHits, falseHits })),

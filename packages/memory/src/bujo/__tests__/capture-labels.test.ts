@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { openMemoryDb } from "../../store/index.js";
 import { extractCapturePlanStrict } from "../capture-batch.js";
 import { captureTurnStrict } from "../capture.js";
+import { captureLabels, deriveCoarseFactLabels } from "../capture-labels.js";
 import { auditCanonicalGraphParity } from "../graph-parity.js";
 import { readGraph } from "../graph.js";
 import { labelsOf } from "../labels.js";
@@ -28,35 +29,32 @@ async function extract(text: string, labels: unknown[], context: {
   conversationId?: string;
   captureEvidence?: MemoryCaptureEvidence;
 }, user = "User: Morgan was born May 17, 1990.") {
+  const people = [...new Set(labels.flatMap((label) => label && typeof label === "object" && "entityId" in label
+    && typeof label.entityId === "string" ? [label.entityId] : []))];
   return await extractCapturePlanStrict(`${user}\nAssistant: Noted.`, {
     id: "fake", complete: async () => JSON.stringify({
-      memories: [{ type: "note", text, salience: 0.8, isInsight: false, entityIds: [], labels }],
-      entities: [], relations: [],
+      memories: [{ type: "note", text, salience: 0.8, isInsight: false, entityIds: people, labels }],
+      entities: people.map((id) => ({ id, name: id === "person:owner" ? "Owner"
+        : id.slice(7).split("-")[0]!.replace(/^./u, (char) => char.toUpperCase()), type: "person" })), relations: [],
     }),
   }, undefined, [], { observedAt: at.toISOString(), ...context });
 }
 
 describe("host-validated capture labels", () => {
-  it("uses the label's own relationship role and requires an allowed owner property", async () => {
+  it("degrades legacy relationship proposals to a person-only fact without trusting a different subject", async () => {
     const relation = { v: 1, kind: "fact", entityId: "person:morgan", key: "relationship",
-      value: { type: "relationship", role: "child", targetEntityId: "person:maple" }, attribution: "user-stated" };
-    const plan = await extract("Morgan's child Maple enjoys drawing.", [relation],
-      { captureSpeakerKind: "human-turn", captureEvidence: evidence("Morgan's child Maple enjoys drawing.") });
-    expect(plan.candidates[0]?.labels).toEqual([relation]);
-    for (const text of ["Maple is Morgan's child.", "Morgan's children Maple visited.", "Maple was Morgan's children."]) {
-      expect((await extract(text, [relation], {})).candidates[0]?.labels)
-        .toEqual([{ ...relation, attribution: "assistant-inferred" }]);
-    }
-    expect((await extract("Morgan is Maple's child.", [relation], {})).candidates[0]?.labels).toBeUndefined();
-    const spouse = { ...relation, value: { ...relation.value, role: "spouse" } };
-    expect((await extract("Morgan's partner Maple visited.", [spouse], {})).candidates[0]?.labels).toBeUndefined();
-    expect((await extract("Morgan's spouses Maple visited.", [spouse], {})).candidates[0]?.labels)
-      .toEqual([{ ...spouse, attribution: "assistant-inferred" }]);
-    const owner = { v: 1, kind: "fact", entityId: "person:owner", key: "other:favorite-animal",
-      value: { type: "text", text: "otter" }, attribution: "user-stated" };
-    const ctx = { captureSpeakerKind: "human-turn" as const, captureEvidence: evidence("My favorite animal is otter.", { ownerTurn: true }) };
-    expect((await extract("The user's favorite animal is otter.", [owner], ctx)).candidates[0]?.labels).toBeUndefined();
-    expect((await extract("The user's zorbel has a favorite animal, otter.", [owner], ctx)).candidates[0]?.labels).toBeUndefined();
+      value: { type: "relationship", role: "zorbel", targetEntityId: "person:maple" }, attribution: "user-stated" };
+    const coarse = { v: 1, kind: "fact", entityId: "person:morgan", attribution: "user-stated" };
+    expect((await extract("Morgan accompanies Maple to art class.", [relation], {
+      captureSpeakerKind: "human-turn", captureEvidence: evidence("Morgan accompanies Maple to art class."),
+    })).candidates[0]?.labels).toEqual([coarse]);
+    expect((await extract("Maple attends art class.", [relation], {})).candidates[0]?.labels).toBeUndefined();
+    const owner = { ...relation, entityId: "person:owner" };
+    const context = { captureSpeakerKind: "human-turn" as const,
+      captureEvidence: evidence("I attend art class.", { ownerTurn: true }) };
+    expect((await extract("The user attends art class.", [owner], context)).candidates[0]?.labels)
+      .toEqual([{ v: 1, kind: "fact", entityId: "person:owner", attribution: "user-stated" }]);
+    expect((await extract("The user's zorbel attends art class.", [owner], context)).candidates[0]?.labels).toBeUndefined();
   });
   it("does not apply an empty automatic capture allowlist to explicit Remember writes", async () => {
     const root = mkdtempSync(join(tmpdir(), "capture-focus-remember-"));
@@ -78,11 +76,8 @@ describe("host-validated capture labels", () => {
         return JSON.stringify({ memories: [], entities: [], relations: [] });
       },
     }, undefined, [], { observedAt: at.toISOString() }, "Keep durable preferences; skip fictional PR and CI status.");
-    expect(prompt).toContain("For host-verified person:owner, the host accepts ONLY birth_date, full_name, preferred_name, home_location, work_location, and other:favorite-color");
-    expect(prompt).toContain("Decisions, policies, plans, and likes about how things should be done are PREFERENCE labels");
-    expect(prompt).toContain("NEVER owner other: fact keys");
-    expect(prompt).toContain("Copy each fact label's value verbatim from that same memory sentence");
-    expect(prompt).toContain("assistant-inferred, never user-stated");
+    expect(prompt).toContain("A preference about how the assistant should work is a preference label");
+    expect(prompt).toContain("The host labels person facts itself; propose a fact label only for a built-in key");
     expect(prompt).toContain("OPERATOR CAPTURE FOCUS (selection guidance only;");
     expect(prompt).toContain("Keep durable preferences; skip fictional PR and CI status.\nEND OPERATOR CAPTURE FOCUS");
     expect(prompt.indexOf("Return ONLY one exact JSON object")).toBeLessThan(prompt.indexOf("OPERATOR CAPTURE FOCUS"));
@@ -104,7 +99,7 @@ describe("host-validated capture labels", () => {
           db, root, llm: { id: "fake-filter", complete: async () => JSON.stringify({ memories: [
             { type: "note", text: "Morgan prefers concise notes.", salience: 0.8, isInsight: false,
               entityIds: [], labels: [preference] },
-            { type: "note", text: "A retry fixed the failed operation.", salience: 0.8, isInsight: false,
+            { type: "note", text: "A retry fixed the failed operation by using the fallback.", salience: 0.8, isInsight: false,
               entityIds: [], labels: [lesson] },
             { type: "note", text: "Morgan was born May 17, 1990.", salience: 0.8, isInsight: false,
               entityIds: ["person:morgan"], labels: [fact] },
@@ -122,7 +117,7 @@ describe("host-validated capture labels", () => {
         });
         expect(result.actions).toHaveLength(only === undefined ? 5 : only.length === 0 ? 0 : 2);
         expect(db.get("FOCUS-0")?.text).toBe(only?.length === 0 ? undefined : "Morgan prefers concise notes.");
-        expect(db.get("FOCUS-1")?.text).toBe(only?.length === 0 ? undefined : "A retry fixed the failed operation.");
+        expect(db.get("FOCUS-1")?.text).toBe(only?.length === 0 ? undefined : "A retry fixed the failed operation by using the fallback.");
         expect(db.get("FOCUS-2")?.text).toBe(only === undefined ? "Morgan was born May 17, 1990." : undefined);
         expect(db.get("FOCUS-3")?.text).toBe(only === undefined ? "A fictional CI check is pending." : undefined);
         expect(db.get("FOCUS-4")?.text).toBe(only === undefined ? "Use verbose summaries for Taylor." : undefined);
@@ -137,12 +132,13 @@ describe("host-validated capture labels", () => {
       .toEqual([fact]);
     expect((await extract("Morgan was born May 17, 1990.", [fact], {
       captureSpeakerKind: "trigger", captureEvidence: evidence(user),
-    })).candidates[0]?.labels).toEqual([{ ...fact, attribution: "assistant-inferred" }]);
+    })).candidates[0]?.labels).toBeUndefined();
     expect((await extract("Morgan was born May 17, 1990.", [fact], {
       captureSpeakerKind: "human-turn", captureEvidence: evidence("Morgan said hello."),
     })).candidates[0]?.labels).toEqual([{ ...fact, attribution: "assistant-inferred" }]);
     const ambiguous = { ...fact, value: { type: "date", date: "1990-06-05" } };
-    expect((await extract("Morgan was born 05/06/1990.", [ambiguous], trusted)).candidates[0]?.labels).toBeUndefined();
+    expect((await extract("Morgan was born 05/06/1990.", [ambiguous], trusted)).candidates[0]?.labels)
+      .toEqual([{ v: 1, kind: "fact", entityId: "person:morgan", attribution: "user-stated" }]);
     expect((await extract("Morgan was born 17/05/1990.", [fact], trusted)).candidates[0]?.labels).toEqual([fact]);
     expect((await extract("Morgan was born May 17, 1990.", [fact, { ...fact, value: { type: "date", date: "1990-02-30" } }], trusted))
       .candidates[0]?.labels).toEqual([fact]);
@@ -168,7 +164,7 @@ describe("host-validated capture labels", () => {
       .toEqual([{ ...fact, attribution: "assistant-inferred" }]);
   });
 
-  it("matches diacritics, slug tokens and display names, but user-stated needs only the value in user text", async () => {
+  it("matches diacritics and display names while requiring a named non-owner in the user's words", async () => {
     const named = { ...fact, entityId: "person:fictional-alias" };
     const label = { v: 1, kind: "fact", entityId: "person:fictional-alias", key: "preferred_name",
       value: { type: "text", text: "Élodie" }, attribution: "user-stated" };
@@ -181,7 +177,7 @@ describe("host-validated capture labels", () => {
         entities: [{ id: named.entityId, name: "Morgan", type: "person" }], relations: [],
       }),
     }, undefined, [], human);
-    expect(plan.candidates[0]?.labels).toEqual([label]);
+    expect(plan.candidates[0]?.labels).toEqual([{ ...label, attribution: "assistant-inferred" }]);
     const slugLabel = { ...fact, entityId: "person:marie-smith" };
     expect((await extract("Marie was born May 17, 1990.", [slugLabel], {})).candidates[0]?.labels)
       .toEqual([{ ...slugLabel, attribution: "assistant-inferred" }]);
@@ -192,7 +188,7 @@ describe("host-validated capture labels", () => {
     expect((await extract("Morgan was born May 17, 1990.", [{ ...fact, attribution: "document" }], context))
       .candidates[0]?.labels).toEqual([{ ...fact, attribution: "assistant-inferred" }]);
     expect((await extract("Morgan was born May 17, 1990.", [{ ...fact, attribution: "unknown" }], context))
-      .candidates[0]?.labels).toEqual([{ ...fact, attribution: "unknown" }]);
+      .candidates[0]?.labels).toEqual([{ ...fact, attribution: "assistant-inferred" }]);
   });
 
   it("does not bind another subject's fact to the owner entity", async () => {
@@ -217,17 +213,18 @@ describe("host-validated capture labels", () => {
       value: { type: "date", date: "1990-05-17" }, attribution: "user-stated" };
     const owner = (userText: string) => ({ captureSpeakerKind: "human-turn" as const,
       captureEvidence: evidence(userText, { ownerTurn: true }) });
-    for (const relation of ["zorbel", "zorbels", "child", "parent", "sibling", "friend", "boss"]) {
+    for (const relation of ["zorbel", "zorbels", "quibbet", "flarn"]) {
       const sentence = `The user's ${relation} was born May 17, 1990.`;
       expect((await extract(sentence, [label], owner(`My ${relation} was born May 17, 1990.`)))
         .candidates[0]?.labels).toBeUndefined();
     }
     expect((await extract("The user has a zorbel born May 17, 1990.", [label],
-      owner("I have a zorbel born May 17, 1990."))).candidates[0]?.labels).toBeUndefined();
+      owner("I have a zorbel born May 17, 1990."))).candidates[0]?.labels)
+      .toEqual([{ v: 1, kind: "fact", entityId: "person:owner", attribution: "user-stated" }]);
     expect((await extract("The user told Taylor her birthday is May 17, 1990.", [label],
       owner("I told Taylor her birthday is May 17, 1990."))).candidates[0]?.labels).toBeUndefined();
     expect((await extract("The user's birthday is May 17, 1990.", [label],
-      owner("My friend likes cake. My birthday is May 17, 1990."))).candidates[0]?.labels).toEqual([label]);
+      owner("My quibbet likes cake. My birthday is May 17, 1990."))).candidates[0]?.labels).toEqual([label]);
     expect((await extract("The user was born May 17, 1990. Their zorbel was born in 2010.", [label],
       owner("My birthday is May 17, 1990. My zorbel likes cake."))).candidates[0]?.labels).toEqual([label]);
     const location = { ...label, key: "home_location", value: { type: "text", text: "Lisbon" } };
@@ -241,9 +238,21 @@ describe("host-validated capture labels", () => {
     const ownerText = "The user prefers blue for fictional sketches.";
     const ownerContext = { captureSpeakerKind: "human-turn" as const, conversationId: "acp:fictional",
       captureEvidence: evidence("I prefer blue for fictional sketches.", { ownerTurn: true }) };
-    expect((await extract(ownerText, [ownerFact], ownerContext)).candidates[0]?.labels).toEqual([ownerFact]);
+    expect((await extract(ownerText, [ownerFact], ownerContext)).candidates[0]?.labels)
+      .toEqual([{ v: 1, kind: "fact", entityId: "person:owner", attribution: "user-stated" }]);
     expect((await extract(ownerText, [ownerFact], { ...ownerContext, captureEvidence: evidence("I prefer blue.") }))
       .candidates[0]?.labels).toBeUndefined();
+  });
+
+  it("keeps standing negative instructions in the owner's own words but not assistant suggestions", async () => {
+    const line = "The assistant should not fetch the fictional work calendar while the user is on leave.";
+    const user = "Don't fetch the fictional work calendar while I'm on leave.";
+    const context = { captureSpeakerKind: "human-turn" as const,
+      captureEvidence: evidence(user, { ownerTurn: true }) };
+    expect((await extract(line, [preference], context)).candidates[0]?.labels).toEqual([preference]);
+    expect((await extract(line, [preference], { ...context,
+      captureEvidence: evidence("Please check the calendar.", { ownerTurn: true }),
+    })).candidates[0]?.labels).toBeUndefined();
   });
 
   it("does not copy a preference onto a sibling split sentence", async () => {
@@ -306,7 +315,7 @@ describe("host-validated capture labels", () => {
   });
 
   it("keeps only a uniquely host-proven successful retry; malformed label never drops the memory", async () => {
-    const sentence = "A retry succeeded after an earlier tool failure.";
+    const sentence = "A retry succeeded by using the alternate path after an earlier tool failure.";
     const context = { captureEvidence: evidence("Please check the task.", { toolOutcomes: [
       { category: "execute", outcome: "failed" }, { category: "execute", outcome: "succeeded" },
     ] }) };
@@ -316,11 +325,16 @@ describe("host-validated capture labels", () => {
     expect((await extract(sentence, [lesson], {})).candidates[0]?.labels).toBeUndefined();
     expect((await extract(sentence, [lesson], { captureEvidence: evidence("Hi", { toolOutcomes: [
       { category: "execute", outcome: "succeeded" }, { category: "execute", outcome: "failed" },
-    ] }) })).candidates[0]?.labels).toBeUndefined();
+    ] }) })).candidates[0]?.labels).toEqual([lesson]);
     expect((await extract(sentence, [lesson], { captureEvidence: evidence("Hi", { toolOutcomes: [
       { category: "execute", outcome: "failed" }, { category: "execute", outcome: "failed" },
       { category: "execute", outcome: "succeeded" },
-    ] }) })).candidates[0]?.labels).toBeUndefined();
+    ] }) })).candidates[0]?.labels).toEqual([lesson]);
+    expect((await extract("The assistant ran a tool.", [lesson], context)).candidates[0]?.labels).toBeUndefined();
+    expect((await extract("The assistant verified the result.", [lesson], context)).candidates[0]?.labels).toBeUndefined();
+    expect((await extract("The check passed by using the fallback.", [lesson], {
+      captureEvidence: evidence("Please check the result.", { toolOutcomes: [{ category: "execute", outcome: "succeeded" }] }),
+    })).candidates[0]?.labels).toEqual([lesson]);
   });
 
   it("bounds lessons to one per proven retry and forces scope unless user names a project", async () => {
@@ -330,15 +344,15 @@ describe("host-validated capture labels", () => {
       ] }) };
     const plan = await extractCapturePlanStrict("User: Please fix the fictional project.", {
       id: "multi-lessons", complete: async () => JSON.stringify({ memories: [
-        { type: "note", text: "A retry resolved the failed operation.", salience: 0.8, isInsight: false,
+        { type: "note", text: "A retry resolved the failed operation by using a fallback.", salience: 0.8, isInsight: false,
           entityIds: [], labels: [{ ...lesson, scope: "project:fictional-project" }] },
-        { type: "note", text: "Another retry fixed the earlier problem.", salience: 0.7, isInsight: false,
+        { type: "note", text: "Another retry fixed the earlier problem by using a different route.", salience: 0.7, isInsight: false,
           entityIds: [], labels: [{ ...lesson, scope: "user:someone" }] },
       ], entities: [], relations: [] }),
     }, undefined, [], context);
     expect(plan.candidates[0]?.labels).toEqual([{ ...lesson, scope: "project:fictional-project" }]);
     expect(plan.candidates[1]?.labels).toBeUndefined();
-    expect((await extract("A retry succeeded after a failure.", [{ ...lesson, scope: "user:someone" }], {
+    expect((await extract("A retry succeeded by using an alternate path after a failure.", [{ ...lesson, scope: "user:someone" }], {
       captureEvidence: context.captureEvidence,
     })).candidates[0]?.labels).toEqual([lesson]);
   });
@@ -347,7 +361,9 @@ describe("host-validated capture labels", () => {
     const text = `${"Morgan keeps fictional archive notes on a deliberately long bounded opening sentence with extensive references to safe written examples and fictional projects."} Morgan was born May 17, 1990.`;
     const plan = await extract(text, [fact], { captureSpeakerKind: "human-turn",
       captureEvidence: evidence("Morgan was born May 17, 1990.") });
-    expect(plan.candidates[0]?.labels).toBeUndefined();
+    // The user named Morgan but never stated the archive-notes claim.
+    expect(plan.candidates[0]?.labels)
+      .toEqual([{ v: 1, kind: "fact", entityId: "person:morgan", attribution: "assistant-inferred" }]);
     expect(plan.candidates[1]?.labels).toEqual([fact]);
     await expect(extractCapturePlanStrict("turn", { id: "bad-structure", complete: async () => JSON.stringify({
       memories: [{ type: "note", text: "Morgan keeps notes.", salience: 0.8, isInsight: false,
@@ -369,8 +385,8 @@ describe("host-validated capture labels", () => {
         const output = await captureTurnStrict(`User: ${text}\nAssistant: Noted.`, {
           db, root, llm: { id: "fake", complete: async (_prompt, options) => {
             if (options?.label === "capture:extract") return JSON.stringify({ memories: [
-              { type: "note", text, salience: 0.8, isInsight: false, entityIds: [], labels: [label] },
-            ], entities: [], relations: [] });
+              { type: "note", text, salience: 0.8, isInsight: false, entityIds: ["person:morgan"], labels: [label] },
+            ], entities: [{ id: "person:morgan", name: "Morgan", type: "person" }], relations: [] });
             return JSON.stringify([{ index: 0, action: decision, targetId: "LABEL-0", text }]);
           } }, nextId: () => `LABEL-${nextId++}`, now: () => at,
           conversationId: "conv-1", captureSpeakerKind: "human-turn", captureEvidence: evidence(text),
@@ -387,7 +403,8 @@ describe("host-validated capture labels", () => {
       const changed = await captureTurnStrict(`User: ${candidateText}\nAssistant: Noted.`, {
         db, root, llm: { id: "fake-final-text", complete: async (_prompt, options) => options?.label === "capture:extract"
           ? JSON.stringify({ memories: [{ type: "note", text: candidateText, salience: 0.8,
-            isInsight: false, entityIds: [], labels: [offered] }], entities: [], relations: [] })
+            isInsight: false, entityIds: ["person:morgan"], labels: [offered] }],
+            entities: [{ id: "person:morgan", name: "Morgan", type: "person" }], relations: [] })
           : JSON.stringify([{ index: 0, action: "supersede", targetId: "LABEL-1", text: finalText }]) },
         nextId: () => `LABEL-${nextId++}`, now: () => at, conversationId: "conv-1",
         captureSpeakerKind: "human-turn", captureEvidence: evidence(candidateText),
@@ -395,22 +412,106 @@ describe("host-validated capture labels", () => {
       });
       expect(changed.actions[0]?.kind).toBe("supersede");
       expect(db.get("LABEL-2")?.text).toBe(finalText);
-      expect(db.labelProjection().map((entry) => entry.memoryId)).toEqual(["LABEL-0", "LABEL-1"]);
-      expect(auditCanonicalGraphParity(root, db).labels.matched).toBe(2);
+      expect(db.labelProjection().map((entry) => entry.memoryId)).toEqual(["LABEL-0", "LABEL-1", "LABEL-2"]);
+      expect(db.labelsForEntity("person:morgan").at(-1)?.label)
+        .toEqual({ v: 1, kind: "fact", entityId: "person:morgan", attribution: "user-stated" });
+      expect(auditCanonicalGraphParity(root, db).labels.matched).toBe(3);
       const discarded = await captureTurnStrict("User: Morgan was born May 21, 1990.\nAssistant: Noted.", {
         db, root, llm: { id: "fake-only-final", complete: async (_prompt, options) => options?.label === "capture:extract"
           ? JSON.stringify({ memories: [{ type: "note", text: "Morgan was born May 21, 1990.", salience: 0.8,
-            isInsight: false, entityIds: [], labels: [{ ...fact, value: { type: "date", date: "1990-05-21" } }] }],
-            entities: [], relations: [] })
+            isInsight: false, entityIds: ["person:morgan"], labels: [{ ...fact, value: { type: "date", date: "1990-05-21" } }] }],
+            entities: [{ id: "person:morgan", name: "Morgan", type: "person" }], relations: [] })
           : JSON.stringify([{ index: 0, action: "supersede", targetId: "LABEL-2", text: "Morgan was born May 22, 1990." }]) },
         nextId: () => `LABEL-${nextId++}`, now: () => at, conversationId: "conv-1",
         captureSpeakerKind: "human-turn", captureEvidence: evidence("Morgan was born May 21, 1990."),
         captureSettings: { only: ["fact"] }, canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
       });
-      expect(discarded.actions).toEqual([]);
+      expect(discarded.actions).toEqual([{ kind: "supersede", oldId: "LABEL-2", newId: "LABEL-3" }]);
       expect(db.get("LABEL-2")?.text).toBe(finalText);
-      expect(db.get("LABEL-3")).toBeUndefined();
+      expect(db.get("LABEL-3")?.text).toBe("Morgan was born May 22, 1990.");
+      expect(db.labelsForEntity("person:morgan").at(-1)?.label)
+        .toEqual({ v: 1, kind: "fact", entityId: "person:morgan", attribution: "user-stated" });
     } finally { db.close(); }
+  });
+
+  it("persists owner custom facts and preferences as queryable labels without labelling chatter", async () => {
+    const root = mkdtempSync(join(tmpdir(), "capture-owner-query-"));
+    const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(8), dim: 8 });
+    const owner = { v: 1, kind: "fact", entityId: "person:owner", key: "other:favorite-animal",
+      value: { type: "text", text: "otter" }, attribution: "user-stated" };
+    const classFact = { v: 1, kind: "fact", entityId: "person:maple", key: "other:art-class",
+      value: { type: "text", text: "art class" }, attribution: "user-stated" };
+    const user = "My favorite animal is otter. Never use long fictional summaries. Maple attends art class on Monday mornings.";
+    try {
+      await captureTurnStrict(`User: ${user}\nAssistant: Noted.`, {
+        db, root, llm: { id: "fake", complete: async () => JSON.stringify({ memories: [
+          { type: "note", text: "The user favors otter as a favorite animal.", salience: 0.8, isInsight: false,
+            entityIds: ["person:owner"], labels: [owner] },
+          { type: "note", text: "Never use long fictional summaries.", salience: 0.8, isInsight: false,
+            entityIds: [], labels: [preference] },
+          { type: "note", text: "Maple attends art class on Monday mornings.", salience: 0.8, isInsight: false,
+            entityIds: ["person:maple"], labels: [classFact] },
+          { type: "note", text: "The assistant said hello.", salience: 0.3, isInsight: false,
+            entityIds: [], labels: [preference] },
+        ], entities: [{ id: "person:owner", name: "Owner", type: "person" },
+          { id: "person:maple", name: "Maple", type: "person" }], relations: [] }) },
+        nextId: (() => { let id = 0; return () => `OWNER-${id++}`; })(), now: () => at,
+        conversationId: "web:fictional", captureSpeakerKind: "human-turn",
+        captureEvidence: evidence(user, { ownerTurn: true }),
+        canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
+      });
+      expect(db.listLabels({}, 20).hits.map((hit) => hit.label.kind).sort()).toEqual(["fact", "fact", "preference"]);
+      expect(db.labelsForEntity("person:owner")[0]?.label)
+        .toEqual({ v: 1, kind: "fact", entityId: "person:owner", attribution: "user-stated" });
+      expect(db.labelsForEntity("person:maple")[0]?.label)
+        .toEqual({ v: 1, kind: "fact", entityId: "person:maple", attribution: "user-stated" });
+      const source = parseDailyFile(readFileSync(join(root, "daily", "2026-07-12.md"), "utf8"));
+      expect(source.bullets.flatMap(labelsOf).map((label) => label.kind).sort()).toEqual(["fact", "fact", "preference"]);
+    } finally { db.close(); }
+  });
+
+  it("derives coarse facts without model labels and excludes task lines", async () => {
+    const root = mkdtempSync(join(tmpdir(), "capture-host-coarse-"));
+    const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(8), dim: 8 });
+    try {
+      const user = "Maple attends art class on Mondays.";
+      await captureTurnStrict(`User: ${user}\nAssistant: Noted.`, {
+        db, root, llm: { id: "fake", complete: async () => JSON.stringify({ memories: [
+          { type: "note", text: user, salience: 0.8, isInsight: false, entityIds: ["person:maple"], labels: [] },
+          { type: "task", text: "Maple should check the art class list.", salience: 0.8,
+            isInsight: false, entityIds: ["person:maple"], labels: [] },
+        ], entities: [{ id: "person:maple", name: "Maple", type: "person" }], relations: [] }) },
+        nextId: (() => { let id = 0; return () => `COARSE-${id++}`; })(), now: () => at,
+        conversationId: "conv-1", captureSpeakerKind: "human-turn", captureEvidence: evidence(user),
+        canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
+      });
+      expect(db.listLabels({ kind: "fact" }, 20).hits.map((hit) => hit.label)).toEqual([
+        { v: 1, kind: "fact", entityId: "person:maple", attribution: "user-stated" },
+      ]);
+      const source = parseDailyFile(readFileSync(join(root, "daily", "2026-07-12.md"), "utf8"));
+      expect(source.bullets.flatMap(labelsOf)).toHaveLength(1);
+    } finally { db.close(); }
+  });
+
+  it("keeps a coarse fact user-stated only when the user's own words share its claim", () => {
+    const context = (userText: string) => ({ captureSpeakerKind: "human-turn" as const, entityIds: ["person:morgan"],
+      entityNames: new Map([["person:morgan", "Morgan"]]), captureEvidence: evidence(userText) });
+    const line = "Morgan attends art class on Mondays.";
+    // A question that only names the person does not state the assistant's line.
+    expect(deriveCoarseFactLabels(line, "note", context("What about Morgan?")))
+      .toEqual([{ v: 1, kind: "fact", entityId: "person:morgan", attribution: "assistant-inferred" }]);
+    // A question that names the person and shares the claim is still not an assertion.
+    expect(deriveCoarseFactLabels(line, "note", context("What art class does Morgan attend?")))
+      .toEqual([{ v: 1, kind: "fact", entityId: "person:morgan", attribution: "assistant-inferred" }]);
+    expect(deriveCoarseFactLabels(line, "note", context("Does Morgan attend the art class. Thanks")))
+      .toEqual([{ v: 1, kind: "fact", entityId: "person:morgan", attribution: "assistant-inferred" }]);
+    expect(deriveCoarseFactLabels(line, "note", context("Morgan has an art class every Monday.")))
+      .toEqual([{ v: 1, kind: "fact", entityId: "person:morgan", attribution: "user-stated" }]);
+    const coarse = { v: 1, kind: "fact", entityId: "person:morgan", attribution: "user-stated" };
+    expect(captureLabels([coarse], line, context("What about Morgan?")))
+      .toEqual([{ ...coarse, attribution: "assistant-inferred" }]);
+    expect(captureLabels([coarse], line, context("Morgan attends an art class.")))
+      .toEqual([coarse]);
   });
 
   it("writes one validated label with its canonical bullet and restores parity on rebuild", async () => {
@@ -421,7 +522,8 @@ describe("host-validated capture labels", () => {
       const result = await captureTurnStrict(`User: ${user}\nAssistant: Noted.`, {
         db, root, llm: { id: "fake", complete: async () => JSON.stringify({
           memories: [{ type: "note", text: user, salience: 0.8, isInsight: false,
-            entityIds: [], labels: [fact] }], entities: [], relations: [],
+            entityIds: ["person:morgan"], labels: [fact] }],
+          entities: [{ id: "person:morgan", name: "Morgan", type: "person" }], relations: [],
         }) }, nextId: () => "LABELLED-CAPTURE", now: () => at,
         conversationId: "conv-1", captureSpeakerKind: "human-turn", captureEvidence: evidence(user),
         canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,

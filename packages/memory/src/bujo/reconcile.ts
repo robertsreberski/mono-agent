@@ -21,7 +21,7 @@ import type { CanonicalGraphRepairGuard } from "./graph.js";
 import { MemoryModelError, MemoryModelOutputError } from "./model-error.js";
 import { withSerializedBujoMutation } from "./mutation-lock.js";
 import type { Bullet } from "./types.js";
-import { canonicalMemoryLabel, labelsOf, MEMORY_RELATIONSHIP_ROLES, withMemoryLabels, type MemoryLabel } from "./labels.js";
+import { canonicalMemoryLabel, labelsOf, withMemoryLabels, type MemoryLabel } from "./labels.js";
 import { factSupported, ownerFactSupported } from "./capture-labels.js";
 
 /** The outcome of reconciling a single candidate against the existing index. */
@@ -307,11 +307,10 @@ function resolveConflictingTargets(
 const STATE_TOPICS: ReadonlyArray<readonly [string, RegExp]> = [
   ["home_location", /\b(?:lives?|living|resides?|residing|moved|home|based)\b/iu],
   ["work_location", /\b(?:works?|working|employed|employer|job|joined)\b/iu],
-  ["relationship", new RegExp(`\\b(?:${MEMORY_RELATIONSHIP_ROLES.join("|")})\\b`, "iu")],
   ["status", /\b(?:status|active|inactive|paused|resumed|completed|cancelled|canceled)\b/iu],
 ];
 function stateTopics(text: string, labels: readonly MemoryLabel[] = []): Set<string> {
-  const topics = new Set(labels.flatMap((label) => label.kind === "fact" ? [label.key] : []));
+  const topics = new Set(labels.flatMap((label) => label.kind === "fact" && label.key !== undefined ? [label.key] : []));
   for (const [key, pattern] of STATE_TOPICS) if (pattern.test(text)) topics.add(key);
   return topics;
 }
@@ -326,7 +325,7 @@ function withEntityStateNeighbours(candidate: CandidateMemory, similar: readonly
     const keysByMemory = new Map<string, string[]>();
     for (const hit of (entityId.startsWith("person:")
       ? db.listLabels({ kind: "fact", entityId }, 200).hits : [])) {
-      if (!hit.active || hit.label.kind !== "fact") continue;
+      if (!hit.active || hit.label.kind !== "fact" || hit.label.key === undefined) continue;
       keysByMemory.set(hit.memoryId, [...(keysByMemory.get(hit.memoryId) ?? []), hit.label.key]);
     }
     for (const record of db.memoriesForEntity(entityId)) {

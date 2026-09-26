@@ -70,7 +70,8 @@ export class MemoryDbLabels extends MemoryDbGraph {
     return hits.map((hit) => {
       const label = hit.label;
       if (label.kind !== "fact") throw new Error("memory-store: inconsistent fact label projection.");
-      const exclusive = ["birth_date", "full_name", "preferred_name", "home_location", "work_location"].includes(label.key);
+      const exclusive = label.key !== undefined
+        && ["birth_date", "full_name", "preferred_name", "home_location", "work_location"].includes(label.key);
       const conflict = exclusive && hit.active && active.some((other) => {
         const otherLabel = other.label;
         return otherLabel.kind === "fact" && (other.memoryId !== hit.memoryId || other.ordinal !== hit.ordinal)

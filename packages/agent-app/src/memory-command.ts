@@ -322,8 +322,11 @@ function memoryCommandUsageError(input: RunMemoryCommandInput): string | undefin
   if (input.ownerBackfill === true && !(subcommand === "curate" && rest[0] === "prepare")) {
     return "--owner-backfill requires `mono-agent memory curate prepare`.";
   }
-  if (input.limit === 0 && !(subcommand === "curate" && rest[0] === "prepare" && (operatorMerges || input.ownerBackfill === true))) {
-    return "--limit 0 is only supported for `mono-agent memory curate prepare` with operator merges or --owner-backfill.";
+  if (input.limit === 0 && !(subcommand === "curate" && rest[0] === "prepare")) {
+    return "--limit 0 is only supported for `mono-agent memory curate prepare`.";
+  }
+  if (input.limit === 0 && input.curateSelect !== undefined && input.curateSelect !== "oldest" && input.curateSelect !== "recent") {
+    return "--limit 0 supports only --select oldest or --select recent.";
   }
   if (input.duplicates === true && subcommand !== "entities") return "--duplicates requires `mono-agent memory entities`.";
   switch (subcommand) {
@@ -3048,7 +3051,8 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
         const dropped = curateDropIds(candidates, false);
         return dropped.size === 0 ? scannedOwners : scannedOwners.filter(({ id }) => !dropped.has(id));
       };
-      // `--limit 0` prepares only the operator merges / owner backfill: no line is sent to a model.
+      // `--limit 0` sends no line to a model: operator merges, owner backfill and
+      // a bounded pass of coarse person labels (oldest first, or --select recent).
       const modelPass = input.limit !== 0;
       const inspected = bujo.inspectCurateSource(root, modelPass ? input.limit ?? 120 : 1,
         modelPass ? input.curateSelect : "oldest");
@@ -3086,24 +3090,44 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
         }
       };
       admit(suggested.proposals);
+      const coarse = modelPass ? undefined : bujo.proposeCoarseCurate(root, {
+        select: input.curateSelect === "recent" ? "recent" : "oldest", fingerprint: snapshot.fingerprint });
+      if (coarse !== undefined) { discarded.push(...coarse.discarded); admit(coarse.proposals); }
       const ownerAssociations = ownersFor(proposals);
       const ownerBackfill = ownerScan === undefined ? undefined : { ...ownerScan.counts, proposed: ownerAssociations.length,
         bare: ownerAssociations.filter(({ reason }) => reason === "owner-bare").length,
         supersededByDrop: scannedOwners.length - ownerAssociations.length };
       const planPath = await canonicalProspectivePath(resolve(context.cwd, input.planPath!));
       if (isSameOrUnderDirectory(root, planPath)) throw new Error("plan cannot be inside memory root");
-      const payload = { schemaVersion: 1, operation: "curate", rootFingerprint: memoryRootFingerprint(root),
-        sourceFingerprint: snapshot.fingerprint, model, createdAt: new Date().toISOString(), proposals, discarded,
-        ...(operatorMerges.length === 0 ? {} : { operatorMerges }),
-        ...(ownerScan === undefined ? {} : { ownerAssociations }) } as const;
-      const plan: CuratePlan = { ...payload, planDigest: curatePlanDigest(payload) };
+      const createdAt = new Date().toISOString();
+      const buildPlan = (): CuratePlan => {
+        const payload = { schemaVersion: 1, operation: "curate", rootFingerprint: memoryRootFingerprint(root),
+          sourceFingerprint: snapshot.fingerprint, model, createdAt, proposals, discarded,
+          ...(operatorMerges.length === 0 ? {} : { operatorMerges }),
+          ...(ownerScan === undefined ? {} : { ownerAssociations }) } as const;
+        return { ...payload, planDigest: curatePlanDigest(payload) };
+      };
+      // The whole plan, as written, must fit the private plan cap. A coarse
+      // pass sheds its newest-selected labels (a later pass picks them up);
+      // anything else fails before writing.
+      const planBytes = (value: CuratePlan): number => Buffer.byteLength(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+      let plan = buildPlan();
+      let size = planBytes(plan);
+      let coarseMore = coarse?.truncated === true;
+      while (size > MAX_CURATE_PLAN_BYTES && coarse !== undefined && proposals.length > 0) {
+        proposals.splice(Math.max(0, Math.floor(proposals.length * MAX_CURATE_PLAN_BYTES / size) - 1));
+        coarseMore = true;
+        plan = buildPlan(); size = planBytes(plan);
+      }
+      if (size > MAX_CURATE_PLAN_BYTES) throw new Error("curate plan exceeds private plan bound; use a smaller --limit");
       await writePrivateJsonExclusive(planPath, plan, MAX_CURATE_PLAN_BYTES);
       const discardedByReason = Object.fromEntries([...new Set(discarded.map(({ reason }) => reason))].map((reason) => [reason,
         discarded.filter((item) => item.reason === reason).length]));
       write(input.json, { operation: "curate-prepare", status: "prepared", planPath, count: proposals.length,
         operatorMerges: operatorMerges.length, ...(ownerBackfill === undefined ? {} : { ownerBackfill }),
+        ...(coarse === undefined ? {} : { coarseLabels: { more: coarseMore } }),
         discarded: discarded.length, discardedByReason, skipped: snapshot.skipped, selected: modelPass ? snapshot.selected : {} },
-        () => `Curate plan prepared: ${proposals.length} proposals, ${operatorMerges.length} operator merges, ${ownerBackfill === undefined ? "" : `${ownerAssociations.length} owner associations (${JSON.stringify(ownerBackfill)}), `}${discarded.length} discarded (${JSON.stringify(discardedByReason)}); skipped canonical lines: ${JSON.stringify(snapshot.skipped)} at ${planPath}. Review before applying.\n`);
+        () => `Curate plan prepared: ${proposals.length} proposals, ${operatorMerges.length} operator merges, ${ownerBackfill === undefined ? "" : `${ownerAssociations.length} owner associations (${JSON.stringify(ownerBackfill)}), `}${discarded.length} discarded (${JSON.stringify(discardedByReason)}); skipped canonical lines: ${JSON.stringify(snapshot.skipped)} at ${planPath}. Review before applying.${coarseMore ? " More unlabelled person lines remain: apply this plan, then prepare again." : ""}\n`);
       return 0;
     }
     if (operation === "review" || operation === "apply") {

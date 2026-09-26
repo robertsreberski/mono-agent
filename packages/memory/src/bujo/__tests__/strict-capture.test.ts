@@ -68,6 +68,7 @@ describe("strict completed-turn extraction", () => {
         salience: 0.8,
         isInsight: false,
         entityIds: ["person:morgan"],
+        labels: [{ v: 1, kind: "fact", entityId: "person:morgan", attribution: "assistant-inferred" }],
       }],
       entities: validPlan.entities,
       relations: [],
@@ -196,6 +197,7 @@ describe("strict completed-turn extraction", () => {
     // The cap is a host contract, not a tool-call rejection: a model that
     // overruns must still be able to submit, so the host can clamp.
     const schema = STRICT_CAPTURE_OUTPUT_SCHEMA as Record<string, any>;
+    expect(schema.properties.memories.items.required).not.toContain("labels");
     const text = schema.properties.memories.items.properties.text;
     expect(text.minLength).toBe(1);
     expect(text.maxLength).toBeUndefined();
@@ -215,6 +217,7 @@ describe("strict completed-turn extraction", () => {
         salience: 0.8,
         isInsight: false,
         entityIds: ["person:morgan"],
+        labels: [{ v: 1, kind: "fact", entityId: "person:morgan", attribution: "assistant-inferred" }],
       }],
       entities: validPlan.entities,
       relations: [],
@@ -240,6 +243,7 @@ describe("strict completed-turn extraction", () => {
         salience: 0.8,
         isInsight: false,
         entityIds: ["person:morgan"],
+        labels: [{ v: 1, kind: "fact", entityId: "person:morgan", attribution: "assistant-inferred" }],
       }],
       entities: validPlan.entities,
       relations: [],

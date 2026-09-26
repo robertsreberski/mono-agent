@@ -352,6 +352,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         ...(args.idsFile === undefined ? {} : { idsFile: args.idsFile }),
         ...(args.reason === undefined ? {} : { reason: args.reason }),
         ...(args.planPath === undefined ? {} : { planPath: args.planPath }),
+        ...(args.curateSelect === undefined ? {} : { curateSelect: args.curateSelect }),
         ...(args.curateAccept === undefined ? {} : { curateAccept: args.curateAccept }),
         ...(args.curateReject === undefined ? {} : { curateReject: args.curateReject }),
         ...(args.curateMerges === undefined ? {} : { curateMerges: args.curateMerges }),
