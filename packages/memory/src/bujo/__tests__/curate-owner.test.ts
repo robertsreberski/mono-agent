@@ -63,16 +63,22 @@ describe("owner association backfill", () => {
     const path = memoryRoot();
     const ownerFact = encodeMemoryLabel({ v: 1, kind: "fact", entityId: "person:owner", key: "birth_date",
       value: { type: "date", date: "1990-05-17" }, attribution: "user-stated" });
-    appendBullet(path, { id: "fictional-a", text: "Mój dom jest w mieście.", type: "note", status: "open",
+    appendBullet(path, { id: "fictional-a", text: "Data: 1990-05-17.", type: "note", status: "open",
       salience: 0.5, isInsight: false, createdAt: at, refs: [ownerFact] }, new Date(at));
     const [association] = proposeOwnerAssociations(path).associations;
     expect(previewCurateMutations(path, [], undefined, [], [association!])).toEqual(["fictional-a"]);
+    expect(() => validateCurateOwnerAssociation({ ...association!, reason: "invalid" as "owner-label" }))
+      .toThrow(/invalid owner association/u);
+    expect(previewCurateMutations(path, [], undefined, [], [{ ...association!, accepted: false }])).toEqual([]);
     const source = inspectCurateSource(path).lines[0]!;
     expect(() => previewCurateMutations(path, [{ source, action: "drop", reason: "focus-noise", accepted: true }], undefined, [], [association!]))
       .toThrow(/conflicting owner association/u);
     expect(() => previewCurateMutations(path, [], undefined, [], [{ ...association!, reason: "owner-text" }])).toThrow(/stale owner association/u);
     const rewrite = { source, action: "rewrite" as const, text: "Morgan likes Maple.", accepted: true };
     expect(() => previewCurateMutations(path, [rewrite], undefined, [], [association!])).toThrow(/rewrite invalidates owner association/u);
+    expect(previewCurateMutations(path, [rewrite], undefined, [], [{ ...association!, accepted: false }])).toEqual([]);
+    expect(previewCurateMutations(path, [{ ...rewrite, text: "Fecha: 1990-05-17." }], undefined, [], [association!]))
+      .toEqual(["fictional-a"]);
     rewriteBullet(path, source.file, source.id, { text: "Otra ciudad." });
     expect(() => previewCurateMutations(path, [], undefined, [], [association!])).toThrow(/stale owner association/u);
   });

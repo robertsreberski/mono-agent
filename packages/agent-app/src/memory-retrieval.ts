@@ -72,7 +72,6 @@ export interface SharedMemoryRecallRuntimeExtensionOptions {
 
 type OriginalRecallUnavailableReason =
   | "empty"
-  | "conversation_relative"
   | "lookup_failed";
 
 type OriginalRecallSelection =

@@ -81,7 +81,7 @@ export interface RecallCapableStore extends LabelRecallStore {
     | { readonly available: true; readonly query: string; readonly outcome: MemoryRecallOutcome }
     | {
         readonly available: false;
-        readonly reason: "not_loaded" | "empty" | "conversation_relative" | "lookup_failed" | "replaced";
+        readonly reason: "not_loaded" | "empty" | "lookup_failed" | "replaced";
       }
   >;
   /** Optional deterministic one-hop expansion, used only by the explicit tool. */
