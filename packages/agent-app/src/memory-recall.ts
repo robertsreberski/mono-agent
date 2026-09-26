@@ -5,7 +5,7 @@ import type {
   EmbeddingProviderConfig,
 } from "@mono-agent/memory/search";
 import type { MemoryStatus, MemoryType } from "@mono-agent/memory/store";
-import { AUTO_RECALL_MIN_SCORE, hasConflictingAutomaticRecallEvidence, isConversationRelativeQuery } from "@mono-agent/memory/bujo";
+import { AUTO_RECALL_MIN_SCORE } from "@mono-agent/memory/bujo";
 import { normalizeOptionalString } from "@mono-agent/agent-contracts";
 import * as z from "zod/v4";
 import { readLabelSections, type LabelKind, type LabelSectionRequest, type LabelSections } from "./memory-label-sections.js";
@@ -81,7 +81,7 @@ export interface RecallCapableStore extends LabelRecallStore {
     | { readonly available: true; readonly query: string; readonly outcome: MemoryRecallOutcome }
     | {
         readonly available: false;
-        readonly reason: "not_loaded" | "empty" | "conversation_relative" | "lookup_failed" | "replaced";
+        readonly reason: "not_loaded" | "empty" | "lookup_failed" | "replaced";
       }
   >;
   /** Optional deterministic one-hop expansion, used only by the explicit tool. */
@@ -185,22 +185,20 @@ export function recallHitCurrentness(hit: MemoryRecallHit, today: string): Recal
   return validTo !== undefined && validTo.slice(0, 10) < today ? "superseded" : "current";
 }
 
-/** Candidates inspected for conflicting values: at least the top eight, uncut. */
+/** Bounded candidate window retained for compatibility with explicit recall consumers. */
 export const RECALL_CONFLICT_WINDOW = 8;
 
 /**
- * `conflicting` when the top candidates or the fact sheet hold different
- * current values for one question; `insufficient` when the best hit is below
- * the calibrated floor. Otherwise no note: the hits are ordinary evidence.
- *
- * `candidates` is the bounded candidate set BEFORE the tail cut, so a
- * disagreeing value the cut removes still produces the conflict note.
+ * `conflicting` only when structured current facts explicitly conflict;
+ * `insufficient` when the best hit is below the calibrated floor. Free-form
+ * prose is not parsed using a language-specific conflict grammar. Query and
+ * candidates remain parameters for compatible callers, but do not authorize
+ * either note by themselves.
  */
-export function recallEvidenceNote(query: string, hits: readonly MemoryRecallHit[], sections?: LabelSections,
-  candidates: readonly MemoryRecallHit[] = hits.slice(0, RECALL_CONFLICT_WINDOW)): RecallEvidenceNote | undefined {
+export function recallEvidenceNote(_query: string, hits: readonly MemoryRecallHit[], sections?: LabelSections,
+  _candidates: readonly MemoryRecallHit[] = hits.slice(0, RECALL_CONFLICT_WINDOW)): RecallEvidenceNote | undefined {
   if (hits.length === 0) return undefined;
-  if (sections?.factSheet?.some((fact) => fact.current && fact.conflict) === true
-    || hasConflictingAutomaticRecallEvidence(query, candidates)) return "conflicting";
+  if (sections?.factSheet?.some((fact) => fact.current && fact.conflict) === true) return "conflicting";
   return Math.max(...hits.map((hit) => hit.score)) < AUTO_RECALL_MIN_SCORE ? "insufficient" : undefined;
 }
 
@@ -302,13 +300,9 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
     const originalPrefix = originalMode
       ? `Memory recall used this logical turn's original query: "${effectiveQuery}".\n`
       : "";
-    if (isConversationRelativeQuery(effectiveQuery)) {
-      const guidance = "This question refers to the active conversation, not long-term memory. Use the current conversation history to identify the last message.";
-      return {
-        content: [{ type: "text" as const, text: `${originalPrefix}${guidance}` }],
-        structuredContent: { hits: [], conversationRelative: true, guidance, ...originalMetadata },
-      };
-    }
+    // This is an explicitly requested search. Do not infer conversation-relative
+    // intent from one language's query grammar: the model has the current turn
+    // and can choose whether to use the returned memory evidence.
     const topK = clampLimit(args.limit, 8);
     let hits: readonly MemoryRecallHit[];
     let degradation: MemoryRecallOutcome["degradation"];

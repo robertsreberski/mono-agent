@@ -9,29 +9,10 @@ import type { MemoryDb } from "../store/index.js";
 import type { Bullet } from "./types.js";
 
 /**
- * Operator-reviewed owner association backfill.
- *
- * Older lines written before capture bound owner statements to `person:owner`
- * describe the host owner only in their text ("The user prefers ..."). This
- * module proposes one `person:owner` association per such line when the
- * line's own source proves the owner is its subject:
- *
- * - `owner-text`: the owner is the grammatical subject. The text starts with
- *   "The user" followed directly by a verb (optionally after one adverb), or
- *   with "The user's <property>" where <property> is one of the finite owner
- *   properties capture already accepts for owner fact labels (name, birthday,
- *   home, work, ...). Any other possessive is simply not proposed.
- *   Pre-accepted.
- * - `owner-bare`: the same shapes starting with a bare "User"/"User's" (not
- *   "User:", a pasted log envelope). Bare "User" is also used for other
- *   senders and tool users, so these are proposed NOT accepted: the operator
- *   opts in with `associate:owner-bare`.
- * - `owner-label`: an existing label already attributes the line to the owner
- *   (a fact label about `person:owner`, or an owner-turn `agent` preference).
- *   Pre-accepted.
- *
- * No model is consulted and no other id is ever proposed. Proposals are
- * applied only through the curate plan's review and root-swap apply.
+ * Operator-reviewed owner association backfill. Only durable structured labels
+ * that explicitly bind `person:owner` qualify. Unlabelled legacy prose has no
+ * language-independent proof of its speaker or grammatical subject; leave it
+ * for operator review rather than guessing from words in the line.
  */
 export type CurateOwnerAssociationReason = "owner-text" | "owner-bare" | "owner-label";
 export interface CurateOwnerAssociation {
@@ -44,43 +25,14 @@ export interface CurateOwnerBackfillScan {
   readonly associations: readonly CurateOwnerAssociation[];
   /** Counts only: live lines examined and why candidates were not proposed. */
   readonly counts: {
-    readonly live: number; readonly alreadyLinked: number; /** Lines starting with "The user"/"User" whose shape does not prove the owner is the subject. */
+    readonly live: number; readonly alreadyLinked: number; /** Reserved for compatibility with existing count consumers; no prose is parsed. */
     readonly notProven: number; readonly proposed: number;
-    /** Proposed `owner-bare` lines, which start not accepted. */
+    /** Reserved for compatibility with existing count consumers. */
     readonly bare: number;
   };
 }
 export const MAX_CURATE_OWNER_ASSOCIATIONS = 8192;
 const MEMORY_ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/u;
-const OWNER_START = /^(?:the\s+)?user\b/iu;
-const BARE_OWNER_START = /^user\b/iu;
-// Verb shapes only (grammar, not vocabulary about people): third-person
-// present (-s), past (-ed), auxiliaries and common irregular past forms.
-const AUXILIARIES = ["is", "was", "has", "had", "does", "did", "will", "would", "can", "could", "should", "may", "might",
-  "must", "said", "told", "went", "got", "made", "took", "bought", "sent", "paid", "felt", "left", "set", "put", "ran",
-  "began", "chose", "gave", "knew", "met", "saw", "wrote", "spent", "kept", "thought", "found", "heard", "lost", "sold",
-  "won", "came", "became", "read", "ate", "drove", "flew", "slept", "woke", "wore", "forgot", "built", "brought"];
-const ADVERBS = ["also", "now", "still", "often", "never", "always", "just", "already", "again", "then", "later", "once"];
-const OWNER_VERB = new RegExp(`^(?:the\\s+)?user\\s+(?:(?:[a-z]+ly|${ADVERBS.join("|")})\\s+)?(?:[a-z]+[a-z](?:s|ed)|${AUXILIARIES.join("|")})\\b(?!['’])`, "iu");
-const OWNER_POSSESSIVE = /^(?:the\s+)?user(?:'s|’s)\s/iu;
-
-// Legacy owner backfill only: English owner-property shapes for existing
-// "the user's ..." lines. Capture no longer uses subject grammar.
-const OWNER_PROPERTY: Readonly<Record<string, RegExp>> = {
-  birth_date: /\b(?:my|the (?:user|owner)'s)\s+(?:birthday|birth\s+date)\b|\b(?:i|the (?:user|owner))\s+(?:was|am|'m)\s+born\b/iu,
-  full_name: /\b(?:my|the (?:user|owner)'s)\s+(?:full\s+)?name\b|\b(?:i\s+am|i'm|the (?:user|owner)\s+is)\s+(?:named|called)\b/iu,
-  preferred_name: /\b(?:my|the (?:user|owner)'s)\s+(?:preferred\s+)?name\b|\b(?:i|the (?:user|owner))\s+(?:prefer|prefers|go\s+by|goes\s+by)\b/iu,
-  home_location: /\b(?:my|the (?:user|owner)'s)\s+home\b|\b(?:i|the (?:user|owner))\s+(?:live|lives|lived|moved)\s+(?:in|to|at)\b|\b(?:i\s+am|i'm|the (?:user|owner)\s+is)\s+based\s+in\b/iu,
-  work_location: /\b(?:my|the (?:user|owner)'s)\s+(?:work|job|employer)\b|\b(?:i|the (?:user|owner))\s+(?:work|works|worked)\s+(?:at|for|as|in)\b/iu,
-};
-
-/** "The user's <owner property> ..." using the legacy owner-property grammar. */
-function ownerPropertyPossessive(text: string): boolean {
-  if (!OWNER_POSSESSIVE.test(text)) return false;
-  const normalized = text.replace(/[’]/gu, "'").replace(/\s+/gu, " ").replace(/^user's /iu, "the user's ");
-  return Object.values(OWNER_PROPERTY).some((property) => property.exec(normalized)?.index === 0);
-}
-
 function hash(text: string): string { return createHash("sha256").update(text).digest("hex"); }
 
 /** Why a bullet's own source proves the owner is its subject, or undefined. */
@@ -89,9 +41,6 @@ export function ownerAssociationReason(bullet: Pick<Bullet, "text" | "refs">): C
   try { labels = labelsOf(bullet); } catch { labels = []; }
   if (labels.some((label) => (label.kind === "fact" && label.entityId === OWNER_ENTITY_ID)
     || (label.kind === "preference" && label.scope === "agent" && label.attribution === "user-stated"))) return "owner-label";
-  if (OWNER_VERB.test(bullet.text) || ownerPropertyPossessive(bullet.text)) {
-    return BARE_OWNER_START.test(bullet.text) ? "owner-bare" : "owner-text";
-  }
   return undefined;
 }
 
@@ -125,21 +74,18 @@ function ownerLinked(root: string): Set<string> {
 export function proposeOwnerAssociations(root: string): CurateOwnerBackfillScan {
   const linked = ownerLinked(root);
   const associations: CurateOwnerAssociation[] = [];
-  let live = 0; let alreadyLinked = 0; let notProven = 0;
+  let live = 0; let alreadyLinked = 0;
   for (const bullet of liveBullets(root).values()) {
     live++;
     const reason = ownerAssociationReason(bullet);
     if (reason === undefined) {
-      if (OWNER_START.test(bullet.text)) notProven++;
       continue;
     }
     if (linked.has(bullet.id)) { alreadyLinked++; continue; }
     if (associations.length >= MAX_CURATE_OWNER_ASSOCIATIONS) throw new Error("memory-curate: too many owner associations");
-    // Bare "User ..." lines are proposed for review, not pre-accepted.
     associations.push({ id: bullet.id, textHash: hash(bullet.text), reason, accepted: reason !== "owner-bare" });
   }
-  return { associations, counts: { live, alreadyLinked, notProven, proposed: associations.length,
-    bare: associations.filter(({ reason }) => reason === "owner-bare").length } };
+  return { associations, counts: { live, alreadyLinked, notProven: 0, proposed: associations.length, bare: 0 } };
 }
 
 export function validateCurateOwnerAssociation(association: CurateOwnerAssociation): void {

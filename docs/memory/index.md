@@ -407,11 +407,12 @@ custom stores must affirm chronological support before that tool is offered. Set
 `recallTool.enabled` to `false` to opt out of both explicit read tools.
 There is no hand-wired `.mcp.json` entry and no separate local LLM to run.
 
-Unqualified active-conversation questions are not durable-memory searches. For example,
-`What did you send in the last message?` bypasses automatic recall, and a mistaken tool call
-returns guidance to use the current provider conversation without querying the memory backend.
-Qualified archived history still uses the tool. BuJo tool recall may add one deterministic graph
-hop; automatic context remains direct-only, while Lite/Journal never expand the graph.
+Unqualified active-conversation questions belong to provider conversation history,
+not durable memory; the `MemoryRecall` tool description directs the model to that
+history. Explicit tool calls are still searched without language-specific query
+suppression. The automatic possibly-relevant block leaves relevance to the main
+model. BuJo tool recall may add one deterministic graph hop; automatic context
+remains direct-only, while Lite/Journal never expand the graph.
 
 Automatically recalled entries do **not** sit in the system prompt. The harness appends
 them to the **user message** each turn (when recall returns hits), so memory survives a

@@ -298,7 +298,7 @@ describe("MemoryRetrievalService", () => {
     await expect(service.load("conversation", "unrelated topic", { turnId: "turn-2" })).resolves.toBeUndefined();
   });
 
-  it("bypasses automatic durable lookup for the exact last-message question but keeps qualified history searchable", async () => {
+  it("does not impose an English-only last-message gate on automatic lookup", async () => {
     const store = fakeStore();
     const service = new MemoryRetrievalService(store);
 
@@ -307,14 +307,14 @@ describe("MemoryRetrievalService", () => {
       "What did you send in the last message?",
       { turnId: "turn-current-history" },
     )).resolves.toBeUndefined();
-    expect(store.queries).toEqual([]);
+    expect(store.queries).toEqual(["what did you send in the last message?"]);
 
     await service.load(
       "telegram:123",
       "What did Alice send in her last message?",
       { turnId: "turn-current-history" },
     );
-    expect(store.queries).toEqual(["what did alice send in her last message?"]);
+    expect(store.queries).toEqual(["what did you send in the last message?", "what did alice send in her last message?"]);
   });
 
   it("keeps original-query selection turn-local and replaces or clears it on every repeated load", async () => {
@@ -334,7 +334,7 @@ describe("MemoryRetrievalService", () => {
 
     await service.load("conversation", "What did you send in the last message?", { turnId: "turn-repeat" });
     await expect(service.recallOriginalOutcomeForTurn("turn-repeat"))
-      .resolves.toMatchObject({ available: false, reason: "conversation_relative" });
+      .resolves.toMatchObject({ available: true, query: "What did you send in the last message?" });
 
     await service.load("conversation", "   ", { turnId: "turn-repeat" });
     await expect(service.recallOriginalOutcomeForTurn("turn-repeat"))
@@ -343,6 +343,7 @@ describe("MemoryRetrievalService", () => {
     expect(store.queries).toEqual([
       "first durable question",
       "what did alice send in her last message?",
+      "what did you send in the last message?",
     ]);
   });
 
@@ -735,7 +736,7 @@ describe("shared MemoryRecall MCP", () => {
     }
   });
 
-  it("does not query the configured backend for the exact Telegram last-message question", async () => {
+  it("routes explicitly requested last-message searches like any language", async () => {
     const store = fakeStore();
     const service = new MemoryRetrievalService(store);
     const extension = await createSharedMemoryRecallRuntimeExtension(service)({ runId: "turn-last-message" });
@@ -747,15 +748,15 @@ describe("shared MemoryRecall MCP", () => {
         name: "MemoryRecall",
         arguments: { query: "What did you send in the last message?" },
       });
-      expect(result.structuredContent).toMatchObject({ hits: [], conversationRelative: true });
-      expect(store.queries).toEqual([]);
+      expect(result.structuredContent).toMatchObject({ hits: expect.any(Array) });
+      expect(store.queries).toEqual(["what did you send in the last message?"]);
     } finally {
       await client.close().catch(() => undefined);
       await extension.cleanup();
     }
   });
 
-  it("rejects ambiguous original-mode input and reports unavailable guarded originals without searching", async () => {
+  it("rejects ambiguous original-mode input and retains the original search", async () => {
     const store = fakeStore();
     const service = new MemoryRetrievalService(store);
     await service.load(
@@ -780,20 +781,15 @@ describe("shared MemoryRecall MCP", () => {
         arguments: { useOriginalQuery: false },
       });
       expect(falseWithoutQuery.isError).toBe(true);
-      expect(store.queries).toEqual([]);
+      expect(store.queries).toEqual(["what did you send in the last message?"]);
 
       const unavailable = await client.callTool({
         name: "MemoryRecall",
         arguments: { useOriginalQuery: true },
       });
-      expect(unavailable.isError).toBe(true);
-      expect(unavailable.structuredContent).toMatchObject({
-        hits: [],
-        queryMode: "original",
-        originalQueryUnavailable: true,
-        reason: "conversation_relative",
-      });
-      expect(store.queries).toEqual([]);
+      expect(unavailable.isError).not.toBe(true);
+      expect(unavailable.structuredContent).toMatchObject({ queryMode: "original", hits: expect.any(Array) });
+      expect(store.queries).toEqual(["what did you send in the last message?"]);
     } finally {
       await client.close().catch(() => undefined);
       await extension.cleanup();

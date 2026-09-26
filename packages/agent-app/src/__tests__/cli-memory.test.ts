@@ -2313,6 +2313,9 @@ describe("curate paid-run isolation", () => {
 });
 
 describe("memory entity identity CLI", { timeout: 30_000 }, () => {
+  // Canonical v1 encoding of a coarse owner fact (label keys are sorted).
+  const ownerFact = `label:v1:${Buffer.from(JSON.stringify({ attribution: "user-stated", entityId: "person:owner",
+    kind: "fact", v: 1 })).toString("base64url")}`;
   it("parses operator merge and duplicate flags only where they apply", () => {
     expect(parseCliArgs(["memory", "curate", "prepare", "--plan", "p.json", "--limit", "0", "--merge", "person:a=person:b",
       "--merge", "concept:a=person:b", "--merge-file", "merges.txt", "--allow-cross-type"]))
@@ -2440,10 +2443,10 @@ describe("memory entity identity CLI", { timeout: 30_000 }, () => {
     const memoryRoot = join(await tempDir(), "memory");
     await mkdir(memoryRoot, { recursive: true });
     const at = "2026-07-12T10:00:00.000Z";
-    for (const [id, text] of [["fictional-a", "The user prefers Maple tea."], ["fictional-b", "The user's zorbel likes Maple tea."],
-      ["fictional-c", "User rides a bike to work."], ["fictional-d", "Morgan likes Maple tea."]]) {
+    for (const [id, text] of [["fictional-a", "Maple tea is preferred."], ["fictional-b", "Maple tea was served."],
+      ["fictional-c", "Chess is played on Fridays."], ["fictional-d", "Morgan likes Maple tea."]]) {
       bujoMemory.appendBullet(memoryRoot, { id: id!, type: "note", status: "open", text: text!, salience: 0.5, isInsight: false,
-        createdAt: at, refs: [] }, new Date(at));
+        createdAt: at, refs: id === "fictional-a" || id === "fictional-c" ? [ownerFact] : [] }, new Date(at));
     }
     await safeRebuildMemoryIndex({ root: memoryRoot, tier: "bujo", embeddings: deterministicEmbeddings("ollama:test-embed", 8), dim: 8 });
     const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
@@ -2453,12 +2456,9 @@ describe("memory entity identity CLI", { timeout: 30_000 }, () => {
     const prepared = await invoke(["memory", "curate", "prepare", "--plan", planPath, "--limit", "0", "--owner-backfill", "--json"]);
     expect(prepared.code, prepared.stderr).toBe(0);
     expect(JSON.parse(prepared.stdout)).toMatchObject({ status: "prepared", count: 0, operatorMerges: 0,
-      ownerBackfill: { live: 4, alreadyLinked: 0, proposed: 2, bare: 1 } });
-    // Bare "User ..." lines are proposed but start rejected; the operator opts in.
+      ownerBackfill: { live: 4, alreadyLinked: 0, proposed: 2, bare: 0 } });
     const reviewed = await invoke(["memory", "curate", "review", "--plan", planPath, "--json"]);
-    expect(JSON.parse(reviewed.stdout)).toMatchObject({ counts: { "associate:owner": { total: 1, accepted: 1 },
-      "associate:owner-bare": { total: 1, accepted: 0 } } });
-    expect((await invoke(["memory", "curate", "review", "--plan", planPath, "--accept", "associate:owner-bare", "--json"])).code).toBe(0);
+    expect(JSON.parse(reviewed.stdout)).toMatchObject({ counts: { "associate:owner": { total: 2, accepted: 2 } } });
     let plan = JSON.parse(await readFile(planPath, "utf8")) as { ownerAssociations: { id: string; accepted: boolean }[] };
     expect(plan.ownerAssociations.map(({ id, accepted }) => [id, accepted])).toEqual([["fictional-a", true], ["fictional-c", true]]);
     expect((await invoke(["memory", "curate", "review", "--plan", planPath, "--reject", "id:fictional-c", "--json"])).code).toBe(0);
@@ -2533,11 +2533,11 @@ describe("memory entity identity CLI", { timeout: 30_000 }, () => {
     const memoryRoot = join(await tempDir(), "memory");
     await mkdir(memoryRoot, { recursive: true });
     const at = "2026-07-12T10:00:00.000Z";
-    const lines = [["fictional-a", "The user prefers Maple tea."], ["fictional-c", "User rides a bike to work."],
-      ["fictional-e", "The user owns a red canoe."]] as const;
+    const lines = [["fictional-a", "Maple tea is preferred."], ["fictional-c", "Chess is played on Fridays."],
+      ["fictional-e", "Maple tea is on the table."]] as const;
     for (const [id, text] of lines) {
       bujoMemory.appendBullet(memoryRoot, { id, type: "note", status: "open", text, salience: 0.5, isInsight: false,
-        createdAt: at, refs: [] }, new Date(at));
+        createdAt: at, refs: [ownerFact] }, new Date(at));
     }
     await safeRebuildMemoryIndex({ root: memoryRoot, tier: "bujo", embeddings: deterministicEmbeddings("ollama:test-embed", 8), dim: 8 });
     const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
@@ -2566,7 +2566,7 @@ describe("memory entity identity CLI", { timeout: 30_000 }, () => {
     // review sets it to not accepted and reports the count.
     const { planDigest: _digest, ...payload } = JSON.parse(await readFile(planPath, "utf8")) as Plan;
     payload.ownerAssociations.push({ id: "fictional-c", textHash: createHash("sha256").update(lines[1][1]).digest("hex"),
-      reason: "owner-bare", accepted: true });
+      reason: "owner-label", accepted: true });
     const strip = <T extends { accepted: boolean }>({ accepted: _accepted, ...rest }: T) => rest;
     const planDigest = createHash("sha256").update(JSON.stringify({ ...payload, proposals: payload.proposals.map(strip),
       ownerAssociations: payload.ownerAssociations.map(strip) })).digest("hex");
@@ -2574,10 +2574,9 @@ describe("memory entity identity CLI", { timeout: 30_000 }, () => {
     const reviewed = await invoke(["memory", "curate", "review", "--plan", planPath, "--json"]);
     expect(reviewed.code, reviewed.stderr).toBe(0);
     expect(JSON.parse(reviewed.stdout)).toMatchObject({ ownerSupersededByDrop: 1,
-      counts: { "drop:generic-advice": { total: 2, accepted: 2 }, "associate:owner": { total: 1, accepted: 1 },
-        "associate:owner-bare": { total: 1, accepted: 0 } } });
-    // Accepting the owner link again keeps the drop authoritative.
-    expect((await invoke(["memory", "curate", "review", "--plan", planPath, "--accept", "associate:owner-bare", "--json"])).code).toBe(0);
+      counts: { "drop:generic-advice": { total: 2, accepted: 2 }, "associate:owner": { total: 2, accepted: 1 } } });
+    // Accepting the owner links again keeps the drop authoritative.
+    expect((await invoke(["memory", "curate", "review", "--plan", planPath, "--accept", "associate:owner", "--json"])).code).toBe(0);
     plan = JSON.parse(await readFile(planPath, "utf8")) as Plan;
     expect(plan.ownerAssociations.map(({ id, accepted }) => [id, accepted])).toEqual([["fictional-e", true], ["fictional-c", false]]);
 

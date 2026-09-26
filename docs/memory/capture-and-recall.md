@@ -258,15 +258,15 @@ excluded. So that a finished or deferred item cannot read as a current fact, a
 result whose status is not `open` is prefixed with that status, for example
 `0.800  [recorded 2026-07-06T12:00:00.000Z] [done] Ship the 0.9 release.`; an ordinary open record also includes the recorded timestamp when supplied. Explicit tool hits keep the backend's ranking. Structured results carry optional `type`, `status`, `createdAt`, `validFrom`, and `validTo` alongside `id`, `score`, and `text` whenever the backend supplies them — a remote backend that reports none keeps its previous result shape unchanged. `createdAt` is the recording instant, not necessarily the event date.
 
-Questions about the active chat are intentionally not durable-memory queries. For
-unqualified prompts such as `What did you send in the last message?`, `What was your
-previous reply?`, or `What happened in this conversation?`, automatic recall injects
-nothing and `MemoryRecall` returns guidance to use the active conversation history
-without calling the memory backend. A targeted archived question such as `Which release
-color did we decide on?` still uses durable recall. A broad explicit-period question such
-as `What did we work on last week?` belongs to `MemoryJournal` when available. This
-prevents an older semantically similar record from displacing the actual latest message
-and keeps broad chronology distinct from targeted search.
+Questions about the active chat belong to current conversation history, not durable
+memory. The tool description tells the model to use that history rather than
+`MemoryRecall` for the current or last message. If explicitly called, however,
+`MemoryRecall` searches without English-only grammar that would suppress some
+languages but not others. The automatic possibly-relevant block likewise uses
+scores and host-stamped owner status, not an English last-message gate; the
+main model decides whether the lines are relevant. Hits remain evidence, not asserted answers; only
+structured conflicting current facts produce an automatic conflict note. A broad
+explicit-period question belongs to `MemoryJournal` when available.
 
 Interrupted-run recovery is also not a durable-memory query. For a request to
 pick up, continue, or recover interrupted work, the model-facing tool contract
@@ -284,15 +284,15 @@ The configured harness auto-provisions `MemoryRecall` from the single `config.me
 
 On this request-scoped configured-harness path, the tool also offers a deliberate
 `useOriginalQuery: true` mode. It reuses the bounded direct lookup already made for
-the current logical turn's original user question, even when the finite automatic
-evidence gate correctly abstained and a later rephrased search would retrieve a
+the current logical turn's original user question, even when the automatic
+score window shows no lines and a later rephrased search would retrieve a
 different set. Existing deliberate-recall graph expansion still applies when
 supported; it can add related evidence within the existing result limit. The mode
 does not combine results from different queries, widen automatic injection, or
 repeat the direct backend lookup. Supply either `query` for an ordinary
 query-local search or `useOriginalQuery: true`, never both. The mode is unavailable
-after an in-turn nonduplicate memory write, for active-conversation-relative or
-empty questions, after turn cleanup, and on standalone or capability-free
+after an in-turn nonduplicate memory write, for empty questions, after turn
+cleanup, and on standalone or capability-free
 programmatic recall servers that do not own the bound automatic lookup.
 
 The shared writable store counts only delivered memory IDs, once per logical

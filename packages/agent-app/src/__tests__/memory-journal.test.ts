@@ -496,8 +496,8 @@ describe("MemoryJournal capability, policy, and routing separation", () => {
         name: "MemoryRecall",
         arguments: { query: "What did you just say?" },
       });
-      expect(structured(relative)).toMatchObject({ conversationRelative: true });
-      expect(recallCalls).toBe(1);
+      expect(structured(relative)).not.toHaveProperty("conversationRelative");
+      expect(recallCalls).toBe(2);
 
       const recallDescription = (await recallClient.listTools()).tools[0]!.description!;
       const runDescription = (await runClient.listTools()).tools[0]!.description!;

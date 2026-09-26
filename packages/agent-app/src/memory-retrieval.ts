@@ -13,7 +13,6 @@ import type {
 import {
   AUTO_RECALL_BACKEND_HITS,
   AUTO_RECALL_MAX_BYTES,
-  isConversationRelativeQuery,
   MARKER_FOR,
   POSSIBLY_RELEVANT_MAX_BYTES,
   recallLineStatus,
@@ -73,7 +72,6 @@ export interface SharedMemoryRecallRuntimeExtensionOptions {
 
 type OriginalRecallUnavailableReason =
   | "empty"
-  | "conversation_relative"
   | "lookup_failed";
 
 type OriginalRecallSelection =
@@ -149,13 +147,6 @@ export class MemoryRetrievalService implements MemoryStore {
     const turnId = options.turnId ?? `uncached:${randomUUID()}`;
     if (evidenceQuery.length === 0) {
       if (!ephemeral) this.setOriginalUnavailable(turnId, "empty");
-      return undefined;
-    }
-    // Current/last-message questions belong to the active channel transcript.
-    // Clear any earlier selection for a repeated context load and abstain before
-    // paying for embeddings/search; durable memory must not displace history.
-    if (isConversationRelativeQuery(evidenceQuery)) {
-      if (!ephemeral) this.setOriginalUnavailable(turnId, "conversation_relative");
       return undefined;
     }
     try {
