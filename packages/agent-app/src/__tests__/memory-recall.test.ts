@@ -223,7 +223,7 @@ describe("resolveMemoryRecallSettings", () => {
 });
 
 describe("MemoryRecall MCP tool (FTS, hermetic)", () => {
-  it("routes last-message questions to active history without searching durable memory", async () => {
+  it("routes explicit searches without language-specific query suppression", async () => {
     let recallCalls = 0;
     const store = {
       async recall() {
@@ -254,32 +254,13 @@ describe("MemoryRecall MCP tool (FTS, hermetic)", () => {
       expect(properties?.kind?.description).toContain("local BuJo memory");
       expect(properties?.about?.description).toContain("Guidance is empty in about mode");
       for (const query of [
-        "What did you send in the last message?",
-        "What was your previous reply?",
         "What was the last message?",
-        "What did you say?",
-        "What did you just send?",
-        "What happened in this conversation?",
-      ]) {
-        const result = (await client.callTool({ name: "MemoryRecall", arguments: { query } })) as {
-          content: Array<{ type: string; text: string }>;
-          structuredContent?: { hits: unknown[]; conversationRelative?: boolean };
-        };
-        expect(result.structuredContent, query).toMatchObject({ hits: [], conversationRelative: true });
-        expect(result.content[0]?.text, query).toMatch(/active conversation|current conversation history/iu);
-      }
-      expect(recallCalls).toBe(0);
-
-      for (const query of [
-        "What did you send Casey for her birthday last year?",
-        "What did you say our durable deployment policy was?",
-        "What did Alice's last message say?",
-        "What was the last message from the deploy bot?",
+        "Co było w poprzedniej wiadomości?",
+        "¿Qué decía el último mensaje?",
+        "What did Morgan send Casey last year?",
       ]) {
         const result = await client.callTool({ name: "MemoryRecall", arguments: { query } });
-        expect(result.structuredContent, query).toMatchObject({
-          hits: [expect.objectContaining({ id: "old" })],
-        });
+        expect(result.structuredContent, query).toMatchObject({ hits: [expect.objectContaining({ id: "old" })] });
       }
       expect(recallCalls).toBe(4);
     } finally {

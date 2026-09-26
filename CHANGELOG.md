@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Let explicit `MemoryRecall` search in any language without English query
+  suppression or prose-based conflict guesses. Keep automatic possibly-relevant
+  selection language-neutral, and restrict owner backfill to existing structured
+  owner labels instead of interpreting English prose.
+
 - Memory capture drops the assistant's own low-salience lines. A memory the
   extraction model marks as `assistant`-sourced (or a `user` claim the host
   bounds to `assistant`) needs a model salience of at least 0.5; below that it

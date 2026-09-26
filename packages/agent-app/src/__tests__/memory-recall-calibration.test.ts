@@ -80,7 +80,7 @@ describe("calibrated explicit MemoryRecall", () => {
     expect(recallEvidenceNote("What color did Morgan select for the Maple launch?", [
       hit("a", 0.9, "Morgan selected cobalt as the color for the Maple launch."),
       hit("b", 0.7, "Morgan selected teal as the color for the Maple launch."),
-    ])).toBe("conflicting");
+    ])).toBeUndefined();
   });
 
   it("serves fewer weak hits with source date, superseded marker and an explicit evidence note", async () => {
@@ -103,17 +103,16 @@ describe("calibrated explicit MemoryRecall", () => {
     expect(weak.content[0]?.text.split("\n")[0]).toMatch(/^Insufficient evidence:/u);
   });
 
-  it("flags conflicting values found in the uncut candidates even when the tail cut drops one of them", async () => {
+  it("does not infer conflicts from one language's free-form grammar", async () => {
     const query = "What color did Morgan select for the Maple launch?";
     const cobalt = hit("m-cobalt", 0.9, "Morgan selected cobalt as the color for the Maple launch.");
     const teal = hit("m-teal", 0.7, "Morgan selected teal as the color for the Maple launch.");
     // 0.70 is within the floor but more than 0.15 below 0.90: the cut drops it.
     expect(calibrateRecallHits([cobalt, teal])).toEqual([cobalt]);
-    expect(recallEvidenceNote(query, [cobalt], undefined, [cobalt, teal])).toBe("conflicting");
+    expect(recallEvidenceNote(query, [cobalt], undefined, [cobalt, teal])).toBeUndefined();
     const result = await callRecall(localStore([cobalt, teal]), query);
     expect(result.structuredContent?.hits.map(({ id }) => id)).toEqual(["m-cobalt"]);
-    expect(result.structuredContent?.evidence).toBe("conflicting");
-    expect(result.content[0]?.text.split("\n")[0]).toMatch(/^Conflicting values:/u);
+    expect(result.structuredContent).not.toHaveProperty("evidence");
   });
 
   it("keeps an array-only backend's previous output exactly", async () => {
