@@ -187,7 +187,7 @@ export function selectClearMarginHit<T extends MarginHit>(
     // line that merely names nobody else.
     if (question.owner && !aboutOwner(rawText, line)) return false;
     if (question.temporal && !timeAttachesTo(question.concepts.at(-1)!, line)) return false;
-    // `day care` also matches `daycare`.
+    // `ice cream` also matches `icecream`.
     return question.concepts.every((concept, index, all) => covers(concept, set)
       || covers(`${all[index - 1] ?? ""}${concept}`, set) || covers(`${concept}${all[index + 1] ?? ""}`, set));
   };

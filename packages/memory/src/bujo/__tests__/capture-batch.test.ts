@@ -112,7 +112,7 @@ describe("extractCapturePlanStrict intra-turn precision", () => {
   it("instructs anchored absolute dates rather than persistent relative claims", async () => {
     const prompts: string[] = [];
     for (const [text, stored] of [
-      ["User: Morgan is 14.5 months old.", "User reported Morgan was 14.5 months old as of 2026-09-08."],
+      ["User: Biscuit is 14.5 months old.", "User reported Biscuit was 14.5 months old as of 2026-09-08."],
       ["User: The meeting is tomorrow.", "User reported the meeting is on 2026-09-09."],
       ["User: The meeting is next Friday.", "User reported the meeting is next Friday (said on 2026-09-08)."],
     ] as const) {

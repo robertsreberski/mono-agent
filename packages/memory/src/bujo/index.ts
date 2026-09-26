@@ -1,10 +1,12 @@
 export { createBujoMemoryStore, BujoMemoryStore } from "./store.js";
 export { applyExplicitMemoryCurate, restoreExplicitMemoryCurate, resolveExplicitMemoryCurateRoot, ExplicitMemoryCurateError } from "./explicit-curate.js";
 export type { ApplyExplicitMemoryCurateOptions, RestoreExplicitMemoryCurateOptions } from "./explicit-curate.js";
-export { inspectCurateSource, curateEstimate, proposeCurate, proposeCoarseCurate, validateCurateProposal, previewCurateMutations, CURATE_DISCARD_REASONS,
+export { inspectCurateSource, curateEstimate, proposeCurate, proposeCoarseCurate, proposePersonAssociations, validateCurateProposal, previewCurateMutations, CURATE_DISCARD_REASONS,
   MAX_CURATE_OPERATOR_MERGES, OWNER_ENTITY_ID, parseCurateOperatorMerges, validateCurateOperatorMerge } from "./curate.js";
 export { MAX_CURATE_OWNER_ASSOCIATIONS, ownerAssociationReason, proposeOwnerAssociations, validateCurateOwnerAssociation } from "./curate-owner.js";
 export type { CurateOwnerAssociation, CurateOwnerAssociationReason, CurateOwnerBackfillScan } from "./curate-owner.js";
+export { MAX_CURATE_PERSON_ASSOCIATIONS, MAX_CURATE_PERSON_ASSOCIATIONS_PER_PASS, validateCuratePersonAssociation } from "./curate-people.js";
+export type { CuratePersonAssociation, CuratePersonAssociationReason, CuratePersonLinkScan } from "./curate-people.js";
 export type { CurateOperatorMerge, CurateLine, CurateProposal, CurateSnapshot, CurateAction, CurateReason, CurateDiscard, CurateSuggestionResult } from "./curate.js";
 export {
   AUTO_RECALL_BACKEND_HITS,

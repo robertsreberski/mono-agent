@@ -172,6 +172,8 @@ export interface ParsedCliArgs {
   readonly allowCrossType?: boolean;
   /** memory curate prepare: propose reviewed `person:owner` associations for owner-subject lines. */
   readonly ownerBackfill?: boolean;
+  /** memory curate prepare --limit 0: propose reviewed links from lines to the persons they name. */
+  readonly linkPeople?: boolean;
   /** memory entities: list folded names shared by more than one entity id. */
   readonly duplicates?: boolean;
   /** memory forget restore: owner-private backup directory. */
@@ -279,6 +281,7 @@ const CLI_BOOLEAN_FLAGS = new Set([
   "--allow-pending",
   "--allow-cross-type",
   "--owner-backfill",
+  "--link-people",
   "--duplicates",
   "--accept-derived-association-drift",
   "--loopback",
@@ -416,6 +419,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let curateMergeFile: string | undefined;
   let allowCrossType = false;
   let ownerBackfill = false;
+  let linkPeople = false;
   let duplicates = false;
   let backupPath: string | undefined;
   let bundlePath: string | undefined;
@@ -568,6 +572,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         break;
       case "--owner-backfill":
         ownerBackfill = true;
+        break;
+      case "--link-people":
+        linkPeople = true;
         break;
       case "--duplicates":
         duplicates = true;
@@ -938,6 +945,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (ownerBackfill && (cmd !== "memory" || positionals[0] !== "curate" || positionals[1] !== "prepare")) {
     throw new Error("--owner-backfill requires `mono-agent memory curate prepare`.");
   }
+  if (linkPeople && (cmd !== "memory" || positionals[0] !== "curate" || positionals[1] !== "prepare" || limit !== 0)) {
+    throw new Error("--link-people requires `mono-agent memory curate prepare --limit 0`.");
+  }
   if (duplicates && (cmd !== "memory" || positionals[0] !== "entities")) {
     throw new Error("--duplicates requires `mono-agent memory entities`.");
   }
@@ -1047,6 +1057,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(curateMergeFile === undefined ? {} : { curateMergeFile }),
     ...(allowCrossType ? { allowCrossType } : {}),
     ...(ownerBackfill ? { ownerBackfill } : {}),
+    ...(linkPeople ? { linkPeople } : {}),
     ...(duplicates ? { duplicates } : {}),
     ...(backupPath === undefined ? {} : { backupPath }),
     ...(bundlePath === undefined ? {} : { bundlePath }),

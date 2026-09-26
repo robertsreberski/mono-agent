@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `mono-agent memory curate prepare --limit 0 --link-people` proposes reviewed
+  person associations, without a model, for live note and event lines that
+  contain a person entity's full proper display name, exactly as written.
+  Matching uses only the graph's entity names, with no word lists or grammar
+  rules; ambiguous names are never linked. Links are pre-accepted, reviewable as
+  `associate:person-name`, bounded to 1024 per pass and idempotent; the next
+  `--limit 0` pass derives coarse labels for them.
+
 - `mono-agent status --config <path>` run from another directory now finds the
   running agent when its config keeps a folder-local trace registry. Status
   also checks the agent's global registry mirror instead of only the registry
@@ -71,7 +79,7 @@
   the top eight hits and leads the median candidate score by `0.1`, instead of
   whenever it clears the absolute `0.35` floor.
 
-- Person cards show an infant's age in months, weeks or days instead of
+- Person cards show a young age in months, weeks or days instead of
   `age 0`.
 
 - Automatic recall can inject ordinary single-clause memory lines, not only

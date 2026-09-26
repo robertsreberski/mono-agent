@@ -263,7 +263,7 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
       "mono-agent memory labels [--kind fact|preference|lesson] [--about entity] [--scope scope] [--json]\n" +
       "mono-agent memory lessons --propose [--json]\n" +
       "mono-agent memory entities --duplicates [--limit N] [--json]\n" +
-      "mono-agent memory curate prepare --plan <file> [--model provider:model] [--limit N] [--select recent,repeated,risky,oldest] [--owner-backfill] [--dry-run]\n" +
+      "mono-agent memory curate prepare --plan <file> [--model provider:model] [--limit N] [--select recent,repeated,risky,oldest] [--owner-backfill] [--link-people] [--dry-run]\n" +
       "mono-agent memory curate review --plan <file> [--accept drop:generic-advice,label:*] [--reject id:<id>]\n" +
       "                  curate prepare|review also take [--merge <fromId>=<toId>]... [--merge-file <file>] [--allow-cross-type]\n" +
       "mono-agent memory curate apply --plan <file> | curate restore --backup <dir>\n" +
@@ -292,6 +292,9 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
       "--owner-backfill proposes person:owner links (associate:owner) for live lines",
       "whose own text starts with \"The user\" or whose label is owner-attributed;",
       "bare \"User ...\" lines are associate:owner-bare and start rejected. No model call.",
+      "--link-people (with --limit 0) links note/event lines to each person entity",
+      "whose full proper name they contain, exactly as written (associate:person-name);",
+      "ambiguous names are skipped. Pre-accepted, at most 1024 per pass; prepare again after apply.",
       "apply and restore require the configured agent to be stopped.",
       "export writes a portable canonical bundle and does not require stopping the",
       "agent; import merges one into this store and does require a stopped agent.",

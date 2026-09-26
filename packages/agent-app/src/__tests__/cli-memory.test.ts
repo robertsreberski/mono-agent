@@ -2476,6 +2476,59 @@ describe("memory entity identity CLI", { timeout: 30_000 }, () => {
     expect(JSON.parse(again.stdout)).toMatchObject({ ownerBackfill: { alreadyLinked: 1, proposed: 1 } });
   });
 
+  it("links lines to the one person they name through a reviewed model-free plan", async () => {
+    expect(parseCliArgs(["memory", "curate", "prepare", "--plan", "p.json", "--limit", "0", "--link-people"]))
+      .toMatchObject({ limit: 0, linkPeople: true });
+    expect(() => parseCliArgs(["memory", "curate", "prepare", "--plan", "p.json", "--link-people"])).toThrow(/--link-people/u);
+    expect(() => parseCliArgs(["memory", "curate", "review", "--plan", "p.json", "--link-people"])).toThrow(/--link-people/u);
+    const memoryRoot = join(await tempDir(), "memory");
+    await mkdir(memoryRoot, { recursive: true });
+    const at = "2026-07-12T10:00:00.000Z";
+    for (const [id, text] of [["fictional-a", "Quill booked the Maple trip."], ["fictional-b", "Ottrin asked for a Maple summary."],
+      ["fictional-c", "Wexa likes Maple tea."], ["fictional-d", "Brenn and Quill met Wexa."]]) {
+      bujoMemory.appendBullet(memoryRoot, { id: id!, type: "note", status: "open", text: text!, salience: 0.5, isInsight: false,
+        createdAt: at, refs: [] }, new Date(at));
+    }
+    bujoMemory.appendGraphBatch(memoryRoot, { entities: [
+      { id: "person:owner", name: "Owner", type: "person", createdAt: at },
+      { id: "person:ottrin", name: "Ottrin", type: "person", createdAt: at },
+      { id: "person:quill", name: "Quill", type: "person", createdAt: at },
+      { id: "person:wexa", name: "Wexa", type: "person", createdAt: at },
+      { id: "person:brenn-1", name: "Brenn", type: "person", createdAt: at },
+      { id: "person:brenn-2", name: "Brenn", type: "person", createdAt: at }] });
+    await safeRebuildMemoryIndex({ root: memoryRoot, tier: "bujo", embeddings: deterministicEmbeddings("ollama:test-embed", 8), dim: 8 });
+    const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
+      embeddings: { provider: "ollama", model: "test-embed", dim: 8 }, llm: { provider: "ollama", model: "test-capture" } } });
+    const invoke = (args: string[]) => captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(args))));
+    const planPath = join(dir, "people-plan.json");
+    // Ottrin is merged into the owner in the same plan; a name merged into the owner is never linked.
+    const prepared = await invoke(["memory", "curate", "prepare", "--plan", planPath, "--limit", "0", "--link-people",
+      "--merge", "person:ottrin=person:owner", "--json"]);
+    expect(prepared.code, prepared.stderr).toBe(0);
+    expect(JSON.parse(prepared.stdout)).toMatchObject({ status: "prepared", operatorMerges: 1,
+      linkPeople: { live: 4, proposed: 4, ambiguousNames: 1, ambiguousLines: 1, more: false } });
+    const reviewed = await invoke(["memory", "curate", "review", "--plan", planPath, "--json"]);
+    expect(JSON.parse(reviewed.stdout)).toMatchObject({ counts: { "associate:person-name": { total: 4, accepted: 4 } } });
+    expect((await invoke(["memory", "curate", "review", "--plan", planPath, "--reject", "id:fictional-d", "--json"])).code).toBe(0);
+    const plan = JSON.parse(await readFile(planPath, "utf8")) as { personAssociations: { id: string; entityId: string; accepted: boolean }[] };
+    expect(plan.personAssociations.map(({ id, entityId, accepted }) => `${id}>${entityId}>${accepted}`)).toEqual([
+      "fictional-a>person:quill>true", "fictional-c>person:wexa>true",
+      "fictional-d>person:quill>false", "fictional-d>person:wexa>false"]);
+
+    stubOllamaEmbeddings(8);
+    const applied = await invoke(["memory", "curate", "apply", "--plan", planPath, "--json"]);
+    expect(applied.code, applied.stderr).toBe(0);
+    expect(JSON.parse(applied.stdout)).toMatchObject({ status: "applied", count: 3 });
+    const graph = bujoMemory.readGraph(memoryRoot);
+    expect(graph.entities.some(({ id }) => id === "person:ottrin")).toBe(false);
+    expect(graph.associations.filter(({ entityId }) => entityId.startsWith("person:"))
+      .map(({ memoryId, entityId }) => `${memoryId}>${entityId}`).sort())
+      .toEqual(["fictional-a>person:quill", "fictional-c>person:wexa"]);
+    // Applied links are not proposed again; the rejected line is.
+    const again = await invoke(["memory", "curate", "prepare", "--plan", join(dir, "people-plan-2.json"), "--limit", "0", "--link-people", "--json"]);
+    expect(JSON.parse(again.stdout)).toMatchObject({ linkPeople: { linkedBefore: 2, alreadyLinked: 2, proposed: 2 } });
+  });
+
   it("keeps a dropped line out of owner backfill so the reviewed plan applies", async () => {
     const memoryRoot = join(await tempDir(), "memory");
     await mkdir(memoryRoot, { recursive: true });
