@@ -354,67 +354,37 @@ Recall fuses two retrievers and re-ranks the result:
 - **Vector similarity** over the configured embeddings.
 - With embeddings, ranking is **embedding-first**: every candidate from either retriever is scored by its stored vector's cosine similarity (below `0.5` counts as no semantic evidence). Shared words add nothing by themselves; only exact names, numbers and dates earn a bounded bonus: each query anchor carries an equal share of up to `0.15` for numbers and dates and `0.08` for names. The embedding already reflects a name, so the smaller name bonus keeps records that only share a name from being lifted as far. A query word is such an anchor when it is a whole number, date or numeric identifier (`1988-11-02` never matches `1988-12-02`), is capitalized and is not a question word, or is spelled as a proper noun by a candidate record; matching normalizes Unicode and ignores case and accents (`Zoe` matches `Zoë`). A small **Reciprocal Rank Fusion (RRF)** rank hint breaks ties; salience/insight are small tie-breakers. `lastAccessedAt` and access counts are telemetry only and never affect ranking.
 - Without embeddings (Lite, or a temporary embedding outage), and for a record still waiting for its vector, evidence remains lexical term overlap as before.
-- Automatic recall treats raw embedding similarity as ranking evidence, not a calibrated probability: it first considers the `0.65` absolute / `77%` top-relative score band, then applies a deterministic direct-fact gate to a bounded candidate window. The gate admits only canonical, unambiguous shapes: an explicitly named possessive property (`Morgan's phone number is ...`), a direct choice (`Morgan selected ... as the deployment color`), a scope-qualified choice (`What color did Mira select for the Velin launch?` answered by `Mira selected cobalt as the color for the Velin launch.`), a direct event date/time, or a direct work/live location. A scope is not a property: a record that only says `Mira selected cobalt for the Velin launch` never states that cobalt is the *color* and still abstains. Scope identity is compared conservatively, so `Project A`/`Project B`, `launch 1`/`launch 2`, `Bora Bora`/`Bora` and `A-team`/`-team` stay distinct. Only case, whitespace, Unicode compatibility forms and a single *standalone* leading article are normalized; an article merges only when followed by whitespace or by nothing, so an identifying prefix such as `A-team` survives. Compatibility normalization (NFKC) is the same folding the query already receives before the gate and the backend cache, so it also treats `release²` and `release2` as one scope. When the bounded candidate window holds contradictory values for the same subject, property and scope, automatic recall abstains entirely rather than injecting both or letting retrieval score pick a winner. Three finite first-party forms may preserve an explicit report around an otherwise supported property, choice, or work/live location, such as `Avery reports that their service port is 8443` or `Avery reports working in Amsterdam`. The textual reporter must equal the query subject exactly apart from case; the broader canonical-name stemming used by legacy direct facts is not used at this attributed boundary. NFKC is applied only as a safety check for compatibility characters that conceal quotation, separators, or punctuation, never to sanitize such text into an admissible report, and the original qualified sentence is injected unchanged. This is query-to-evidence matching: it does not authenticate that Avery is the current user, establish identity from a same-name match, or verify the reported proposition. Conflicting canonical/attributed or attributed/attributed values abstain before score slicing. A matching same-property correction blocks automatic selection even when its leading value equals a canonical record; the selector does not infer either the old or replacement value. Coordination, all other reported or ditransitive speech, assistant/third-party/quoted claims, uncertainty, correction, negation/unknown values, causal or conditional clauses, actor/relationship questions, subordinate clauses, and multi-hop evidence abstain. Those records remain available through the default-on `MemoryRecall` tool, where the model can inspect separate results and provenance instead of receiving a fabricated binding. The gate adds no embedding or chat-model call, works across provider score scales, injects nothing for unsupported questions, and remains capped at five hits / 8 KB.
-- When the canonical shapes find nothing, a clear-margin rule may inject ordinary single-clause lines such as `Morgan works at Initech as a data engineer.` It needs all of the following:
-  - a short `who`/`what`/`when`/`where`/`which`/`how old|much|many` question;
-  - a top hit of at most 30 words that is one clause (`and` only inside a comma list, no subordinate clause), with no negation, reported speech, hedging, request or advice wording (an owner envelope such as `The user said` is unwrapped first);
-  - every content word of the question in that line, including names, with light stem and synonym folding (`born`/`birthday`, `work`/`job`/`employer`); `when` and `what time` questions also need a date or time value attached to the asked term (`Morgan was born on 17 May`, not `Morgan's birthday party is on 17 May`);
-  - exactly one qualifying line among the top eight hits (verbatim duplicates count once), leading every other hit by at least `0.05`. Two qualifying lines abstain, even with different values.
+- Automatic recall at the start of a turn shows a small **possibly relevant** block. The main agent model decides what matters; the block never claims to answer:
 
-  On a host-stamped owner turn, `my`, `I` or `we` means the owner. The line's subject must then be the user (`The user works …`, `User's employer is …`, or `they` inside an owner envelope such as `The user said they work …`); a line about anyone else never answers it. On any other turn, first-person questions abstain. Deliberate tool calls may inspect more results (up to the requested limit).
+  ```text
+  ## Memory (possibly relevant — may be unrelated; verify before relying)
 
-Questions are normalized before the gate: `what's` expands, a trailing `now`,
-`right now` or `currently` is dropped, and in an all-lower-case question a
-possessive marks the name (`what is morgan's phone number` reads as `Morgan's`).
-On an owner turn, a human turn from the operator's own web, TUI or ACP surface
-that the host stamps as `ownerTurn` (the same rule capture uses), two more
-forms apply. A question with exactly one `my` and no other first-person word is
-about the owner, whom capture records as `the user`: `What is my phone number?`
-can use `The user's phone number is 555-0100.` The owner-report envelope `The
-user reports|reported|said|stated|confirmed [that] …` is unwrapped when its
-inner clause is itself one of the canonical shapes above (`their` reads as the
-owner), and it counts as attributed evidence, so a disagreeing answer in the
-candidate window abstains. On other turns `my` could be anyone in a group chat,
-so neither form applies. Most captured prose is multi-clause and still abstains;
-labelled facts are the main automatic path for it.
+  - – Morgan joined the Maple book club. (recorded 2026-03-01; superseded)
+  - – Morgan prefers green tea. (recorded 2026-05-01; current; you said)
+  ```
 
-Labelled facts answer directly on owner turns. When a question names one
-unambiguous person entity and asks about a property a current, user-stated or
-document fact label covers, that value is added to the recalled block as
-`Morgan — home city: Lisbon (you said, recorded 2026-09-06)`. A key covers the
-question only when every content word of the key appears in it:
-`other:home-city` answers `Where is Morgan's home city?`, but
-`other:favorite_color` does not answer `What color did Morgan choose for the
-launch?`. A birth date answers only birth-date and current-age questions
-(`birthday`, `date of birth`, `When was … born?`, `How old is …?`), never
-`Where was … born?` or a historical age such as `How old was Morgan in 2015?`.
-Keys the question does not ask about are never injected. Two or more current
-distinct values for the same key, or a label that disagrees with the records
-the direct-fact gate selected, are never direct: neither is injected directly
-and the background card says the values conflict and asks. On other turns
-(group, trigger, peer or unidentified) relevant labels stay in the background
-card. A bare mention (`Morgan`, `Tell me about Morgan`) still gets the whole
-card as background. Keys drop the `other:` namespace and values render as text,
-not JSON, in both the automatic block and the explicit `MemoryRecall` fact
-sheet.
+  Selection uses scores only, with no question grammar or word lists, so it works the same way in any language:
+  - the strongest hybrid (embedding-first) hit must reach `0.62`;
+  - further lines must score within `0.04` of it;
+  - at most three lines are shown, and identical text appears once;
+  - current lines come before superseded or ended ones (`validTo` before the host date);
+  - the chosen lines are listed oldest first, so the latest statement reads last.
 
-Scheduled temporal questions are one bounded copular-time form. For example,
-`When is the Project Atlas production migration scheduled?` can use a direct
-record such as `Project Atlas production migration is scheduled for 20 November
-2026 at 08:30 Europe/Paris.` The event identity remains exact apart from case,
-whitespace, Unicode compatibility forms, and a standalone leading article;
-project words, one-character tokens, digits, punctuation, order, and repetition
-remain significant. Clock colons are accepted only as valid ASCII `HH:MM` tokens
-in a supported temporal answer, not in generic properties, choices, or
-locations. Quoted, uncertain, attributed, or control/format-bearing schedule
-payloads abstain. NFKC safety discovery applies the same forbidden-language
-policy to compatibility-folded text, but never converts an unsupported clock or
-separator into accepted syntax. Automatic recall abstains when the retrieved
-cohort contains two scheduled payloads that
-are not textually identical after case, whitespace, and Unicode compatibility
-normalization. It deliberately does not equate alternate date formats or
-date-only and date-time values; use `MemoryRecall` to inspect those raw
-candidates instead.
+  Each line shows when it was recorded and whether it is `current`, `superseded` or `ended <date>`. When every label on the line agrees, it also shows who said it: `you said`, `assistant noted` or `from a document`.
+
+  The block has a 1.5 KB budget. Each line's text is capped at 360 bytes, and a line that doesn't fit is left out. The whole automatic context, including the background card below, stays under about 2.5 KB. Opposite statements can appear together; the model weighs them.
+
+  Two cases show nothing automatically:
+  - Lexical-only (degraded) results. The host warns instead.
+  - Turns that are not host-verified owner turns: group chats, other senders, triggers and peers. This is a privacy default. Those turns can still use `MemoryRecall` deliberately.
+
+  The floor, window and line count were measured on three real stores that use `nomic-embed-text:v1.5`, with English, Polish and Spanish questions. They were chosen to keep the answer present as often as possible while negative and near-miss probes average at most two lines.
+
+  Retrieval quality still limits other languages. With an English-centred embedding model and English memory text, Polish or Spanish questions often don't retrieve the answer at all. A multilingual embedding model is the lever for that.
+
+  Programmatic `BujoMemoryStore.load()`, used without the app's retrieval service, still uses the earlier direct-fact gate for now.
+
+Labelled background stays language-neutral too. Preferences and verified lessons in the turn's scopes join when their memory ranks among the top retrieved hits and clearly leads the candidate median. Opposite advice is shown together. A person card appears when the message contains an exact person name or `person:` id, such as `Morgan`, `¿Dónde trabaja Morgan?` or `Gdzie pracuje Morgan?`. The card shows that person's current user-stated or document facts with the recording date, in the form `home town: Maple Harbor (you said, recorded 2026-09-06)`, plus age for a birth date. It does not filter keys by the question's wording. Two or more current distinct values for one key show as `conflicting values — ask`. First-person wording no longer selects the owner's card. Keys drop the `other:` namespace and values render as text, not JSON, in both the automatic card and the explicit `MemoryRecall` fact sheet.
 
 You can exercise the same hybrid scoring config-aware from the agent folder with `mono-agent memory search`:
 
@@ -496,8 +466,8 @@ restrictive allowlist, include `MemoryJournal`; exact/server/global deny wins.
 
 :::caution
 Setting `config.memory.recallTool.enabled: false` removes both explicit memory
-read tools. It does not disable automatic score- and answer-evidence-gated
-context recall from an otherwise configured backend, and it does not disable
+read tools. It does not disable the automatic possibly-relevant
+context block from an otherwise configured backend, and it does not disable
 operator-only `mono-agent memory` inspection.
 :::
 

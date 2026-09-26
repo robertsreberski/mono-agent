@@ -14,6 +14,71 @@ export const AUTO_RECALL_MAX_BYTES = 8_000;
 /** One lookup can satisfy automatic context and the explicit tool's maximum request. */
 export const AUTO_RECALL_BACKEND_HITS = 50;
 
+/**
+ * Turn-start "possibly relevant" block: at most this many lines. The main model
+ * judges relevance; selection only bounds the block. Measured on real nomic
+ * stores (English, Polish, Spanish probes); see docs/memory/capture-and-recall.md.
+ */
+export const POSSIBLY_RELEVANT_MAX_LINES = 3;
+/** Hybrid-score floor for the strongest line; below it nothing is shown. */
+export const POSSIBLY_RELEVANT_MIN_SCORE = 0.62;
+/** Further lines must score within this distance of the strongest line. */
+export const POSSIBLY_RELEVANT_WINDOW = 0.04;
+/** Byte budget for the whole possibly-relevant block, heading included. */
+export const POSSIBLY_RELEVANT_MAX_BYTES = 1_500;
+
+/**
+ * Language-neutral selection for the possibly-relevant block: scores only, no
+ * query grammar. The strongest hit must reach the floor; further hits must stay
+ * within the window below it. Identical texts are shown once, current lines are
+ * preferred over superseded or ended ones, and the chosen lines are returned
+ * oldest first so the latest statement reads last. Input is the backend's
+ * relevance-sorted hybrid result; callers drop lexical-only results.
+ */
+export function selectPossiblyRelevantRecallHits<T extends {
+  readonly score: number;
+  readonly record: PossiblyRelevantRecord;
+}>(
+  hits: readonly T[],
+  options: { readonly maxLines?: number; readonly asOf?: string } = {},
+): readonly T[] {
+  const top = hits[0]?.score;
+  if (top === undefined || !Number.isFinite(top) || top < POSSIBLY_RELEVANT_MIN_SCORE) return [];
+  const maxLines = Math.max(1, Math.min(options.maxLines ?? POSSIBLY_RELEVANT_MAX_LINES, POSSIBLY_RELEVANT_MAX_LINES));
+  const window: T[] = [];
+  for (const hit of hits) {
+    if (hit.score < top - POSSIBLY_RELEVANT_WINDOW) break;
+    window.push(hit);
+  }
+  const current = window.filter((hit) => recallLineStatus(hit.record, options.asOf) === "current");
+  const other = window.filter((hit) => recallLineStatus(hit.record, options.asOf) !== "current");
+  // Deduplicate identical text after currency preference, so a current copy wins.
+  const seen = new Set<string>();
+  const unique = [...current, ...other].filter((hit) => {
+    const key = hit.record.text.trim();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return unique.slice(0, maxLines)
+    .sort((a, b) => (a.record.createdAt ?? "").localeCompare(b.record.createdAt ?? ""));
+}
+
+export interface PossiblyRelevantRecord {
+  readonly text: string;
+  readonly createdAt?: string;
+  readonly status?: string;
+  readonly validTo?: string;
+  readonly supersededBy?: string;
+}
+
+/** Reader-facing currency of a recalled line on `asOf` (YYYY-MM-DD). */
+export function recallLineStatus(record: PossiblyRelevantRecord, asOf?: string): "current" | "superseded" | "ended" {
+  if (record.supersededBy !== undefined || record.status === "invalidated" || record.status === "dropped") return "superseded";
+  if (record.validTo !== undefined && asOf !== undefined && record.validTo.slice(0, 10) < asOf) return "ended";
+  return "current";
+}
+
 /** Select confidence-gated automatic hits from an already relevance-sorted result set. */
 export function selectAutomaticRecallHits<T extends {
   readonly score: number;

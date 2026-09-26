@@ -445,6 +445,11 @@ export class BujoMemoryStore implements MemoryStore {
     return this.db.guidanceForScope(scope);
   }
 
+  labelsForMemories(memoryIds: readonly string[]) {
+    this.assertOpen("labelsForMemories");
+    return this.db.labelsForMemories(memoryIds);
+  }
+
   findMemoryEntitiesByNames(names: readonly string[]) {
     this.assertOpen("findMemoryEntitiesByNames");
     return this.db.findEntitiesByNames(names);

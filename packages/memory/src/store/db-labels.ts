@@ -91,6 +91,13 @@ export class MemoryDbLabels extends MemoryDbGraph {
     return this.labelHits("scope = ?", [scope]);
   }
 
+  /** Labels attached to these memory ids (at most 50), for recall-line attribution. */
+  labelsForMemories(memoryIds: readonly string[]): readonly MemoryLabelHit[] {
+    const ids = [...new Set(memoryIds)].slice(0, 50);
+    if (ids.length === 0) return [];
+    return this.labelHits(`memory_id IN (${ids.map(() => "?").join(", ")})`, ids);
+  }
+
   /** Bounded index-only operator inventory; includes inactive labels as history. */
   listLabels(filters: { kind?: MemoryLabel["kind"]; entityId?: string; scope?: string } = {}, limit = 200):
     { hits: readonly MemoryLabelHit[]; truncated: boolean } {

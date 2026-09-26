@@ -10,6 +10,20 @@
   `associate:person-name`, bounded to 1024 per pass and idempotent; the next
   `--limit 0` pass derives coarse labels for them.
 
+- Turn-start automatic memory now shows a small "possibly relevant" block for
+  the main model to judge, instead of English question grammar deciding what
+  counts as an answer. The block holds up to three lines chosen only by
+  retrieval score (a floor and a window below the top line), so it works in any
+  language. Current lines are preferred, lines are listed oldest first, and
+  each line shows its recorded date, whether it is current, superseded or
+  ended, and who said it when known. The automatic context stays under about
+  2.5 KB. Lexical-only results and non-owner turns (group chats, other senders,
+  triggers) get no automatic block. Person cards appear on an exact name or id
+  match and no longer filter facts by English question words. The explicit
+  `MemoryRecall` tool is unchanged. The memory behaviour scorecard now reports
+  how often the answer is present and gates on lines shown for negative
+  questions.
+
 - `mono-agent status --config <path>` run from another directory now finds the
   running agent when its config keeps a folder-local trace registry. Status
   also checks the agent's global registry mirror instead of only the registry

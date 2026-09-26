@@ -33,6 +33,11 @@ function store(rows: MemoryLabelHit[], facts: MemoryLabelHit[] = []): LabelRecal
   };
 }
 const options = { senderToken: token, hostDate: "2026-09-24" };
+const owner = { ...options, ownerTurn: true as const };
+const labelled = (key: string, text: string, id: string): MemoryLabelHit => ({
+  ...fact(id, "1990-05-17"), text: `Morgan's ${key} is ${text}.`,
+  label: { v: 1, kind: "fact", entityId: "person:morgan", key, value: { type: "text", text }, attribution: "user-stated" },
+});
 
 describe("automatic labelled background", () => {
   it("injects only relevant live guidance for this speaker/conversation/project", () => {
@@ -70,11 +75,13 @@ describe("automatic labelled background", () => {
     expect(conflict).not.toContain("age ");
   });
 
-  it("abstains on contradictory advice and ambiguous names but permits explicit entity IDs", () => {
+  it("shows opposite advice together for the model to judge, abstains on ambiguous names, permits explicit entity IDs", () => {
     const yes = preference("agent", "Do check the concise note.", "yes");
     const no = preference(`user:${token}`, "Do not check the concise note.", "no");
     const relevant = [yes, no].map((hit) => ({ score: 0.9, record: { id: hit.memoryId, text: hit.text } }));
-    expect(formatMemoryBackground(store([yes, no]), "Check the concise note", "current", options, relevant)).toBeUndefined();
+    const both = formatMemoryBackground(store([yes, no]), "Check the concise note", "current", options, relevant);
+    expect(both).toContain("Do check the concise note.");
+    expect(both).toContain("Do not check the concise note.");
     const duplicated: LabelRecallStore = {
       guidanceForScope: () => [], labelsForEntity: () => [fact("birth", "1990-05-17")],
       findMemoryEntitiesByNames: () => [
@@ -120,97 +127,85 @@ describe("automatic labelled background", () => {
     expect(formatBlock(store(rows), "brief report", "conv", options, scored, 40)?.content).toBe("");
   });
 
-  it("keeps the direct-fact gate and remote-store shape unchanged", async () => {
+  it("shows remote lines only on owner turns, as possibly relevant, next to the card", async () => {
     const remote: SharedRecallStore = {
       async load() { return undefined; }, async close() {},
-      async recall() { return [{ score: 0.9, record: { id: "hint", text: "Morgan likes blue sky." } }]; },
+      async recall() { return [{ score: 0.9, record: { id: "hint", text: "Morgan likes green tea." } }]; },
     };
-    const remoteBlock = await new MemoryRetrievalService(remote).load("current", "What is Morgan's birthday?", { hostDate: "2026-09-24" });
-    expect(remoteBlock).toBeUndefined();
+    // Non-owner turns (groups, other senders) get no automatic memory at all.
+    expect(await new MemoryRetrievalService(remote).load("current", "What does Morgan drink?", { hostDate: "2026-09-24" }))
+      .toBeUndefined();
     const labelled = Object.assign(remote, store([], [fact("birth", "1990-05-17")]));
-    const block = await new MemoryRetrievalService(labelled).load("current", "What is Morgan's birthday?", { hostDate: "2026-09-24" });
-    expect(block?.content).toContain("Memory (background — not direct evidence)");
-    expect(block?.content).toContain("age 36");
-    expect(block?.content).not.toContain("likes blue sky");
-    // Near miss: the label exists but the text gate selected no birth record.
-    // Before the own-source check, this injected a label-only direct answer.
-    const owned = await new MemoryRetrievalService(labelled).load("current", "What is Morgan's birthday?",
+    expect(await new MemoryRetrievalService(labelled).load("current", "What does Morgan drink?", { hostDate: "2026-09-24" }))
+      .toBeUndefined();
+    const owned = await new MemoryRetrievalService(labelled).load("current", "What does Morgan drink?",
       { hostDate: "2026-09-24", ownerTurn: true });
-    expect(owned?.content).not.toContain("## Memory (recalled)");
+    expect(owned?.content).toContain("## Memory (possibly relevant — may be unrelated; verify before relying)\n\n- Morgan likes green tea. (current)");
     expect(owned?.content).toContain("Memory (background — not direct evidence)");
-    const matching: SharedRecallStore = { ...labelled, async recall() {
-      return [{ score: 0.96, record: { id: "birth", text: "Morgan was born 1990-05-17." } }];
-    } };
-    const supported = await new MemoryRetrievalService(matching).load("current", "What is Morgan's birthday?",
-      { hostDate: "2026-09-24", ownerTurn: true });
-    expect(supported?.content).toContain("Morgan — born: 1990-05-17");
+    expect(owned?.content).toContain("age 36");
+    expect(owned?.content).not.toContain("## Memory (recalled)");
   });
 
-  it("injects only the labelled keys a question asks about, rendered as text", () => {
-    const labelled = (key: string, text: string, id: string): MemoryLabelHit => ({
-      ...fact(id, "1990-05-17"), text: `Morgan's ${key} is ${text}.`,
-      label: { v: 1, kind: "fact", entityId: "person:morgan", key, value: { type: "text", text }, attribution: "user-stated" },
-    });
-    const person = store([], [fact("birth", "1990-05-17"), labelled("other:home-city", "Lisbon", "city"),
-      labelled("other:employer", "Initech", "job")]);
-    const owner = { ...options, ownerTurn: true as const };
-    const asked = formatBlock(person, "Where is Morgan's home city?", "conv", owner, [], undefined, [], new Set(["city"]));
-    expect(asked?.facts).toEqual(["Morgan — home city: Lisbon (you said, recorded 2026-09-06)"]);
-    expect(asked?.content).toBe("");
-    // An unrelated question about the same person injects nothing.
-    expect(formatBlock(person, "What is Morgan's phone number?", "conv", owner, [])).toBeUndefined();
-    expect(formatBlock(person, "How old is Morgan?", "conv", owner, [], undefined, [], new Set(["birth"]))?.facts)
-      .toEqual(["Morgan — born: 1990-05-17 (you said, recorded 2026-09-06); age 36"]);
-    // A bare mention keeps the whole background card, without `other:` or JSON.
-    const card = formatMemoryBackground(person, "Tell me about Morgan", "conv", options, []);
-    expect(card).toContain("Person card:");
-    expect(card).toContain("home city: Lisbon");
-    expect(card).toContain("employer: Initech");
-    expect(card).not.toContain("other:");
-    expect(card).not.toContain("{");
+  it("shows a named person's whole card whatever the question's language or wording", () => {
+    const person = store([], [fact("birth", "1990-05-17"), labelled("other:home-town", "Maple Harbor", "town"),
+      labelled("other:employer", "Zorbel Labs", "job")]);
+    for (const query of ["Where does Morgan work?", "¿Dónde trabaja Morgan?", "Gdzie pracuje Morgan?", "Morgan"]) {
+      const card = formatMemoryBackground(person, query, "conv", owner, []);
+      expect(card).toContain("Person card:");
+      expect(card).toContain("home town: Maple Harbor (you said, recorded 2026-09-06)");
+      expect(card).toContain("employer: Zorbel Labs");
+      expect(card).toContain("born: 1990-05-17");
+      expect(card).not.toContain("other:");
+      expect(card).not.toContain("{");
+    }
+    // No name, no card: first-person wording never selects the owner's card.
+    expect(formatMemoryBackground(person, "Where do I work?", "conv", owner, [])).toBeUndefined();
   });
 
-  it("preserves byte-identical ordinary recall when a label lookup fails", async () => {
+  it("preserves the possibly-relevant block when a label lookup fails", async () => {
     const base: SharedRecallStore = { async load() { return undefined; }, async close() {},
-      async recall() { return [{ score: 0.95, record: { id: "direct", text: "Morgan selected cobalt as the launch color." } }]; },
+      async recall() { return [{ score: 0.95, record: { id: "direct", text: "Morgan picked the cobalt chess set." } }]; },
     };
-    const options = { hostDate: "2026-09-24" };
-    const ordinary = await new MemoryRetrievalService(base).load("conv", "What launch color did Morgan select?", options);
+    const options = { hostDate: "2026-09-24", ownerTurn: true as const };
+    const ordinary = await new MemoryRetrievalService(base).load("conv", "Which chess set did Morgan pick?", options);
     const broken: SharedRecallStore = { ...base, guidanceForScope() { throw new Error("label DB temporarily unavailable"); },
-      labelsForEntity() { return []; } };
-    const protectedBlock = await new MemoryRetrievalService(broken).load("conv", "What launch color did Morgan select?", options);
+      labelsForEntity() { return []; }, labelsForMemories() { throw new Error("label DB temporarily unavailable"); } };
+    const protectedBlock = await new MemoryRetrievalService(broken).load("conv", "Which chess set did Morgan pick?", options);
     expect(protectedBlock).toEqual(ordinary);
     expect(ordinary?.content).toContain("cobalt");
   });
 
   it("counts background against the configured recall budget and marks omitted lines truncated", async () => {
     const base: SharedRecallStore = { async load() { return undefined; }, async close() {},
-      async recall() { return [{ score: 0.95, record: { id: "direct", text: "Morgan selected cobalt as the launch color." } }]; },
+      async recall() { return [{ score: 0.95, record: { id: "direct", text: "Morgan picked the cobalt chess set." } },
+        { score: 0.9, record: { id: "pref", text: "A useful but long background preference about concise notes." } }]; },
     };
-    const query = "What launch color did Morgan select?";
-    const ordinary = await new MemoryRetrievalService(base, { maxBytes: 100 }).load("conv", query, options);
+    const query = "Which chess set did Morgan pick?";
+    const owner = { ...options, ownerTurn: true as const };
+    const ordinary = await new MemoryRetrievalService(base, { maxBytes: 160 }).load("conv", query, owner);
     const labelled: SharedRecallStore = { ...base,
-      guidanceForScope: () => [preference("agent", "A useful but long background preference about concise notes.", "direct")],
+      guidanceForScope: () => [preference("agent", "A useful but long background preference about concise notes.", "pref")],
       labelsForEntity: () => [],
     };
-    const full = await new MemoryRetrievalService(labelled, { maxBytes: 512 }).load("conv", query, options);
-    const fullOrdinary = await new MemoryRetrievalService(base, { maxBytes: 512 }).load("conv", query, options);
+    const full = await new MemoryRetrievalService(labelled, { maxBytes: 512 }).load("conv", query, owner);
+    const fullOrdinary = await new MemoryRetrievalService(base, { maxBytes: 512 }).load("conv", query, owner);
     expect(full?.content.startsWith(`${fullOrdinary?.content}\n\n`)).toBe(true);
     expect(full?.content).toContain("Working preferences & lessons");
-    const block = await new MemoryRetrievalService(labelled, { maxBytes: 100 }).load("conv", query, options);
+    const block = await new MemoryRetrievalService(labelled, { maxBytes: 160 }).load("conv", query, owner);
     expect(block?.content).toBe(ordinary?.content);
     expect(block?.truncated).toBe(true);
-    expect(Buffer.byteLength(block?.content ?? "", "utf8")).toBeLessThanOrEqual(100);
+    expect(Buffer.byteLength(block?.content ?? "", "utf8")).toBeLessThanOrEqual(160);
   });
 
-  it("does not conceal degraded recall with a person card", async () => {
+  it("injects nothing from lexical-only recall, even with a person card", async () => {
     const degraded: SharedRecallStore = { ...store([], [fact("birth", "1990-05-17")]),
       async load() { return undefined; }, async close() {}, async recall() { return []; },
-      async recallWithOutcome() { return { hits: [], retrievalMode: "lexical_only" as const,
-        degradation: { code: "embedding_unavailable" as const } }; },
+      async recallWithOutcome() { return { hits: [{ score: 0.99, record: { id: "lex", text: "Morgan plays chess." } }],
+        retrievalMode: "lexical_only" as const, degradation: { code: "embedding_unavailable" as const } }; },
     };
-    await expect(new MemoryRetrievalService(degraded).load("conv", "Morgan", options))
+    await expect(new MemoryRetrievalService(degraded).load("conv", "Morgan", { ...options, ownerTurn: true }))
       .rejects.toThrow(/semantic memory retrieval is unavailable/iu);
+    expect(await new MemoryRetrievalService(degraded).load("conv", "Morgan", options)).toBeUndefined();
   });
 });
 
@@ -242,95 +237,21 @@ describe("explicit fact sheet rendering", () => {
   });
 });
 
-describe("label relevance and agreement", () => {
-  const owner = { ...options, ownerTurn: true as const };
-  const labelled = (key: string, text: string, id: string): MemoryLabelHit => ({
-    ...fact(id, "1990-05-17"), text: `Morgan's ${key} is ${text}.`,
-    label: { v: 1, kind: "fact", entityId: "person:morgan", key, value: { type: "text", text }, attribution: "user-stated" },
+describe("person card values", () => {
+  it("treats two current distinct values for one key as a conflict to ask about", () => {
+    const person = store([], [labelled("other:home-town", "Maple Harbor", "one"), labelled("other:home-town", "Birchfield", "two")]);
+    const result = formatBlock(person, "Morgan", "conv", owner, []);
+    expect(result?.content).toContain("home town: conflicting values — ask");
+    expect(result?.content).not.toContain("Maple Harbor");
   });
 
-  it("requires the question to name every word of the key", () => {
-    const person = store([], [labelled("other:favorite_color", "teal", "color")]);
-    expect(formatBlock(person, "What color did Morgan choose for the launch?", "conv", owner, [])).toBeUndefined();
-    expect(formatBlock(person, "What is Morgan's favorite color?", "conv", owner, [], undefined, [], new Set(["color"]))?.facts)
-      .toEqual(["Morgan — favorite color: teal (you said, recorded 2026-09-06)"]);
-  });
-
-  it("treats two current distinct values for one key as a conflict, not a direct answer", () => {
-    const person = store([], [labelled("other:home-city", "Lisbon", "one"), labelled("other:home-city", "Porto", "two")]);
-    const result = formatBlock(person, "What is Morgan's home city?", "conv", owner, []);
-    expect(result?.facts).toBeUndefined();
-    expect(result?.content).toContain("home city: conflicting values — ask");
-    expect(result?.content).not.toContain("Lisbon");
-  });
-
-  it("answers birth-date questions only for the birth date or current age", () => {
-    const person = store([], [fact("birth", "1990-05-17")]);
-    expect(formatBlock(person, "When was Morgan born?", "conv", owner, [], undefined, [], new Set(["birth"]))?.facts)
-      .toEqual(["Morgan — born: 1990-05-17 (you said, recorded 2026-09-06); age 36"]);
-    expect(formatBlock(person, "Where was Morgan born?", "conv", owner, [])).toBeUndefined();
-    expect(formatBlock(person, "How old was Morgan in 2015?", "conv", owner, [])).toBeUndefined();
-    expect(formatBlock(person, "What is Morgan's age?", "conv", owner, [])).toBeUndefined();
-  });
-
-  it("injects neither directly when a selected record and a label disagree", async () => {
-    const recall = (text: string): SharedRecallStore => ({ async load() { return undefined; }, async close() {},
-      async recall() { return [{ score: 0.95, record: { id: "phone", text } }]; } });
-    const query = "What is Morgan's phone number?";
-    const disagree = { ...recall("Morgan's phone number is 555-0100."),
-      ...store([], [labelled("other:phone-number", "555-0199", "phone")]) };
-    const block = await new MemoryRetrievalService(disagree).load("conv", query, owner);
-    expect(block?.content).not.toContain("## Memory (recalled)");
-    expect(block?.content).toContain("phone number: labelled value and recalled memory disagree — ask");
-    expect(block?.content).not.toContain("555-0100");
-    const agree = { ...recall("Morgan's phone number is 555-0100."),
-      ...store([], [labelled("other:phone-number", "555-0100", "phone")]) };
-    const agreed = await new MemoryRetrievalService(agree).load("conv", query, owner);
-    expect(agreed?.content).toContain("## Memory (recalled)");
-    expect(agreed?.content).toContain("Morgan — phone number: 555-0100 (you said");
-    // Cross-line: the selected line carries no label, and a legacy structured
-    // label on an unselected line disagrees with it. Still ask, never answer.
-    const crossLine = { ...recall("Morgan's phone number is 555-0100."),
-      ...store([], [labelled("other:phone-number", "555-0199", "legacy-phone")]) };
-    const crossed = await new MemoryRetrievalService(crossLine).load("conv", query, owner);
-    expect(crossed?.content).not.toContain("## Memory (recalled)");
-    expect(crossed?.content).toContain("phone number: labelled value and recalled memory disagree — ask");
-    const direct = formatBlock(store([], [labelled("other:phone-number", "555-0199", "legacy-phone")]), query, "conv", owner,
-      [], undefined, ["Morgan's phone number is 555-0100."], new Set(["phone"]));
-    expect(direct?.recallConflict).toBe(true);
-    expect(direct?.facts).toBeUndefined();
-  });
-
-  it("reads a first-person owner-turn question as one about the canonical owner id", () => {
-    const asked: string[] = [];
-    const ownerStore: LabelRecallStore = {
-      guidanceForScope() { return []; },
-      labelsForEntity(id) {
-        asked.push(id);
-        return id === "person:owner" ? [{ ...fact("owner-birth", "1990-05-17"), text: "The user was born 1990-05-17.",
-          label: { v: 1, kind: "fact", entityId: "person:owner", key: "birth_date",
-            value: { type: "date", date: "1990-05-17" }, attribution: "user-stated" } }] : [];
-      },
-      findMemoryEntitiesByNames(names) { return names.includes("morgan")
-        ? [{ id: "person:morgan", name: "Morgan", createdAt: "2026-09-06T00:00:00Z" }] : []; },
-    };
-    expect(formatBlock(ownerStore, "When was I born?", "conv", owner, [], undefined, [], new Set(["owner-birth"]))?.facts)
-      .toEqual(["You — born: 1990-05-17 (you said, recorded 2026-09-06); age 36"]);
-    expect(formatBlock(ownerStore, "how old am i", "conv", owner, [], undefined, [], new Set(["owner-birth"]))?.facts)
-      .toEqual(["You — born: 1990-05-17 (you said, recorded 2026-09-06); age 36"]);
-    // Not the owner's turn, or a question naming someone else: no owner card.
-    asked.length = 0;
-    expect(formatBlock(ownerStore, "When was I born?", "conv", options, [])?.facts).toBeUndefined();
-    expect(formatBlock(ownerStore, "When was my zorbel Morgan born?", "conv", owner, [])?.facts).toBeUndefined();
-    expect(asked).not.toContain("person:owner");
-  });
-
-  it("keeps relevant labels background-only on turns that are not the owner's", () => {
-    const person = store([], [labelled("other:home-city", "Lisbon", "city")]);
-    const result = formatBlock(person, "What is Morgan's home city?", "conv", options, []);
-    expect(result?.facts).toBeUndefined();
-    expect(result?.content).toContain("Person card:");
-    expect(result?.content).toContain("home city: Lisbon");
+  it("keeps the card background-only on every turn", () => {
+    const person = store([], [labelled("other:home-town", "Maple Harbor", "town")]);
+    for (const opts of [options, owner]) {
+      const result = formatBlock(person, "What is Morgan's home town?", "conv", opts, []);
+      expect(result?.content).toContain("Person card:");
+      expect(result?.content).not.toContain("## Memory (recalled)");
+    }
   });
 });
 
@@ -358,5 +279,38 @@ describe("guidance score floor", () => {
 
   it("requires the preference to rank among the top hits", () => {
     expect(background(0.95, Array.from({ length: 9 }, () => 0.97).concat([0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]))).toBeUndefined();
+  });
+});
+
+describe("possibly-relevant block format", () => {
+  it("shows date, currency and attribution, stays within the tiny budget and never claims to answer", async () => {
+    const long = "Zorbel Labs chess ladder notes ".repeat(30);
+    const records = [
+      { score: 0.9, record: { id: "said", text: "Morgan prefiere el té verde.", createdAt: "2026-05-01T08:00:00Z" } },
+      { score: 0.89, record: { id: "noted", text: "Morgan woli zieloną herbatę.", createdAt: "2026-04-01T08:00:00Z" } },
+      { score: 0.88, record: { id: "old", text: long, createdAt: "2026-03-01T08:00:00Z", supersededBy: "said" } },
+    ];
+    const label = (memoryId: string, attribution: "user-stated" | "assistant-inferred"): MemoryLabelHit => ({
+      memoryId, ordinal: 0, text: "", status: "open", createdAt: "2026-05-01T08:00:00Z", active: true, conflict: false,
+      label: { v: 1, kind: "fact", entityId: "person:morgan", attribution } });
+    const store: SharedRecallStore = { async load() { return undefined; }, async close() {},
+      async recall() { return records; },
+      labelsForMemories: (ids) => [label("said", "user-stated"), label("noted", "assistant-inferred")].filter((row) => ids.includes(row.memoryId)),
+    };
+    const block = await new MemoryRetrievalService(store).load("conv", "¿Qué té bebe Morgan?", { ...options, ownerTurn: true });
+    const lines = block?.content.split("\n") ?? [];
+    expect(lines[0]).toBe("## Memory (possibly relevant — may be unrelated; verify before relying)");
+    expect(block?.content).not.toMatch(/recalled|answer/iu);
+    // Current lines first, then ordered by time; the superseded long line is capped.
+    expect(lines.slice(2)).toEqual([
+      expect.stringMatching(/^- Zorbel Labs chess ladder notes .*… \(recorded 2026-03-01; superseded\)$/u),
+      "- Morgan woli zieloną herbatę. (recorded 2026-04-01; current; assistant noted)",
+      "- Morgan prefiere el té verde. (recorded 2026-05-01; current; you said)",
+    ]);
+    expect(Buffer.byteLength(block?.content ?? "", "utf8")).toBeLessThanOrEqual(1_500);
+    const tiny = await new MemoryRetrievalService(store, { maxBytes: 200 }).load("conv", "¿Qué té bebe Morgan?", { ...options, ownerTurn: true });
+    expect(tiny?.truncated).toBe(true);
+    expect(Buffer.byteLength(tiny?.content ?? "", "utf8")).toBeLessThanOrEqual(200);
+    expect(tiny?.content).not.toContain("Zorbel");
   });
 });

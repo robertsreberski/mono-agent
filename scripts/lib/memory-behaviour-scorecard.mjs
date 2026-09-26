@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { createBujoMemoryStore, resolveActiveMemoryDbPath, safeRebuildMemoryIndex, selectAutomaticRecallHits } from "../../packages/memory/dist/bujo/index.js";
+import { createBujoMemoryStore, resolveActiveMemoryDbPath, safeRebuildMemoryIndex, selectPossiblyRelevantRecallHits } from "../../packages/memory/dist/bujo/index.js";
 import { openMemoryDb } from "../../packages/memory/dist/store/index.js";
 
 // Entirely fictional, scripted model outputs still pass through the production
@@ -64,10 +64,19 @@ export function scoreBehaviour({ records, labels, questions, pending, before, af
   const credentialStored = records.filter((r) => /fake-secret-123/iu.test(r.text)).length;
   const triggerText = TURNS.find((turn) => turn.kind === "trigger-outcome")?.memories[0]?.text;
   const triggerOutcomeStored = triggerText !== undefined && active.some((row) => row.text === triggerText);
-  const falseAutomaticRecall = questions.reduce((sum, q) => sum + q.falseHits, 0);
+  // Automatic recall is a "possibly relevant" block the main model judges, so
+  // negatives may show lines. Gates: non-owner turns get none, and negatives
+  // average at most two lines. Answer presence is reported, not gated, because
+  // the deterministic hash embeddings are not a semantic model.
+  const negatives = questions.filter((q) => q.kind === "negative");
+  const negativeLinesAvg = negatives.length === 0 ? 0 : negatives.reduce((sum, q) => sum + q.automaticHits, 0) / negatives.length;
+  const nonOwnerAutomaticLines = questions.filter((q) => q.kind === "non-owner").reduce((sum, q) => sum + q.automaticHits, 0);
+  const expected = questions.filter((q) => q.kind.endsWith("positive") || q.kind === "first-person");
+  const answerPresence = expected.length === 0 ? 0 : expected.filter((q) => q.hit).length / expected.length;
   const parity = JSON.stringify(before) === JSON.stringify(after);
   const gates = {
-    falseAutomaticRecall: falseAutomaticRecall === 0,
+    nonOwnerAutomaticLines: nonOwnerAutomaticLines === 0,
+    negativeLinesAvg: negativeLinesAvg <= 2,
     ownerBindingOfOthers: ownerBindingOfOthers === 0,
     credentialStored: credentialStored === 0,
     pendingTurns: pending === 0,
@@ -81,12 +90,12 @@ export function scoreBehaviour({ records, labels, questions, pending, before, af
     }),
   };
   return { schema: 1, turns: TURNS.length, records: records.length, activeRecords: active.length,
-    labels: labels.length, questions: questions.map(({ kind, hit, explicitHit, automaticHits, falseHits }) => ({ kind, hit, explicitHit, automaticHits, falseHits })),
+    labels: labels.length, questions: questions.map(({ kind, hit, explicitHit, automaticHits }) => ({ kind, hit, explicitHit, automaticHits })),
     labelKinds: Object.fromEntries(["fact", "preference", "lesson"].map((kind) => [kind, labels.filter((row) => row.label.kind === kind && row.active).length])),
     superseded: records.filter((row) => row.status === "invalidated").length,
     categories: Object.fromEntries([...new Set(TURNS.map((t) => t.kind))].map((kind) => [kind, 1])),
     cpuMs: { total: cpuMs.reduce((a, b) => a + b, 0), perTurn: cpuMs },
-    falseAutomaticRecall, ownerBindingOfOthers, credentialStored, triggerOutcomeStored, pendingTurns: pending,
+    answerPresence, negativeLinesAvg, nonOwnerAutomaticLines, ownerBindingOfOthers, credentialStored, triggerOutcomeStored, pendingTurns: pending,
     rebuildParity: parity, gates, passed: Object.values(gates).every(Boolean) };
 }
 
@@ -139,17 +148,13 @@ export async function runMemoryBehaviourScorecard({ turns = TURNS, questions = Q
     const results = [];
     for (const question of questions) {
       const hits = await store.recall(question.query, { topK: 8, trackAccess: false });
-      // A non-owner turn is not authorized to use owner direct recall. Count
-      // any owner hit as a leak; never silently claim this is a built-in ACL.
-      const automatic = selectAutomaticRecallHits(hits, { query: question.query,
-        ...(question.ownerTurn === false ? {} : { ownerTurn: true }) });
+      // Selector-only simulation of the app service (non-owner turns get no
+      // automatic block); the service itself is covered by memory-retrieval tests.
+      const automatic = question.ownerTurn === false ? [] : selectPossiblyRelevantRecallHits(hits);
       const texts = automatic.map((hit) => hit.record.text);
-      const falseHits = question.expected
-        ? texts.filter((text) => text !== question.expected).length
-        : texts.length;
       results.push({ kind: question.kind, hit: question.expected ? texts.includes(question.expected) : false,
         explicitHit: question.expected ? hits.some((item) => item.record.text === question.expected) : false,
-        automaticHits: texts.length, falseHits });
+        automaticHits: texts.length });
     }
     await store.close();
     store = undefined;
@@ -171,6 +176,6 @@ export async function runMemoryBehaviourScorecard({ turns = TURNS, questions = Q
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
   const report = await runMemoryBehaviourScorecard();
   console.log(JSON.stringify(report));
-  console.error(`memory behaviour: ${report.passed ? "PASS" : "FAIL"}; turns=${report.turns} records=${report.records} false=${report.falseAutomaticRecall} pending=${report.pendingTurns} parity=${report.rebuildParity}`);
+  console.error(`memory behaviour: ${report.passed ? "PASS" : "FAIL"}; turns=${report.turns} records=${report.records} answers=${report.answerPresence.toFixed(2)} negLines=${report.negativeLinesAvg.toFixed(2)} nonOwner=${report.nonOwnerAutomaticLines} pending=${report.pendingTurns} parity=${report.rebuildParity}`);
   if (!report.passed) process.exitCode = 1;
 }
