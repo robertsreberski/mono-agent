@@ -8,6 +8,8 @@ export interface LabelRecallStore {
   labelsForEntity?(id: string, date?: string): readonly MemoryLabelHit[];
   guidanceForScope?(scope: string): readonly MemoryLabelHit[];
   findMemoryEntitiesByNames?(names: readonly string[]): readonly EntityRecord[];
+  /** Labels on these memory ids; used only to show a recalled line's attribution. */
+  labelsForMemories?(memoryIds: readonly string[]): readonly MemoryLabelHit[];
 }
 
 const MAX_BACKGROUND_BYTES = 1024;
@@ -34,9 +36,6 @@ export function guidanceScoreFloor(scores: readonly number[]): number {
   return Math.max(GUIDANCE_FLOOR, median + GUIDANCE_MARGIN);
 }
 const PERSON_ID = /^person:[a-z0-9]+(?:-[a-z0-9]+)*$/u;
-/** Canonical host-owner entity id used by owner-turn capture. */
-const OWNER_ID = "person:owner";
-const OWNER_FIRST_PERSON = /\b(?:I|my|mine|myself)\b/iu;
 const scopeId = (value: string): boolean => /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,95}$/u.test(value);
 export const safeLine = (text: string): string => text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").replace(/\s+/gu, " ").trim();
 const fold = (text: string): string => text.normalize("NFD").replace(/\p{M}/gu, "").toLocaleLowerCase("und");
@@ -86,43 +85,6 @@ export function factValueText(value: NonNullable<FactLabel["value"]>): string {
     : value.type === "entity" ? value.entityId : `${value.role} ${value.targetEntityId}`;
 }
 
-// A birth date answers only a question about the birth date or current age.
-// `Where was Morgan born?` asks for a place, and a historical age (`How old was
-// Morgan in 2015?`) would need arithmetic the card does not do.
-const BIRTH_QUESTION = /\bbirthday\b|\bdate\s+of\s+birth\b|\bbirth\s*date\b|\bhow\s+old\b|\bwhen\b.*\bborn\b|\bwhat\s+(?:date|day|year)\b.*\bborn\b/iu;
-const NOT_BIRTH_DATE_QUESTION = /\bwhere\b|\bhow\s+old\s+(?:was|were|will|would)\b|\b(?:19|20)\d{2}\b|\b(?:ago|last|next|then)\b/iu;
-const QUESTION_FILLER = new Set([
-  "a", "about", "an", "and", "are", "as", "at", "be", "can", "could", "did", "do", "does", "for", "from",
-  "give", "has", "have", "he", "her", "his", "how", "i", "in", "is", "it", "know", "me", "my", "of", "on",
-  "or", "our", "please", "remind", "s", "she", "show", "tell", "that", "the", "their", "them", "they",
-  "this", "to", "was", "we", "were", "what", "whats", "when", "where", "which", "who", "whom", "whose",
-  "why", "with", "would", "you", "your", "now", "current", "currently", "right", "anything", "something",
-  "everything", "info", "information", "details", "person", "card",
-]);
-const stem = (word: string): string => word.length > 4 && word.endsWith("s") && !word.endsWith("ss") ? word.slice(0, -1) : word;
-
-/** Content words a question asks about, excluding the named entities themselves. */
-function questionConcepts(query: string, names: readonly string[]): Set<string> {
-  const nameWords = new Set(names.flatMap((name) => fold(name).split(/[^\p{L}\p{N}]+/u)));
-  const out = new Set<string>();
-  for (const [word] of fold(query).replace(/['’]s\b/gu, "").matchAll(/[\p{L}\p{N}]+/gu)) {
-    if (!QUESTION_FILLER.has(word) && !nameWords.has(word) && !/^person$/u.test(word)) out.add(stem(word));
-  }
-  return out;
-}
-
-/**
- * A key answers the question only when the question names the whole property:
- * every content word of the key (`favorite` and `color` for
- * `other:favorite_color`). Birth dates use the bounded birth-question rule.
- */
-function keyRelevant(key: string, concepts: ReadonlySet<string>, query: string): boolean {
-  if (key === "birth_date") return BIRTH_QUESTION.test(query) && !NOT_BIRTH_DATE_QUESTION.test(query);
-  const words = fold(key.replace(/^other:/u, "")).split(/[^\p{L}\p{N}]+/u)
-    .filter((word) => word.length > 1 && !QUESTION_FILLER.has(word));
-  return words.length > 0 && words.every((word) => concepts.has(stem(word)));
-}
-
 const keyText = (key: string): string => key.replace(/^other:/u, "").replace(/[-_]+/gu, " ");
 
 export function memoryGuidanceScopes(conversationId?: string, options: MemoryLoadOptions = {}): string[] {
@@ -153,7 +115,12 @@ export function resolveMemoryEntities(store: LabelRecallStore, query: string, ab
   return entities;
 }
 
-/** Only labelled, host-scoped background. Never alters the ordinary answer-evidence gate. */
+/**
+ * Only labelled, host-scoped background for an owner turn. Triggers are
+ * language-neutral: preferences and verified lessons by retrieval score within
+ * their scope, person cards by an exact entity name or id in the message. No
+ * question grammar decides what a card shows; the main model judges relevance.
+ */
 export function formatMemoryBackground(
   store: LabelRecallStore,
   query: string,
@@ -161,17 +128,9 @@ export function formatMemoryBackground(
   options: MemoryLoadOptions,
   hits: readonly MemoryRecallHit[],
   byteBudget = MAX_BACKGROUND_BYTES,
-  /** Texts of records the direct-fact gate already selected for this question. */
-  directEvidence: readonly string[] = [],
-  directMemoryIds: ReadonlySet<string> = new Set(),
-): {
-  readonly content: string;
-  readonly truncated: boolean;
-  /** Owner turns only: current fact labels whose key the question asks about. */
-  readonly facts?: readonly string[];
-  /** A relevant label disagrees with the selected records: inject neither directly. */
-  readonly recallConflict?: true;
-} | undefined {
+  /** Memory ids already shown in the possibly-relevant block. */
+  shownMemoryIds: ReadonlySet<string> = new Set(),
+): { readonly content: string; readonly truncated: boolean } | undefined {
   if (store.guidanceForScope === undefined || store.labelsForEntity === undefined) return undefined;
   const date = options.hostDate;
   if (date === undefined || !/^\d{4}-\d{2}-\d{2}$/u.test(date)) return undefined;
@@ -179,52 +138,25 @@ export function formatMemoryBackground(
   const scores = new Map(hits.map((hit) => [hit.record.id, hit.score]));
   const floor = guidanceScoreFloor(hits.map((hit) => hit.score));
   const ranked = new Set([...hits].sort((a, b) => b.score - a.score).slice(0, GUIDANCE_MAX_RANK).map((hit) => hit.record.id));
-  const applicable = scopes.flatMap((scope) => store.guidanceForScope!(scope))
+  // Opposite statements may both appear; the main model judges them.
+  const guidance = scopes.flatMap((scope) => store.guidanceForScope!(scope))
     .filter((hit) => hit.active && (hit.label.kind === "preference" || (hit.label.kind === "lesson" && hit.label.verified))
-      && ranked.has(hit.memoryId) && (scores.get(hit.memoryId) ?? 0) >= floor);
-  // Abstain on opposite statements about an otherwise identical action, across scopes too.
-  const normalized = (text: string): string => fold(text).replace(/\b(?:not|never|don't)\b/gu, "").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
-  const contradictory = new Set<string>();
-  for (const hit of applicable) {
-    const other = applicable.find((candidate) => candidate !== hit && candidate.label.kind === hit.label.kind
-      && normalized(candidate.text) === normalized(hit.text)
-      && /\b(?:not|never|don't)\b/iu.test(candidate.text) !== /\b(?:not|never|don't)\b/iu.test(hit.text));
-    if (other !== undefined) contradictory.add(hit.memoryId);
-  }
-  const guidance = applicable.filter((hit) => !contradictory.has(hit.memoryId))
+      && ranked.has(hit.memoryId) && (scores.get(hit.memoryId) ?? 0) >= floor && !shownMemoryIds.has(hit.memoryId))
     .sort((a, b) => (scores.get(b.memoryId) ?? 0) - (scores.get(a.memoryId) ?? 0) || a.memoryId.localeCompare(b.memoryId))
     .filter((hit, index, all) => all.findIndex((other) => other.text === hit.text) === index);
 
   const entities = resolveMemoryEntities(store, query);
-  // The host owner has one canonical id. On a host-stamped owner turn a
-  // first-person question that names nobody else (`When was I born?`) is
-  // about that person.
-  if (options.ownerTurn === true && entities.length === 0 && OWNER_FIRST_PERSON.test(query)) {
-    entities.unshift({ id: OWNER_ID, name: "You" });
-  }
   const explicitIds = new Set(query.match(/\bperson:[a-z0-9]+(?:-[a-z0-9]+)*\b/gu) ?? []);
   const ambiguous = new Set(entities.filter((entity) => !explicitIds.has(entity.id)
     && entities.some((other) => other.id !== entity.id && fold(other.name) === fold(entity.name)))
     .map((entity) => entity.id));
-  // Relevance: a question that asks something beyond the name gets only the
-  // keys it asks about; unrelated keys are never injected. On an owner turn they
-  // answer directly; elsewhere (group, trigger, peer) they stay background. A
-  // bare mention (`Morgan`, `Tell me about Morgan`) keeps the whole background
-  // card. Conflicting values, and labels that disagree with the records the
-  // direct-fact gate selected, stay background and prompt a question.
-  const concepts = questionConcepts(query, entities.map((entity) => entity.name));
-  const bare = concepts.size === 0;
-  const evidence = directEvidence.map((text) => fold(text));
-  let recallConflict = false;
+  // A named person gets the whole current card; conflicting values ask.
   const cards: string[] = [];
-  const direct: string[] = [];
   for (const entity of entities.filter((entry) => !ambiguous.has(entry.id)).slice(0, 3)) {
     const facts = store.labelsForEntity(entity.id, date).filter((hit) => hit.label.kind === "fact" && hit.label.key !== undefined && hit.active
       && (hit.label.attribution === "user-stated" || hit.label.attribution === "document"));
     const parts: string[] = [];
     for (const key of [...new Set(facts.flatMap((hit) => hit.label.kind === "fact" && hit.label.key !== undefined ? [hit.label.key] : []))]) {
-      const relevant = keyRelevant(key, concepts, query);
-      if (!bare && !relevant) continue;
       const candidates = facts.filter((hit) => hit.label.kind === "fact" && hit.label.key === key && hit.currentAt);
       if (candidates.length === 0) continue;
       const distinct = new Set(candidates.flatMap((hit) => hit.label.kind === "fact" && hit.label.value !== undefined
@@ -233,27 +165,14 @@ export function formatMemoryBackground(
         parts.push(`${keyText(key)}: conflicting values — ask`);
         continue;
       }
-      // Every selected record must state every relevant labelled value, or neither
-      // is direct — including a label whose own line was not selected.
-      // `directMemoryIds` only decides which line may be pushed as the answer.
-      if (relevant && evidence.length > 0
-        && ![...distinct].every((value) => evidence.every((text) => text.includes(value)))) {
-        recallConflict = true;
-        parts.push(`${keyText(key)}: labelled value and recalled memory disagree — ask`);
-        continue;
-      }
       for (const hit of candidates) {
         if (hit.label.kind !== "fact" || hit.label.value === undefined) continue;
         const value = hit.label.value;
-        const values = [`${factKeyLabel(key)}: ${safeLine(factValueText(value))} (${hit.label.attribution === "user-stated" ? "you said" : "document"}, recorded ${hit.createdAt.slice(0, 10)})`];
+        parts.push(`${factKeyLabel(key)}: ${safeLine(factValueText(value))} (${hit.label.attribution === "user-stated" ? "you said" : "document"}, recorded ${hit.createdAt.slice(0, 10)})`);
         if (key === "birth_date" && value.type === "date") {
           const age = ageAt(value.date, date);
-          if (age !== undefined) values.push(age);
+          if (age !== undefined) parts.push(age);
         }
-        if (relevant && options.ownerTurn === true && directMemoryIds.has(hit.memoryId)) {
-          direct.push(`${safeLine(entity.name)} — ${values.join("; ")}`);
-        }
-        else parts.push(...values);
       }
     }
     if (parts.length > 0) cards.push(`${safeLine(entity.name)}: ${parts.join("; ")}`);
@@ -273,9 +192,5 @@ export function formatMemoryBackground(
   }
   addSection("Working preferences & lessons:", guidance.slice(0, 3).map((hit) => safeLine(hit.text)));
   addSection("Person card:", cards);
-  const facts = direct.slice(0, 3).map((line) => line.slice(0, 240));
-  truncated ||= direct.length > 3;
-  const withFacts = { ...(facts.length > 0 ? { facts } : {}), ...(recallConflict ? { recallConflict: true as const } : {}) };
-  return selected.length > 1 ? { content: selected.join("\n"), truncated, ...withFacts }
-    : truncated || facts.length > 0 || recallConflict ? { content: "", truncated, ...withFacts } : undefined;
+  return selected.length > 1 ? { content: selected.join("\n"), truncated } : truncated ? { content: "", truncated } : undefined;
 }

@@ -7,7 +7,7 @@ describe("fictional completed-turn memory behaviour scorecard", () => {
     expect(result.passed).toBe(true);
     expect(result.turns).toBe(TURNS.length);
     expect(result.questions).toHaveLength(QUESTIONS.length);
-    expect(result.gates).toMatchObject({ falseAutomaticRecall: true, ownerBindingOfOthers: true,
+    expect(result.gates).toMatchObject({ nonOwnerAutomaticLines: true, negativeLinesAvg: true, ownerBindingOfOthers: true,
       credentialStored: true, pendingTurns: true, rebuildParity: true });
     expect(result.superseded).toBe(2);
     expect(result.categories["trigger-outcome"]).toBe(1);
@@ -25,11 +25,12 @@ describe("fictional completed-turn memory behaviour scorecard", () => {
     const base = { records: [...Array.from({ length: 5 }, (_, i) => ({ id: String(i), text: `Note ${i}.`, status: "open" })),
       ...labelled.map((turn, index) => ({ id: `label-${index}`, text: turn.memories[0].text, status: "open" }))],
       labels: labelled.map((turn, index) => ({ memoryId: `label-${index}`, active: true, label: turn.memories[0].labels[0] })),
-      questions: QUESTIONS.map((q) => ({ kind: q.kind, falseHits: 0 })), pending: 0,
+      questions: QUESTIONS.map((q) => ({ kind: q.kind, automaticHits: 0 })), pending: 0,
       before: {}, after: {}, cpuMs: [] };
     expect(scoreBehaviour(base).passed).toBe(true);
     for (const changed of [
-      { questions: [{ kind: "negative", falseHits: 1 }, ...base.questions.slice(1)] },
+      { questions: base.questions.map((q) => q.kind === "negative" ? { ...q, automaticHits: 3 } : q) },
+      { questions: base.questions.map((q) => q.kind === "non-owner" ? { ...q, automaticHits: 1 } : q) },
       { records: [{ id: "other-person", text: "The user's colleague Taylor lives in Porto.", status: "open" }, ...base.records],
         labels: [{ memoryId: "other-person", active: true, label: { kind: "fact", entityId: "person:owner" } }] },
       { records: [{ id: "credential", text: "fake-secret-123", status: "open" }, ...base.records] },

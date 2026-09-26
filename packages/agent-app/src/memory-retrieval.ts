@@ -15,12 +15,14 @@ import {
   AUTO_RECALL_MAX_BYTES,
   isConversationRelativeQuery,
   MARKER_FOR,
-  selectAutomaticRecallHits,
+  POSSIBLY_RELEVANT_MAX_BYTES,
+  recallLineStatus,
+  selectPossiblyRelevantRecallHits,
   type JournalBrowseInput,
   type JournalBrowseSnapshot,
 } from "@mono-agent/memory/bujo";
 
-import { formatMemoryBackground, type LabelRecallStore } from "./memory-guidance.js";
+import { formatMemoryBackground, safeLine, type LabelRecallStore } from "./memory-guidance.js";
 import { readLabelSections, type LabelSectionRequest } from "./memory-label-sections.js";
 import {
   createMemoryRecallServer,
@@ -104,6 +106,7 @@ interface SharedRecallHit {
     readonly createdAt?: string;
     readonly validFrom?: string;
     readonly validTo?: string;
+    readonly supersededBy?: string;
   };
 }
 
@@ -156,6 +159,9 @@ export class MemoryRetrievalService implements MemoryStore {
       return undefined;
     }
     try {
+      // An uncached non-owner load could only feed automatic context, which
+      // non-owner turns never receive; skip the lookup entirely.
+      if (ephemeral && options.ownerTurn !== true) return undefined;
       this.turnCache(turnId).context = { ...options, conversationId };
       let outcome: MemoryRecallOutcome;
       if (ephemeral || originalQuestion.length === 0) {
@@ -184,43 +190,36 @@ export class MemoryRetrievalService implements MemoryStore {
           throw error;
         }
       }
-      const hits = selectAutomaticRecallHits(outcome.hits, {
-        query: evidenceQuery,
-        ...(options.ownerTurn === true ? { ownerTurn: true } : {}),
-      });
-      // Keep the degraded-no-evidence warning even if labels could render a card.
-      if (hits.length === 0 && outcome.degradation?.code === "embedding_unavailable") {
+      // Lexical-only results are never injected; keep the degraded warning.
+      if (outcome.degradation?.code === "embedding_unavailable") {
         throw new Error("Semantic memory retrieval is unavailable; lexical-only recall found no eligible automatic evidence.");
       }
-      let block = hits.length > 0 ? formatRecallBlock(hits, this.source, this.maxBytes, outcome.degradation) : undefined;
+      // Privacy default: automatic memory reaches only host-verified owner
+      // turns. Group chats, other senders and triggers get no block; the
+      // lookup above still backs the explicit tool's original-query mode.
+      if (options.ownerTurn !== true) return undefined;
+      // Language-neutral selection relies on embedding scores; a lexical-only
+      // store (e.g. Lite) never feeds the automatic block.
+      if (outcome.retrievalMode !== "hybrid") return undefined;
+      const asOf = options.hostDate !== undefined && /^\d{4}-\d{2}-\d{2}$/u.test(options.hostDate) ? options.hostDate : undefined;
+      const hits = selectPossiblyRelevantRecallHits(outcome.hits, asOf === undefined ? {} : { asOf });
+      const budget = Math.min(this.maxBytes, POSSIBLY_RELEVANT_MAX_BYTES);
+      const block = hits.length > 0
+        ? formatPossiblyRelevantBlock(hits, recallAttributions(this.store, hits), budget, asOf) : undefined;
       let background: ReturnType<typeof formatMemoryBackground>;
       try {
         const available = this.maxBytes - (block === undefined ? 0 : Buffer.byteLength(block.content, "utf8") + 2);
         background = formatMemoryBackground(this.store, evidenceQuery, conversationId, options, outcome.hits, available,
-          hits.map((hit) => hit.record.text), new Set(hits.map((hit) => hit.record.id)));
+          new Set(block?.shown.map((hit) => hit.record.id) ?? []));
       } catch {
         // Corrupt or temporarily unavailable labels must not erase ordinary recall.
         background = undefined;
       }
-      // A labelled value that disagrees with the selected records: neither is
-      // injected as direct evidence; the background card asks instead.
-      if (background?.recallConflict === true) block = undefined;
-      // Label-backed direct facts: current labelled values whose key the
-      // question asks about join the recalled evidence, inside the byte budget.
-      let recalled = block?.content;
-      let factsTruncated = false;
-      for (const fact of background?.facts ?? []) {
-        const next = recalled === undefined ? `## Memory (recalled)\n\n- ${fact}` : `${recalled}\n- ${fact}`;
-        const total = Buffer.byteLength(next, "utf8")
-          + (background?.content ? Buffer.byteLength(background.content, "utf8") + 2 : 0);
-        if (total > this.maxBytes) { factsTruncated = true; continue; }
-        recalled = next;
-      }
-      if (recalled === undefined && !background?.content) return undefined;
-      if (block !== undefined) this.recordServed(turnId, hits);
+      if (block === undefined && !background?.content) return undefined;
+      if (block !== undefined) this.recordServed(turnId, block.shown);
       return { kind: "markdown", source: this.source,
-        content: [recalled, background?.content].filter((text) => text !== undefined && text.length > 0).join("\n\n"),
-        truncated: (block?.truncated ?? false) || (background?.truncated ?? false) || factsTruncated };
+        content: [block?.content, background?.content].filter((text) => text !== undefined && text.length > 0).join("\n\n"),
+        truncated: (block?.truncated ?? false) || (background?.truncated ?? false) };
     } finally {
       if (ephemeral) this.releaseTurn(turnId);
     }
@@ -592,31 +591,66 @@ function clampLimit(limit: number | undefined, fallback: number): number {
   return Math.min(AUTO_RECALL_BACKEND_HITS, Math.max(1, Math.trunc(limit)));
 }
 
-function formatRecallBlock(
+/** The block never claims to answer: the main model judges each line. */
+export const POSSIBLY_RELEVANT_HEADING = "## Memory (possibly relevant — may be unrelated; verify before relying)";
+/** One recalled line's text is capped so K lines fit the tiny block budget. */
+const POSSIBLY_RELEVANT_LINE_BYTES = 360;
+
+/** Reader-facing attribution when every label on the line agrees. */
+function recallAttributions(store: SharedRecallStore, hits: readonly SharedRecallHit[]): ReadonlyMap<string, string> {
+  const out = new Map<string, string>();
+  if (store.labelsForMemories === undefined) return out;
+  let labels: ReturnType<NonNullable<SharedRecallStore["labelsForMemories"]>>;
+  try {
+    labels = store.labelsForMemories(hits.map((hit) => hit.record.id));
+  } catch {
+    // Attribution is decoration; label trouble must not erase recall.
+    return out;
+  }
+  const byMemory = new Map<string, Set<string>>();
+  for (const hit of labels) {
+    if (hit.label.kind === "lesson") continue;
+    const set = byMemory.get(hit.memoryId) ?? new Set<string>();
+    set.add(hit.label.attribution);
+    byMemory.set(hit.memoryId, set);
+  }
+  const words: Record<string, string> = { "user-stated": "you said", "assistant-inferred": "assistant noted", document: "from a document" };
+  for (const [id, set] of byMemory) {
+    const only = set.size === 1 ? words[[...set][0]!] : undefined;
+    if (only !== undefined) out.set(id, only);
+  }
+  return out;
+}
+
+function formatPossiblyRelevantBlock(
   hits: readonly SharedRecallHit[],
-  source: string,
+  attributions: ReadonlyMap<string, string>,
   maxBytes: number,
-  degradation?: MemoryRecallOutcome["degradation"],
-): MemoryBlock {
-  const degradedHeading = "## Memory (recalled; lexical-only — semantic retrieval unavailable)";
-  const compactDegradedHeading = "## Memory degraded: lexical-only";
-  let heading = "## Memory (recalled)";
-  if (degradation?.code === "embedding_unavailable") {
-    const firstEvidence = `- ${formatRecallRecord(hits[0]!.record)}`;
-    heading = [degradedHeading, compactDegradedHeading].find((candidate) => (
-      Buffer.byteLength(`${candidate}\n\n${firstEvidence}`, "utf8") <= maxBytes
-    )) ?? "";
-    if (heading.length === 0) {
-      throw new Error("Semantic memory retrieval is unavailable; the memory byte budget cannot include lexical-only evidence.");
-    }
+  asOf?: string,
+): { readonly content: string; readonly truncated: boolean; readonly shown: readonly SharedRecallHit[] } | undefined {
+  const lines = [POSSIBLY_RELEVANT_HEADING, ""];
+  const shown: SharedRecallHit[] = [];
+  let truncated = false;
+  for (const hit of hits) {
+    const recorded = /^\d{4}-\d{2}-\d{2}/u.exec(hit.record.createdAt ?? "")?.[0];
+    const status = recallLineStatus(hit.record, asOf);
+    const currency = status === "ended" ? `ended ${hit.record.validTo!.slice(0, 10)}` : status;
+    const note = [recorded === undefined ? undefined : `recorded ${recorded}`, currency, attributions.get(hit.record.id)]
+      .filter((part) => part !== undefined).join("; ");
+    const text = clampBytes(safeLine(formatRecallRecord(hit.record)), POSSIBLY_RELEVANT_LINE_BYTES);
+    const line = `- ${text}${note.length > 0 ? ` (${note})` : ""}`;
+    if (Buffer.byteLength([...lines, line].join("\n"), "utf8") > maxBytes) { truncated = true; continue; }
+    lines.push(line);
+    shown.push(hit);
   }
-  const full = [heading, "", ...hits.map((hit) => `- ${formatRecallRecord(hit.record)}`)].join("\n");
-  if (Buffer.byteLength(full, "utf8") <= maxBytes) {
-    return { kind: "markdown", content: full, source, truncated: false };
-  }
-  const bytes = Buffer.from(full, "utf8").subarray(0, maxBytes);
-  const content = new TextDecoder("utf-8").decode(bytes).replace(/�+$/u, "");
-  return { kind: "markdown", content, source, truncated: true };
+  if (shown.length === 0) return undefined;
+  return { content: lines.join("\n"), truncated, shown };
+}
+
+function clampBytes(text: string, maxBytes: number): string {
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) return text;
+  const cut = new TextDecoder("utf-8").decode(Buffer.from(text, "utf8").subarray(0, maxBytes - 3)).replace(/\uFFFD+$/u, "");
+  return `${cut}…`;
 }
 
 function formatRecallRecord(record: SharedRecallHit["record"]): string {

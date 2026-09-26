@@ -15,8 +15,15 @@ export {
   AUTO_RECALL_MIN_SCORE,
   AUTO_RECALL_RELATIVE_SCORE,
   composeRecallBlock,
+  POSSIBLY_RELEVANT_MAX_BYTES,
+  POSSIBLY_RELEVANT_MAX_LINES,
+  POSSIBLY_RELEVANT_MIN_SCORE,
+  POSSIBLY_RELEVANT_WINDOW,
   selectAutomaticRecallHits,
+  recallLineStatus,
+  selectPossiblyRelevantRecallHits,
 } from "./recall.js";
+export type { PossiblyRelevantRecord } from "./recall.js";
 export { hasConflictingAutomaticRecallEvidence, isConversationRelativeQuery } from "./recall-evidence.js";
 export {
   rebuildFromMarkdown,
