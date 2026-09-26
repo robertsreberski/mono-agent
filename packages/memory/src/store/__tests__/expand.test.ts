@@ -112,7 +112,7 @@ describe("expandEntityRelations", () => {
     const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
     try {
       await db.upsert(note("morgan-seed", "Morgan has durable team context."));
-      await db.upsert(note("taylor-manager", "Taylor is based in Utrecht."));
+      await db.upsert(note("taylor-manager", "Taylor is based in Porto."));
       await db.upsert(note("casey-report", "Casey is based in Rotterdam."));
       await db.upsert(note("amsterdam-distractor", "Amsterdam is Morgan's current home."));
       addEntity(db, "person:morgan", "Morgan");

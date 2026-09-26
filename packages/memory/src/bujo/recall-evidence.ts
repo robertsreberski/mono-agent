@@ -38,7 +38,7 @@
  * Owner turns (host-stamped `ownerTurn`, never model text) add two narrow
  * forms. A first-person question with exactly one `my` and no other first-person
  * word is read as a question about the owner, whom capture records as `the
- * user`: `What is my tax residence?` -> `The user's tax residence is Poland.`
+ * user`: `What is my favourite tea?` -> `The user's favourite tea is sencha.`
  * And the owner-report envelope `The user reports|reported|said|stated|
  * confirmed [that] <inner>` is unwrapped, where `<inner>` must itself be one of
  * the canonical shapes above (`their` reads as the owner). The unwrapped record
