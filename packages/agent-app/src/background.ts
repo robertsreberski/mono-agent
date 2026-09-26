@@ -9,8 +9,10 @@ import { listRecordedRuns, listTraceSources } from "@mono-agent/observability";
 import type { TraceSourceListItem } from "@mono-agent/observability";
 
 import {
+  resolveAppTraceGlobalDiscovery,
   resolveAppTraceRegistryDir,
   resolveAppTraceStaleAfterMs,
+  resolveGlobalTraceRegistryDir,
 } from "./app-config.js";
 import { formatChannelFactValue } from "./channel-fact-format.js";
 import { formatHumanChannelSections } from "./channel-status-display.js";
@@ -150,6 +152,13 @@ export interface InstanceTarget {
   readonly configPath: string;
   readonly label: string;
   readonly registryDir: string;
+  /**
+   * Machine-wide registry that holds the worker's best-effort manifest mirror
+   * when `registryDir` differs from it. A relative `traceability.registryDir`
+   * is resolved against the caller's cwd, so a control command run outside the
+   * agent folder finds the worker only through this mirror.
+   */
+  readonly mirrorRegistryDir?: string;
   readonly staleAfterMs: number;
   readonly paths: LaunchdPaths;
   readonly nodePath: string;
@@ -215,16 +224,19 @@ export async function resolveInstanceTarget(input: ResolveInstanceTargetInput): 
     canonicalBackgroundConfigPath(lexicalCwd, input.args.configPath),
   ]);
   const configInput = { env: input.env, cwd, configPath };
-  const [registryDir, staleAfterMs] = await Promise.all([
+  const [registryDir, staleAfterMs, globalDiscovery] = await Promise.all([
     resolveAppTraceRegistryDir(configInput),
     resolveAppTraceStaleAfterMs(configInput),
+    resolveAppTraceGlobalDiscovery(configInput),
   ]);
+  const globalRegistryDir = resolveGlobalTraceRegistryDir(input.env);
   const label = deriveLaunchdLabel(configPath);
   return {
     cwd,
     configPath,
     label,
     registryDir,
+    ...(globalDiscovery && resolve(registryDir) !== globalRegistryDir ? { mirrorRegistryDir: globalRegistryDir } : {}),
     staleAfterMs,
     paths: launchdPathsFor(label),
     nodePath: process.execPath,
@@ -1521,14 +1533,10 @@ export async function statusBackground(
   deps: BackgroundDeps,
   options: StatusBackgroundOptions = {},
 ): Promise<number> {
-  const [result, service] = await Promise.all([
-    deps.listTraceSources({ registryDir: target.registryDir, staleAfterMs: target.staleAfterMs }),
+  const [classified, service] = await Promise.all([
+    classifyTargetSources(target, deps),
     launchdServiceInfo(deps.runner, target.label, deps.getuid()),
   ]);
-  const classified = await Promise.all(result.sources.map(async (source) => ({
-    source,
-    matches: await matchesConfig(source, target.configPath),
-  })));
   const matchingSources = classified.filter((entry) => entry.matches).map((entry) => entry.source);
   const recorded = service.pid === undefined
     ? matchingSources[0]
@@ -1757,13 +1765,35 @@ export function printInstanceInfo(
   deps.stdout("\n" + ui.hint(`Stop with: mono-agent stop${flag}   ·   Logs: mono-agent logs${flag} --follow`));
 }
 
+/** Sources read from the global mirror; their manifests are not in `target.registryDir`. */
+const mirroredSources = new WeakSet<TraceSourceListItem>();
+
+/**
+ * Every source in the target's registry, classified against its config, plus
+ * the worker's global mirror entries for the same config that the registry
+ * does not already list. Status, stop and restart all match through here.
+ */
+async function classifyTargetSources(
+  target: InstanceTarget,
+  deps: BackgroundDeps,
+): Promise<readonly { readonly source: TraceSourceListItem; readonly matches: boolean }[]> {
+  const classify = async (registryDir: string) => await Promise.all(
+    (await deps.listTraceSources({ registryDir, staleAfterMs: target.staleAfterMs })).sources.map(async (source) => ({
+      source,
+      matches: await matchesConfig(source, target.configPath),
+    })),
+  );
+  const local = await classify(target.registryDir);
+  if (target.mirrorRegistryDir === undefined) return local;
+  const known = new Set(local.filter((entry) => entry.matches).map((entry) => entry.source.sourceId));
+  const mirrored = (await classify(target.mirrorRegistryDir))
+    .filter((entry) => entry.matches && !known.has(entry.source.sourceId));
+  for (const entry of mirrored) mirroredSources.add(entry.source);
+  return [...local, ...mirrored];
+}
+
 async function findInstances(target: InstanceTarget, deps: BackgroundDeps): Promise<readonly TraceSourceListItem[]> {
-  const result = await deps.listTraceSources({ registryDir: target.registryDir, staleAfterMs: target.staleAfterMs });
-  const matches = await Promise.all(result.sources.map(async (source) => ({
-    source,
-    matches: await matchesConfig(source, target.configPath),
-  })));
-  return matches.filter((entry) => entry.matches).map((entry) => entry.source);
+  return (await classifyTargetSources(target, deps)).filter((entry) => entry.matches).map((entry) => entry.source);
 }
 
 async function maybeUnlinkDeadManifest(
@@ -1773,7 +1803,7 @@ async function maybeUnlinkDeadManifest(
 ): Promise<void> {
   // Only clean up a manifest whose process is already gone; a worker that is
   // still shutting down will mark its own manifest stopped.
-  if (existing?.pid === undefined || deps.isAlive(existing.pid)) {
+  if (existing?.pid === undefined || mirroredSources.has(existing) || deps.isAlive(existing.pid)) {
     return;
   }
   await deps.rm(resolve(target.registryDir, `${existing.sourceId}.json`));
