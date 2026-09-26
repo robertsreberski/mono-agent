@@ -22,79 +22,58 @@ function seed(path: string, id: string, text: string, status: "open" | "done" = 
 }
 
 describe("owner association backfill", () => {
-  it("links only lines whose own text or owner label proves the owner is the subject", () => {
+  it("uses explicit owner labels regardless of language, never prose or pronouns", () => {
     const reason = (text: string, refs: string[] = []) => ownerAssociationReason({ text, refs });
-    // The owner is the grammatical subject: "The user" + verb (optionally after one adverb).
-    expect(reason("The user prefers short replies.")).toBe("owner-text");
-    expect(reason("The user asked for a Maple summary.")).toBe("owner-text");
-    expect(reason("The user was born on 1990-05-17.")).toBe("owner-text");
-    expect(reason("The user also bought a zorbel.")).toBe("owner-text");
-    expect(reason("User moved to Example City in 2026.")).toBe("owner-bare");
-    // "The user's <owner property>" from capture's finite owner-property grammar.
-    expect(reason("The user’s home is in Example City.")).toBe("owner-text");
-    expect(reason("The user's full name is Morgan Example.")).toBe("owner-text");
-    expect(reason("The user's birthday is 1990-05-17.")).toBe("owner-text");
-    expect(reason("User's preferred name is Morgan.")).toBe("owner-bare");
-    // Any other possessive names something else as the subject and is not proposed.
-    expect(reason("The user's zorbel lives in Example City.")).toBeUndefined();
-    expect(reason("The user’s quellin starts school in 2027.")).toBeUndefined();
-    expect(reason("User's vantry reviewed the draft.")).toBeUndefined();
-    expect(reason("The user's homework is due.")).toBeUndefined();
-    // "The user" not followed by a verb does not prove the subject.
-    expect(reason("The user and Morgan planned the Maple trip.")).toBeUndefined();
-    // Not a subject: pasted log envelopes, mid-sentence mentions, other subjects.
-    expect(reason("User: remind me tomorrow")).toBeUndefined();
-    expect(reason("Morgan told the user about the Maple project.")).toBeUndefined();
-    expect(reason("Users of the Maple app reported an outage.")).toBeUndefined();
     const ownerFact = encodeMemoryLabel({ v: 1, kind: "fact", entityId: "person:owner", key: "birth_date",
       value: { type: "date", date: "1990-05-17" }, attribution: "user-stated" });
-    expect(reason("Born on 1990-05-17.", [ownerFact])).toBe("owner-label");
     const agentPreference = encodeMemoryLabel({ v: 1, kind: "preference", scope: "agent", attribution: "user-stated" });
-    expect(reason("Reply in plain English.", [agentPreference])).toBe("owner-label");
-    const conversationPreference = encodeMemoryLabel({ v: 1, kind: "preference", scope: "conversation:guest-room", attribution: "user-stated" });
-    expect(reason("Reply in plain English.", [conversationPreference])).toBeUndefined();
+    const guestPreference = encodeMemoryLabel({ v: 1, kind: "preference", scope: "conversation:guest-room", attribution: "user-stated" });
+    for (const text of ["The user prefers short replies.", "User moved to Example City.",
+      "Mi casa está en la ciudad.", "Mój dom jest w mieście.", "Morgan told the user about Maple."]) {
+      expect(reason(text)).toBeUndefined();
+      expect(reason(text, [ownerFact])).toBe("owner-label");
+    }
+    expect(reason("Risposte brevi.", [agentPreference])).toBe("owner-label");
+    expect(reason("Risposte brevi.", [guestPreference])).toBeUndefined();
   });
 
-  it("proposes unlinked live lines, skips linked and unproven lines, and reports counts", () => {
+  it("proposes only unlinked live owner-labelled lines and reports counts", () => {
     const path = memoryRoot();
+    const ownerFact = encodeMemoryLabel({ v: 1, kind: "fact", entityId: "person:owner", key: "birth_date",
+      value: { type: "date", date: "1990-05-17" }, attribution: "user-stated" });
     seed(path, "fictional-a", "The user prefers short replies.");
-    seed(path, "fictional-b", "The user's zorbel lives in Example City.");
-    seed(path, "fictional-c", "The user was born on 1990-05-17.");
-    seed(path, "fictional-d", "Morgan likes the Maple project.");
-    seed(path, "fictional-e", "The user finished the Maple draft.", "done");
-    seed(path, "fictional-f", "User asked for a Maple summary.");
+    seed(path, "fictional-b", "Mi casa está en la ciudad.");
+    appendBullet(path, { id: "fictional-c", text: "The user was born on 1990-05-17.", type: "note", status: "open",
+      salience: 0.5, isInsight: false, createdAt: at, refs: [ownerFact] }, new Date(at));
+    seed(path, "fictional-d", "Morgan likes Maple.");
+    // The labelled text may be in any language.
+    appendBullet(path, { id: "fictional-e", text: "Mój dom jest w mieście.", type: "note", status: "open",
+      salience: 0.5, isInsight: false, createdAt: at, refs: [ownerFact] }, new Date(at));
     appendGraphBatch(path, { entities: [{ id: "person:owner", name: "Owner", type: "person", createdAt: at }],
       associations: [{ memoryId: "fictional-c", entityId: "person:owner", provenance: "capture", createdAt: at }] });
     const scan = proposeOwnerAssociations(path);
     expect(scan.associations.map(({ id, reason, accepted }) => ({ id, reason, accepted }))).toEqual([
-      { id: "fictional-a", reason: "owner-text", accepted: true },
-      { id: "fictional-e", reason: "owner-text", accepted: true },
-      // Bare "User ..." is proposed but the operator must opt in.
-      { id: "fictional-f", reason: "owner-bare", accepted: false },
+      { id: "fictional-e", reason: "owner-label", accepted: true },
     ]);
-    expect(scan.counts).toEqual({ live: 6, alreadyLinked: 1, notProven: 1, proposed: 3, bare: 1 });
+    expect(scan.counts).toEqual({ live: 5, alreadyLinked: 1, notProven: 0, proposed: 1, bare: 0 });
     for (const association of scan.associations) expect(() => validateCurateOwnerAssociation(association)).not.toThrow();
-    expect(() => validateCurateOwnerAssociation({ ...scan.associations[0]!, reason: "guess" as never })).toThrow(/invalid owner association/u);
   });
 
-  it("refuses stale, dropped-in-the-same-plan or re-qualified lines before any backup", () => {
+  it("refuses stale, dropped and re-qualified owner labels before backup", () => {
     const path = memoryRoot();
-    seed(path, "fictional-a", "The user prefers short replies.");
+    const ownerFact = encodeMemoryLabel({ v: 1, kind: "fact", entityId: "person:owner", key: "birth_date",
+      value: { type: "date", date: "1990-05-17" }, attribution: "user-stated" });
+    appendBullet(path, { id: "fictional-a", text: "Mój dom jest w mieście.", type: "note", status: "open",
+      salience: 0.5, isInsight: false, createdAt: at, refs: [ownerFact] }, new Date(at));
     const [association] = proposeOwnerAssociations(path).associations;
     expect(previewCurateMutations(path, [], undefined, [], [association!])).toEqual(["fictional-a"]);
-    expect(previewCurateMutations(path, [], undefined, [], [{ ...association!, accepted: false }])).toEqual([]);
     const source = inspectCurateSource(path).lines[0]!;
     expect(() => previewCurateMutations(path, [{ source, action: "drop", reason: "focus-noise", accepted: true }], undefined, [], [association!]))
       .toThrow(/conflicting owner association/u);
-    expect(() => previewCurateMutations(path, [], undefined, [], [{ ...association!, reason: "owner-label" }])).toThrow(/stale owner association/u);
-    // The same plan may not rewrite the line into one about someone else.
-    const rewrite = { source, action: "rewrite" as const, text: "The user's zorbel prefers short replies.", accepted: true };
+    expect(() => previewCurateMutations(path, [], undefined, [], [{ ...association!, reason: "owner-text" }])).toThrow(/stale owner association/u);
+    const rewrite = { source, action: "rewrite" as const, text: "Morgan likes Maple.", accepted: true };
     expect(() => previewCurateMutations(path, [rewrite], undefined, [], [association!])).toThrow(/rewrite invalidates owner association/u);
-    expect(previewCurateMutations(path, [{ ...rewrite, text: "The user prefers very short replies." }], undefined, [], [association!]))
-      .toEqual(["fictional-a"]);
-    // A rejected association does not constrain the rewrite.
-    expect(previewCurateMutations(path, [rewrite], undefined, [], [{ ...association!, accepted: false }])).toEqual([]);
-    rewriteBullet(path, source.file, source.id, { text: "The user's zorbel prefers short replies." });
+    rewriteBullet(path, source.file, source.id, { text: "Otra ciudad." });
     expect(() => previewCurateMutations(path, [], undefined, [], [association!])).toThrow(/stale owner association/u);
   });
 
@@ -108,7 +87,10 @@ describe("owner association backfill", () => {
     const { resolveActiveMemoryDbPath } = await import("../generations.js");
     const path = memoryRoot();
     initializeReplayProjection(path);
-    seed(path, "fictional-a", "The user planned the Maple project.");
+    const ownerFact = encodeMemoryLabel({ v: 1, kind: "fact", entityId: "person:owner", key: "birth_date",
+      value: { type: "date", date: "1990-05-17" }, attribution: "user-stated" });
+    appendBullet(path, { id: "fictional-a", text: "The user planned the Maple project.", type: "note", status: "open",
+      salience: 0.5, isInsight: false, createdAt: at, refs: [ownerFact] }, new Date(at));
     seed(path, "fictional-b", "Morgan likes the Maple project.");
     // No owner id yet: apply creates it. Maple is linked to both lines by name only.
     appendGraphBatch(path, { entities: [{ id: "project:maple", name: "Maple", type: "project", createdAt: at }] });
