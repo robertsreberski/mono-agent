@@ -311,8 +311,8 @@ function memoryCommandUsageError(input: RunMemoryCommandInput): string | undefin
   if (input.strict && subcommand !== "audit") {
     return "--strict is only supported for `mono-agent memory audit`.";
   }
-  if (input.limit !== undefined && subcommand !== "stats" && subcommand !== "search" && subcommand !== "top" && subcommand !== "entities" && !(subcommand === "curate" && rest[0] === "prepare")) {
-    return "--limit is only supported for memory stats, search, top, entities, and curate prepare.";
+  if (input.limit !== undefined && subcommand !== "stats" && subcommand !== "search" && subcommand !== "top" && subcommand !== "entities" && subcommand !== "labels" && !(subcommand === "curate" && rest[0] === "prepare")) {
+    return "--limit is only supported for memory stats, search, top, labels, entities, and curate prepare.";
   }
   if (input.curateSelect !== undefined && !(subcommand === "curate" && rest[0] === "prepare")) {
     return "--select requires `mono-agent memory curate prepare`.";
@@ -337,7 +337,7 @@ function memoryCommandUsageError(input: RunMemoryCommandInput): string | undefin
   if (input.duplicates === true && subcommand !== "entities") return "--duplicates requires `mono-agent memory entities`.";
   switch (subcommand) {
     case "labels":
-      return rest.length === 0 ? undefined : "Usage: mono-agent memory labels [--kind k] [--about entity] [--scope s] [--json].";
+      return rest.length === 0 ? undefined : "Usage: mono-agent memory labels [--kind k] [--about entity] [--scope s] [--limit N] [--json].";
     case "entities":
       return rest.length === 0 && input.duplicates === true ? undefined : "Usage: mono-agent memory entities --duplicates [--limit N] [--json].";
     case "lessons":
@@ -1814,14 +1814,14 @@ async function readLabelIndex(context: MemoryCommandContext, input: RunMemoryCom
           ...(input.labelScope === undefined ? {} : { scope: input.labelScope }),
           ...(entity === undefined ? {} : { entityId: entity.id }) };
       const inventory = about !== undefined && entity === undefined
-        ? { hits: [], truncated: false } as const : db.listLabels(filters);
+        ? { hits: [], truncated: false } as const : db.listLabels(filters, operation === "labels" ? input.limit ?? 200 : 200);
       if (operation === "labels") {
         const rows = inventory.hits.map((hit) => ({ id: hit.memoryId, ordinal: hit.ordinal, label: hit.label,
           text: hit.text, status: hit.status, recordedAt: hit.createdAt.slice(0, 10),
           source: hit.sourceFile === undefined ? undefined : `${hit.sourceFile}${hit.sourceLine === undefined ? "" : `:${hit.sourceLine}`}` }));
         write(input.json, { labels: rows, truncated: inventory.truncated }, () =>
           rows.length === 0 ? "No matching labels.\n" : `${rows.map((row) =>
-            `${row.recordedAt} [${row.status}] ${row.source ?? row.id} ${JSON.stringify(row.label)} — ${safeLine(row.text)}`).join("\n")}\n${inventory.truncated ? "More labels exist; output capped at 200.\n" : ""}`);
+            `${row.recordedAt} [${row.status}] ${row.source ?? row.id} ${JSON.stringify(row.label)} — ${safeLine(row.text)}`).join("\n")}\n${inventory.truncated ? "More labels exist; use --limit N (up to 1000).\n" : ""}`);
       } else {
         const groups = new Map<string, typeof inventory.hits[number][]>();
         for (const hit of inventory.hits) {
@@ -3044,6 +3044,12 @@ function parseCuratePlan(value: unknown): CuratePlan {
   return parsed;
 }
 
+export function curateRecoveredFailureReason(error: unknown): string {
+  return error instanceof Error && "cause" in error && error.cause !== undefined
+    ? "The apply failure cause was withheld because it may contain private memory text."
+    : "An interrupted apply was recovered; its original cause was not retained.";
+}
+
 async function runMemoryCurate(context: MemoryCommandContext, rest: readonly string[], input: RunMemoryCommandInput): Promise<number> {
   const operation = rest[0];
   const memory = context.config.memory;
@@ -3056,6 +3062,9 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
     const bujo = await loadBujoModule();
     const root = bujo.resolveExplicitMemoryCurateRoot(resolve(context.cwd, memory.path));
     if (operation === "prepare") {
+      const planPath = await canonicalProspectivePath(resolve(context.cwd, input.planPath!));
+      if (isSameOrUnderDirectory(root, planPath)) throw new Error("plan cannot be inside memory root");
+      if (!input.dryRun && await exists(planPath)) throw new Error(`curate plan already exists at ${planPath}; choose a new --plan path.`);
       const operatorMerges = await readCurateOperatorMerges(context, input, bujo);
       // Deterministic and model-free: only lines whose own source proves the owner is the subject.
       const ownerScan = input.ownerBackfill === true ? bujo.proposeOwnerAssociations(root) : undefined;
@@ -3122,8 +3131,6 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       const personAssociations = peopleFor(proposals);
       const linkPeople = peopleScan === undefined ? undefined : { ...peopleScan.counts, proposed: personAssociations.length,
         supersededByDrop: scannedPeople.length - personAssociations.length };
-      const planPath = await canonicalProspectivePath(resolve(context.cwd, input.planPath!));
-      if (isSameOrUnderDirectory(root, planPath)) throw new Error("plan cannot be inside memory root");
       const createdAt = new Date().toISOString();
       const buildPlan = (): CuratePlan => {
         const payload = { schemaVersion: 1, operation: "curate", rootFingerprint: memoryRootFingerprint(root),
@@ -3337,6 +3344,7 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
     const safeReason = (value: unknown): string | undefined => {
       if (!(value instanceof Error)) return undefined;
       if (safeCurateReasons.has(value.message)) return value.message;
+      if (value.message === "root mismatch") return "memory-curate: configured root changed since preparation";
       // Forget owns these diagnostics, but ids are omitted from public output.
       if (/^memory-forget: unknown memory id [A-Za-z0-9][A-Za-z0-9:._-]{0,127}\.$/u.test(value.message)) return "memory-forget: unknown memory id";
       if (/^memory-forget: memory [A-Za-z0-9][A-Za-z0-9:._-]{0,127} (?:requires exactly one canonical source bullet|is already terminal)\.$/u.test(value.message)) {
@@ -3346,9 +3354,15 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
     };
     const reason = safeReason(error) ?? (error instanceof Error && error.name === "ExplicitMemoryCurateError"
       ? safeReason(error.cause) : undefined);
+    const planExists = operation === "prepare" && error instanceof Error &&
+      (error.message.startsWith("curate plan already exists at ") || ("code" in error && error.code === "EEXIST"));
+    const detail = planExists ? `Plan already exists at ${resolve(context.cwd, input.planPath!)}; choose a new --plan path.`
+      : reason ?? (code === "apply_failed_recovered" ? curateRecoveredFailureReason(error) : undefined);
+    const restored = code === "apply_failed_recovered";
     write(input.json, { operation: `curate-${operation ?? "unknown"}`, status: "failed", code: `curate_${code}`,
-      ...(reason === undefined ? {} : { reason }), ...(backupPath === undefined ? {} : { backupPath }) },
-      () => `${messages[code]}${reason === undefined ? "" : ` ${reason}`}${backupPath === undefined ? "" : ` Backup: ${backupPath}.`}\n`);
+      ...(detail === undefined ? {} : { reason: detail }),
+      ...(operation === "apply" ? { restored } : {}), ...(backupPath === undefined ? {} : { backupPath }) },
+      () => `${messages[code]}${detail === undefined ? "" : ` ${detail}`}${backupPath === undefined ? "" : ` Backup: ${backupPath}.`}\n`);
     return 1;
   }
 }

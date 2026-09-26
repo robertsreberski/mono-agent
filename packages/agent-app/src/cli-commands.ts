@@ -11,7 +11,7 @@ import { readCliDotenvFile } from "./first-run-readiness.js";
 import { loadCliEnvFile, parseCliArgs } from "./cli-args.js";
 import type { ParsedCliArgs } from "./cli-args.js";
 export { loadCliEnvFile, parseCliArgs } from "./cli-args.js";
-import { monoAgentVersion, renderHelp, renderHelpTopic } from "./cli-help.js";
+import { monoAgentVersion, renderHelp, renderHelpTopic, renderMemorySubcommandHelp } from "./cli-help.js";
 export { monoAgentVersion, renderHelp, renderHelpTopic } from "./cli-help.js";
 import { runInstallSkill } from "./cli-install-skill-command.js";
 import { runConfig, runPresets, runValidate } from "./cli-validate-config-command.js";
@@ -104,6 +104,10 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       const { writeMemoryForgetFailure } = await import("./memory-command.js");
       const operationIndex = argv.indexOf("forget") + 1;
       writeMemoryForgetFailure(argv.includes("--json"), argv[operationIndex] ?? "unknown", "forget_usage");
+      return 2;
+    }
+    if (argv[0] === "memory" && argv.includes("--json")) {
+      process.stdout.write(`${JSON.stringify({ operation: "memory", status: "failed", code: "memory_usage", reason: "Invalid memory command arguments." })}\n`);
       return 2;
     }
     process.stderr.write(ui.errorLine(error instanceof Error ? error.message : String(error)));
@@ -232,6 +236,12 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   switch (args.command) {
     case "help": {
       const topic = args.positionals[0];
+      if (topic === "memory" && args.positionals.length > 1) {
+        const usage = renderMemorySubcommandHelp(args.positionals.slice(1));
+        if (usage !== undefined) { process.stdout.write(usage); return 0; }
+        process.stderr.write(ui.errorLine("Unknown memory help topic."));
+        return 2;
+      }
       if (topic === undefined) {
         process.stdout.write(renderHelp());
         return 0;

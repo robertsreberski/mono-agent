@@ -734,7 +734,8 @@ scoped preferences and verified lessons. Ambiguous names display entity IDs;
 `factSheetTruncated` and `preferencesAndLessonsTruncated` flag capped views.
 An explicit `about` focuses on facts, not guidance. Remote stores without labels keep their
 existing response shape. The CLI `mono-agent memory labels [--kind k] [--about
-entity] [--scope s] [--json]` lists indexed labels including history, and
+entity] [--scope s] [--limit 1..1000] [--json]` lists indexed labels
+including history (200 by default), and
 `mono-agent memory lessons --propose` prints source-linked snippets to copy
 manually. Both commands open the active generation read-only while an agent runs.
 

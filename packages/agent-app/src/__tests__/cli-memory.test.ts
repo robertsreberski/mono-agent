@@ -20,7 +20,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { resolveAppTraceRegistryDir } from "../app-config.js";
 import { parseCliArgs, renderHelp, renderHelpTopic, runCli } from "../cli.js";
-import { runMemoryCommand } from "../memory-command.js";
+import { curateRecoveredFailureReason, runMemoryCommand } from "../memory-command.js";
 
 /** Resolve a help topic to its rendered detail text. */
 function helpTopicText(topic: string): string {
@@ -46,6 +46,38 @@ describe("memory label CLI flags", () => {
     expect(() => parseCliArgs(["memory", "stats", "--kind", "lesson"])).toThrow(/memory labels/iu);
     expect(() => parseCliArgs(["memory", "labels", "--kind", "unknown"])).toThrow(/--kind/iu);
     expect(helpTopicText("memory")).toContain("memory lessons --propose");
+    expect(parseCliArgs(["memory", "labels", "--limit", "500"]).limit).toBe(500);
+    expect(() => parseCliArgs(["memory", "labels", "--limit", "1001"])).toThrow(/1000/u);
+  });
+
+  it("prints memory and exact subcommand help without reading an agent", async () => {
+    const root = await captureCli(() => runCli(["memory", "--help"]));
+    expect(root.code).toBe(0);
+    expect(root.stdout).toContain("mono-agent memory labels");
+    const nested = await captureCli(() => runCli(["memory", "curate", "apply", "--help"]));
+    expect(nested.code).toBe(0);
+    expect(nested.stdout).toContain("Usage: mono-agent memory curate apply --plan <file>");
+    const labels = await captureCli(() => runCli(["memory", "labels", "--help"]));
+    expect(labels.stdout).toContain("--limit 1..1000");
+    for (const [args, expected] of [
+      [["--config", "./a.json", "labels"], "memory labels"],
+      [["curate", "--plan", "x", "apply"], "curate apply --plan <file>"],
+      [["curate"], "curate prepare|review|apply|restore"],
+      [["forget"], "forget prepare|apply|restore"],
+      [["import"], "import prepare|apply|restore"],
+      [["labels", "--json"], "memory labels"],
+      [["search", "foo"], "memory search"],
+    ] as const) {
+      const result = await captureCli(() => runCli(["memory", ...args, "--help"]));
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain(expected);
+    }
+  });
+
+  it("returns a valid JSON error for an unknown labels flag", async () => {
+    const result = await captureCli(() => runCli(["memory", "labels", "--unknown", "--json"]));
+    expect(result.code).toBe(2);
+    expect(JSON.parse(result.stdout)).toMatchObject({ status: "failed", code: "memory_usage" });
   });
 
   it("preserves command-specific JSON envelopes without an index", async () => {
@@ -81,6 +113,11 @@ describe("memory label CLI flags", () => {
       const capped = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
         runCli(["memory", "lessons", "--propose"]))));
       expect(capped.stdout).toContain("Inventory truncated at 200; proposals may be incomplete.");
+      const labels = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+        runCli(["memory", "labels", "--limit", "250", "--json"]))));
+      expect(labels.code).toBe(0);
+      expect(JSON.parse(labels.stdout).labels).toHaveLength(203);
+      expect(JSON.parse(labels.stdout).truncated).toBe(false);
     } finally { db.close(); }
   });
 
@@ -2124,6 +2161,12 @@ describe("memory curate review safety", () => {
 });
 
 describe("curate crash recovery CLI", { timeout: 30_000 }, () => {
+  it("distinguishes withheld in-process causes from interrupted recovery", () => {
+    expect(curateRecoveredFailureReason(new bujoMemory.ExplicitMemoryCurateError("apply_failed_recovered", "/fixture/backup",
+      new Error("fictional private memory text")))).toContain("withheld");
+    expect(curateRecoveredFailureReason(new bujoMemory.ExplicitMemoryCurateError("apply_failed_recovered", "/fixture/backup")))
+      .toContain("not retained");
+  });
   it("routes stale post-mutation sources into durable recovery and reports the backup in JSON", async () => {
     const memoryRoot = join(await tempDir(), "memory");
     await mkdir(memoryRoot, { recursive: true });
@@ -2165,7 +2208,7 @@ describe("curate crash recovery CLI", { timeout: 30_000 }, () => {
     const recovered = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
       runCli(["memory", "curate", "apply", "--plan", planPath, "--json"]))));
     expect(recovered.code).toBe(1);
-    expect(JSON.parse(recovered.stdout)).toMatchObject({ code: "curate_apply_failed_recovered", backupPath: expect.any(String) });
+    expect(JSON.parse(recovered.stdout)).toMatchObject({ code: "curate_apply_failed_recovered", restored: true, backupPath: expect.any(String) });
     expect(bujoMemory.readBujoCanonicalSourceFingerprint(memoryRoot)).toBe(payload.sourceFingerprint);
     bujoMemory.appendBullet(memoryRoot, { id: "fictional-unindexed", type: "note", status: "open",
       text: "Morgan completed a later fictional task.", salience: 0.5, isInsight: false,
@@ -2180,8 +2223,12 @@ describe("curate crash recovery CLI", { timeout: 30_000 }, () => {
     const refused = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
       runCli(["memory", "curate", "apply", "--plan", planPath, "--json"]))));
     expect(JSON.parse(refused.stdout)).toMatchObject({ code: "curate_apply_failed",
-      reason: "memory-curate: selected id is not in the active index" });
+      reason: "memory-curate: selected id is not in the active index", restored: false });
     expect((await readdir(join(memoryRoot, ".."))).filter((name) => name.includes("curate-backup"))).toEqual(backupsBefore);
+    const text = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "curate", "apply", "--plan", planPath]))));
+    expect(text.stdout).toContain("memory-curate: selected id is not in the active index");
+    expect(text.stdout).toContain("Curation was refused before a recoverable backup");
   });
 });
 
@@ -2252,6 +2299,20 @@ describe("curate paid-run isolation", () => {
     const plan = JSON.parse(await readFile(planPath, "utf8"));
     expect(plan.proposals.map((proposal: { source: { id: string } }) => proposal.source.id)).toEqual(["fictional-a"]);
     expect(plan.sourceFingerprint).not.toBe(bujoMemory.readBujoCanonicalSourceFingerprint(memoryRoot));
+    const duplicate = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runMemoryCommand({
+      cwd: dir, env: {}, positionals: ["curate", "prepare"], planPath, json: true, strict: false,
+      curateLlm: { id: "fake", complete: async () => { throw new Error("model must not be called"); } },
+    }))));
+    expect(duplicate.code).toBe(1);
+    expect(JSON.parse(duplicate.stdout)).toMatchObject({ status: "failed", code: "curate_prepare_failed",
+      reason: expect.stringContaining(`Plan already exists at ${planPath}; choose a new --plan path.`) });
+    expect(await readFile(planPath, "utf8")).toBe(JSON.stringify(plan, null, 2) + "\n");
+    const estimate = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runMemoryCommand({
+      cwd: dir, env: {}, positionals: ["curate", "prepare"], planPath, json: true, strict: false, dryRun: true,
+    }))));
+    expect(estimate.code).toBe(0);
+    expect(JSON.parse(estimate.stdout).status).toBe("estimated");
+    expect(await readFile(planPath, "utf8")).toBe(JSON.stringify(plan, null, 2) + "\n");
   });
   it("explains tool-owned preparation failures without exposing provider errors", async () => {
     const memoryRoot = join(await tempDir(), "memory"); await mkdir(memoryRoot, { recursive: true });

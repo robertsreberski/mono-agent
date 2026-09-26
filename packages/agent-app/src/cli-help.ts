@@ -260,7 +260,7 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
     json: true,
     signature:
       "mono-agent memory [stats|today|show <date>|search <query>|top|audit|inspect [id]|retry [id]|resolve <id> <reason>|rebuild|rollback|adopt-replay]\n" +
-      "mono-agent memory labels [--kind fact|preference|lesson] [--about entity] [--scope scope] [--json]\n" +
+      "mono-agent memory labels [--kind fact|preference|lesson] [--about entity] [--scope scope] [--limit 1..1000] [--json]\n" +
       "mono-agent memory lessons --propose [--json]\n" +
       "mono-agent memory entities --duplicates [--limit N] [--json]\n" +
       "mono-agent memory curate prepare --plan <file> [--model provider:model] [--limit N] [--select recent,repeated,risky,oldest] [--owner-backfill] [--link-people] [--dry-run]\n" +
@@ -419,6 +419,36 @@ export type HelpTopicResult =
  * (or its alias) prints that command's detail view, a removed command prints its
  * replacement pointer, and anything else is a usage error listing valid topics.
  */
+export function renderMemorySubcommandHelp(positionals: readonly string[]): string | undefined {
+  const [subcommand, ...tail] = positionals;
+  if (subcommand === undefined) return undefined;
+  const operation = tail.find((token) => !token.startsWith("-"));
+  const usages: Readonly<Record<string, string>> = {
+    stats: "stats [--limit N]", today: "today", show: "show <YYYY-MM-DD>",
+    search: "search <query> [--limit N]", top: "top [--limit N]",
+    labels: "labels [--kind fact|preference|lesson] [--about entity] [--scope scope] [--limit 1..1000] [--json]",
+    entities: "entities --duplicates [--limit N]", lessons: "lessons --propose",
+    audit: "audit [--strict]", inspect: "inspect [id]", retry: "retry [id]",
+    resolve: "resolve <id> <reason>", rebuild: "rebuild", rollback: "rollback",
+    "adopt-replay": "adopt-replay", export: "export --bundle <dir> [--include-extras] [--allow-pending]",
+  };
+  const nested: Readonly<Record<string, string>> = {
+    "curate prepare": "curate prepare --plan <file> [--limit N] [--model provider:model] [--dry-run]",
+    "curate review": "curate review --plan <file> [--accept category,...] [--reject category,...]",
+    "curate apply": "curate apply --plan <file>", "curate restore": "curate restore --backup <dir>",
+    "forget prepare": "forget prepare --ids-file <file> --reason <slug> --plan <file>",
+    "forget apply": "forget apply --plan <file>", "forget restore": "forget restore --backup <dir>",
+    "import prepare": "import prepare --bundle <dir> --plan <file>",
+    "import apply": "import apply --plan <file>", "import restore": "import restore --backup <dir>",
+  };
+  const parent: Readonly<Record<string, string>> = {
+    curate: "curate prepare|review|apply|restore", forget: "forget prepare|apply|restore",
+    import: "import prepare|apply|restore",
+  };
+  const usage = nested[`${subcommand} ${operation ?? ""}`] ?? usages[subcommand] ?? parent[subcommand];
+  return usage === undefined ? undefined : `Usage: mono-agent memory ${usage} [--config <path>] [--json]\n`;
+}
+
 export function renderHelpTopic(topic: string): HelpTopicResult {
   if (topic === "notes") {
     return { ok: true, text: `${helpBanner()}${ui.style.dim(HELP_NOTES)}` };

@@ -112,6 +112,33 @@ false. A restrictive policy that mentions `MemoryJournal` while its memory
 capability is absent also reports that mismatch; no state is represented as
 a successful empty journal.
 
+### Curating a live store
+
+For an existing running agent, stop it before planning so the reviewed snapshot
+stays stable. Use a new private plan path outside the memory root each time;
+`prepare` refuses to overwrite a previous plan. Keep plans and backups private.
+
+```bash
+mono-agent stop
+mono-agent memory curate prepare --plan ./curate-plan.json --limit 120
+mono-agent memory curate review --plan ./curate-plan.json
+# Inspect the private plan; accept only proposals you intend to apply.
+mono-agent memory curate review --plan ./curate-plan.json --accept drop:generic-advice
+mono-agent memory curate apply --plan ./curate-plan.json --json
+mono-agent memory audit --strict --json
+mono-agent start
+```
+
+If apply fails, check its `reason` and `restored` result before restarting. If
+recovery could not be verified, leave the agent stopped. To undo a successful
+apply, stop the agent and run `mono-agent memory curate restore --backup <dir>`
+using the exact backup path returned by apply, before any intervening store
+write; audit again before starting. Restore refuses a changed store.
+
+`memory labels --limit N` reads up to 1000 indexed labels per invocation
+(default 200); `truncated` means more remain. It is read-only and safe while
+an agent runs.
+
 ### Reviewed one-time BuJo curation
 
 `memory curate prepare --plan <private-file>` reads at most 8192 selected live canonical lines (120 by default). The default `--select recent,repeated,risky,oldest` reserves bounded shares for recent lines, near-duplicates, credential/instruction-like lines, and the oldest lines; `--select oldest` restores the former oldest-first order. A custom comma-separated mix uses only its named buckets; prepare and dry-run report selected counts per bucket. Mixed selection caps the scanned live inventory at 65536 lines and fails explicitly above that bound; `--select oldest` keeps only its bounded oldest slice even on larger stores. Model-free `--limit 0` calls no LLM: besides operator merges and owner backfill it proposes deterministic coarse fact labels for lines already associated with a person, at most 1024 per pass and within the private plan size cap, walking oldest first (or newest first with `--select recent`; other buckets are rejected). Lines that already carry a fact for that person are skipped, so repeated prepare/apply passes cover a large store; prepare reports `coarseLabels.more` while lines remain. A line that cannot form a valid label becomes an `invalid-label` discard instead of failing the run. Prepare adds bounded adjacent-line and exact-name graph hints **from the same store only**, and sends batches of 12 to the configured memory LLM or an explicit `--model provider:model` override. `--dry-run` reports estimated calls/tokens without calling the model or writing a plan. Monetary cost is `unknown` when there is no trustworthy price. A successful prepare creates a new owner-private 0600 JSON plan outside the memory root containing original lines, proposals and source/root fingerprints; treat it as private memory data. Recheck the proposal count and examples with `review` before making changes. A checksum binds immutable proposals while permitting only `accepted` edits; other plan edits are rejected. Proposal defaults are rejected; `review --accept drop:generic-advice,label:*` flips matching booleans in one step, `--reject id:<id>` wins over a matching category, and manual editing of `accepted` is supported. Model output cannot authorize user attribution, a verified lesson, a legacy preference scope or identity. Curate has no user turn, so every label it proposes is an assistant-inferred person fact (an owner fact only on an explicit user/owner line); it never mints user-stated labels, preferences or lessons. A rewrite keeps preference and lesson labels, and each existing fact label exactly as stored while the new text still names its subject (and states its structured value), dropping it otherwise; it never re-derives or downgrades attribution, and a legacy relationship fact becomes a coarse fact on the same person with the same attribution. Re-prepare curate plans created by an older version. Agent-host curation calls use strict structured output (a single completion plus its structured-output finalization, at most three model turns) and no tools, MCP servers, process jobs, or agent-root lease; text-only providers may return either a proposal array or its `{ "proposals": [...] }` wrapper; a running agent's root lease does not block read-only prepare. Each batch gets one retry for transport/model/JSON-envelope failures, then its lines are discarded as `model-error` or `invalid-response` and later batches continue. Authentication/configuration failures abort without writing a plan, and so does a failed first model batch or two consecutive model-error batches before any batch has succeeded; an unavailable endpoint cannot yield an all-discarded success. Once a batch has succeeded, later failed batches are discarded and the run keeps its paid work. Individually invalid suggestions are discarded with bounded validation reason codes (action, fields, reason, text, label, merge, or generic proposal) listed in the private plan and review, while valid siblings survive the paid run. Prepare reports discard counts by reason without model error text. Both estimate and prepare report counts of canonical lines skipped as raw host observations, unstructured bullets, missing-identity bullets, legacy-source records, or terminal bullets; raw host observations excluded by rebuild are never sent to the model, even when they precede the selection limit. Keep durable user facts, dated values, plans and user-specific assistant findings; drop raw turn-log envelopes, process chatter and generic advice. Rewrites are only for supported attribution or date repairs, not shortening or guessing truncated text. Apply still strictly refuses any invalid or stale selected proposal before mutation.

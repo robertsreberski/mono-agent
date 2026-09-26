@@ -109,7 +109,7 @@ export class MemoryDbLabels extends MemoryDbGraph {
     for (const [column, value] of [["kind", filters.kind], ["entity_id", filters.entityId], ["scope", filters.scope]] as const) {
       if (value !== undefined) { predicates.push(`${column} = ?`); args.push(value); }
     }
-    const cap = Number.isInteger(limit) ? Math.max(1, Math.min(limit, 200)) : 200;
+    const cap = Number.isInteger(limit) ? Math.max(1, Math.min(limit, 1000)) : 200;
     const rows = this.labelHits(predicates.join(" AND "), args, cap + 1);
     return { hits: rows.slice(0, cap), truncated: rows.length > cap };
   }

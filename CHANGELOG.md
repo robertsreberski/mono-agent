@@ -7,6 +7,14 @@
   selection language-neutral, and restrict owner backfill to existing structured
   owner labels instead of interpreting English prose.
 
+- Fix `memory curate prepare` to refuse an existing private plan before model
+  work and tell operators to choose a new path.
+- Report safe curation failure reasons and whether `memory curate apply`
+  restored the pre-apply store, including interrupted recovery.
+- Let `memory labels --limit N` inspect up to 1000 indexed labels (default 200)
+  and return a JSON usage error for unknown flags.
+- Let `memory --help` and memory subcommand `--help` print relevant usage.
+
 - Memory capture drops the assistant's own low-salience lines. A memory the
   extraction model marks as `assistant`-sourced (or a `user` claim the host
   bounds to `assistant`) needs a model salience of at least 0.5; below that it

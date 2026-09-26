@@ -320,6 +320,17 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   }
   // `help <topic>` keeps the remaining tokens as positionals so the command
   // handler can render `help <command>` / `help notes` detail views.
+  if (command === "memory" && (rest.includes("--help") || rest.includes("-h"))) {
+    const topics: string[] = [];
+    for (let index = 0; index < rest.length; index++) {
+      const token = rest[index]!;
+      if (CLI_VALUE_FLAGS.has(token)) { index++; continue; }
+      if (token.startsWith("-")) continue;
+      topics.push(token);
+    }
+    return { command: "help", positionals: ["memory", ...topics],
+      force: false, foreground: false, follow: false, all: false, dryRun: false, includeMemory: false };
+  }
   if (command === "help") {
     return { command: "help", positionals: [...rest], force: false, foreground: false, follow: false, all: false, dryRun: false, includeMemory: false };
   }
@@ -525,7 +536,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       case "--limit": {
         const raw = requireValue(rest, ++i, flag);
         const parsed = Number(raw);
-        const maximum = cmd === "continuations" ? 500 : positionals[0] === "curate" ? 8192 : 100;
+        const maximum = cmd === "continuations" ? 500 : positionals[0] === "curate" ? 8192 : cmd === "memory" && positionals[0] === "labels" ? 1000 : 100;
         // `curate prepare --limit 0` prepares operator merges or an owner backfill without a model pass.
         const minimum = cmd === "memory" && positionals[0] === "curate" ? 0 : 1;
         if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
