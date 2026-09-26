@@ -14,7 +14,8 @@ import { encodeMemoryLabel, isStructuredFact, validateMemoryLabel, labelsOf, wit
 import type { LlmComplete } from "./llm.js";
 import type { Bullet } from "./types.js";
 import { OWNER_ENTITY_ID } from "./entity-reuse.js";
-import { applyOwnerAssociations, previewOwnerAssociations, type CurateOwnerAssociation } from "./curate-owner.js";
+import { applyEntityAssociations, previewOwnerAssociations, type CurateOwnerAssociation } from "./curate-owner.js";
+import { previewPersonAssociations, scanPersonAssociations, type CuratePersonAssociation, type CuratePersonLink, type CuratePersonLinkScan } from "./curate-people.js";
 import { unsafeCredentialContext } from "./text-safety.js";
 
 const MAX_LINES = 8192;
@@ -543,9 +544,28 @@ function mergePairs(root: string, proposals: readonly CurateProposal[], operator
   }
   return pairs;
 }
-/** Exact pre-backup source check; every proposed source is pinned to one canonical bullet. */
+/**
+ * Deterministic person-link scan (`--link-people`). Names resolve after the
+ * plan's accepted operator merges; a name merged into `person:owner` is not
+ * linked.
+ */
+export function proposePersonAssociations(root: string, operatorMerges: readonly CurateOperatorMerge[] = []): CuratePersonLinkScan {
+  return scanPersonAssociations(root, mergePairs(root, [], operatorMerges));
+}
+/**
+ * Exact pre-backup source check; every proposed source is pinned to one
+ * canonical bullet. Returns the ids of lines the plan links to the owner or a
+ * person.
+ */
 export function previewCurateMutations(root: string, proposals: readonly CurateProposal[], activeDb?: MemoryDb,
-  operatorMerges: readonly CurateOperatorMerge[] = [], ownerAssociations: readonly CurateOwnerAssociation[] = []): readonly string[] {
+  operatorMerges: readonly CurateOperatorMerge[] = [], ownerAssociations: readonly CurateOwnerAssociation[] = [],
+  personAssociations: readonly CuratePersonAssociation[] = []): readonly string[] {
+  return [...new Set(previewCurateLinks(root, proposals, activeDb, operatorMerges, ownerAssociations, personAssociations)
+    .map(({ memoryId }) => memoryId))];
+}
+function previewCurateLinks(root: string, proposals: readonly CurateProposal[], activeDb: MemoryDb | undefined,
+  operatorMerges: readonly CurateOperatorMerge[], ownerAssociations: readonly CurateOwnerAssociation[],
+  personAssociations: readonly CuratePersonAssociation[]): readonly CuratePersonLink[] {
   const seen = new Set<string>();
   const selected = new Set(proposals.map(({ source }) => source.id));
   const counts = new Map<string, number>();
@@ -615,7 +635,9 @@ export function previewCurateMutations(root: string, proposals: readonly CurateP
   }
   const drops = proposals.filter((item) => item.action === "drop").map(({ source }) => source.id);
   if (drops.length > 0) previewCanonicalExplicitForgetMemories(root, drops);
-  return previewOwnerAssociations(root, ownerAssociations, new Set(drops), activeDb, finals);
+  const ownerIds = previewOwnerAssociations(root, ownerAssociations, new Set(drops), activeDb, finals);
+  const personLinks = previewPersonAssociations(root, personAssociations, pairs, new Set(drops), activeDb, finals);
+  return [...ownerIds.map((memoryId) => ({ memoryId, entityId: OWNER_ENTITY_ID })), ...personLinks];
 }
 // A rewrite keeps preference and lesson refs, and each fact label exactly as
 // stored while the new text still supports its subject (and structured value);
@@ -688,9 +710,10 @@ function rewriteMergedEntities(root: string, pairs: ReadonlyMap<string, string>,
 }
 /** Runs only inside the durable root-swap transaction with the writer lease held. */
 export async function applyCurateMutations(root: string, db: MemoryDb, proposals: readonly CurateProposal[], expectedSourceFingerprint: string, now: () => Date,
-  operatorMerges: readonly CurateOperatorMerge[] = [], ownerAssociations: readonly CurateOwnerAssociation[] = []) {
+  operatorMerges: readonly CurateOperatorMerge[] = [], ownerAssociations: readonly CurateOwnerAssociation[] = [],
+  personAssociations: readonly CuratePersonAssociation[] = []) {
   if (readBujoCanonicalSourceFingerprint(root) !== expectedSourceFingerprint) throw new Error("memory-curate: source changed");
-  const ownerIds = previewCurateMutations(root, proposals, undefined, operatorMerges, ownerAssociations);
+  const links = previewCurateLinks(root, proposals, undefined, operatorMerges, ownerAssociations, personAssociations);
   const names = curateEntityNames(readCanonicalGraphStrictSnapshot(root).records.entities);
   const drops = proposals.filter((item) => item.action === "drop").map(({ source }) => source.id);
   if (drops.length > 0) await forgetExplicitMemories({ root, db, ids: drops, now, expectedSourceFingerprint });
@@ -705,7 +728,7 @@ export async function applyCurateMutations(root: string, db: MemoryDb, proposals
     if (!rewriteBullet(root, file, id, updated)) throw new Error("memory-curate: missing source");
   }
   rewriteMergedEntities(root, mergePairs(root, proposals, operatorMerges), now);
-  const associated = applyOwnerAssociations(root, db, ownerIds, now);
+  const associated = applyEntityAssociations(root, db, links, now);
   return { changed: proposals.length + operatorMerges.filter(({ accepted }) => accepted).length + associated,
     sourceFingerprint: readBujoCanonicalSourceFingerprint(root) };
 }

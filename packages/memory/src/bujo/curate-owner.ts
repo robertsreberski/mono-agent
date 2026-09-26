@@ -91,7 +91,8 @@ function dailyPaths(root: string): string[] {
     ...listCanonicalFileNames(root, "daily", { allowMissing: true, include: (name) => /^\d{4}-\d{2}-\d{2}\.md$/u.test(name) }).map((name) => `daily/${name}`)].sort();
 }
 
-function liveBullets(root: string): Map<string, Bullet> {
+/** Live canonical bullets by id; each daily file is parsed once. */
+export function liveBullets(root: string): Map<string, Bullet> {
   const bullets = new Map<string, Bullet>();
   for (const file of dailyPaths(root)) {
     const snapshot = readCanonicalFileSnapshot(root, file);
@@ -177,19 +178,25 @@ export function previewOwnerAssociations(root: string, associations: readonly Cu
 }
 
 /**
- * Runs inside the curate root-swap transaction, after merges and drops.
- * A canonical association suppresses name-derived (legacy) associations for
- * its memory, so the currently derived ones are recorded alongside it and the
- * line keeps every link it had before.
+ * Runs inside the curate root-swap transaction, after merges and drops, for
+ * reviewed owner and person links alike. `person:owner` is created when a
+ * link needs it. A canonical association suppresses name-derived (legacy)
+ * associations for its memory, so the currently derived ones are recorded
+ * alongside it and the line keeps every link it had before.
  */
-export function applyOwnerAssociations(root: string, db: MemoryDb, ids: readonly string[], now: () => Date): number {
-  if (ids.length === 0) return 0;
+export function applyEntityAssociations(root: string, db: MemoryDb,
+  links: readonly { readonly memoryId: string; readonly entityId: string }[], now: () => Date): number {
+  if (links.length === 0) return 0;
   const snapshot = readCanonicalGraphStrictSnapshot(root);
   const graph = snapshot.records;
   const createdAt = now().toISOString();
   const entities = [...graph.entities];
-  if (!entities.some(({ id }) => id === OWNER_ENTITY_ID)) entities.push({ id: OWNER_ENTITY_ID, name: "Owner", type: "person", createdAt });
-  const targets = new Set(ids);
+  if (links.some(({ entityId }) => entityId === OWNER_ENTITY_ID) && !entities.some(({ id }) => id === OWNER_ENTITY_ID)) {
+    entities.push({ id: OWNER_ENTITY_ID, name: "Owner", type: "person", createdAt });
+  }
+  const known = new Set(entities.map(({ id }) => id));
+  if (links.some(({ entityId }) => !known.has(entityId))) throw new Error("memory-curate: association refers to an unknown entity");
+  const targets = new Set(links.map(({ memoryId }) => memoryId));
   const projection = projectCanonicalGraph({ ...graph, entities }, db.canonicalGraphSnapshot().memories);
   const kept = projection.associations.filter((association) => targets.has(association.memoryId)
     && association.provenance === "legacy-name-match");
@@ -207,7 +214,7 @@ export function applyOwnerAssociations(root: string, db: MemoryDb, ids: readonly
   // A distinct provenance would widen the public association type and every
   // validator for no behavioural difference.
   const associations = [...graph.associations, ...kept,
-    ...ids.map((memoryId) => ({ memoryId, entityId: OWNER_ENTITY_ID, provenance: "capture" as const, createdAt }))];
+    ...links.map(({ memoryId, entityId }) => ({ memoryId, entityId, provenance: "capture" as const, createdAt }))];
   const lines = [
     ...entities.map((entity) => JSON.stringify({ ...entity, kind: "entity" })),
     ...graph.relations.map((relation) => JSON.stringify({ ...relation, kind: "relation" })),
@@ -215,5 +222,5 @@ export function applyOwnerAssociations(root: string, db: MemoryDb, ids: readonly
       .map((association) => JSON.stringify({ ...association, kind: "association" })),
   ].join("\n") + "\n";
   writeCanonicalFileAtomic(root, "graph.jsonl", lines, snapshot.identity);
-  return ids.length;
+  return new Set(links.map(({ memoryId, entityId }) => `${memoryId}\0${entityId}`)).size;
 }

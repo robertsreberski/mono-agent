@@ -559,6 +559,9 @@ CurateOperatorMerge
 CurateOwnerAssociation
 CurateOwnerAssociationReason
 CurateOwnerBackfillScan
+CuratePersonAssociation
+CuratePersonAssociationReason
+CuratePersonLinkScan
 CurateProposal
 CurateReason
 CurateSnapshot
@@ -593,6 +596,8 @@ MAX_CAPTURE_MEMORIES
 MAX_CAPTURE_RELATIONS
 MAX_CURATE_OPERATOR_MERGES
 MAX_CURATE_OWNER_ASSOCIATIONS
+MAX_CURATE_PERSON_ASSOCIATIONS
+MAX_CURATE_PERSON_ASSOCIATIONS_PER_PASS
 MAX_KNOWN_ENTITY_HINTS
 MEMORY_BUNDLE_EXTRAS_DIR
 MEMORY_BUNDLE_MANIFEST_FILE
@@ -685,6 +690,7 @@ previewCurateMutations
 proposeCoarseCurate
 proposeCurate
 proposeOwnerAssociations
+proposePersonAssociations
 pruneExplicitMemoryForgetBackups
 readBujoCanonicalSourceFingerprint
 readBujoRuntimeSnapshot
@@ -711,6 +717,7 @@ serializeBullet
 serializeDailyFile
 validateCurateOperatorMerge
 validateCurateOwnerAssociation
+validateCuratePersonAssociation
 validateCurateProposal
 writeFutureLog
 writeIndex

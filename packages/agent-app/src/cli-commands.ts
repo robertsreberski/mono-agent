@@ -359,6 +359,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         ...(args.curateMergeFile === undefined ? {} : { curateMergeFile: args.curateMergeFile }),
         ...(args.allowCrossType === undefined ? {} : { allowCrossType: args.allowCrossType }),
         ...(args.ownerBackfill === undefined ? {} : { ownerBackfill: args.ownerBackfill }),
+        ...(args.linkPeople === undefined ? {} : { linkPeople: args.linkPeople }),
         ...(args.duplicates === undefined ? {} : { duplicates: args.duplicates }),
         ...(args.model === undefined ? {} : { model: args.model }),
         dryRun: args.dryRun,
