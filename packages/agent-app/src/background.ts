@@ -156,7 +156,8 @@ export interface InstanceTarget {
    * Machine-wide registry that holds the worker's best-effort manifest mirror
    * when `registryDir` differs from it. A relative `traceability.registryDir`
    * is resolved against the caller's cwd, so a control command run outside the
-   * agent folder finds the worker only through this mirror.
+   * agent folder finds the worker only through this mirror. Read by
+   * `status` only; lifecycle commands never act on mirror entries.
    */
   readonly mirrorRegistryDir?: string;
   readonly staleAfterMs: number;
@@ -1534,7 +1535,7 @@ export async function statusBackground(
   options: StatusBackgroundOptions = {},
 ): Promise<number> {
   const [classified, service] = await Promise.all([
-    classifyTargetSources(target, deps),
+    classifyStatusSources(target, deps),
     launchdServiceInfo(deps.runner, target.label, deps.getuid()),
   ]);
   const matchingSources = classified.filter((entry) => entry.matches).map((entry) => entry.source);
@@ -1765,15 +1766,13 @@ export function printInstanceInfo(
   deps.stdout("\n" + ui.hint(`Stop with: mono-agent stop${flag}   ·   Logs: mono-agent logs${flag} --follow`));
 }
 
-/** Sources read from the global mirror; their manifests are not in `target.registryDir`. */
-const mirroredSources = new WeakSet<TraceSourceListItem>();
-
 /**
- * Every source in the target's registry, classified against its config, plus
- * the worker's global mirror entries for the same config that the registry
- * does not already list. Status, stop and restart all match through here.
+ * Status only (read-only): every source in the target's registry, classified
+ * against its config, plus every entry for the same config in the global
+ * mirror. Duplicates are kept; status picks the one whose pid is the launchd
+ * service pid. Lifecycle commands keep using {@link findInstances}.
  */
-async function classifyTargetSources(
+async function classifyStatusSources(
   target: InstanceTarget,
   deps: BackgroundDeps,
 ): Promise<readonly { readonly source: TraceSourceListItem; readonly matches: boolean }[]> {
@@ -1785,15 +1784,16 @@ async function classifyTargetSources(
   );
   const local = await classify(target.registryDir);
   if (target.mirrorRegistryDir === undefined) return local;
-  const known = new Set(local.filter((entry) => entry.matches).map((entry) => entry.source.sourceId));
-  const mirrored = (await classify(target.mirrorRegistryDir))
-    .filter((entry) => entry.matches && !known.has(entry.source.sourceId));
-  for (const entry of mirrored) mirroredSources.add(entry.source);
-  return [...local, ...mirrored];
+  return [...local, ...(await classify(target.mirrorRegistryDir)).filter((entry) => entry.matches)];
 }
 
 async function findInstances(target: InstanceTarget, deps: BackgroundDeps): Promise<readonly TraceSourceListItem[]> {
-  return (await classifyTargetSources(target, deps)).filter((entry) => entry.matches).map((entry) => entry.source);
+  const result = await deps.listTraceSources({ registryDir: target.registryDir, staleAfterMs: target.staleAfterMs });
+  const matches = await Promise.all(result.sources.map(async (source) => ({
+    source,
+    matches: await matchesConfig(source, target.configPath),
+  })));
+  return matches.filter((entry) => entry.matches).map((entry) => entry.source);
 }
 
 async function maybeUnlinkDeadManifest(
@@ -1803,7 +1803,7 @@ async function maybeUnlinkDeadManifest(
 ): Promise<void> {
   // Only clean up a manifest whose process is already gone; a worker that is
   // still shutting down will mark its own manifest stopped.
-  if (existing?.pid === undefined || mirroredSources.has(existing) || deps.isAlive(existing.pid)) {
+  if (existing?.pid === undefined || deps.isAlive(existing.pid)) {
     return;
   }
   await deps.rm(resolve(target.registryDir, `${existing.sourceId}.json`));

@@ -2996,26 +2996,39 @@ describe("statusBackground", () => {
     }
   });
 
-  it("stops a worker known only through the global mirror without deleting a local manifest", async () => {
+  it("prefers the mirror entry with the launchd pid over a stale local manifest with the same sourceId", async () => {
+    const { runner } = makeRunner({ loaded: true });
+    const target = makeTarget({ registryDir: "/elsewhere/.mono-agent/trace-sources", mirrorRegistryDir: "/home/u/.mono-agent/trace-sources" });
+    const stale = makeSource(target, { pid: 1111, sourceId: "fictional-agent", status: "stopped", health: "stopped" });
+    const fresh = makeSource(target, { pid: 4321, sourceId: "fictional-agent" });
+    const harness = makeHarness({
+      runner,
+      isAlive: (pid) => pid === 4321,
+      list: (async (options: { registryDir: string }) => ({ registryDir: options.registryDir,
+        sources: options.registryDir === target.mirrorRegistryDir ? [fresh] : [stale], warnings: [] })) as unknown as BackgroundDeps["listTraceSources"],
+    });
+
+    expect(await statusBackground(target, harness.deps, { json: true })).toBe(0);
+    expect(JSON.parse(harness.out.join(""))).toMatchObject({ ok: true, instance: { pid: 4321, health: "running" }, others: [] });
+  });
+
+  it("keeps lifecycle commands off the global mirror", async () => {
     const { runner, calls } = makeRunner({ loaded: true });
     const target = makeTarget({ registryDir: "/elsewhere/.mono-agent/trace-sources", mirrorRegistryDir: "/home/u/.mono-agent/trace-sources" });
-    // A dead worker: stop would unlink its manifest if it were in target.registryDir.
-    const mirrored = makeSource(target, { pid: 4321 });
     const listed: string[] = [];
     const harness = makeHarness({
       runner,
       isAlive: () => false,
       list: (async (options: { registryDir: string }) => {
         listed.push(options.registryDir);
-        return { registryDir: options.registryDir, sources: options.registryDir === target.mirrorRegistryDir ? [mirrored] : [], warnings: [] };
+        return { registryDir: options.registryDir, sources: [], warnings: [] };
       }) as unknown as BackgroundDeps["listTraceSources"],
     });
 
     expect(await stopBackground(target, harness.deps, POLL)).toBe(0);
-    expect(listed).toContain(target.mirrorRegistryDir);
     expect(calls.some((call) => call[0] === "bootout" && call[1]?.endsWith(target.label))).toBe(true);
-    expect(harness.removed).toContain(target.paths.plistPath);
-    expect(harness.removed.some((path) => path.endsWith(`${mirrored.sourceId}.json`))).toBe(false);
+    expect(listed.length).toBeGreaterThan(0);
+    expect(listed).not.toContain(target.mirrorRegistryDir);
   });
 
   it("prints this config's instance plus a brief list of others", async () => {
