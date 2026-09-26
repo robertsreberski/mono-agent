@@ -501,11 +501,11 @@ describe("strict completed-turn extraction", () => {
       "The user reports that Project Atlas uses the blue deployment lane.",
       "The user reports that Project Atlas uses the blue deployment lane today.",
     ],
-  ] as const)("rejects attributed %s as one ambiguous batch", async (_label, left, right) => {
+  ] as const)("keeps attributed %s for the model's judgement, not a word-shape rule", async (_label, left, right) => {
     await expect(extractCapturePlanStrict("completed turn", {
-      id: "ambiguous-attributed-facts",
+      id: "attributed-variants",
       complete: async () => planWithMemoryTexts([left, right]),
-    })).rejects.toMatchObject({ name: "MemoryModelOutputError" });
+    })).resolves.toMatchObject({ candidates: [{ text: left }, { text: right }] });
   });
 
   it.each([
@@ -544,9 +544,9 @@ describe("strict completed-turn extraction", () => {
       ...validPlan,
       entities: [{ id: "person:morgan", name: "Morgan", type: "project" }],
     })],
-    ["ambiguous duplicate memories", JSON.stringify({
+    ["duplicate memories", JSON.stringify({
       ...validPlan,
-      memories: [validPlan.memories[0], { ...validPlan.memories[0], text: "Morgan prefers strict durable capture now." }],
+      memories: [validPlan.memories[0], { ...validPlan.memories[0], text: "morgan prefers STRICT durable capture" }],
     })],
     ["invalid relation", JSON.stringify({ ...validPlan, relations: [{ src: "person:morgan", dst: "person:unknown", relation: "knows" }] })],
     ["partial invalid item", JSON.stringify({ ...validPlan, memories: [validPlan.memories[0], { type: "note" }] })],

@@ -453,8 +453,13 @@ function planBatchAction(
       return planUpdate(candidate, decision, deps);
     case "supersede": {
       const old = deps.db.get(decision.targetId ?? "");
+      // Standing guidance is not replaced on a model decision alone. The owner
+      // may correct their own preference (owner scope) on a verified owner
+      // turn; the old line stays as superseded history. A peer's or project
+      // preference and a lesson are never superseded here.
       if (old?.source.file !== undefined && labelsOf(requireCanonicalTarget(deps.root, old.source.file, old.id))
-        .some((label) => label.kind === "preference" || label.kind === "lesson")) {
+        .some((label) => label.kind === "lesson"
+          || (label.kind === "preference" && !(ownerCorrection(candidate, deps) && ownerScope(label.scope, deps))))) {
         return planAddWithoutIndex(candidate, similar, deps, threadThreshold);
       }
       return planSupersede(candidate, decision, deps);
@@ -462,6 +467,18 @@ function planBatchAction(
     default:
       throw new Error("memory-reconcile: unsupported batch action.");
   }
+}
+
+/** A memory the model sourced to the user on a host-verified owner turn with user text. */
+function ownerCorrection(candidate: CandidateMemory, deps: ReconcileDeps): boolean {
+  return candidate.source === "user" && deps.captureSpeakerKind === "human-turn"
+    && deps.captureEvidence?.ownerTurn === true && deps.captureEvidence.userText.trim().length > 0;
+}
+
+/** The owner's own preference scopes: `agent`, or this owner turn's own sender scope. */
+function ownerScope(scope: string, deps: ReconcileDeps): boolean {
+  const sender = deps.captureEvidence?.senderToken;
+  return scope === "agent" || (sender !== undefined && scope === `user:${sender}`);
 }
 
 function planAddWithoutIndex(
@@ -764,6 +781,7 @@ Use exactly one of these decision object shapes:
 
 Rules:
 - add means genuinely new; noop means duplicate; update means refinement; supersede means contradiction or a real replacement of a stable state. An existing item with sameEntity shares that graph entity but has no measured vector distance; it is offered only so a changed state of that entity can be recognised. Compare its actual content, not a fabricated similarity score; an unrelated claim about the same entity is add.
+- The User's own word wins. When a candidate with source "user" contradicts an existing memory, supersede that memory with the User's statement, not update or add. This includes an existing record of what the Assistant inferred, estimated, assumed, or recommended when the User contradicts its claim or the premise it rests on: an accurate record of what the Assistant said does not stay current once the User has corrected it. Supersede only on a real contradiction or replacement; other details about the same subject are add.
 - Compare the meaning as well as the topic: speaker attribution, stated scope, evidence limits, temporal qualification, and correction-versus-state-change qualification are durable information.
 - Material dates, times, timezones, year/month boundaries, resolved calendar intervals, observation anchors, uncertainty, negation, speaker/event association, and event scope must survive update or supersede text. Resolve directly stated relative time against a supplied host-owned observation anchor when unambiguous; preserve the observation date for an age snapshot as 'was N months old as of YYYY-MM-DD'. Never reinterpret a capture/observation anchor as the event time or invent a more exact event date than the input and trusted anchor support. Do not rebase a stored old observation on the current capture clock.
 - Distinct repeated events remain distinct when their temporal qualifiers or anchors differ. Do not choose noop or merge them merely because their non-temporal wording is similar.

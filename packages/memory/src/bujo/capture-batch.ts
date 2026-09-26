@@ -215,9 +215,10 @@ ${text}`;
  * because rejecting one long sentence discards every sibling memory in the
  * same response. Returned memory text is therefore bounded model output, not
  * necessarily verbatim model output. When clamping makes two otherwise
- * distinct memories indistinct, only the colliding candidate is dropped;
- * memories the model itself authored as indistinct still fail the whole
- * attempt. Malformed or unsafe text and every structural field — entity ids,
+ * distinct memories identical (the same words in the same order), only the
+ * colliding candidate is dropped; identical memories the model itself authored
+ * still fail the whole attempt. Differently worded near-duplicates are the
+ * model's judgement, not a host word-shape rule. Malformed or unsafe text and every structural field — entity ids,
  * types, relations — remain strictly all-or-nothing.
  */
 export async function extractCapturePlanStrict(
@@ -312,7 +313,7 @@ export async function extractCapturePlanStrict(
       // a material tail such as a date. Dropping that one candidate keeps every
       // unrelated sibling instead of discarding the batch and retrying it.
       if (!hostSplit && indistinctFrom(fullTokenSets.filter((_tokens, index) => !splitFlags[index]), fullTokens)) {
-        throw outputError("capture-extract", "memories must be distinct and non-ambiguous");
+        throw outputError("capture-extract", "memories must be distinct");
       }
       continue;
     }
@@ -338,10 +339,14 @@ export async function extractCapturePlanStrict(
     relations: relations.filter((relation) => !unsafeIds.has(relation.src) && !unsafeIds.has(relation.dst)) };
 }
 
+/**
+ * Structural duplicate check only: the same words in the same order. Whether
+ * two differently worded lines say the same thing is the model's judgement at
+ * extraction and, against the store, at reconciliation.
+ */
 function indistinctFrom(priorTokenSets: readonly (readonly string[])[], tokens: readonly string[]): boolean {
   const key = tokens.join("\u0000");
-  return priorTokenSets.some((prior) => prior.join("\u0000") === key
-    || isAmbiguousNearDuplicate(prior, tokens));
+  return priorTokenSets.some((prior) => prior.join("\u0000") === key);
 }
 
 function stripSingleJsonFence(raw: string): string {
@@ -515,77 +520,5 @@ function outputError(stage: string, detail: string): MemoryModelOutputError {
 }
 
 function candidateTokens(text: string): string[] {
-  return text.toLocaleLowerCase("en-US").match(/[\p{L}\p{N}]+/gu) ?? [];
-}
-
-const ATTRIBUTION_COMPLEMENT_VERBS = new Set([
-  "believed",
-  "believes",
-  "claimed",
-  "claims",
-  "confirmed",
-  "confirms",
-  "explained",
-  "explains",
-  "indicated",
-  "indicates",
-  "noted",
-  "notes",
-  "reported",
-  "reports",
-  "said",
-  "says",
-  "stated",
-  "states",
-]);
-
-function isAmbiguousNearDuplicate(left: readonly string[], right: readonly string[]): boolean {
-  // Attribution handling may only narrow the original guard. A pair accepted by
-  // the historical token predicate cannot become newly ambiguous here.
-  if (!hasAmbiguousTokenShape(left, right)) return false;
-  const [leftFact, rightFact, attributionRemoved] = withoutSharedAttribution(left, right);
-  if (!attributionRemoved) return true;
-  return hasAmbiguousTokenShape(leftFact, rightFact, true);
-}
-
-function hasAmbiguousTokenShape(
-  left: readonly string[],
-  right: readonly string[],
-  allowSingleAlignedSubstitution = false,
-): boolean {
-  if (left.length < 3 || right.length < 3) return false;
-  const smaller = Math.min(left.length, right.length);
-  const rightSet = new Set(right);
-  const overlap = new Set(left.filter((token) => rightSet.has(token))).size / smaller;
-  let prefix = 0;
-  while (prefix < smaller && left[prefix] === right[prefix]) prefix += 1;
-  const alignedSubstitutions = allowSingleAlignedSubstitution && left.length === right.length
-    ? left.reduce((count, token, index) => count + Number(token !== right[index]), 0)
-    : Number.POSITIVE_INFINITY;
-  return overlap >= 0.6
-    && ((prefix >= 2 && prefix / smaller >= 0.5) || alignedSubstitutions === 1);
-}
-
-/**
- * A repeated speaker/evidence qualification is context, not the proposition's
- * predicate. Compare the content after an identical reporting complement so a
- * long "the user reports that ..." preamble cannot make two independent facts
- * look like variants. Different reporters remain material, and short contents
- * retain the original whole-sentence guard rather than becoming uncheckable.
- */
-function withoutSharedAttribution(
-  left: readonly string[],
-  right: readonly string[],
-): readonly [readonly string[], readonly string[], boolean] {
-  const smaller = Math.min(left.length, right.length);
-  let shared = 0;
-  while (shared < smaller && left[shared] === right[shared]) shared += 1;
-  for (let index = 0; index + 1 < shared; index += 1) {
-    if (!ATTRIBUTION_COMPLEMENT_VERBS.has(left[index] ?? "") || left[index + 1] !== "that") continue;
-    const offset = index + 2;
-    const leftFact = left.slice(offset);
-    const rightFact = right.slice(offset);
-    if (leftFact.length >= 3 && rightFact.length >= 3) return [leftFact, rightFact, true];
-  }
-  return [left, right, false];
+  return text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
 }

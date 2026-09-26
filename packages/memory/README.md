@@ -308,9 +308,12 @@ memory text length: text beyond the capture bound is clamped rather than
 rejected, because rejecting one long sentence would discard every other memory
 in the same response. Returned memory text is therefore bounded, not
 necessarily verbatim, model output. If clamping makes two otherwise distinct
-memories indistinct, only the colliding candidate is dropped; memories the
-model itself authored as indistinct still fail the whole attempt. Malformed or
-unsafe text and every structural field remain all-or-nothing.
+memories identical (the same words in the same order), only the colliding
+candidate is dropped; identical memories the model itself authored still fail
+the whole attempt. There is no word-shape near-duplicate rule: whether two
+differently worded lines say the same thing is the model's judgement, at
+extraction and against the store at reconciliation. Malformed or unsafe text
+and every structural field remain all-or-nothing.
 
 Capture and reconciliation prompts ask the selected model to preserve material
 speaker, evidence, preference scope, negation, and temporal qualification;
