@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { extractCapturePlanStrict } from "../capture-batch.js";
+import { MIN_ASSISTANT_CAPTURE_SALIENCE, extractCapturePlanStrict } from "../capture-batch.js";
 import { fakeLlm } from "./helpers.js";
 
 /** Build one exact-key strict completion from memory texts, with no graph fields. */
@@ -230,7 +230,7 @@ describe("extractCapturePlanStrict intra-turn precision", () => {
         { id: "person:bad id", name: "bad slug", type: "person" },
         { id: `person:${huge}`, name: "oversized id", type: "person" },
         { id: "person:morgan", name: `Morgan\n${"R".repeat(200)}`, type: "person" },
-        { id: "person:morgan", name: "  Morgan\nReberski  ", type: "PERSON!" },
+        { id: "person:morgan", name: "  Morgan\nQuillson  ", type: "PERSON!" },
         { id: "project:mono-agent", name: "mono-agent", type: "project" },
       ],
       relations: [
@@ -243,5 +243,67 @@ describe("extractCapturePlanStrict intra-turn precision", () => {
     })]]);
 
     await expect(extractCapturePlanStrict("Morgan maintains mono-agent.", llm)).rejects.toThrow(/capture-extract/iu);
+  });
+});
+
+describe("extractCapturePlanStrict assistant salience floor", () => {
+  const human = (user: string) => ({ observedAt: "2026-07-12T10:00:00.000Z", captureSpeakerKind: "human-turn" as const,
+    conversationId: "web:fictional", captureEvidence: { userText: user, toolOutcomes: [] } });
+  const memory = (text: string, source: string | undefined, salience: number, entityIds: string[] = []) => ({
+    type: "note", text, salience, isInsight: false, entityIds, ...(source === undefined ? {} : { source }) });
+
+  it.each([
+    ["en", "Can you check the Maple job?", "The assistant restarted the Maple job at 17:18.", "The assistant found the Maple job fails when Quillmere is offline."],
+    ["pl", "Sprawdzisz zadanie Maple?", "Asystent zrestartował zadanie Maple o 17:18.", "Asystent ustalił, że zadanie Maple nie działa bez Quillmere."],
+    ["es", "¿Puedes revisar la tarea Maple?", "El asistente reinició la tarea Maple a las 17:18.", "El asistente descubrió que la tarea Maple falla sin Quillmere."],
+  ])("drops only low-salience assistant lines (%s), whatever the language", async (_lang, user, status, finding) => {
+    const plan = await extractCapturePlanStrict(`User: ${user}\nAssistant: ${finding}`, {
+      id: "salience-floor", complete: async () => JSON.stringify({ memories: [
+        memory(status, "assistant", 0.45),
+        memory(finding, "assistant", MIN_ASSISTANT_CAPTURE_SALIENCE),
+        memory("Morgan asked about the Maple job on 2026-07-12.", "user", 0.2),
+        memory("A document lists the Maple job owner as Morgan.", "document", 0.2),
+      ], entities: [], relations: [] }),
+    }, undefined, [], human(user));
+    expect(plan.candidates.map((candidate) => candidate.text)).toEqual([
+      finding, "Morgan asked about the Maple job on 2026-07-12.", "A document lists the Maple job owner as Morgan.",
+    ]);
+  });
+
+  it("applies the floor to a user claim the host bounds to assistant, but not to a plan without source", async () => {
+    const trigger = { observedAt: "2026-07-12T10:00:00.000Z", captureSpeakerKind: "trigger" as const };
+    const bounded = await extractCapturePlanStrict("Scheduled task trigger (trigger text omitted):\nAssistant: Maple sync ran.", {
+      id: "trigger-floor", complete: async () => JSON.stringify({ memories: [
+        memory("The Maple sync ran at 06:00.", "user", 0.3),
+        memory("The Maple sync moved to Quillmere storage on 2026-07-12.", "user", 0.7),
+      ], entities: [], relations: [] }),
+    }, undefined, [], trigger);
+    expect(bounded.candidates.map(({ text, source }) => [text, source]))
+      .toEqual([["The Maple sync moved to Quillmere storage on 2026-07-12.", "assistant"]]);
+    const legacy = await extractCapturePlanStrict("User: Maple sync?\nAssistant: It ran.", {
+      id: "no-source", complete: async () => JSON.stringify({ memories: [memory("The Maple sync ran at 06:00.", undefined, 0.2)],
+        entities: [], relations: [] }),
+    });
+    expect(legacy.candidates.map(({ text }) => text)).toEqual(["The Maple sync ran at 06:00."]);
+  });
+
+  it("does not persist an entity or relation named only by a dropped line", async () => {
+    const user = "How is Morgan's Maple project going?";
+    const plan = await extractCapturePlanStrict(`User: ${user}\nAssistant: Status only.`, {
+      id: "floor-graph", complete: async () => JSON.stringify({ memories: [
+        memory("The assistant said the Quillmere service schedule is unchanged.", "assistant", 0.3, ["service:quillmere"]),
+        memory("Morgan leads the Maple project.", "user", 0.8, ["person:morgan", "project:maple"]),
+      ], entities: [
+        { id: "person:morgan", name: "Morgan", type: "person" },
+        { id: "project:maple", name: "Maple", type: "project" },
+        { id: "service:quillmere", name: "Quillmere", type: "service" },
+      ], relations: [
+        { src: "person:morgan", dst: "project:maple", relation: "leads" },
+        { src: "project:maple", dst: "service:quillmere", relation: "uses" },
+      ] }),
+    }, undefined, [], human(user));
+    expect(plan.candidates.map(({ text }) => text)).toEqual(["Morgan leads the Maple project."]);
+    expect(plan.entities.map(({ id }) => id)).toEqual(["person:morgan", "project:maple"]);
+    expect(plan.relations).toEqual([{ src: "person:morgan", dst: "project:maple", relation: "leads" }]);
   });
 });

@@ -204,7 +204,9 @@ in that text. A structured date matches only as `YYYY-MM-DD` or an unambiguous
 numeric day/month/year, never a month written in words. A structured owner
 property falls back to the coarse owner fact when the line is also associated
 with, or names, another person entity. A capture plan retained before `source`
-existed keeps its already-validated labels while its text is unchanged. A preference needs a `user` source on a human turn; unidentified
+existed keeps its already-validated labels while its text is unchanged. An `assistant`-sourced memory is kept only with a model salience of at least
+0.5, so the assistant's own progress or status reports and generic advice are
+dropped before reconciliation. A preference needs a `user` source on a human turn; unidentified
 speakers' preferences are conversation-scoped. A verified lesson needs the
 model's lesson label and a host-observed successful tool outcome. Optional `capture.focus` (operator guidance) narrows extraction selection;
 `capture.only` filters curated capture to host-accepted label kinds after final

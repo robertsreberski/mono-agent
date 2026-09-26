@@ -19,6 +19,13 @@ import { unsafeCaptureContent } from "./text-safety.js";
 export const MAX_CAPTURE_MEMORIES = 8;
 export const MAX_CAPTURE_ENTITIES = 16;
 export const MAX_CAPTURE_RELATIONS = 16;
+/**
+ * An assistant-sourced memory needs at least this model salience to be kept.
+ * The Assistant's own status and process reports and generic advice are scored
+ * low by the extraction model; a concrete finding for the user is not. Calibrated
+ * on a real multi-turn replay; the number is the only rule, in any language.
+ */
+export const MIN_ASSISTANT_CAPTURE_SALIENCE = 0.5;
 
 export interface CapturePlan {
   readonly candidates: readonly CandidateMemory[];
@@ -273,13 +280,15 @@ export async function extractCapturePlanStrict(
   const labelContext = { ...observationContext, entityNames };
   const parsedCandidates = output.memories.flatMap((value, index) => strictCandidate(value, index, entityIds, labelContext));
   // A question is not a fact; the trailing mark is structural. Requests in any
-  // other form are the extraction model's admission judgement.
+  // other form are the extraction model's admission judgement. The Assistant's
+  // own low-salience lines (progress, status, generic advice) are not kept.
   const safeCandidates = parsedCandidates.filter(({ candidate }) => !unsafeCaptureContent(candidate.text)
-    && !/[?？]\s*$/u.test(candidate.text));
+    && !/[?？]\s*$/u.test(candidate.text)
+    && !(candidate.source === "assistant" && candidate.salience < MIN_ASSISTANT_CAPTURE_SALIENCE));
   const unsafeIds = new Set(entities.filter((entity) => unsafeCaptureContent(entity.name)
     || /^(?:credential|password|passcode|pin|username|login|token|secret-key|api-key):/iu.test(entity.id)).map((entity) => entity.id));
-  // An identifier proposed only by a filtered unsafe line is not a real-world
-  // graph subject; discard it rather than persisting it as an orphan entity.
+  // An identifier proposed only by a filtered line is not a real-world graph
+  // subject; discard it rather than persisting it as an orphan entity.
   const safeIds = new Set(safeCandidates.flatMap(({ candidate }) => candidate.entityIds ?? []));
   for (const { candidate } of parsedCandidates) {
     if (safeCandidates.some((safe) => safe.candidate === candidate)) continue;
