@@ -182,7 +182,7 @@ The first call has one strict shape:
 {
   "fromDate": "2026-09-01",
   "throughDate": "2026-09-07",
-  "timeZone": "Europe/Amsterdam",
+  "timeZone": "UTC",
   "limit": 10
 }
 ```

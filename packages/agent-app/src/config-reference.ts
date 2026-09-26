@@ -392,7 +392,7 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
     env: "--",
     type: "object",
     defaultLabel: "unset",
-    example: { timezone: "Europe/Amsterdam", start: "22:00", end: "07:00" },
+    example: { timezone: "UTC", start: "22:00", end: "07:00" },
     description: "Quiet-hours rules for Telegram notifications.",
   },
   {

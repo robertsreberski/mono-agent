@@ -187,7 +187,7 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `telegram.enabled` | `boolean` | `MONO_AGENT_TELEGRAM_ENABLED` | false | `true` | Enables the telegram capability. |
 | `telegram.groupMode` | `string` | `MONO_AGENT_TELEGRAM_GROUP_MODE` | any | `mention` | Group-message trigger rule: `any` runs every allowed group message; `mention` runs only native @mentions of the bot and replies to its messages. Direct chats and commands are unaffected. |
 | `telegram.pollWatchdogMs` | `integer` | `MONO_AGENT_TELEGRAM_POLL_WATCHDOG_MS` | unset | `1` | Configures pollWatchdogMs for the telegram section. |
-| `telegram.quietHours` | `object` | `--` | unset | `{"timezone":"Europe/Amsterdam","start":"22:00","end":"07:00"}` | Quiet-hours rules for Telegram notifications. |
+| `telegram.quietHours` | `object` | `--` | unset | `{"timezone":"UTC","start":"22:00","end":"07:00"}` | Quiet-hours rules for Telegram notifications. |
 | `telegram.reactions` | `object` | `MONO_AGENT_TELEGRAM_REACTIONS` | unset | `{"working":true,"done":true,"error":true}` | Telegram lifecycle reactions. The env override is boolean and toggles all states. |
 | `telegram.sendTools.pathScope` | `string` | `--` | unset | `run-output` | Confine Telegram path uploads to the current run output directory. |
 | `telegram.sendTools.scope` | `string` | `--` | unset | `producing-conversation` | Bind Telegram send tools to the chat that produced the current run. |
