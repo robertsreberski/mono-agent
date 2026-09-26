@@ -81,7 +81,7 @@ export function factKeyLabel(key: string): string {
 }
 
 /** Reader-facing value text; never the JSON encoding. */
-export function factValueText(value: FactLabel["value"]): string {
+export function factValueText(value: NonNullable<FactLabel["value"]>): string {
   return value.type === "date" ? value.date : value.type === "text" ? value.text
     : value.type === "entity" ? value.entityId : `${value.role} ${value.targetEntityId}`;
 }
@@ -163,6 +163,7 @@ export function formatMemoryBackground(
   byteBudget = MAX_BACKGROUND_BYTES,
   /** Texts of records the direct-fact gate already selected for this question. */
   directEvidence: readonly string[] = [],
+  directMemoryIds: ReadonlySet<string> = new Set(),
 ): {
   readonly content: string;
   readonly truncated: boolean;
@@ -218,34 +219,40 @@ export function formatMemoryBackground(
   const cards: string[] = [];
   const direct: string[] = [];
   for (const entity of entities.filter((entry) => !ambiguous.has(entry.id)).slice(0, 3)) {
-    const facts = store.labelsForEntity(entity.id, date).filter((hit) => hit.label.kind === "fact" && hit.active
+    const facts = store.labelsForEntity(entity.id, date).filter((hit) => hit.label.kind === "fact" && hit.label.key !== undefined && hit.active
       && (hit.label.attribution === "user-stated" || hit.label.attribution === "document"));
     const parts: string[] = [];
-    for (const key of [...new Set(facts.map((hit) => hit.label.kind === "fact" ? hit.label.key : ""))]) {
+    for (const key of [...new Set(facts.flatMap((hit) => hit.label.kind === "fact" && hit.label.key !== undefined ? [hit.label.key] : []))]) {
       const relevant = keyRelevant(key, concepts, query);
       if (!bare && !relevant) continue;
       const candidates = facts.filter((hit) => hit.label.kind === "fact" && hit.label.key === key && hit.currentAt);
       if (candidates.length === 0) continue;
-      const distinct = new Set(candidates.map((hit) => hit.label.kind === "fact" ? fold(factValueText(hit.label.value)) : ""));
+      const distinct = new Set(candidates.flatMap((hit) => hit.label.kind === "fact" && hit.label.value !== undefined
+        ? [fold(factValueText(hit.label.value))] : []));
       if (candidates.some((hit) => hit.conflict) || distinct.size > 1) {
         parts.push(`${keyText(key)}: conflicting values — ask`);
         continue;
       }
-      // Every selected record must state the labelled value, or neither is direct.
-      if (relevant && evidence.length > 0 && ![...distinct].every((value) => evidence.every((text) => text.includes(value)))) {
+      // Every selected record must state every relevant labelled value, or neither
+      // is direct — including a label whose own line was not selected.
+      // `directMemoryIds` only decides which line may be pushed as the answer.
+      if (relevant && evidence.length > 0
+        && ![...distinct].every((value) => evidence.every((text) => text.includes(value)))) {
         recallConflict = true;
         parts.push(`${keyText(key)}: labelled value and recalled memory disagree — ask`);
         continue;
       }
       for (const hit of candidates) {
-        if (hit.label.kind !== "fact") continue;
+        if (hit.label.kind !== "fact" || hit.label.value === undefined) continue;
         const value = hit.label.value;
         const values = [`${factKeyLabel(key)}: ${safeLine(factValueText(value))} (${hit.label.attribution === "user-stated" ? "you said" : "document"}, recorded ${hit.createdAt.slice(0, 10)})`];
         if (key === "birth_date" && value.type === "date") {
           const age = ageAt(value.date, date);
           if (age !== undefined) values.push(age);
         }
-        if (relevant && options.ownerTurn === true) direct.push(`${safeLine(entity.name)} — ${values.join("; ")}`);
+        if (relevant && options.ownerTurn === true && directMemoryIds.has(hit.memoryId)) {
+          direct.push(`${safeLine(entity.name)} — ${values.join("; ")}`);
+        }
         else parts.push(...values);
       }
     }

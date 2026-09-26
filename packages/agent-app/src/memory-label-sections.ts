@@ -13,8 +13,10 @@ export interface LabelContext extends MemoryLoadOptions { readonly conversationI
 export interface FactSheetEntry {
   readonly entityId: string;
   readonly name: string;
-  readonly key: string;
-  readonly value: Extract<LabelHit["label"], { kind: "fact" }>["value"];
+  readonly key?: string;
+  readonly value?: Extract<LabelHit["label"], { kind: "fact" }>["value"];
+  /** The stored line itself is the only claim carried by a coarse fact. */
+  readonly text?: string;
   readonly attribution: string;
   readonly recordedAt: string;
   readonly current: boolean;
@@ -51,13 +53,18 @@ export function readLabelSections(store: LabelRecallStore, request: LabelSection
     const rows = entities.slice(0, 3).flatMap((entity) => store.labelsForEntity!(entity.id, date)
       .filter((hit): hit is LabelHit & { label: Extract<LabelHit["label"], { kind: "fact" }> } => hit.label.kind === "fact")
       .map((hit) => ({ entity, hit })));
-    // Rank current/active first so a long historical ledger cannot hide today's values.
-    rows.sort((a, b) => Number(b.hit.active && b.hit.currentAt) - Number(a.hit.active && a.hit.currentAt)
+    // Structured rows first, so many keyless person lines can never push a
+    // structured value or conflict past the cut; then current/active first so
+    // a long historical ledger cannot hide today's values.
+    rows.sort((a, b) => Number(b.hit.label.key !== undefined) - Number(a.hit.label.key !== undefined)
+      || Number(b.hit.active && b.hit.currentAt) - Number(a.hit.active && a.hit.currentAt)
       || Number(b.hit.active) - Number(a.hit.active)
       || b.hit.createdAt.localeCompare(a.hit.createdAt)
       || a.hit.memoryId.localeCompare(b.hit.memoryId));
     const facts: FactSheetEntry[] = rows.slice(0, 12).map(({ entity, hit }) => ({
-      entityId: entity.id, name: safeLine(entity.name).slice(0, 160), key: hit.label.key, value: hit.label.value,
+      entityId: entity.id, name: safeLine(entity.name).slice(0, 160),
+      ...(hit.label.key === undefined ? { text: safeLine(hit.text).slice(0, 240) }
+        : { key: hit.label.key, value: hit.label.value }),
       attribution: hit.label.attribution, recordedAt: hit.createdAt.slice(0, 10),
       current: hit.currentAt === true, conflict: hit.conflict,
       ...(hit.sourceFile === undefined ? {} : { sourceFile: hit.sourceFile }),
@@ -67,7 +74,7 @@ export function readLabelSections(store: LabelRecallStore, request: LabelSection
     Object.assign(result, { factSheet: facts, factSheetTruncated });
     if (ambiguous) lines.push(`Ambiguous name — ${entities.length} entities, specify an entity id.`);
     if (facts.length > 0) lines.push("Fact sheet:", ...facts.map((fact) =>
-      `- ${safeLine(fact.name)} [${fact.entityId}] ${safeLine(factKeyLabel(fact.key))}: ${safeLine(factValueText(fact.value))} (${fact.attribution}, recorded ${fact.recordedAt}; ${fact.current ? "current" : "historical"}${fact.conflict ? "; conflicting values" : ""})`));
+      `- ${safeLine(fact.name)} [${fact.entityId}] ${fact.key === undefined ? "fact" : safeLine(factKeyLabel(fact.key))}: ${safeLine(fact.value === undefined ? fact.text ?? "" : factValueText(fact.value))} (${fact.attribution}, recorded ${fact.recordedAt}; ${fact.current ? "current" : "historical"}${fact.conflict ? "; conflicting values" : ""})`));
     if (factSheetTruncated) lines.push("Fact sheet truncated; request a narrower entity or kind.");
   }
   if (request.kind === undefined || request.kind !== "fact") {

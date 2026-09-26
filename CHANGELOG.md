@@ -13,6 +13,26 @@
   the line's drop is accepted, reporting the count. Such plans used to fail at
   `apply` with "conflicting owner association".
 
+- Derive coarse `label:v1` person facts from associated durable capture lines
+  without a model label proposal, and let `memory curate prepare --limit 0`
+  propose the same labels for existing lines without model calls. Keep
+  structured direct answers bound to the selected source line, while any relevant
+  labelled value that disagrees with the selected line still asks instead of
+  answering; do not downgrade readers after writing coarse facts. The `--limit 0`
+  pass is bounded (1024 labels and the plan size cap), idempotent, walks oldest
+  or `--select recent` first, and turns a bad line into a discard; `--select`
+  now reaches `curate prepare` from the CLI. Curate labels are always
+  assistant-inferred and validated against every graph display name; rewrites
+  keep supported labels, preferences and lessons unchanged and turn legacy
+  relationship facts into coarse ones. Legacy relationship roles are read as
+  plain tokens. Re-prepare curate plans created by an older version.
+
+- Keep capture and curate labels for supported natural-phrasing person facts and
+  user-stated standing instructions, including negative preferences. Keep
+  assistant-only claims inferred (a coarse fact is user-stated only when a
+  user sentence that is not a question asserts its claim) and reject unsupported retrospective labels.
+  Verified lessons no longer require a failed retry.
+
 - Embed large explicit memory plans (curate, forget) in bounded provider
   batches. Applying a plan with hundreds of dropped lines no longer sends one
   oversized request that a local Ollama runner rejects.

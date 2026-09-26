@@ -221,7 +221,7 @@ describe("capture extraction with reuse hints", () => {
       memories: [{ type: "note", text: "Morgan met the user at Maple Street.", salience: 0.8, isInsight: false,
         entityIds: ["person:owner", "person:morgan"],
         labels: [{ v: 1, kind: "fact", entityId: "person:morgan", key: "relationship",
-          value: { type: "relationship", role: "friend", targetEntityId: "person:owner" }, attribution: "unknown" }] }],
+          value: { type: "relationship", role: "zorbel", targetEntityId: "person:owner" }, attribution: "unknown" }] }],
       entities: [{ id: "person:owner", name: "Owner", type: "person" }, { id: "person:morgan", name: "Morgan", type: "person" }],
       relations: [{ src: "person:morgan", dst: "person:owner", relation: "met" }],
     });
@@ -234,7 +234,8 @@ describe("capture extraction with reuse hints", () => {
     expect(peer.entities.map(({ id }) => id)).toEqual(["person:morgan"]);
     expect(peer.relations).toEqual([]);
     expect(peer.candidates[0]?.entityIds).toEqual(["person:morgan"]);
-    expect(peer.candidates[0]?.labels).toBeUndefined();
+    expect(peer.candidates[0]?.labels).toEqual([{ v: 1, kind: "fact", entityId: "person:morgan",
+      attribution: "user-stated" }]); // The owner id stays stripped; Morgan is named in the line and turn.
     const trigger = await extractCapturePlanStrict(turn, fakeLlm([["Extract one bounded", output]]), undefined, [],
       { observedAt: "2026-07-12T10:00:00.000Z", captureSpeakerKind: "trigger" });
     expect(trigger.entities.map(({ id }) => id)).toEqual(["person:morgan"]);

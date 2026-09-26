@@ -726,7 +726,10 @@ because they do not own that per-turn lookup. Optional `kind` (`fact`, `preferen
 `lesson`) filters labelled sections without changing the ordinary dated hits;
 `about` selects one exact person entity ID/name. Local BuJo results prepend a
 fact sheet (keys without the `other:` namespace, values as text) with
-attribution, date, current/historical state and conflicts, plus
+attribution, date, current/historical state and conflicts; a keyless coarse
+person fact is a `FactSheetEntry` with the stored line as `text` and no
+`key`/`value`, rendered as `fact: <line>`. Structured rows rank before keyless
+ones so a structured conflict is never cut, plus
 scoped preferences and verified lessons. Ambiguous names display entity IDs;
 `factSheetTruncated` and `preferencesAndLessonsTruncated` flag capped views.
 An explicit `about` focuses on facts, not guidance. Remote stores without labels keep their

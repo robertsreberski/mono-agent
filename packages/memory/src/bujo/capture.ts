@@ -101,7 +101,7 @@ async function captureTurnUnlocked(
     fallbackOnClassifierFailure: true,
     isFinalCaptureAttempt: deps.isFinalCaptureAttempt === true,
     labelsForAction: (_action, candidate, _previous, finalText) => candidate.labels === undefined ? undefined
-      : captureLabels(candidate.labels, finalText ?? candidate.text, labelContext),
+      : captureLabels(candidate.labels, finalText ?? candidate.text, { ...labelContext, ...(candidate.entityIds === undefined ? {} : { entityIds: candidate.entityIds }) }),
     // Once the intent exists it is the single commit owner. Writing the same
     // records directly here and then replaying the intent would duplicate the
     // SQLite/canonical transaction without improving durability.

@@ -197,7 +197,7 @@ export class MemoryRetrievalService implements MemoryStore {
       try {
         const available = this.maxBytes - (block === undefined ? 0 : Buffer.byteLength(block.content, "utf8") + 2);
         background = formatMemoryBackground(this.store, evidenceQuery, conversationId, options, outcome.hits, available,
-          hits.map((hit) => hit.record.text));
+          hits.map((hit) => hit.record.text), new Set(hits.map((hit) => hit.record.id)));
       } catch {
         // Corrupt or temporarily unavailable labels must not erase ordinary recall.
         background = undefined;

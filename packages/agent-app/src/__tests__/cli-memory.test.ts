@@ -2293,8 +2293,8 @@ describe("curate paid-run isolation", () => {
       cwd: dir, env: {}, positionals: ["curate", "prepare"], planPath, json: true, strict: false,
       curateLlm: { id: "fake", complete: async () => { calls++; return JSON.stringify([
         { id: "fictional-0", action: "drop", reason: "generic-advice" },
-        { id: "fictional-1", action: "label", labels: [{ v: 1, kind: "fact", entityId: "person:morgan", key: "preferred_name",
-          value: { type: "text", text: "Maple" }, attribution: "user-stated" }] },
+        { id: "fictional-1", action: "label", labels: [{ v: 1, kind: "fact", entityId: "person:taylor", key: "preferred_name",
+          value: { type: "text", text: "Cedar City" }, attribution: "user-stated" }] },
         { id: "fictional-2", action: "merge", mergeEntity: { from: "person:unlisted", to: "person:absent" } },
       ]); } },
     }))));
@@ -2368,7 +2368,14 @@ describe("memory entity identity CLI", { timeout: 30_000 }, () => {
     await expect(stat(planPath)).rejects.toThrow();
     const prepared = await invoke(["memory", "curate", "prepare", "--plan", planPath, "--limit", "0", "--merge-file", mergeFile, "--json"]);
     expect(prepared.code, prepared.stderr).toBe(0);
-    expect(JSON.parse(prepared.stdout)).toMatchObject({ status: "prepared", count: 0, operatorMerges: 1 });
+    expect(JSON.parse(prepared.stdout)).toMatchObject({ status: "prepared", count: 3, operatorMerges: 1, coarseLabels: { more: false } });
+    // A model-free pass walks oldest or newest first; bucket mixes need a model.
+    const mixed = await invoke(["memory", "curate", "prepare", "--plan", join(dir, "mixed.json"), "--limit", "0", "--select", "risky", "--json"]);
+    expect(mixed.code).toBe(2);
+    expect(JSON.parse(mixed.stdout)).toMatchObject({ status: "failed", code: "curate_usage" });
+    const recent = await invoke(["memory", "curate", "prepare", "--plan", join(dir, "recent.json"), "--limit", "0", "--select", "recent", "--json"]);
+    expect(JSON.parse(recent.stdout)).toMatchObject({ status: "prepared", count: 3, coarseLabels: { more: false } });
+    // Model-free coarse labels are reviewable alongside operator-only merges.
     const added = await invoke(["memory", "curate", "review", "--plan", planPath, "--merge", "concept:morgan=person:morgan",
       "--merge", "person:the-user=person:morgan", "--allow-cross-type", "--json"]);
     expect(added.code, added.stderr).toBe(0);
@@ -2390,6 +2397,40 @@ describe("memory entity identity CLI", { timeout: 30_000 }, () => {
       .toEqual(["fictional-a", "fictional-b"]);
     const after = await invoke(["memory", "entities", "--duplicates"]);
     expect(after.stdout).toBe("No entity name is shared by more than one id.\n");
+  });
+
+  it("re-runs a model-free coarse label pass idempotently after apply", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    await mkdir(memoryRoot, { recursive: true });
+    const at = "2026-07-12T10:00:00.000Z";
+    for (const [id, text] of [["fictional-a", "Morgan planted fictional tulips."], ["fictional-b", "Maple repaired a fictional bicycle."]]) {
+      bujoMemory.appendBullet(memoryRoot, { id: id!, type: "note", status: "open", text: text!, salience: 0.5, isInsight: false,
+        createdAt: at, refs: [] }, new Date(at));
+    }
+    bujoMemory.appendGraphBatch(memoryRoot, { entities: [
+      { id: "person:morgan", name: "Morgan", type: "person", createdAt: at },
+      { id: "person:maple", name: "Maple", type: "person", createdAt: at },
+    ], associations: [
+      { memoryId: "fictional-a", entityId: "person:morgan", provenance: "capture", createdAt: at },
+      { memoryId: "fictional-b", entityId: "person:maple", provenance: "capture", createdAt: at },
+    ] });
+    await safeRebuildMemoryIndex({ root: memoryRoot, tier: "bujo", embeddings: deterministicEmbeddings("ollama:test-embed", 8), dim: 8 });
+    const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
+      embeddings: { provider: "ollama", model: "test-embed", dim: 8 }, llm: { provider: "ollama", model: "test-capture" } } });
+    const invoke = (args: string[]) => captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(args))));
+    const first = join(dir, "coarse-1.json");
+    const prepared = await invoke(["memory", "curate", "prepare", "--plan", first, "--limit", "0", "--json"]);
+    expect(prepared.code, prepared.stderr).toBe(0);
+    expect(JSON.parse(prepared.stdout)).toMatchObject({ status: "prepared", count: 2, coarseLabels: { more: false } });
+    expect((await invoke(["memory", "curate", "review", "--plan", first, "--accept", "label:*", "--json"])).code).toBe(0);
+    stubOllamaEmbeddings(8);
+    const applied = await invoke(["memory", "curate", "apply", "--plan", first, "--json"]);
+    expect(applied.code, applied.stderr).toBe(0);
+    expect(JSON.parse(applied.stdout)).toMatchObject({ status: "applied", count: 2 });
+    // The same lines already carry their coarse fact: a second pass proposes nothing.
+    const again = await invoke(["memory", "curate", "prepare", "--plan", join(dir, "coarse-2.json"), "--limit", "0", "--json"]);
+    expect(again.code, again.stderr).toBe(0);
+    expect(JSON.parse(again.stdout)).toMatchObject({ status: "prepared", count: 0, discarded: 0, coarseLabels: { more: false } });
   });
 
   it("backfills reviewed person:owner associations for owner-subject lines without a model", async () => {

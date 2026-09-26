@@ -3,18 +3,25 @@ import type { Bullet } from "./types.js";
 const PREFIX = "label:v1:";
 const ENTITY_ID = /^[a-z][a-z0-9-]{0,31}:[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const KEY = /^(?:birth_date|full_name|preferred_name|relationship|home_location|work_location|other:[a-z](?:[a-z0-9]|-[a-z0-9]){0,31})$/u;
-export const MEMORY_RELATIONSHIP_ROLES = ["parent", "child", "partner", "spouse", "sibling", "friend", "colleague", "other"] as const;
+// Legacy relationship refs stay readable: the role is only a safe lowercase
+// token. Nothing new emits relationship values.
+const ROLE = /^[a-z][a-z-]{0,23}$/u;
 const ATTRIBUTIONS = ["user-stated", "document", "assistant-inferred", "unknown"] as const;
 type Attribution = typeof ATTRIBUTIONS[number];
 type FactValue = { readonly type: "date"; readonly date: string }
   | { readonly type: "text"; readonly text: string }
   | { readonly type: "entity"; readonly entityId: string }
-  | { readonly type: "relationship"; readonly role: typeof MEMORY_RELATIONSHIP_ROLES[number]; readonly targetEntityId: string };
-export type MemoryLabel =
-  | { readonly v: 1; readonly kind: "fact"; readonly entityId: string; readonly key: string;
-      readonly value: FactValue; readonly attribution: Attribution; readonly validFrom?: string; readonly validTo?: string }
+  | { readonly type: "relationship"; readonly role: string; readonly targetEntityId: string };
+export type FactMemoryLabel = { readonly v: 1; readonly kind: "fact"; readonly entityId: string;
+  readonly attribution: Attribution } & (
+  | { readonly key: string; readonly value: FactValue; readonly validFrom?: string; readonly validTo?: string }
+  | { readonly key?: never; readonly value?: never; readonly validFrom?: never; readonly validTo?: never });
+export type MemoryLabel = FactMemoryLabel
   | { readonly v: 1; readonly kind: "preference"; readonly scope: string; readonly attribution: Attribution }
   | { readonly v: 1; readonly kind: "lesson"; readonly scope: string; readonly verified: boolean };
+export function isStructuredFact(label: MemoryLabel): label is FactMemoryLabel & { readonly key: string; readonly value: FactValue } {
+  return label.kind === "fact" && label.key !== undefined;
+}
 
 function fail(): never { throw new Error("memory-bujo: invalid label in bullet metadata."); }
 function object(value: unknown): value is Record<string, unknown> {
@@ -46,7 +53,7 @@ function valueFor(value: unknown, key: string): boolean {
   if (!object(value)) return false;
   if (key === "birth_date") return keys(value, ["type", "date"]) && value.type === "date" && date(value.date);
   if (key === "relationship") return keys(value, ["type", "role", "targetEntityId"])
-    && value.type === "relationship" && MEMORY_RELATIONSHIP_ROLES.includes(value.role as typeof MEMORY_RELATIONSHIP_ROLES[number])
+    && value.type === "relationship" && typeof value.role === "string" && ROLE.test(value.role)
     && entity(value.targetEntityId) && (value.targetEntityId as string).startsWith("person:");
   if (value.type === "text") return keys(value, ["type", "text"]) && safeText(value.text, 160);
   if (!key.startsWith("other:")) return false;
@@ -56,10 +63,14 @@ function valueFor(value: unknown, key: string): boolean {
 export function validateMemoryLabel(value: unknown): MemoryLabel {
   if (!object(value) || value.v !== 1) return fail();
   if (value.kind === "fact") {
-    if (!keys(value, ["v", "kind", "entityId", "key", "value", "attribution"], ["validFrom", "validTo"])
-      || !entity(value.entityId) || !(value.entityId as string).startsWith("person:")
+    if (!entity(value.entityId) || !(value.entityId as string).startsWith("person:")
+      || !ATTRIBUTIONS.includes(value.attribution as Attribution)) return fail();
+    if (value.key === undefined) {
+      if (!keys(value, ["v", "kind", "entityId", "attribution"])) return fail();
+    // Existing v1 other:/relationship refs stay readable on rebuild; capture
+    // and curate emit only coarse labels for those keys going forward.
+    } else if (!keys(value, ["v", "kind", "entityId", "key", "value", "attribution"], ["validFrom", "validTo"])
       || typeof value.key !== "string" || !KEY.test(value.key) || !valueFor(value.value, value.key)
-      || !ATTRIBUTIONS.includes(value.attribution as Attribution)
       || (value.validFrom !== undefined && !date(value.validFrom))
       || (value.validTo !== undefined && !date(value.validTo))
       || (value.validFrom !== undefined && value.validTo !== undefined && value.validFrom > value.validTo)

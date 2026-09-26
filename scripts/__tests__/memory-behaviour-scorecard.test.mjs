@@ -21,8 +21,11 @@ describe("fictional completed-turn memory behaviour scorecard", () => {
   });
 
   it("fails closed on each safety invariant and on a vacuous fixture", () => {
-    const base = { records: Array.from({ length: 5 }, (_, i) => ({ id: String(i), text: `Note ${i}.`, status: "open" })),
-      labels: [], questions: QUESTIONS.map((q) => ({ kind: q.kind, falseHits: 0 })), pending: 0,
+    const labelled = TURNS.filter((turn) => ["owner", "owner-custom", "preference", "owner-date"].includes(turn.kind));
+    const base = { records: [...Array.from({ length: 5 }, (_, i) => ({ id: String(i), text: `Note ${i}.`, status: "open" })),
+      ...labelled.map((turn, index) => ({ id: `label-${index}`, text: turn.memories[0].text, status: "open" }))],
+      labels: labelled.map((turn, index) => ({ memoryId: `label-${index}`, active: true, label: turn.memories[0].labels[0] })),
+      questions: QUESTIONS.map((q) => ({ kind: q.kind, falseHits: 0 })), pending: 0,
       before: {}, after: {}, cpuMs: [] };
     expect(scoreBehaviour(base).passed).toBe(true);
     for (const changed of [
@@ -30,6 +33,11 @@ describe("fictional completed-turn memory behaviour scorecard", () => {
       { records: [{ id: "other-person", text: "The user's colleague Taylor lives in Porto.", status: "open" }, ...base.records],
         labels: [{ memoryId: "other-person", active: true, label: { kind: "fact", entityId: "person:owner" } }] },
       { records: [{ id: "credential", text: "fake-secret-123", status: "open" }, ...base.records] },
+      // A label of the wrong kind or on the wrong subject does not count.
+      { labels: base.labels.map((row) => row.label.kind === "preference"
+        ? { ...row, label: { v: 1, kind: "fact", entityId: "person:owner", attribution: "user-stated" } } : row) },
+      { labels: base.labels.map((row) => row.memoryId === "label-0"
+        ? { ...row, label: { ...row.label, entityId: "person:taylor" } } : row) },
       { pending: 1 },
       { after: { missing: true } },
       { records: [] },

@@ -7,7 +7,7 @@ import { openMemoryDb } from "../../store/index.js";
 import { appendBullet, rewriteBullet } from "../daily.js";
 import { createBujoMemoryStore } from "../store.js";
 import { parseBullet, serializeBullet } from "../grammar.js";
-import { encodeMemoryLabel, labelsOf, withMemoryLabels, type MemoryLabel } from "../labels.js";
+import { encodeMemoryLabel, labelsOf, validateMemoryLabel, withMemoryLabels, type MemoryLabel } from "../labels.js";
 import { rebuildFromMarkdown, safeRebuildMemoryIndex } from "../rebuild.js";
 import { auditCanonicalGraphParity } from "../graph-parity.js";
 import type { Bullet } from "../types.js";
@@ -51,6 +51,18 @@ describe("labels on canonical bullets", () => {
     expect(() => encodeMemoryLabel({ ...birthday, mystery: true } as unknown as MemoryLabel)).toThrow();
     expect(() => encodeMemoryLabel({ ...preference, scope: "global" })).toThrow();
     expect(() => encodeMemoryLabel({ ...lesson, verified: "yes" } as unknown as MemoryLabel)).toThrow();
+  });
+
+  it("round-trips coarse v1 facts, rejects unpaired fields, and reads legacy structured custom facts", () => {
+    const coarse: MemoryLabel = { v: 1, kind: "fact", entityId: "person:maple", attribution: "user-stated" };
+    const legacy: MemoryLabel = { v: 1, kind: "fact", entityId: "person:maple", key: "other:art-class",
+      value: { type: "text", text: "art class" }, attribution: "assistant-inferred" };
+    const roundTrip = parseBullet(serializeBullet(withMemoryLabels(bullet("B1", "Maple attends art class."), [coarse, legacy])))!;
+    expect(labelsOf(roundTrip)).toEqual([coarse, legacy]);
+    for (const invalid of [
+      { ...coarse, key: "birth_date" }, { ...coarse, value: { type: "text", text: "art" } },
+      { ...coarse, validFrom: "2025-01-01" },
+    ]) expect(() => encodeMemoryLabel(invalid as unknown as MemoryLabel)).toThrow();
   });
 
   it("indexes labels from a daily line and rebuilds scope, history and conflicts", async () => {
@@ -237,5 +249,17 @@ describe("labels on canonical bullets", () => {
     const lite = openMemoryDb({ path: upgraded.active, readOnly: true });
     try { expect(lite.labelProjection()).toEqual([]); } finally { lite.close(); }
     expect(readFileSync(path, "utf8")).toContain("label:v1:bad");
+  });
+});
+
+describe("legacy relationship refs", () => {
+  it("stay readable with any safe lowercase role token and no role list", () => {
+    const legacy = (role: string) => ({ v: 1, kind: "fact", entityId: "person:morgan", key: "relationship",
+      value: { type: "relationship", role, targetEntityId: "person:maple" }, attribution: "unknown" });
+    expect(validateMemoryLabel(legacy("zorbel"))).toEqual(legacy("zorbel"));
+    expect(labelsOf({ refs: [encodeMemoryLabel(legacy("quibbet-flarn") as MemoryLabel)] })).toHaveLength(1);
+    for (const role of ["Zorbel", "zorbel 2", "-zorbel", "z".repeat(25), ""]) {
+      expect(() => validateMemoryLabel(legacy(role))).toThrow(/invalid label/u);
+    }
   });
 });
