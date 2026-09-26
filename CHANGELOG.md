@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Memory capture drops the assistant's own low-salience lines. A memory the
+  extraction model marks as `assistant`-sourced (or a `user` claim the host
+  bounds to `assistant`) needs a model salience of at least 0.5; below that it
+  is not stored, along with any entity or relation only it named. This keeps
+  the assistant's progress and status reports and generic advice out of memory
+  in any language, with no word lists. User, tool and document lines are
+  unaffected.
+
 - Memory capture no longer uses English grammar or word lists on the write
   side, so it works the same in any language. The extraction model now marks
   each memory's `source` (`user`, `assistant`, `tool` or `document`) in its
