@@ -472,7 +472,7 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
               const abortForeground = () => foreground.abort();
               input.request.abortSignal.addEventListener("abort", abortForeground, { once: true });
               if (input.request.abortSignal.aborted) foreground.abort();
-              void run(foreground.signal).catch(() => undefined);
+              runSettled = run(foreground.signal).then(() => undefined, () => undefined);
               try { return peerEventReply(await relay.next()); }
               finally { input.request.abortSignal.removeEventListener("abort", abortForeground); }
             } catch (error) {

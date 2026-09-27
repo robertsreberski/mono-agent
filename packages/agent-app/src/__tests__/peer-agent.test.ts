@@ -413,7 +413,7 @@ describe("PeerAgent request lifecycle", () => {
     } finally { await f.close(); }
   });
 
-  it.each(["stop", "settlement failure"] as const)("drains an interrupted background peer write before %s returns", async (cause) => {
+  it.each(["stop", "settlement failure", "foreground stop"] as const)("drains an interrupted peer write before %s returns", async (cause) => {
     const f = await setup();
     mocks.run.mockImplementation(parked);
     let entered!: () => void;
@@ -422,10 +422,13 @@ describe("PeerAgent request lifecycle", () => {
     const writeGate = new Promise<void>((resolve) => { release = resolve; });
     mocks.interruptedWrite = { entered, wait: writeGate };
     try {
-      await f.send(true);
-      const job = f.pending()!;
-      expect(await job.run(new AbortController().signal, () => {}, () => {})).toMatchObject({ status: "awaiting_reply" });
-      if (cause === "settlement failure") job.onSettlementFailure?.();
+      if (cause === "foreground stop") expect((await f.send()).isError).not.toBe(true);
+      else {
+        await f.send(true);
+        const job = f.pending()!;
+        expect(await job.run(new AbortController().signal, () => {}, () => {})).toMatchObject({ status: "awaiting_reply" });
+        if (cause === "settlement failure") job.onSettlementFailure?.();
+      }
       const stopping = f.client.callTool({ name: "PeerAgent", arguments: {
         action: "stop", peer: "finance", thread: "portfolio",
       } });
