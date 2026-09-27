@@ -9,12 +9,13 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "storybook": "storybook dev --host 0.0.0.0 --port 6006",
+    "storybook": "storybook dev --port 6006",
     "build-storybook": "storybook build -o storybook-static",
     "test": "vitest run",
     "test:browser": "vitest run --config vitest.browser.config.ts",
     "test:standalone": "node scripts/test-standalone.mjs",
-    "typecheck": "tsc -b --pretty false"
+    "typecheck": "tsc -b --pretty false",
+    "typecheck:storybook": "tsc -p tsconfig.storybook.json --noEmit --pretty false"
   },
   "dependencies": {
     "@assistant-ui/react": "0.14.27",

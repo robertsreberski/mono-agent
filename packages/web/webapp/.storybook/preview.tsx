@@ -27,7 +27,24 @@ document.head.append(style);
 const originalFetch = window.fetch.bind(window);
 window.fetch = (input, init) => {
   const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-  if (new URL(url, location.href).pathname.startsWith("/api/")) {
+  const pathname = new URL(url, location.href).pathname;
+  // This read-only fixture lets schedule editor examples show their actual
+  // create/edit/paused controls; no mutation ever contacts a console.
+  const match = /^\/api\/v1\/threads\/(garden-planner|garden-active|garden-paused)\/wake-schedule$/.exec(pathname);
+  if (match && (!init?.method || init.method === "GET")) {
+    const id = match[1]!;
+    const schedule = id === "garden-planner" ? null : {
+      scheduleId: `example-${id}`, threadId: id, sourceId: "atlas",
+      definition: id === "garden-paused"
+        ? { kind: "weekly", timezone: "UTC", days: [1, 3], times: ["09:00"], message: "Check the fictional garden" }
+        : { kind: "once", timezone: "UTC", localAt: "2026-10-15T09:00", message: "Review the garden plan" },
+      state: id === "garden-paused" ? "paused" : "active", revision: 1,
+      nextFireAt: id === "garden-paused" ? null : "2026-10-15T09:00:00Z",
+      lastOutcome: null, createdAt: "2026-01-15T10:00:00Z",
+    };
+    return Promise.resolve(new Response(JSON.stringify({ schedule }), { headers: { "Content-Type": "application/json" } }));
+  }
+  if (pathname.startsWith("/api/")) {
     return Promise.reject(new Error("Console API is disabled in Storybook"));
   }
   return originalFetch(input, init);

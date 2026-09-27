@@ -1,0 +1,12 @@
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import { ThreadListItem } from "../../components/dashboard/ThreadListItem";
+import { atlas, gardenThread, runningThread } from "../fixtures";
+import { StoryRuntime } from "../runtime";
+const defaults = { thread: gardenThread, agent: atlas, catalogModels: {}, unread: false, highlightSelected: false };
+export default { title: "Dashboard/ThreadListItem", component: ThreadListItem, tags: ["autodocs"], decorators: [(Story) => <StoryRuntime><div style={{ width: 360, maxWidth: "100%" }}><Story /></div></StoryRuntime>] } satisfies Meta<typeof ThreadListItem>;
+type Story = StoryObj<typeof ThreadListItem>;
+export const Recent: Story = { args: defaults };
+export const Running: Story = { args: { ...defaults, thread: runningThread } };
+export const Unread: Story = { args: { ...defaults, unread: true } };
+export const LongTitle: Story = { args: { ...defaults, thread: { ...gardenThread, title: "Garden planner with extra community notes and a seasonal planting calendar" } } };
+export const Mobile: Story = { args: defaults, globals: { viewport: { value: "phone" } } };

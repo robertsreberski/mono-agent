@@ -247,6 +247,9 @@ jobs:
       - name: Install webapp dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Typecheck web console stories
+        run: pnpm run typecheck:storybook
+
       - name: Build web console Storybook
         run: pnpm run build-storybook
 

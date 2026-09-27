@@ -5,8 +5,10 @@ const config: StorybookConfig = {
   stories: ["../src/stories/**/*.stories.tsx"],
   addons: [],
   framework: { name: "@storybook/react-vite", options: {} },
-  docs: { autodocs: "tag" },
   viteFinal: async (config) => {
+    const plugins = ((config.plugins ?? []) as unknown[]).flat(Infinity)
+      .filter((plugin) => plugin && typeof plugin === "object"
+        && !/pwa|workbox/i.test(String((plugin as { name?: string }).name ?? "")));
     return {
       ...config,
       base: "./",
@@ -15,7 +17,7 @@ const config: StorybookConfig = {
         ...(Array.isArray(config.resolve?.alias) ? config.resolve.alias : []),
       ] },
       // Product Vite config installs a PWA worker; Storybook is a separate site.
-      plugins: config.plugins?.flat(Infinity).filter((plugin) => plugin && !/pwa|workbox/i.test(plugin.name ?? "")) as typeof config.plugins,
+      plugins: plugins as typeof config.plugins,
     };
   },
 };
