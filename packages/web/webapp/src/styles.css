@@ -1817,24 +1817,25 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 }
 
 
-/* Conversation wake scheduling: compact list affordance and bounded mobile editor. */
-.wake-indicator { color: var(--accent, #527ac2); font-size: 1rem; line-height: 1; }
+/* Scheduled-wake sheet uses the same responsive sheet and form tokens as project settings. */
+.wake-indicator { color: var(--accent); display: inline-flex; align-items: center; }
 .scheduled-wake-item { margin: .5rem 0; padding: .65rem .8rem; border-left: 3px solid currentColor; border-radius: .3rem; background: color-mix(in srgb, currentColor 6%, transparent); white-space: pre-wrap; overflow-wrap: anywhere; }
 .scheduled-wake-item strong { display: block; }
 .scheduled-wake-item time { display: block; font-size: .8rem; opacity: .75; }
 .scheduled-wake-item p { margin: .5rem 0 0; }
-.wake-editor-backdrop { position: fixed; inset: 0; z-index: 1100; background: #0008; display: grid; place-items: center; padding: 1rem; }
-.wake-editor { box-sizing: border-box; width: min(100%, 35rem); max-height: min(90vh, 48rem); overflow: auto; background: var(--surface, #fff); color: var(--text, #222); border-radius: .8rem; padding: 1.1rem; box-shadow: 0 1rem 3rem #0004; }
-.wake-editor header, .wake-editor footer { display: flex; align-items: center; justify-content: space-between; gap: .5rem; flex-wrap: wrap; }
-.wake-editor h2 { margin: 0; font-size: 1.2rem; }
-.wake-editor > label { display: grid; gap: .3rem; margin: .8rem 0; }
-.wake-editor input:not([type=checkbox]), .wake-editor select, .wake-editor textarea { box-sizing: border-box; max-width: 100%; min-width: 0; padding: .45rem; border: 1px solid #888; border-radius: .3rem; background: inherit; color: inherit; }
-.wake-editor textarea { min-height: 5rem; resize: vertical; }
-.wake-editor fieldset { display: flex; flex-wrap: wrap; gap: .5rem; margin: .8rem 0; border: 1px solid #888; border-radius: .3rem; }
-.wake-editor fieldset label { display: inline-flex; align-items: center; gap: .2rem; }
-.wake-editor button { cursor: pointer; padding: .4rem .6rem; }
-.wake-editor-error { color: #ad2938; }
-.wake-editor .wake-editor-error, .conversation-menu-item .conversation-menu-hint { overflow-wrap: anywhere; white-space: normal; }
+.wake-schedule-sheet { max-width: 570px; }
+.wake-schedule-sheet .icon-button { width: 34px; height: 34px; flex: none; color: var(--text-muted); background: var(--surface-subtle); border-radius: 9px; }
+.wake-schedule-sheet .sheet-field select { min-height: 44px; padding: 0 14px; color: var(--text); background: var(--surface-subtle); border: 1px solid var(--line-strong); border-radius: 12px; font: inherit; }
+.wake-choice-group { min-width: 0; margin: 0; padding: 0; border: 0; }
+.wake-choice-group legend { margin-bottom: 8px; }
+.wake-choice-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(115px, 1fr)); gap: 8px; color: var(--text); font-size: 12px; }
+.wake-choice-grid label { display: flex; align-items: center; gap: 8px; min-height: 32px; }
+.wake-choice-grid input { accent-color: var(--accent); }
+.wake-times { display: grid; gap: 6px; }
+.wake-time-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.wake-times .sheet-row { border-radius: 9px; }
+.wake-schedule-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.conversation-menu-item .conversation-menu-hint { overflow-wrap: anywhere; white-space: normal; }
 .conversation-menu-item.is-wake { height: auto; padding-top: 8px; padding-bottom: 8px; }
 .conversation-menu-item.is-wake .wake-menu-copy { display: grid; flex: 1; gap: 2px; white-space: normal; }
 .conversation-menu-item.is-wake .conversation-menu-hint { max-width: none; white-space: normal; overflow: visible; }

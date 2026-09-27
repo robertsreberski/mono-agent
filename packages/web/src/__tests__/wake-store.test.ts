@@ -18,6 +18,28 @@ const agent = (): WebAgentSummary => ({
 const definition = { kind: "once" as const, timezone: "UTC", localAt: "2027-01-02T10:00", message: "Check the draft." };
 
 describe("wake schedule ledger", () => {
+  it("keeps the wake message as the latest sidebar preview through an empty answer", async () => {
+    const root = await temporaryRoot(); roots.push(root);
+    let now = Date.parse("2027-01-02T09:59:00Z");
+    const store = await WebStore.open({ stateDir: join(root, "state"), clock: () => new Date(now) });
+    try {
+      store.replaceAgents([agent()]);
+      for (const message of ["Check the draft.", undefined]) {
+        const thread = store.createThread("fictional-agent");
+        store.createWakeSchedule(thread.id, { kind: "once", timezone: "UTC", localAt: "2027-01-02T10:00",
+          ...(message === undefined ? {} : { message }) });
+        now = Date.parse("2027-01-02T10:00:00Z");
+        store.reconcileWake(thread.id, true);
+        const claimed = store.claimWake(thread.id, thread.sourceId, () => true, {});
+        expect(claimed).not.toBeNull();
+        const preview = message ?? "Scheduled wake-up";
+        expect(store.getThread(thread.id)?.lastMessagePreview).toBe(preview);
+        store.completeTurn(claimed!.started.turnId, "");
+        expect(store.getThread(thread.id)?.lastMessagePreview).toBe(preview);
+        now = Date.parse("2027-01-02T09:59:00Z");
+      }
+    } finally { store.close(); }
+  });
   it("claims a busy occurrence once, survives reopening before and after admission, and preserves the transcript marker", async () => {
     const root = await temporaryRoot(); roots.push(root);
     const stateDir = join(root, "state");

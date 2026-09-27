@@ -55,6 +55,7 @@ import {
 } from "./ActivityRow";
 import { finiteDuration, formatToolDuration } from "./duration";
 import { Icon } from "./Icon";
+import { shortDateTime } from "./time";
 import { MessageGallery } from "./ImageGallery";
 import { toolHistoryFailure } from "./tool-history";
 import { useToolCallRepair } from "./tool-call-repair";
@@ -870,7 +871,7 @@ function ScheduledWakePart({ data }: DataMessagePartProps) {
   const message = typeof data.message === "string" ? data.message : "";
   return <section className="scheduled-wake-item" aria-label="Scheduled wake-up">
     <strong>Scheduled wake-up</strong>
-    <time dateTime={String(data.scheduledAt)}>{new Date(String(data.scheduledAt)).toLocaleString()}</time>
+    <time dateTime={String(data.scheduledAt)}>{shortDateTime(String(data.scheduledAt))}</time>
     {message && <p>{message}</p>}
   </section>;
 }

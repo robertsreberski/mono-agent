@@ -76,12 +76,12 @@ export function parseWakeDefinition(value: unknown, now = new Date()): WebWakeSc
   if (keys.length === 0) invalid("kind", "Choose once or weekly.");
   for (const key of Object.keys(body)) if (!keys.includes(key)) invalid(key, "Unknown field for this schedule kind.");
   if (typeof body.timezone !== "string" || body.timezone.length > 128) invalid("timezone", "Enter an IANA timezone.");
-  try { new Intl.DateTimeFormat("en", { timeZone: body.timezone }); }
+  let timezone: string;
+  try { timezone = new Intl.DateTimeFormat("en", { timeZone: body.timezone }).resolvedOptions().timeZone; }
   catch { invalid("timezone", "Enter a valid IANA timezone."); }
   if (body.message !== undefined && (typeof body.message !== "string" || Buffer.byteLength(body.message, "utf8") > 1000)) {
     invalid("message", "Must be at most 1000 UTF-8 bytes.");
   }
-  const timezone = body.timezone as string;
   const message = body.message as string | undefined;
   if (kind === "once") {
     if (typeof body.localAt !== "string" || !LOCAL.test(body.localAt)) invalid("localAt", "Enter a local date and time (YYYY-MM-DDTHH:mm).");

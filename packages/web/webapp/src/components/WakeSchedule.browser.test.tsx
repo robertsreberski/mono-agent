@@ -1,11 +1,12 @@
 import { AssistantRuntimeProvider, ThreadPrimitive, useExternalStoreRuntime } from "@assistant-ui/react";
-import { render, screen, waitFor } from "@testing-library/react";
-import { page } from "@vitest/browser/context";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { commands, page } from "@vitest/browser/context";
 import { describe, expect, it, vi } from "vitest";
 import { api } from "../api";
 import { convertWebMessage } from "../runtime";
 import type { ThreadSummary, WebMessage } from "../types";
 import { AssistantMessage, SystemMessage, UserMessage } from "./Messages";
+import { Icon } from "./Icon";
 import { WakeScheduleEditor } from "./WakeScheduleEditor";
 import { WakeScheduleStatus } from "./WakeScheduleStatus";
 import "../styles.css";
@@ -31,6 +32,25 @@ function Transcript({ message }: { message: WebMessage }) {
 }
 
 describe("scheduled wake UI in Chromium", () => {
+  it("preserves a dirty draft across a live summary revision, reports a stale save and closes on Escape", async () => {
+    const read = vi.spyOn(api, "wakeSchedule").mockResolvedValueOnce({ schedule })
+      .mockResolvedValueOnce({ schedule: { ...schedule, revision: 3,
+        definition: { ...schedule.definition, message: "Changed elsewhere." } } });
+    const save = vi.spyOn(api, "saveWakeSchedule").mockRejectedValue(new Error("Schedule changed; reload and retry."));
+    const close = vi.fn();
+    const editor = render(<WakeScheduleEditor thread={thread} onClose={close} />);
+    await waitFor(() => expect(screen.getByLabelText("Optional message")).toHaveValue("Review the sample."));
+    fireEvent.change(screen.getByLabelText("Optional message"), { target: { value: "Local draft." } });
+    editor.rerender(<WakeScheduleEditor thread={{ ...thread, wakeSchedule: { ...thread.wakeSchedule!, revision: 3 } }} onClose={close} />);
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    expect(screen.getByLabelText("Optional message")).toHaveValue("Local draft.");
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(/Schedule changed/u));
+    expect(save).toHaveBeenCalledWith(thread.id, expect.objectContaining({ message: "Local draft." }), 2);
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(close).toHaveBeenCalledTimes(1);
+    editor.unmount(); read.mockRestore(); save.mockRestore();
+  });
   it.each([[1280, 800, "desktop"], [390, 844, "mobile"]] as const)("shows editor, summary/list indicator and retained empty answer at %ipx (%s)", async (width, height, name) => {
     await page.viewport(width, height);
     const read = vi.spyOn(api, "wakeSchedule").mockResolvedValue({ schedule });
@@ -38,7 +58,14 @@ describe("scheduled wake UI in Chromium", () => {
     await waitFor(() => expect(screen.getByLabelText("Monday")).toBeChecked());
     expect(screen.getByLabelText("Wednesday")).toBeChecked();
     expect(screen.getByLabelText("Time 2")).toHaveValue("14:30");
+    expect(screen.getByRole("dialog", { name: "Scheduled wake-up" })).toHaveFocus();
     await capture(`${name}-weekly-schedule-editor`);
+    if (name === "desktop") {
+      try {
+        await commands.emulateColorScheme("dark");
+        await capture("desktop-weekly-schedule-editor-dark");
+      } finally { await commands.emulateColorScheme(null); }
+    }
     editor.unmount();
     read.mockRestore();
 
@@ -48,7 +75,7 @@ describe("scheduled wake UI in Chromium", () => {
           <WakeScheduleStatus thread={thread} /></span></div>
       </div></header>
       <div className="thread-item is-conversation"><div className="thread-trigger"><span className="thread-title">Sample conversation</span>
-        <span className="wake-indicator" role="img" aria-label="Active scheduled wake-up">◷</span></div></div>
+        <span className="wake-indicator" role="img" aria-label="Active scheduled wake-up"><Icon name="clock" size={14} /></span></div></div>
     </div>);
     expect(screen.getByLabelText("Wake-up schedule status")).toHaveTextContent(/active · next/u);
     expect(screen.getByLabelText("Active scheduled wake-up")).toBeVisible();

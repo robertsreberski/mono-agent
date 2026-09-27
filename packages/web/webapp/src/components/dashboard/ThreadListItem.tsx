@@ -97,7 +97,7 @@ export function ThreadListItem({
             </span>
             {unread && <i className="thread-unread" role="img" aria-label="Unread" />}
             {thread.wakeSchedule?.state === "active" && <span className="wake-indicator" role="img"
-              aria-label="Active scheduled wake-up" title="Active scheduled wake-up">◷</span>}
+              aria-label="Active scheduled wake-up" title="Active scheduled wake-up"><Icon name="clock" size={14} /></span>}
             <time dateTime={thread.updatedAt}>{relativeTime(thread.updatedAt)}</time>
           </span>
           <span className="thread-preview">

@@ -6715,7 +6715,11 @@ export class WebStore {
         .join(" ")
         .replace(/\s+/gu, " ")
         .trim();
-      if (text.length > 0) previews.set(row.thread_id, text.slice(0, 160));
+      const scheduledWake = parts.find((part) => part.type === "scheduled-wake");
+      const preview = text || (scheduledWake?.type === "scheduled-wake"
+        ? scheduledWake.message?.replace(/\s+/gu, " ").trim() || "Scheduled wake-up"
+        : "");
+      if (preview.length > 0) previews.set(row.thread_id, preview.slice(0, 160));
     }
     return previews;
   }

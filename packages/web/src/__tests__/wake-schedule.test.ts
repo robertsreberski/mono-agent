@@ -20,6 +20,11 @@ describe("scheduled wake wall-clock policy", () => {
       .toBe("2028-02-29T06:15:00.000Z");
   });
 
+  it("stores the canonical IANA zone spelling", () => {
+    expect(parseWakeDefinition({ kind: "weekly", timezone: "europe/berlin", days: [1], times: ["09:00"] }).timezone)
+      .toBe("Europe/Berlin");
+  });
+
   it("enforces strict fields and bounded distinct slots", () => {
     expect(() => parseWakeDefinition({ kind: "weekly", timezone: "UTC", days: [0], times: ["10:00", "10:00"] })).toThrow(/times/u);
     expect(() => parseWakeDefinition({ kind: "weekly", timezone: "UTC", days: [0], times: ["10:00"], arbitrary: true })).toThrow(/arbitrary/u);
