@@ -87,6 +87,7 @@ export const CORE_CONFIG_FIELD_IDS = {
   "memory.writeMode": true,
   "memory.capture.focus": true,
   "memory.capture.only": true,
+  "memory.capture.reconcileModel": true,
   "memory.embeddings.provider": true,
   "memory.embeddings.model": true,
   "memory.embeddings.endpoint": true,
@@ -546,6 +547,12 @@ function buildMemorySection(input: BuildMonoAgentConfigViewInput): ConfigViewSec
       label: "Capture only",
       value: JSON.stringify(memory.capture.only),
       jsonPresent: json.memory?.capture?.only !== undefined,
+    })]),
+    ...(memory.capture?.reconcileModel === undefined ? [] : [toField({
+      id: "memory.capture.reconcileModel",
+      label: "Reconcile model",
+      value: memory.capture.reconcileModel,
+      jsonPresent: json.memory?.capture?.reconcileModel !== undefined,
     })]),
     toField({
       id: "memory.recallTool.enabled",

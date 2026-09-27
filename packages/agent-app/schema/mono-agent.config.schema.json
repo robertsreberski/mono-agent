@@ -666,6 +666,14 @@
               },
               "maxItems": 3,
               "uniqueItems": true
+            },
+            "reconcileModel": {
+              "description": "Optional validated agent-host runtime model reference for the capture reconciliation classifier only. Unset uses memory.llm for extraction, review and reconciliation. Requires mode bujo and writeMode capture; failures do not fall back to the capture model.",
+              "examples": [
+                "openai-codex:gpt-6-sol"
+              ],
+              "type": "string",
+              "minLength": 1
             }
           }
         },

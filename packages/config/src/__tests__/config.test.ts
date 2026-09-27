@@ -3811,6 +3811,26 @@ describe("resolveJsonMonoAgentConfig", () => {
     } })).toThrow(/memory\.capture requires memory\.path/u);
   });
 
+  it("validates a classifier-only agent-host model reference without changing the capture default", () => {
+    const memory = { path: "./mem", mode: "bujo", writeMode: "capture",
+      embeddings: { provider: "ollama" }, llm: { provider: "agent-host", model: "openai-codex:gpt-5.5" } };
+    const read = (capture?: unknown) => resolveJsonMonoAgentConfig({ cwd: "/repo", json: {
+      ...baseJson, memory: { ...memory, ...(capture === undefined ? {} : { capture }) },
+    } as MonoAgentConfigJson });
+    expect(read().memory?.capture).toBeUndefined();
+    expect(read({ reconcileModel: "openai-codex:gpt-5.6-terra" }).memory?.capture)
+      .toEqual({ reconcileModel: "openai-codex:gpt-5.6-terra" });
+    for (const invalid of [null, 1, "", " openai-codex:gpt-5.5", "openai-codex:", "invalid"]) {
+      expect(() => read({ reconcileModel: invalid })).toThrow(/memory\.capture\.reconcileModel/u);
+    }
+    expect(() => resolveJsonMonoAgentConfig({ cwd: "/repo", json: {
+      ...baseJson, memory: { capture: { reconcileModel: "openai-codex:gpt-5.5" } },
+    } })).toThrow(/requires memory\.path/u);
+    expect(() => resolveJsonMonoAgentConfig({ cwd: "/repo", json: {
+      ...baseJson, memory: { ...memory, writeMode: "disabled", capture: { reconcileModel: "openai-codex:gpt-5.5" } },
+    } as MonoAgentConfigJson })).toThrow(/memory\.capture requires/u);
+  });
+
   it("rejects memory.writeMode 'capture' unless mode is 'bujo'", () => {
     expect(() =>
       resolveJsonMonoAgentConfig({

@@ -606,6 +606,23 @@ describe("strict completed-turn reconciliation", () => {
     } finally { fixture.db.close(); }
   });
 
+  it("keeps every nonduplicate candidate on the final attempt when the classifier is unavailable", async () => {
+    const fixture = await reconcileFixture();
+    const failing = { ...fixture.deps, strictModelOutput: true, fallbackOnClassifierFailure: true,
+      isFinalCaptureAttempt: true,
+      llm: { id: "offline", complete: async () => { throw new Error("fictional classifier outage"); } } };
+    try {
+      const actions = await reconcileBatch(fixture.candidates, failing);
+      expect(actions.map((action) => action?.kind)).toEqual(["add", "add"]);
+      expect(fixture.db.count()).toBe(3);
+      expect(fixture.db.get("TARGET")?.status).toBe("open");
+      for (const candidate of fixture.candidates) {
+        expect(actions.some((action) => action?.kind === "add"
+          && fixture.db.get(action.id)?.text === candidate.text)).toBe(true);
+      }
+    } finally { fixture.db.close(); }
+  });
+
   it("states the exact per-action object contract that strict reconciliation enforces", async () => {
     const fixture = await reconcileFixture();
     let reconcilePrompt = "";

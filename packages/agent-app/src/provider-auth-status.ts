@@ -47,6 +47,14 @@ export async function collectUsedProviderReferences(
       // The existing memory validation owns malformed model-reference errors.
     }
   }
+  if (config.memory?.capture?.reconcileModel !== undefined) {
+    try {
+      const ref = parseMonoRuntimeModelReference(config.memory.capture.reconcileModel);
+      refs.push({ ref, usage: { kind: "memory_llm", model: modelReferenceKey(ref), label: "Capture reconcile model" } });
+    } catch {
+      // The capture model's shape is checked by config validation.
+    }
+  }
   for (const driver of drivers) {
     if (driver.id !== "cron" && driver.id !== "webhook") continue;
     let loaded: unknown;

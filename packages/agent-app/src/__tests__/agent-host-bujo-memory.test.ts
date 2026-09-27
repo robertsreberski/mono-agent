@@ -299,7 +299,7 @@ describe("createConfiguredMemory — bujo mode", () => {
     await store.close();
   });
 
-  it("projects structured reconciliation decisions back into the established strict array contract", async () => {
+  it.each([undefined, "openai-codex:gpt-5.6-terra"])("routes only reconciliation to optional model %s (unset preserves default)", async (reconcileModel) => {
     const dir = await tempDir();
     const memoryRoot = join(dir, "structured-reconcile-memory");
     vi.stubGlobal("fetch", vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
@@ -318,7 +318,8 @@ describe("createConfiguredMemory — bujo mode", () => {
             structuredResult: {
               memories: [{
                 type: "note",
-                text: "Nadia prefers weekly status reports on Friday before 15:00 Europe/London.",
+                text: "The assistant reported Morgan prefers weekly status reports on Friday.",
+                source: "assistant",
                 salience: 0.8,
                 isInsight: false,
                 entityIds: [],
@@ -327,6 +328,9 @@ describe("createConfiguredMemory — bujo mode", () => {
               relations: [],
             },
           };
+        }
+        if (prompt.startsWith("Review memory lines")) {
+          return { structuredResult: { decisions: [{ index: 0, decision: "keep" }] } };
         }
         const targetId = /"existing":\[\{"id":"([^"]+)"/u.exec(prompt)?.[1];
         expect(targetId).toBeDefined();
@@ -345,6 +349,7 @@ describe("createConfiguredMemory — bujo mode", () => {
           dim: 4,
         },
         llm: { provider: "agent-host", model: "openai-codex:gpt-5.5" },
+        ...(reconcileModel === undefined ? {} : { capture: { reconcileModel } }),
       }),
       { memoryRuntime: runtime },
     ) as unknown as {
@@ -375,13 +380,18 @@ describe("createConfiguredMemory — bujo mode", () => {
     });
     await store.flush();
 
-    expect(calls).toHaveLength(2);
-    expect(calls[1]?.outputSchema).toMatchObject({
+    expect(calls).toHaveLength(3);
+    expect(calls.map((call) => call.model)).toEqual([
+      expect.objectContaining({ provider: "openai-codex", model: "gpt-5.5" }),
+      expect.objectContaining({ provider: "openai-codex", model: "gpt-5.5" }),
+      expect.objectContaining({ provider: "openai-codex", model: reconcileModel === undefined ? "gpt-5.5" : "gpt-5.6-terra" }),
+    ]);
+    expect(calls[2]?.outputSchema).toMatchObject({
       type: "object",
       required: ["decisions"],
       properties: { decisions: { type: "array", minItems: 1, maxItems: 1 } },
     });
-    expect(calls[1]?.maxTurns).toBe(3);
+    expect(calls[2]?.maxTurns).toBe(3);
     const snapshot = await store.browseJournal({
       fromInclusive: "2000-01-01T00:00:00.000Z",
       toExclusive: "2100-01-01T00:00:00.000Z",

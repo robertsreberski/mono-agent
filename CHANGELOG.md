@@ -17,6 +17,10 @@
   dated history notes, keeping their id, text, date and labels. Apply and
   restore work like other curate plans.
 
+- Let BuJo capture select an optional agent-host model for reconciliation only
+  with `memory.capture.reconcileModel`; leave extraction, review and the unset
+  default unchanged. Model failures retain capture retry behavior.
+
 - Let agents read, set and clear wake-up schedules for their current web
   conversation; tool-set one-offs must be at least five minutes ahead. Fired
   turns arrive later in the same conversation.

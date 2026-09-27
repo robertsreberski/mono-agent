@@ -1739,9 +1739,25 @@ function readMemoryConfig(value: unknown, cwd: string): MonoAgentConfig["memory"
       throw new MonoAgentConfigError("invalid_json", "memory.capture.only must be a unique subset of fact, preference, lesson.",
         { path: "memory.capture.only" });
     }
+    const rawReconcileModel = captureJson.reconcileModel;
+    if (rawReconcileModel !== undefined) {
+      if (typeof rawReconcileModel !== "string" || rawReconcileModel.trim() !== rawReconcileModel || rawReconcileModel.length === 0) {
+        throw new MonoAgentConfigError("invalid_json", "memory.capture.reconcileModel must be a nonblank, trimmed agent-host model reference.",
+          { path: "memory.capture.reconcileModel" });
+      }
+      try {
+        parseMonoRuntimeModelReference(rawReconcileModel);
+      } catch (error) {
+        const reason = modelReferenceReason(error);
+        throw new MonoAgentConfigError("invalid_model_reference",
+          `memory.capture.reconcileModel \`${modelReferenceEcho(rawReconcileModel)}\` is not a valid runtime model reference: ${reason}`,
+          { path: "memory.capture.reconcileModel", reason });
+      }
+    }
     capture = {
       ...(rawFocus === undefined ? {} : { focus: rawFocus as string }),
       ...(rawOnly === undefined ? {} : { only: rawOnly as ("fact" | "preference" | "lesson")[] }),
+      ...(rawReconcileModel === undefined ? {} : { reconcileModel: rawReconcileModel as string }),
     };
   }
   if ((mode === "lite" || mode === "journal") && hasMemoryLlmJson(llmJson)) {
