@@ -35,5 +35,6 @@
         "../src/push-preview.ts",
         "../src/contracts.ts",
         "../../agent-contracts/src/provider-usage.ts"
-      ]
+      ],
+      "exclude": ["src/stories/**", "src/**/*.stories.tsx"]
 }

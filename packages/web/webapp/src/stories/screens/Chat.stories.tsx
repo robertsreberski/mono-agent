@@ -1,0 +1,54 @@
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import { userEvent } from "storybook/test";
+import { Chat } from "../../components/Chat";
+import { Dashboard } from "../../components/dashboard/Dashboard";
+import { StoryRuntime, sampleMessages } from "../runtime";
+import type { ThreadMessageLike } from "@assistant-ui/react";
+import { gardenThread, runningThread } from "../fixtures";
+import { storyStore } from "../store";
+import { useEffect } from "react";
+import { RecentFixtures } from "../screen-fixtures";
+import { waitForOverlay } from "../overlay-play";
+
+const streamingMessages: readonly ThreadMessageLike[] = [sampleMessages[0]!, {
+  role: "assistant", status: { type: "running" }, content: [
+    { type: "text", text: "Drafting the first planting beds for Morgan..." },
+    { type: "tool-call", toolCallId: "read-garden-outline", toolName: "Read", args: { file_path: "garden/outline.md" } },
+  ],
+}];
+
+function ConsoleShell({ children, phone = false, streaming = false }: { readonly children: React.ReactNode; readonly phone?: boolean; readonly streaming?: boolean }) {
+  if (streaming) Object.assign(storyStore, { selectedThread: { ...runningThread, title: gardenThread.title }, selectedThreadId: runningThread.id });
+  useEffect(() => () => { if (streaming) Object.assign(storyStore, { selectedThread: gardenThread, selectedThreadId: gardenThread.id }); }, [streaming]);
+  return <StoryRuntime messages={streaming ? streamingMessages : undefined}><div className="app-shell">
+    <div className="dashboard-panel" role="navigation" aria-label="Dashboard" aria-hidden={phone || undefined}>
+      <Dashboard highlightSelected={!phone} /><RecentFixtures />
+    </div>
+    <div className="chat-region is-open">{children}</div>
+  </div></StoryRuntime>;
+}
+export default {
+  title: "Screens/Chat", component: Chat, tags: ["autodocs"],
+  parameters: { layout: "fullscreen" },
+  decorators: [(Story, context) => <ConsoleShell phone={context.globals.viewport?.value === "phone"} streaming={context.parameters.streaming === true}><Story /></ConsoleShell>],
+} satisfies Meta<typeof Chat>;
+type Story = StoryObj<typeof Chat>;
+export const Desktop: Story = { args: { onBack: () => {} } };
+export const Phone: Story = { args: { onBack: () => {} }, globals: { viewport: { value: "phone" } } };
+export const Streaming: Story = { args: { onBack: () => {} }, parameters: { streaming: true } };
+export const StreamingPhone: Story = { args: { onBack: () => {} }, parameters: { streaming: true }, globals: { viewport: { value: "phone" } } };
+const openActions: NonNullable<Story["play"]> = async ({ canvasElement }) => {
+  const button = canvasElement.querySelector<HTMLElement>('button[aria-label="Conversation actions"]');
+  if (!button) throw new Error("Conversation actions trigger missing");
+  await userEvent.click(button);
+  await waitForOverlay(canvasElement, '.conversation-menu-popup[aria-label="Conversation actions"]');
+};
+export const ActionsOpen: Story = { args: Desktop.args, play: openActions };
+export const ActionsPhone: Story = { args: Phone.args, globals: Phone.globals, play: openActions };
+export const ProjectMenuOpen: Story = { args: Desktop.args, play: async (context) => {
+  await openActions(context);
+  const submenu = context.canvasElement.ownerDocument.querySelector<HTMLElement>('.conversation-menu-popup[aria-label="Conversation actions"] .conversation-menu-item');
+  if (!submenu) throw new Error("Project submenu trigger missing");
+  await userEvent.click(submenu);
+  await waitForOverlay(context.canvasElement, '.conversation-menu-popup[aria-label="Move to project"]');
+} };

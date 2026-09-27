@@ -1,0 +1,12 @@
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import { AssistantMessage } from "../../components/Messages";
+import { sampleMessages } from "../runtime";
+import { Transcript } from "../transcript";
+export default { title: "Chat & Messages/AssistantMessage", component: AssistantMessage, tags: ["autodocs"] } satisfies Meta<typeof AssistantMessage>;
+type Story = StoryObj<typeof AssistantMessage>;
+export const Conversation: Story = { render: () => <Transcript /> };
+export const User: Story = { render: () => <Transcript messages={[sampleMessages[0]!]} /> };
+export const AssistantMarkdown: Story = { render: () => <Transcript messages={[sampleMessages[1]!]} /> };
+export const System: Story = { render: () => <Transcript messages={[sampleMessages[2]!]} /> };
+export const LongMarkdown: Story = { render: () => <Transcript messages={[sampleMessages[0]!, { role: "assistant", content: Array.from({ length: 8 }, (_, index) => `## Section ${String(index + 1)}\n\n${sampleMessages[1]!.content}`).join("\n\n") }]} /> };
+export const Mobile: Story = { render: () => <Transcript />, globals: { viewport: { value: "phone" } } };

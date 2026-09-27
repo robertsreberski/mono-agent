@@ -25,6 +25,10 @@
   with `memory.capture.reconcileModel`; leave extraction, review and the unset
   default unchanged. Model failures retain capture retry behavior.
 
+- Add a local web console Storybook documenting live theme tokens, component
+  states and open context-usage/other overlays, with a CI static build; keep its
+  dev dependencies and stories out of the published web package.
+
 - Let agents read, set and clear wake-up schedules for their current web
   conversation; tool-set one-offs must be at least five minutes ahead. Fired
   turns arrive later in the same conversation.

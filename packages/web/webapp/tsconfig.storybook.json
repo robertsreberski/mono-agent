@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "composite": false,
+    "tsBuildInfoFile": null,
+    "types": ["vite/client", "node"]
+  },
+  "include": [".storybook/**/*.ts", ".storybook/**/*.tsx", "src/stories/**/*.ts", "src/stories/**/*.tsx", "src/components/**/*.stories.tsx", "src/**/*.d.ts"],
+  "exclude": []
+}

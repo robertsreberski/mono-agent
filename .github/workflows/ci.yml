@@ -247,6 +247,9 @@ jobs:
       - name: Install webapp dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build web console Storybook
+        run: pnpm run build-storybook
+
       - name: Install Chromium
         run: pnpm exec playwright install --with-deps chromium
 

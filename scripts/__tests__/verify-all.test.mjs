@@ -238,6 +238,7 @@ describe("verify-all", () => {
       "Setup Node",
       "Install pinned pnpm",
       "Install webapp dependencies",
+      "Build web console Storybook",
       "Install Chromium",
       "Test webapp in Chromium",
     ]);
