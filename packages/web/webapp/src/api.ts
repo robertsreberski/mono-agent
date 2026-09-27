@@ -382,6 +382,25 @@ export interface BootstrapScope {
 }
 
 export const api = {
+  wakeSchedule: (threadId: string, signal?: AbortSignal) =>
+    request<{ schedule: import("../../src/contracts.js").WebWakeSchedule | null }>(`/api/v1/threads/${encodeURIComponent(threadId)}/wake-schedule`, { signal }),
+  saveWakeSchedule: (threadId: string, definition: import("../../src/contracts.js").WebWakeScheduleDefinition, expectedRevision?: number) =>
+    request<{ schedule: import("../../src/contracts.js").WebWakeSchedule }>(`/api/v1/threads/${encodeURIComponent(threadId)}/wake-schedule`, {
+      method: expectedRevision === undefined ? "POST" : "PUT",
+      headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
+      body: JSON.stringify({ ...definition, ...(expectedRevision === undefined ? {} : { expectedRevision }) }),
+    }),
+  setWakeState: (threadId: string, expectedRevision: number, state: "active" | "paused") =>
+    request<{ schedule: import("../../src/contracts.js").WebWakeSchedule }>(`/api/v1/threads/${encodeURIComponent(threadId)}/wake-schedule`, {
+      method: "PATCH", headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
+      body: JSON.stringify({ expectedRevision, state }),
+    }),
+  deleteWakeSchedule: async (threadId: string, expectedRevision: number): Promise<void> => {
+    await send(`/api/v1/threads/${encodeURIComponent(threadId)}/wake-schedule`, {
+      method: "DELETE", headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
+      body: JSON.stringify({ expectedRevision }),
+    });
+  },
   bootstrap: (signal?: AbortSignal, scope?: BootstrapScope) => {
     const query = new URLSearchParams();
     if (scope?.sourceId !== undefined) query.set("sourceId", scope.sourceId);

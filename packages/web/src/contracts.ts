@@ -388,7 +388,24 @@ export interface WebJobActivity {
   };
 }
 
+export type WebWakeScheduleDefinition =
+  | { readonly kind: "once"; readonly timezone: string; readonly localAt: string; readonly message?: string }
+  | { readonly kind: "weekly"; readonly timezone: string; readonly days: readonly number[]; readonly times: readonly string[]; readonly message?: string };
+
+export interface WebWakeSchedule {
+  readonly scheduleId: string;
+  readonly threadId: string;
+  readonly sourceId: string;
+  readonly definition: WebWakeScheduleDefinition;
+  readonly state: "active" | "paused" | "completed";
+  readonly revision: number;
+  readonly nextFireAt: string | null;
+  readonly lastOutcome: "fired" | "skipped" | "uncertain" | "failed" | null;
+  readonly createdAt: string;
+}
+
 export interface WebThread {
+  readonly wakeSchedule?: Pick<WebWakeSchedule, "state" | "revision" | "nextFireAt"> & { readonly kind: WebWakeScheduleDefinition["kind"] };
   readonly id: string;
   readonly sourceId: string;
   readonly title: string;
@@ -679,6 +696,14 @@ export type WebMessagePart =
       readonly job: ProcessJobProjection;
       /** Bounded normal-turn answer produced by the terminal wake, when ready. */
       readonly responseText?: string;
+    }
+  | {
+      readonly type: "scheduled-wake";
+      readonly occurrenceId: string;
+      readonly scheduledAt: string;
+      readonly firedAt: string;
+      readonly timezone: string;
+      readonly message?: string;
     }
   | {
       /** Chronological marker for the point where a retained job wake was applied. */

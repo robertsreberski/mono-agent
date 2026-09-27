@@ -141,6 +141,8 @@ export type {
   WebSkillRegistry,
   WebSkillUnavailableReason,
   WebThread,
+  WebWakeSchedule,
+  WebWakeScheduleDefinition,
   WebJobActivity,
   WebThreadChangedPayload,
   WebThreadDetail,

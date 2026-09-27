@@ -86,6 +86,16 @@ describe("applyMessageDelta", () => {
     expect(readMessageDelta(delta({ ops: [{ op: "set", index: 0, part }] }))).toBeDefined();
   });
 
+  it("retains a scheduled wake marker across cache delta replay and rejects oversized messages", () => {
+    const part = { type: "scheduled-wake", occurrenceId: "sample", scheduledAt: "2027-01-04T09:00:00Z",
+      firedAt: "2027-01-04T09:00:01Z", timezone: "UTC", message: "Review the sample." } as const;
+    const wire = delta({ ops: [{ op: "set", index: 0, part }] });
+    expect(readMessageDelta(wire)).toBeDefined();
+    expect(applyMessageDelta(message("m1"), wire).parts).toEqual([part]);
+    expect(readMessageDelta(delta({ ops: [{ op: "set", index: 0, part: { ...part, message: "x".repeat(1001) } }] })))
+      .toBeUndefined();
+  });
+
   it("returns a new message carrying the delta's own status, stamp and version", () => {
     const held = message("m1", { status: "running", seq: 4 });
 

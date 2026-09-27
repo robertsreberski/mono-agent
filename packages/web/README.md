@@ -104,6 +104,40 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   remain stack-only.
 ## Install / Usage
 
+### Scheduled wake-ups
+
+An ordinary existing conversation can have one schedule, configured through
+**Conversation actions → Schedule wake-up**. Choose a one-off local date and time
+or weekly weekdays and up to eight distinct times, an editable IANA timezone
+(defaulting to the browser's zone), and an optional message of up to 1,000 UTF-8
+bytes. The conversation row indicates active schedules; the menu shows state and
+next UTC-derived fire time in local display time. Paused schedules stay attached;
+editing a completed one-off replaces its definition with a future time.
+
+`GET /api/v1/threads/:id/wake-schedule` returns `{schedule:null|schedule}`;
+`POST` creates with `{kind,timezone,localAt?,days?,times?,message?}`; `PUT`
+replaces the definition, `PATCH` accepts `{state:"paused"|"active"}`, and
+`DELETE` clears it. PUT/PATCH/DELETE also require `expectedRevision` from the
+latest GET; conflicting revisions return 409. Mutations require the console's
+exact origin and reject unknown fields, invalid zones/times and notification
+threads. Archiving pauses the schedule and discards unclaimed pending work;
+unarchiving does not resume it. Deleting the conversation deletes its schedule.
+
+Due wakes run on the first connected idle boundary after existing queued user
+input and host follow-ups drain, never concurrently with a turn or steering into
+one. Busy occurrences persist as pending, including through restart or temporary
+disconnection. An occurrence not queued while busy is admitted once within a
+60-minute grace after downtime/offline, otherwise skipped. Multiple missed weekly
+occurrences coalesce to one; weekly schedules continue at their next future local
+slot. Weekly spring gaps shift by the gap and fall overlaps fire once at the
+earlier instant; one-off spring-gap local times are rejected. A claimed occurrence
+is never replayed after an ambiguous failure; its last outcome can remain
+uncertain. The host-framed prompt treats the optional message as untrusted user
+text. The resulting assistant-only turn uses the conversation's saved model and
+effort, has normal console tools and background-job access but cannot rename the
+conversation or insert an inactivity-resumption marker. The transcript retains a
+standalone **Scheduled wake-up** item even if the agent sends no answer.
+
 The composer’s ↵ control chooses a device-local, persisted Enter preference:
 Enter sends with Shift+Enter for a newline, or Enter inserts a newline with
 Cmd/Ctrl+Enter to send. The default is newline on every device; only an explicit choice enables
@@ -1035,6 +1069,8 @@ WebThreadNotificationTriggerKind
 WebThreadSearchHit
 WebThreadSearchPage
 WebThreadTrigger
+WebWakeSchedule
+WebWakeScheduleDefinition
 createWebConsoleToolClient
 defaultTraceRegistryDir
 defaultWebStateDir

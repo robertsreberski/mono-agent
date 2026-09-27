@@ -18,6 +18,8 @@ import { Composer } from "./Composer";
 import { CronChannelHeader } from "./CronChannelHeader";
 import { Icon } from "./Icon";
 import { ProcessJobStack } from "./ProcessJobStack";
+import { WakeScheduleEditor } from "./WakeScheduleEditor";
+import { WakeScheduleStatus } from "./WakeScheduleStatus";
 import { ConversationErrorFallback, RenderErrorBoundary } from "./RenderErrorBoundary";
 import { conversationRenderContext } from "./render-error-diagnostics";
 import { useRunControls } from "./run-controls";
@@ -347,6 +349,7 @@ function ProjectPickerItems({ threadId, sourceId, currentProjectId }: {
 }
 
 function ConversationActions() {
+  const [scheduleOpen, setScheduleOpen] = useState(false);
   const {
     selectedThread,
     archiveThread,
@@ -368,6 +371,7 @@ function ConversationActions() {
     : (projectsByAgent[selectedThread.sourceId] ?? []).find((project) => project.id === memberProjectId)?.name ?? null;
 
   return (
+    <>
     <Menu.Root
       onOpenChange={(open) => {
         // The picker lists this conversation's agent projects; make sure the
@@ -432,6 +436,14 @@ function ConversationActions() {
                 <span>Remove from project</span>
               </Menu.Item>
             )}
+            {selectedThread.trigger === undefined && <Menu.Item className="conversation-menu-item is-wake"
+              onClick={() => setScheduleOpen(true)}>
+              <Icon name="clock" size={16} />
+              <span className="wake-menu-copy">
+                <span>{selectedThread.wakeSchedule === undefined ? "Schedule wake-up" : "Edit wake-up schedule"}</span>
+                <WakeScheduleStatus thread={selectedThread} />
+              </span>
+            </Menu.Item>}
             <Menu.Item
               className="conversation-menu-item"
               onClick={() => {
@@ -464,6 +476,8 @@ function ConversationActions() {
         </Menu.Positioner>
       </Menu.Portal>
     </Menu.Root>
+    {scheduleOpen && <WakeScheduleEditor key={selectedThread.id} thread={selectedThread} onClose={() => setScheduleOpen(false)} />}
+    </>
   );
 }
 

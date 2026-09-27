@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add one-off and weekly timezone-aware wake-up schedules to ordinary web
+  conversations, with edit, pause, resume, delete, live list status and a distinct
+  scheduled transcript item. Keep busy occurrences pending until an idle turn;
+  skip unqueued occurrences more than 60 minutes late.
+
 - Remove the BuJo English automatic-recall grammar and use bounded, score-based
   possibly-relevant context in standalone stores; Lite and degraded lexical
   recall remain available explicitly; `load()` returns no automatic block on an

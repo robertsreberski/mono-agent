@@ -150,6 +150,8 @@ const convertPart = (
       return { type: "data-subagent", data: jsonObject(part) };
     case "process-job":
       return { type: "data-process-job", data: jsonObject(part) };
+    case "scheduled-wake":
+      return { type: "data-scheduled-wake", data: jsonObject(part) };
     case "process-job-wake": {
       const job = processJobs?.get(part.jobId);
       return job === undefined ? null : {
@@ -304,7 +306,7 @@ const foldSettledActivity = (parts: readonly ConvertedPart[]): ConvertedPart[] =
   };
   visible.forEach((part, index) => {
     if (index === answerIndex) return;
-    if (isSteerPart(part)) {
+    if (isSteerPart(part) || part.type === "data-scheduled-wake") {
       flush();
       folded.push(part);
       return;
@@ -706,7 +708,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
           !isLegacySilentCronMessage(message)
           && !(message.role === "assistant" && message.status === "complete"
             && message.attachments.length === 0
-            && !message.parts.some((part) => part.type === "process-job-wake" || part.type === "steer")
+            && !message.parts.some((part) => part.type === "process-job-wake" || part.type === "scheduled-wake" || part.type === "steer")
             && convertWebMessage(message).content?.length === 0)),
       { threadId: store.selectedThreadId },
     ),

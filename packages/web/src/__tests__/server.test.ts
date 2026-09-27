@@ -178,6 +178,35 @@ function pushSubscriptionBody(endpoint = "https://push.example.test/send/opaque"
   };
 }
 
+describe("conversation wake schedule HTTP", () => {
+  it("requires exact origin, validates strict fields and revisions, and projects active state", async () => {
+    const { baseUrl } = await start();
+    const threadId = await createThread(baseUrl, "agent-one");
+    const url = `${baseUrl}/api/v1/threads/${threadId}/wake-schedule`;
+    const body = { kind: "weekly", timezone: "UTC", days: [1], times: ["09:00"], message: "Review the sample." };
+    const send = (method: string, payload: object, origin = baseUrl) => fetch(url, {
+      method, headers: { "Content-Type": "application/json", Origin: origin }, body: JSON.stringify(payload),
+    });
+    expect((await send("POST", body, "http://example.invalid")).status).toBe(403);
+    const invalid = await send("POST", { ...body, extra: true });
+    expect(invalid.status).toBe(400);
+    expect(JSON.stringify(await json(invalid))).toContain("extra");
+    const created = await send("POST", body);
+    expect(created.status).toBe(201);
+    const schedule = (await json(created)).schedule as { revision: number; nextFireAt: string };
+    expect(schedule.nextFireAt).toBeTruthy();
+    expect((await send("POST", body)).status).toBe(409);
+    const detail = await json(await fetch(`${baseUrl}/api/v1/threads/${threadId}`));
+    expect((detail.thread as { wakeSchedule: { state: string } }).wakeSchedule.state).toBe("active");
+    expect((await send("PATCH", { expectedRevision: schedule.revision + 1, state: "paused" })).status).toBe(409);
+    const paused = await send("PATCH", { expectedRevision: schedule.revision, state: "paused" });
+    expect(paused.status).toBe(200);
+    const revision = ((await json(paused)).schedule as { revision: number }).revision;
+    expect((await send("DELETE", { expectedRevision: revision })).status).toBe(204);
+    expect((await json(await fetch(url))).schedule).toBeNull();
+  });
+});
+
 describe("web HTTP server", () => {
   it("requires exact-origin persisted message/part binding before a proposal can request one restart", async () => {
     let restarts = 0;
