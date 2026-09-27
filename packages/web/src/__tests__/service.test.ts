@@ -7121,6 +7121,47 @@ describe("conversation project dispatch bounds", () => {
 });
 
 
+describe("authenticated console wake callback", () => {
+  it("publishes wake schedule summaries and applies tool operations through the turn-bound ingress", async () => {
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const service = await createService({ fetchImpl: operatorFetch({
+      turns: () => new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }),
+    }) });
+    const ingress = await startWebNotificationIngress(service);
+    try {
+      const thread = service.createThread("agent-one");
+      await service.startTurn(thread.id, { text: "Schedule a check-in" });
+      await waitFor(() => stream !== undefined);
+      const scope = { sourceId: "agent-one", threadId: thread.id, turnId: service.store.activeTurn(thread.id)!.id };
+      const call = await createWebConsoleToolClient(scope, { stateDir: service.store.paths.root });
+      const events: WebEvent[] = [];
+      const unsubscribe = service.subscribe((event) => { events.push(event); });
+      try {
+        const get = () => call({ operationId: randomUUID(), tool: "GetWakeSchedule", args: {} });
+        expect(await get()).toEqual({ schedule: null });
+        const future = new Date(Date.now() + 15 * 60_000).toISOString().slice(0, 16);
+        const created = await call({ operationId: randomUUID(), tool: "SetWakeSchedule", args: { kind: "once", timezone: "UTC", localAt: future } });
+        expect(created).toMatchObject({ schedule: { threadId: thread.id, revision: 1 } });
+        expect(events.slice(-2)).toMatchObject([
+          { type: "thread.changed", payload: { thread: { wakeSchedule: { kind: "once", revision: 1 } } } },
+          { type: "threads.changed", payload: { thread: { wakeSchedule: { kind: "once", revision: 1 } } } },
+        ]);
+        expect(await get()).toEqual(created);
+        const updated = await call({ operationId: randomUUID(), tool: "SetWakeSchedule", args: { kind: "weekly", timezone: "UTC", days: [1], times: ["09:00"], expectedRevision: 1 } });
+        expect(updated).toMatchObject({ schedule: { revision: 2, definition: { kind: "weekly" } } });
+        await expect(call({ operationId: randomUUID(), tool: "ClearWakeSchedule", args: { expectedRevision: 1 } })).rejects.toMatchObject({ code: "wake_revision_conflict" });
+        expect(await call({ operationId: randomUUID(), tool: "ClearWakeSchedule", args: { expectedRevision: 2 } })).toEqual({ cleared: true });
+        expect(events.slice(-2)).toMatchObject([
+          { type: "thread.changed", payload: { thread: { id: thread.id } } },
+          { type: "threads.changed", payload: { thread: { id: thread.id } } },
+        ]);
+        expect(service.store.getThread(thread.id)?.wakeSchedule).toBeUndefined();
+        expect(await get()).toEqual({ schedule: null });
+      } finally { unsubscribe(); }
+    } finally { try { stream?.close(); } catch { /* already settled */ } await ingress.stop(); await service.stop(); }
+  });
+});
+
 describe("authenticated console project callback", () => {
   it("commits create-and-attach once, binds source and turn, then rejects late calls", async () => {
     let stream: ReadableStreamDefaultController<Uint8Array> | undefined;

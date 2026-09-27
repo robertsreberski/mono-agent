@@ -13,8 +13,16 @@ const context = z.string().max(4000);
 const tagName = z.string().refine((value) => !/[\u0000-\u001f\u007f\u0085\u2028\u2029]/u.test(value), "name must not contain control characters").pipe(name);
 const tagColor = z.enum(["default", "blue", "purple", "amber", "rose", "green", "teal", "red"]);
 const color = z.enum(["default", "blue", "purple", "amber", "rose"]);
+const wakeMessage = z.string().refine((value) => Buffer.byteLength(value, "utf8") <= 1000, "message must be at most 1000 UTF-8 bytes").optional();
+const wakeRevision = z.number().int().min(1);
 export const CONSOLE_PROJECT_SCHEMAS = {
   MarkConversationRead: z.object({ conversationId: id.optional() }).strict(),
+  GetWakeSchedule: z.object({}).strict(),
+  SetWakeSchedule: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("once"), expectedRevision: wakeRevision.optional(), timezone: z.string().min(1).max(128), localAt: z.string(), message: wakeMessage }).strict(),
+    z.object({ kind: z.literal("weekly"), expectedRevision: wakeRevision.optional(), timezone: z.string().min(1).max(128), days: z.array(z.number().int().min(0).max(6)).min(1).max(7), times: z.array(z.string()).min(1).max(8), message: wakeMessage }).strict(),
+  ]),
+  ClearWakeSchedule: z.object({ expectedRevision: wakeRevision }).strict(),
   ListTags: z.object({}).strict(),
   CreateTag: z.object({ name: tagName, color: tagColor.optional() }).strict(),
   UpdateTag: z.object({ tagId: id, name: tagName.optional(), color: tagColor.optional() }).strict()
@@ -42,6 +50,9 @@ export function isConsoleProjectToolAllowed(tool: ToolName, policy: Policy): boo
 
 const descriptions: Record<ToolName, string> = {
   MarkConversationRead: "Mark one of this agent's conversations read at its current revision (this conversation by default). Clears the console unread dot on connected devices without opening it or changing recency; later updates can make it unread again. Returns conversationId and readRevision.",
+  GetWakeSchedule: "Read this conversation's wake-up schedule or null: definition (once or weekly), state, nextFireAt (UTC instant for the given IANA timezone), lastOutcome and revision. A fired turn arrives later in this conversation.",
+  SetWakeSchedule: "Set this conversation's wake-up schedule: kind once with localAt YYYY-MM-DDTHH:mm at least 5 minutes ahead, or weekly with 1–7 days (0=Sunday) and at most 8 HH:mm times; times are local to timezone (IANA). Optional message is at most 1000 UTF-8 bytes. Omit expectedRevision to create; supply the current revision to replace. A fired turn arrives later in this conversation.",
+  ClearWakeSchedule: "Clear this conversation's once or weekly wake-up schedule with its expectedRevision. Times are local to its IANA timezone; a fired turn otherwise arrives later in this conversation (weekly: 1–7 days, at most 8 times; message: at most 1000 UTF-8 bytes; tool-set one-offs: at least 5 minutes ahead).",
   ListTags: "List this agent's tags with their names, colors, and IDs.",
   CreateTag: "Create a named tag for this agent with an optional palette color.",
   UpdateTag: "Change a tag's name or color for this agent.",
@@ -94,7 +105,16 @@ export function createConsoleProjectsRuntimeExtension(options: {
           } catch (error) {
             const candidate = typeof error === "object" && error !== null && "code" in error ? String(error.code) : "";
             const code = /^[a-z_]{1,64}$/u.test(candidate) ? candidate : "console_tool_failed";
-            return { isError: true, content: [{ type: "text" as const, text: JSON.stringify({ error: code, message: code === "project_busy" ? "Wait for current conversation turns before deleting or archiving this project." : code === "console_tool_delivery_unknown" ? "Delivery is unknown. Do not automatically retry." : "The console refused this operation." }) }] };
+            const wakeErrors: Record<string, string> = {
+              invalid_wake_schedule: "Invalid wake-up definition. Check the local date/time, weekdays, timezone and limits.",
+              wake_lead_time: "One-off wake-ups set by this tool must be at least five minutes from now.",
+              wake_revision_conflict: "Schedule changed. Read its current revision before retrying.",
+              wake_schedule_exists: "This conversation already has a schedule. Read its revision before replacing it.",
+              wake_schedule_not_found: "This conversation has no wake-up schedule.",
+              thread_archived: "Unarchive this conversation before scheduling a wake-up.",
+              invalid_wake_thread: "Wake-up schedules require an ordinary conversation, not a cron thread.",
+            };
+            return { isError: true, content: [{ type: "text" as const, text: JSON.stringify({ error: code, message: wakeErrors[code] ?? (code === "project_busy" ? "Wait for current conversation turns before deleting or archiving this project." : code === "console_tool_delivery_unknown" ? "Delivery is unknown. Do not automatically retry." : "The console refused this operation.") }) }] };
           }
         });
         return server;

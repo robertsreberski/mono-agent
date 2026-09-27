@@ -262,7 +262,7 @@ describe("wizard prompt builders", () => {
       "RunHistory",
       "SessionHistory",
       "SetConversationTitle",
-      "ListTags", "CreateTag", "UpdateTag", "DeleteTag", "UpdateConversationTags", "MarkConversationRead",
+      "ListTags", "CreateTag", "UpdateTag", "DeleteTag", "UpdateConversationTags", "MarkConversationRead", "GetWakeSchedule", "SetWakeSchedule", "ClearWakeSchedule",
       "ListProjects", "GetProject", "CreateProject", "UpdateProject", "DeleteProject", "ListConversations", "SearchConversations", "CreateConversation", "SetConversationProject",
       "MemoryJournal",
       "PeerAgent",
