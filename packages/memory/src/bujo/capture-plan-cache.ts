@@ -48,7 +48,10 @@ export function recoveredCapturePlan(root: string, key: string, inputHash: strin
     || plan.candidates.length > 8 || plan.entities.length > 16 || plan.relations.length > 16) {
     throw new Error("memory-capture: retained plan is invalid");
   }
-  return plan;
+  // A plan retained before capture stopped writing tasks may still carry one;
+  // recover it as the same dated history note a fresh extraction now yields.
+  return { ...plan, candidates: plan.candidates.map((candidate) => candidate?.type === "task"
+    ? { ...candidate, type: "note" } : candidate) };
 }
 
 export function listRetainedCapturePlanKeys(root: string): readonly string[] {
