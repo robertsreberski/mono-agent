@@ -330,7 +330,12 @@ export async function extractCapturePlanStrict(
     const combined = [...(labels ?? []), ...derived.filter((item) => !labels?.some((existing) =>
       existing.kind === "fact" && item.kind === "fact" && existing.entityId === item.entityId))].slice(0, 8);
     const { labels: _unfiltered, ...unlabelled } = candidate;
-    candidates.push({ ...unlabelled, ...(combined.length === 0 ? {} : { labels: combined }) });
+    // Memory is not a task list: automatic capture never writes an open task.
+    // A task-typed extraction is kept only as a dated history note; its
+    // lifecycle belongs to the agent's task tools. Coarse facts were derived
+    // from the extracted type above, so a plan still gains no owner fact.
+    candidates.push({ ...unlabelled, type: unlabelled.type === "task" ? "note" : unlabelled.type,
+      ...(combined.length === 0 ? {} : { labels: combined }) });
     clampedTokenSets.push(tokens);
     fullTokenSets.push(fullTokens);
     splitFlags.push(hostSplit);

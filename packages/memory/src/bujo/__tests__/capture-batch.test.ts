@@ -290,3 +290,26 @@ describe("extractCapturePlanStrict assistant salience floor", () => {
     expect(plan.relations).toEqual([{ src: "person:morgan", dst: "project:maple", relation: "leads" }]);
   });
 });
+
+describe("extractCapturePlanStrict never plans open tasks", () => {
+  it.each([
+    ["en", "User: Remind me to renew the Maple lease on 2026-10-01.\nAssistant: Scheduled.", "Morgan renews the Maple lease on 2026-10-01."],
+    ["pl", "User: Przypomnij mi o odnowieniu umowy Maple 2026-10-01.\nAssistant: Zaplanowane.", "Morgan odnawia umowę Maple 2026-10-01."],
+    ["es", "User: Recuérdame renovar el contrato de Maple el 2026-10-01.\nAssistant: Programado.", "Morgan renueva el contrato de Maple el 2026-10-01."],
+  ])("keeps a task-typed extraction only as a history note without an owner fact (%s)", async (_language, turn, text) => {
+    const plan = await extractCapturePlanStrict(turn, { id: `task-${_language}`, complete: async () => JSON.stringify({
+      memories: [
+        { type: "task", text, salience: 0.8, isInsight: false, entityIds: ["person:morgan"], source: "user" },
+        { type: "event", text: "Morgan moved into the Maple flat on 1990-05-17.", salience: 0.8, isInsight: false,
+          entityIds: ["person:morgan"], source: "user" },
+      ],
+      entities: [{ id: "person:morgan", name: "Morgan", type: "person" }],
+      relations: [],
+    }) });
+    expect(plan.candidates.map(({ type }) => type)).toEqual(["note", "event"]);
+    expect(plan.candidates[0]).toMatchObject({ text, entityIds: ["person:morgan"] });
+    expect(plan.candidates[0]?.labels).toBeUndefined();
+    expect(plan.candidates[1]?.labels).toEqual([expect.objectContaining({ kind: "fact", entityId: "person:morgan" })]);
+    expect(plan.candidates.some(({ type }) => type === "task")).toBe(false);
+  });
+});

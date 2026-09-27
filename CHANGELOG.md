@@ -8,6 +8,10 @@
   structured event date or timestamp has passed in local-day/instant order.
   Explicit `MemoryRecall` reports the same ended status.
 
+- Memory capture no longer writes open task lines. A line the extractor types
+  as a task is stored as a dated history note without a host-derived fact; task
+  lifecycle belongs to the agent's task tools.
+
 - Let agents read, set and clear wake-up schedules for their current web
   conversation; tool-set one-offs must be at least five minutes ahead. Fired
   turns arrive later in the same conversation.
