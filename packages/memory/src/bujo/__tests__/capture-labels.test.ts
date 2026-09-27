@@ -1,4 +1,5 @@
 import { mkdtempSync, readFileSync } from "node:fs";
+import { neutralCaptureReview } from "./capture-review-fake.js";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -99,7 +100,7 @@ describe("host-validated capture labels", () => {
         const user = "Morgan prefers concise notes. Morgan was born 1990-05-17.";
         let id = 0;
         const result = await captureTurnStrict(`User: ${user}\nAssistant: A retry fixed the failure.`, {
-          db, root, llm: { id: "fake-filter", complete: async () => JSON.stringify({ memories: [
+          db, root, llm: { id: "fake-filter", complete: async (prompt, call) => call?.label === "capture:review" ? neutralCaptureReview(prompt) : JSON.stringify({ memories: [
             { type: "note", text: "Morgan prefers concise notes.", salience: 0.8, isInsight: false, source: "user", entityIds: [], labels: [preference] },
             { type: "note", text: "A retry fixed the failed operation by using the fallback.", salience: 0.8, isInsight: false, source: "user", entityIds: [], labels: [lesson] },
             { type: "note", text: "Morgan was born 1990-05-17.", salience: 0.8, isInsight: false, source: "user", entityIds: ["person:morgan"], labels: [fact] },
@@ -442,7 +443,7 @@ describe("host-validated capture labels", () => {
     const user = "My favorite animal is otter. Never use long fictional summaries. Maple attends art class on Monday mornings.";
     try {
       await captureTurnStrict(`User: ${user}\nAssistant: Noted.`, {
-        db, root, llm: { id: "fake", complete: async () => JSON.stringify({ memories: [
+        db, root, llm: { id: "fake", complete: async (prompt, call) => call?.label === "capture:review" ? neutralCaptureReview(prompt) : JSON.stringify({ memories: [
           { type: "note", text: "The user favors otter as a favorite animal.", salience: 0.8, isInsight: false, source: "user", entityIds: ["person:owner"], labels: [owner] },
           { type: "note", text: "Never use long fictional summaries.", salience: 0.8, isInsight: false, source: "user", entityIds: [], labels: [preference] },
           { type: "note", text: "Maple attends art class on Monday mornings.", salience: 0.8, isInsight: false, source: "user", entityIds: ["person:maple"], labels: [classFact] },

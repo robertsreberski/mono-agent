@@ -79,9 +79,9 @@ export function captureRetryCause(item, captureAttempt) {
 export function currentCaptureRetryCause(events, cursor, tag, item) {
   const captureAttempt = events.slice(cursor).findLast((entry) => (
     entry.groupId === tag.groupId && entry.arm === tag.arm
-    && (["extraction", "reconciliation"].includes(entry.stage)
+    && (["extraction", "review", "reconciliation"].includes(entry.stage)
       || (entry.stage === "capture_projection"
-        && ["extraction", "reconciliation"].includes(entry.captureStage)))
+        && ["extraction", "review", "reconciliation"].includes(entry.captureStage)))
   ));
   return { cause: captureRetryCause(item, captureAttempt), nextCursor: events.length };
 }
@@ -175,7 +175,7 @@ export async function persistedCaptureRetrySchedule(source, expected) {
  */
 export function captureFailureKindFor(events, tag) {
   const found = events.findLast((entry) => entry.groupId === tag.groupId && entry.arm === tag.arm
-    && ["extraction", "reconciliation", "capture_recovery"].includes(entry.stage) && typeof entry.failureKind === "string");
+    && ["extraction", "review", "reconciliation", "capture_recovery"].includes(entry.stage) && typeof entry.failureKind === "string");
   return found?.failureKind ?? null;
 }
 

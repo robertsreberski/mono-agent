@@ -158,7 +158,7 @@ export function usageOf(value) {
 }
 
 function settledCaptureTimeoutRecovery(plan, stage) {
-  return ["extraction", "reconciliation"].includes(stage)
+  return ["extraction", "review", "reconciliation"].includes(stage)
     && plan.locomo?.captureRecovery?.timeoutPolicy === "settled_capture_runtime_only"
     && Number.isSafeInteger(plan.perCall.captureTimeoutSettlementMs)
     && plan.perCall.captureTimeoutSettlementMs > 0;
@@ -421,7 +421,8 @@ export function captureLlm(runtime, { model, workspace, sessionsRoot, budget, ta
   return {
     id: `agent-host:${model.reference}`,
     async complete(prompt, options = {}) {
-      const stage = options.label === "capture:reconcile-batch" ? "reconciliation" : "extraction";
+      const stage = options.label === "capture:reconcile-batch" ? "reconciliation"
+        : options.label === "capture:review" ? "review" : "extraction";
       let result;
       try {
         result = await meteredRuntime(runtime, { budget, stage, tag }).run(MEMORY_SYSTEM, {

@@ -115,6 +115,11 @@ export async function runMemoryBehaviourScorecard({ turns = TURNS, questions = Q
         const entities = ids.map((id) => ({ id, name: id === "person:owner" ? "Owner" : id.slice(7).replace(/^./u, (c) => c.toUpperCase()), type: "person" }));
         return JSON.stringify({ memories: turn.memories, entities, relations: [] });
       }
+      if (options.label === "capture:review") {
+        // The scripted review keeps every line and adds no preference.
+        const lines = JSON.parse(prompt.slice(prompt.lastIndexOf("LINES:\n") + 7));
+        return JSON.stringify({ decisions: lines.map(({ index, source }) => ({ index, decision: source === "user" ? "none" : "keep" })) });
+      }
       if (options.label === "capture:reconcile-batch") {
         const offered = JSON.parse(prompt.slice(prompt.lastIndexOf("INPUT:\n") + 7));
         return JSON.stringify(offered.map(({ index, candidate: item, existing }) => {

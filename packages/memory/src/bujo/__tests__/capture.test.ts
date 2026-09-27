@@ -1,4 +1,5 @@
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, symlinkSync, unlinkSync } from "node:fs";
+import { neutralCaptureReview } from "./capture-review-fake.js";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 
@@ -737,8 +738,8 @@ describe("captureTurnStrict owner preference correction", () => {
       accessCount: 0, tags: [], source: { file: relative(root, dailyFilePath(root, FIXED)) } });
     db.replaceMemoryLabels("LIKES", labelsOf(bullet));
     db.findSimilarMany = async () => [[{ record: db.get("LIKES")!, distance: 0.2 }]];
-    const llm: ReconcileDeps["llm"] = { id: "owner-correction", complete: async (_prompt, call) =>
-      call?.label === "capture:extract"
+    const llm: ReconcileDeps["llm"] = { id: "owner-correction", complete: async (prompt, call) =>
+      call?.label === "capture:review" ? neutralCaptureReview(prompt) : call?.label === "capture:extract"
         ? JSON.stringify({ memories: [{ type: "note", text: line, salience: 0.8, isInsight: false, source: options.source ?? "user",
           entityIds: [] }], entities: [], relations: [] })
         : JSON.stringify([{ index: 0, action: "supersede", targetId: "LIKES", text: line }]) };
