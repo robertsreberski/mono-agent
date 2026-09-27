@@ -219,3 +219,91 @@ export function sumMessageCosts(costs: readonly (number | undefined)[]): number 
   }
   return priced ? total : undefined;
 }
+
+/** A per-message observation. Synchronous children are a subset of main cost. */
+export interface MessageUsageSlice {
+  readonly model?: string;
+  readonly tokens?: { readonly input: number; readonly cacheRead: number; readonly cacheWrite: number; readonly output: number };
+  readonly costUsd?: number;
+  readonly hasCostKey?: boolean;
+  readonly costPartial?: true;
+}
+export interface MessageUsageRollup {
+  readonly main: MessageUsageSlice;
+  readonly subagents: readonly (MessageUsageSlice & { readonly detached: boolean })[];
+}
+
+type PartRecord = CostTelemetryPart & Readonly<Record<string, unknown>>;
+const positiveCost = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+const tokenObservation = (value: unknown): MessageUsageSlice["tokens"] => {
+  const usage = normalizeUsage(value);
+  if (usage === null || [usage.input, usage.cachedInput, usage.cacheCreation, usage.output].every((v) => v === undefined)) return undefined;
+  return {
+    input: usage.input ?? 0, cacheRead: usage.cachedInput ?? 0,
+    cacheWrite: usage.cacheCreation ?? 0, output: usage.output ?? 0,
+  };
+};
+
+export function messageUsageRollup(message: {
+  readonly parts: readonly CostTelemetryPart[];
+  readonly attribution?: { readonly executed?: { readonly model?: string } };
+}): MessageUsageRollup {
+  let aggregate: NormalizedUsage | null = null;
+  let tokens: MessageUsageSlice["tokens"];
+  for (const part of message.parts) {
+    if (part.type !== "telemetry" || part.event === undefined) continue;
+    const layers = dataLayers(part.data);
+    if (!isAggregateUsageTelemetry(part.event, layers)) continue;
+    const observation = normalizeUsage(part.data);
+    if (observation === null) continue;
+    if (observation.cost !== undefined) aggregate = observation;
+    // A cost-only update must not erase the most recent aggregate token sample.
+    const observed = tokenObservation(part.data);
+    if (observed !== undefined) tokens = observed;
+  }
+  const subagents: Array<MessageUsageSlice & { readonly detached: boolean }> = [];
+  for (const part of message.parts) {
+    const record = part as PartRecord;
+    if (part.type === "subagent") {
+      const attribution = recordValue(record.attribution);
+      const executed = attribution && recordValue(attribution.executed);
+      const costUsd = positiveCost(record.costUsd);
+      const observed = tokenObservation(record.usage);
+      subagents.push({ detached: false,
+        ...(typeof executed?.model === "string" ? { model: executed.model } : {}),
+        ...(costUsd === undefined ? {} : { costUsd }),
+        ...(observed === undefined ? {} : { tokens: observed }),
+      });
+    } else if (part.type === "process-job") {
+      const job = recordValue(record.job);
+      const progress = job && recordValue(job.subagentProgress);
+      if (!progress) continue;
+      const route = recordValue(progress.route);
+      const executed = route && recordValue(route.executed);
+      const costUsd = positiveCost(progress.costUsd);
+      const observed = tokenObservation(progress.usage);
+      subagents.push({ detached: true,
+        ...(typeof executed?.model === "string" ? { model: executed.model } : {}),
+        ...(costUsd === undefined ? {} : { costUsd }),
+        ...(observed === undefined ? {} : { tokens: observed }),
+      });
+    }
+  }
+  const syncCost = subagents.reduce((sum, child) => sum + (child.detached ? 0 : child.costUsd ?? 0), 0);
+  const reportedCost = latestMessageCostUsd(message.parts);
+  const syncObserved = subagents.some((child) => !child.detached && child.costUsd !== undefined);
+  const costUsd = reportedCost === undefined
+    ? syncObserved ? syncCost : undefined
+    : Math.max(reportedCost, syncCost);
+  const model = aggregate?.model ?? message.attribution?.executed?.model;
+  return {
+    main: {
+      ...(model === undefined ? {} : { model }),
+      ...(tokens === undefined ? {} : { tokens }),
+      ...(costUsd === undefined ? {} : { costUsd, hasCostKey: true }),
+      ...(tokens !== undefined && reportedCost === undefined ? { costPartial: true as const } : {}),
+    },
+    subagents,
+  };
+}

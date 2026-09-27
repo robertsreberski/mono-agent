@@ -70,6 +70,7 @@ import {
   type WebJobActivity,
   type WebToolCall,
   type WebThreadDetail,
+  type WebThreadUsage,
   type WebThreadPage,
   type WebThreadListScope,
   type WebThreadSearchHit,
@@ -84,7 +85,8 @@ import { isConversationMarker } from "./conversation-markers.js";
 import { parseTagColor, parseTagName } from "./tag-color.js";
 import { parseProjectColor } from "./project-color.js";
 import { WebConsoleError } from "./errors.js";
-import { latestMessageCostUsd, sumMessageCosts } from "./message-cost.js";
+import { latestMessageCostUsd, messageUsageRollup, sumMessageCosts, type MessageUsageRollup } from "./message-cost.js";
+import { sumThreadUsage } from "./thread-usage.js";
 import { runActivityFromParts, sameRunActivity } from "./run-activity.js";
 import { runWebStorageMigrations, validateWebStorageMigrationRegistry, WEB_STORAGE_SCHEMA_VERSION } from "./store-migrations.js";
 import { webPushPreview } from "./push-preview.js";
@@ -989,6 +991,7 @@ export class WebStore {
       .run(serializeParts(parts), this.now(), row.id);
     return row.id;
   }
+  private readonly usageMemo = new Map<string, MessageUsageRollup>();
   private readonly streamSnapshots = new Map<string, WebMessage>();
   readonly paths: WebStatePaths;
   private readonly database: DatabaseSync;
@@ -3015,6 +3018,56 @@ export class WebStore {
       messages: page.messages,
       ...(page.nextCursor === undefined ? {} : { messagesNextCursor: page.nextCursor }),
     };
+  }
+
+  /** On-demand full-conversation accounting; the tail message page is not a total. */
+  async threadUsage(id: string): Promise<WebThreadUsage> {
+    const threadId = this.resolveThreadId(id);
+    if (this.getThread(threadId) === undefined) {
+      throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+    }
+    const start = performance.now();
+    const rows = this.database.prepare(`SELECT m.id, m.seq, t.model AS executed_model
+      FROM messages m LEFT JOIN turns t ON t.id = m.turn_id
+      WHERE m.thread_id = ? AND m.role = 'assistant'`)
+      .all(threadId) as unknown as Array<{ id: string; seq: number; executed_model: string | null }>;
+    const rollups: MessageUsageRollup[] = [];
+    const fetch = this.database.prepare("SELECT id, parts_json FROM messages WHERE id IN (SELECT value FROM json_each(?))");
+    let misses = 0;
+    let parsedBytes = 0;
+    for (let index = 0; index < rows.length; index += 100) {
+      const batch = rows.slice(index, index + 100);
+      const missing = batch.filter((row) => !this.usageMemo.has(`${row.id}:${row.seq}`));
+      const fetched: Array<{ id: string; parts_json: string }> = missing.length === 0
+        ? [] : fetch.all(JSON.stringify(missing.map((row) => row.id))) as unknown as Array<{ id: string; parts_json: string }>;
+      const blobs = new Map(fetched.map((blob) => [blob.id, blob.parts_json]));
+      for (const row of batch) {
+        const key = `${row.id}:${row.seq}`;
+        let rollup = this.usageMemo.get(key);
+        if (rollup !== undefined) this.usageMemo.delete(key);
+        else {
+          const partsJson = blobs.get(row.id);
+          if (partsJson === undefined) continue;
+          misses += 1;
+          parsedBytes += Buffer.byteLength(partsJson);
+          const parsed = messageUsageRollup({ parts: parseParts(partsJson),
+            ...(row.executed_model === null ? {} : { attribution: { executed: { model: row.executed_model } } }),
+          });
+          rollup = Object.freeze({ main: Object.freeze(parsed.main),
+            subagents: Object.freeze(parsed.subagents.map((child) => Object.freeze(child))),
+          });
+        }
+        this.usageMemo.set(key, rollup);
+        if (this.usageMemo.size > 20_000) this.usageMemo.delete(this.usageMemo.keys().next().value!);
+        rollups.push(rollup);
+      }
+      if (index + 100 < rows.length) await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    while (this.usageMemo.size > 20_000) this.usageMemo.delete(this.usageMemo.keys().next().value!);
+    if (process.env.DEBUG?.includes("web")) {
+      console.debug("web thread usage", { messages: rows.length, misses, parsedBytes, elapsedMs: Math.round(performance.now() - start) });
+    }
+    return sumThreadUsage(rollups);
   }
 
   getMessage(id: string): WebMessage | undefined {

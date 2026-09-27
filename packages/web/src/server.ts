@@ -753,6 +753,11 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     }
   });
 
+  app.get("/api/v1/threads/:id/usage", (req, res, next) => {
+    void service.threadUsage(pathParam(req.params.id))
+      .then((usage) => res.status(200).json({ usage })).catch(next);
+  });
+
   app.get("/api/v1/threads/:id", (req, res, next) => {
     try {
       res.status(200).json(service.thread(pathParam(req.params.id), fullTranscriptQuery(req.query.full)));

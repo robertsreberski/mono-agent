@@ -6,6 +6,10 @@
   default to 2 GiB, and select a per-file limit up to the 20 MiB delivery cap.
   Group repeated storage-full reply failures into one card per reply.
 
+- Add an on-demand web conversation usage endpoint that totals processed tokens
+  and estimated cost across all persisted messages, including detached jobs.
+  Missing telemetry is identified as a lower bound.
+
 - Fix manual context compaction for app-hosted conversations with durable Pi
   sessions, including web model selections; log safe unsupported reasons on the
   host while keeping operator responses generic.

@@ -933,6 +933,13 @@ id discovery no longer reports, are left alone.
 
 ## Public API
 
+`GET /api/v1/threads/:id/usage` returns `{usage: WebThreadUsage}` for the
+whole conversation, independently of the paginated transcript. It folds
+synchronous delegation cost into the parent run, adds detached job spend once,
+and marks token or cost lower bounds when telemetry is incomplete. Assistant
+parts are scanned on demand and memoized by message id and sequence; no
+additional storage table is required.
+
 ### Start here
 
 | API | Use it for |
@@ -943,7 +950,7 @@ id discovery no longer reports, are left alone.
 | `deliverWebNotification` | Deliver one idempotent cron/webhook result or source/thread-bound process-job card update through the private loopback ingress. |
 | `discoverAcpBridgeAgents` | Discover Worklab-importable ACP sources through a credential-free, versioned ownership contract. |
 | `discoverOperatorAgents` | Read trusted operator endpoints from trace-source manifests. |
-| `WebBootstrap`, `WebThreadDetail`, `WebEvent`, and related `Web*` DTOs | Build another client against the versioned browser API. |
+| `WebBootstrap`, `WebThreadDetail`, `WebThreadUsage`, `WebEvent`, and related `Web*` DTOs | Build another client against the versioned browser API. |
 | `WEB_THEMES`, `DEFAULT_WEB_THEME`, `WEB_CONSOLE_NAME_MAX_CHARACTERS`, `WebTheme`, and `WebConsoleIdentity` | Select a curated theme/name and consume the hostname/display-name/theme identity returned to browsers. |
 
 <!-- public-api-inventory:start -->

@@ -10,6 +10,9 @@ import {
   numericValue,
   stringValue,
 } from "../../src/message-cost.js";
+import { messageUsageRollup } from "../../src/message-cost.js";
+import { sumThreadUsage } from "../../src/thread-usage.js";
+import type { WebThreadUsage } from "../../src/contracts.js";
 import type { NormalizedUsage } from "../../src/message-cost.js";
 
 export interface ConsoleTokenUsage {
@@ -39,6 +42,7 @@ export interface ConsoleContextProjection {
   readonly usage?: ConsoleContextUsage;
   readonly measuredModel?: string;
   readonly reason?: string;
+  readonly compaction?: { readonly tokensBefore?: number; readonly tokensAfter?: number; readonly tokenCountsExact?: boolean; readonly running: boolean };
 }
 
 export interface ConsoleUsage {
@@ -58,7 +62,30 @@ export interface ConsoleUsageOptions {
  * says nothing.
  */
 export const formatUsd = (cost: number): string =>
-  `$${cost.toFixed(cost > 0 && cost < 0.01 ? 4 : 2)}`;
+  `${cost.toFixed(cost > 0 && cost < 0.01 ? 4 : 2)}`;
+
+export const formatTokenCount = (tokens: number): string => {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1).replace(/\.0$/u, "")}M`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1).replace(/\.0$/u, "")}k`;
+  return String(tokens);
+};
+
+export const contextLevel = (percent: number | undefined): "normal" | "warning" | "danger" =>
+  percent !== undefined && percent >= 95 ? "danger" : percent !== undefined && percent >= 80 ? "warning" : "normal";
+
+export function windowUsage(detail: ThreadDetail): WebThreadUsage {
+  const rollups = detail.messages.filter((message) => message.role === "assistant").map(messageUsageRollup);
+  const usage = sumThreadUsage(rollups);
+  if (detail.messagesNextCursor === undefined) return usage;
+  return {
+    ...usage,
+    total: { ...usage.total, tokensPartial: true, costPartial: true },
+    byModel: usage.byModel.map((model) => ({ ...model, costPartial: true as const, tokensPartial: true as const })),
+    ...(usage.subagents === undefined ? {} : { subagents: {
+      ...usage.subagents, tokensPartial: true as const, costPartial: true as const,
+    } }),
+  };
+}
 
 interface OrderedObservation {
   readonly order: number;
@@ -72,6 +99,9 @@ interface ContextObservation extends OrderedObservation {
 
 interface CompactionObservation extends OrderedObservation {
   readonly status: "running" | "succeeded";
+  readonly tokensBefore?: number;
+  readonly tokensAfter?: number;
+  readonly tokenCountsExact?: boolean;
 }
 
 const contextUsage = (data: unknown): ConsoleContextUsage | undefined => {
@@ -184,6 +214,10 @@ const contextProjection = (
           compactions.push({
             status,
             order,
+            ...(numericValue(innerToOuter, ["tokensBefore"]) === undefined ? {} : { tokensBefore: numericValue(innerToOuter, ["tokensBefore"]) }),
+            ...(numericValue(innerToOuter, ["tokensAfter"]) === undefined ? {} : { tokensAfter: numericValue(innerToOuter, ["tokensAfter"]) }),
+            ...(innerToOuter.find((layer) => typeof layer.tokenCountsExact === "boolean")?.tokenCountsExact === undefined
+              ? {} : { tokenCountsExact: innerToOuter.find((layer) => typeof layer.tokenCountsExact === "boolean")?.tokenCountsExact as boolean }),
             ...(timestamp === undefined ? {} : { timestamp }),
           });
         }
@@ -201,10 +235,22 @@ const contextProjection = (
   const invalidated = latestInvalidation !== undefined &&
     (latestExact === undefined || occursAfter(latestInvalidation, latestExact));
 
-  if (invalidated) {
+  if (invalidated && latestInvalidation !== undefined) {
+    const after = latestInvalidation.tokensAfter;
     return {
       status: "awaiting_measurement",
-      reason: "Context changed during compaction; waiting for the next exact provider measurement.",
+      ...(after === undefined || after < 0 ? {} : { usage: {
+        total: after,
+        ...(latestExact?.usage.contextWindow === undefined ? {} : { contextWindow: latestExact.usage.contextWindow }),
+      } }),
+      compaction: {
+        running: latestInvalidation.status === "running",
+        ...(latestInvalidation.tokensBefore === undefined ? {} : { tokensBefore: latestInvalidation.tokensBefore }),
+        ...(after === undefined ? {} : { tokensAfter: after }),
+        ...(latestInvalidation.tokenCountsExact === undefined ? {} : { tokenCountsExact: latestInvalidation.tokenCountsExact }),
+      },
+      reason: after === undefined ? "Compaction changed the context. It's measured again on the next turn."
+        : "Estimated after compaction. Measured exactly on the next turn.",
     };
   }
 

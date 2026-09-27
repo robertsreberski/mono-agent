@@ -3826,3 +3826,15 @@ it.each([undefined, "user-stop", "client-disconnect", "client-reconnect", "servi
   try { expect(database.prepare("SELECT cancel_origin FROM turns WHERE thread_id = ?").get(id)).toEqual({ cancel_origin: origin ?? "api" }); }
   finally { database.close(); }
 });
+
+describe("conversation usage route", () => {
+  it("returns an on-demand aggregate and 404 for missing threads", async () => {
+    const { baseUrl } = await start();
+    const id = await createThread(baseUrl, "agent-one");
+    const response = await fetch(`${baseUrl}/api/v1/threads/${id}/usage`);
+    expect(response.status).toBe(200);
+    expect(await json(response)).toMatchObject({ usage: { total: {}, byModel: [], computedAt: expect.any(String) } });
+    const missing = await fetch(`${baseUrl}/api/v1/threads/unknown/usage`);
+    expect(missing.status).toBe(404);
+  });
+});

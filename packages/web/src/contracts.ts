@@ -839,6 +839,27 @@ export interface WebQuote {
   readonly messageId: string;
 }
 
+export interface WebUsageTokens {
+  readonly input: number;
+  readonly cacheRead: number;
+  readonly cacheWrite: number;
+  readonly output: number;
+}
+
+export interface WebUsageSlice {
+  readonly tokens?: WebUsageTokens;
+  readonly costUsd?: number;
+  readonly tokensPartial?: true;
+  readonly costPartial?: true;
+}
+
+export interface WebThreadUsage {
+  readonly total: WebUsageSlice;
+  readonly subagents?: WebUsageSlice & { readonly runs: number };
+  readonly byModel: readonly (WebUsageSlice & { readonly model?: string })[];
+  readonly computedAt: string;
+}
+
 export interface WebThreadDetail {
   readonly thread: WebThread;
   readonly messages: readonly WebMessage[];

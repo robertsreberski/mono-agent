@@ -1,4 +1,5 @@
 import { parseProviderUsageSnapshot } from "@mono-agent/agent-contracts/provider-usage";
+import type { WebThreadUsage, WebUsageSlice } from "../../src/contracts.js";
 import type { TagSummary, TagColor, ProjectColor } from "./types";
 import type {
   ActiveThreads,
@@ -381,7 +382,37 @@ export interface BootstrapScope {
   readonly scope?: "chats";
 }
 
+const recordOf = (value: unknown): Record<string, unknown> | null =>
+  value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+const safeNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
+function validUsageSlice(value: unknown): value is WebUsageSlice {
+  const slice = recordOf(value);
+  if (slice === null || (slice.costUsd !== undefined && !safeNumber(slice.costUsd))
+    || (slice.tokensPartial !== undefined && slice.tokensPartial !== true)
+    || (slice.costPartial !== undefined && slice.costPartial !== true)) return false;
+  if (slice.tokens === undefined) return true;
+  const tokens = recordOf(slice.tokens);
+  return tokens !== null && ["input", "cacheRead", "cacheWrite", "output"].every((key) => Number.isSafeInteger(tokens[key]) && Number(tokens[key]) >= 0);
+}
+export function parseThreadUsage(value: unknown): WebThreadUsage {
+  const usage = recordOf(value);
+  if (usage === null || !validUsageSlice(usage.total)
+    || typeof usage.computedAt !== "string" || Number.isNaN(Date.parse(usage.computedAt))
+    || !Array.isArray(usage.byModel) || !usage.byModel.every((row: unknown) => {
+      const model = recordOf(row);
+      return validUsageSlice(row) && model !== null && (model.model === undefined || typeof model.model === "string");
+    }) || (usage.subagents !== undefined && (!validUsageSlice(usage.subagents)
+      || !Number.isSafeInteger(recordOf(usage.subagents)?.runs) || Number(recordOf(usage.subagents)?.runs) < 1))) {
+    throw new Error("Invalid conversation usage response.");
+  }
+  return usage as unknown as WebThreadUsage;
+}
+
 export const api = {
+  threadUsage: async (threadId: string, signal?: AbortSignal): Promise<WebThreadUsage> => {
+    const response = await request<{ usage: unknown }>(`/api/v1/threads/${encodeURIComponent(threadId)}/usage`, { signal });
+    return parseThreadUsage(response.usage);
+  },
   wakeSchedule: (threadId: string, signal?: AbortSignal) =>
     request<{ schedule: import("../../src/contracts.js").WebWakeSchedule | null }>(`/api/v1/threads/${encodeURIComponent(threadId)}/wake-schedule`, { signal }),
   saveWakeSchedule: (threadId: string, definition: import("../../src/contracts.js").WebWakeScheduleDefinition, expectedRevision?: number) =>

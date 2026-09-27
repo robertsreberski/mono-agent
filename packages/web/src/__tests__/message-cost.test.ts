@@ -73,3 +73,40 @@ describe("sumMessageCosts", () => {
     expect(sumMessageCosts([1.5, undefined, 0.25])).toBeCloseTo(1.75, 10);
   });
 });
+
+describe("messageUsageRollup", () => {
+  const usage = (cost: number | undefined, model = "atlas/standard") => telemetry("usage_update", {
+    model, ...(cost === undefined ? {} : { cumulativeUsd: cost }),
+    tokens: { input: 50, cacheRead: 20, cacheWrite: 5, output: 10 },
+  });
+  it("uses the latest aggregate, ignores context and compaction, and retains zero", async () => {
+    const { messageUsageRollup } = await import("../message-cost.js");
+    expect(messageUsageRollup({ parts: [usage(2), telemetry("context_usage", { cost: 100 }),
+      telemetry("context_compaction", { cost: 100 }), usage(0)] }).main).toMatchObject({
+      model: "atlas/standard", costUsd: 0,
+      tokens: { input: 50, cacheRead: 20, cacheWrite: 5, output: 10 },
+    });
+  });
+  it("treats synchronous cost as a subset and detached cost as additional", async () => {
+    const { messageUsageRollup } = await import("../message-cost.js");
+    const { sumThreadUsage } = await import("../thread-usage.js");
+    const child = { ...subagent(4), attribution: { executed: { model: "grove/fast" } } };
+    const card = { type: "process-job", job: { subagentProgress: { costUsd: 3, route: { executed: { model: "grove/fast" } } } } };
+    const rolled = messageUsageRollup({ parts: [child, usage(1), card] });
+    const total = sumThreadUsage([rolled]);
+    expect(rolled.main.costUsd).toBe(4);
+    expect(total.total.costUsd).toBe(7);
+    expect(total.subagents).toMatchObject({ costUsd: 7, runs: 2, tokensPartial: true });
+    expect(total.total.tokensPartial).toBe(true);
+    expect(total.byModel.reduce((sum, row) => sum + (row.costUsd ?? 0), 0)).toBe(7);
+    expect(sumThreadUsage([messageUsageRollup({ parts: [subagent(0), usage(0)] })]).total.costUsd).toBe(0);
+    expect(sumThreadUsage([messageUsageRollup({ parts: [subagent(0)] })]).total.costUsd).toBe(0);
+  });
+  it("marks cost partial only for token telemetry without a cost observation", async () => {
+    const { messageUsageRollup } = await import("../message-cost.js");
+    expect(messageUsageRollup({ parts: [usage(undefined)] }).main.costPartial).toBe(true);
+    expect(messageUsageRollup({ parts: [telemetry("context_usage", { tokens: { input: 5 } })] }).main.costPartial).toBeUndefined();
+    expect(messageUsageRollup({ parts: [usage(0)] }).main.costPartial).toBeUndefined();
+    expect(messageUsageRollup({ parts: [usage(2, "" )], attribution: { executed: { model: "grove/fast" } } }).main.model).toBe("grove/fast");
+  });
+});

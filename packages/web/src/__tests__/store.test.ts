@@ -6844,3 +6844,47 @@ describe("durable conversation markers", () => {
     } finally { store.close(); }
   });
 });
+
+describe("thread usage aggregation", () => {
+  it("counts all 90 rows, including suppressed and detached cards, then memoizes by seq and evicts", async () => {
+    const root = await temporaryRoot();
+    cleanup.push(root);
+    const store = await WebStore.open({ stateDir: join(root, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const raw = new DatabaseSync(store.paths.database);
+    const memo = (store as unknown as { usageMemo: Map<string, unknown> }).usageMemo;
+    try {
+      const insert = raw.prepare(`INSERT INTO messages
+        (id, thread_id, role, parts_json, created_at, updated_at, status)
+        VALUES (?, ?, 'assistant', ?, ?, ?, 'complete')`);
+      for (let index = 0; index < 90; index++) {
+        const parts = index === 0 ? [{ type: "process-job", job: { ...fakeProcessJob(), tool: "Agent", kind: "internal", instanceId: "child-one", childStillBusy: false,
+          subagentProgress: { revision: 1, profile: "researcher", toolCalls: 0, failedCalls: 0, recent: [], costUsd: 3 },
+        } }] : [{ type: "telemetry", event: "usage_update", data: {
+          model: "atlas/standard", cumulativeUsd: 0.5,
+          tokens: { input: 10, cacheRead: 2, cacheWrite: 1, output: 4 },
+        } }];
+        insert.run(`usage-${index}`, thread.id, JSON.stringify(parts), `2026-01-01T00:00:${String(index).padStart(2, "0")}Z`, "2026-01-01T00:02:00Z");
+      }
+      expect(store.getThreadDetail(thread.id)?.messages).toHaveLength(30);
+      const first = await store.threadUsage(thread.id);
+      expect(first.total.costUsd).toBe(47.5);
+      expect(first.total.tokens).toMatchObject({ input: 890, cacheRead: 178, cacheWrite: 89, output: 356 });
+      expect(first.total.tokensPartial).toBe(true);
+      expect(first.subagents?.costUsd).toBe(3);
+      const held = memo.get("usage-1:0");
+      await store.threadUsage(thread.id);
+      expect(memo.get("usage-1:0")).toBe(held);
+      raw.prepare("UPDATE messages SET seq = seq + 1, parts_json = ? WHERE id = 'usage-1'")
+        .run(JSON.stringify([{ type: "telemetry", event: "usage_update", data: { cumulativeUsd: 1 } }]));
+      expect((await store.threadUsage(thread.id)).total.costUsd).toBe(48);
+      expect(memo.has("usage-1:1")).toBe(true);
+      for (let n = 0; n < 20_000; n++) memo.set(`eviction-${n}`, { main: {}, subagents: [] });
+      await store.threadUsage(thread.id);
+      expect(memo.size).toBe(20_000);
+      expect(memo.has("eviction-0")).toBe(false);
+      await expect(store.threadUsage("unknown-thread")).rejects.toMatchObject({ code: "thread_not_found" });
+    } finally { raw.close(); store.close(); }
+  });
+});
