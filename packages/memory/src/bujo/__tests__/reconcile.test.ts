@@ -554,6 +554,33 @@ describe("reconcile", () => {
     expect(existsSync(dailyFilePath(root, admittedAt))).toBe(false);
   });
 
+  it("never rewrites a task line in place: an update against a task adds a note and leaves the task untouched", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "TASK1", "morgan prefers opt in memory capture", { type: "task" });
+    const before = parseDailyFile(dailyContent(root)).bullets.find((b) => b.id === "TASK1");
+
+    const llm = fakeLlm([["CLASSIFY", '{"action":"update","targetId":"TASK1","text":"morgan prefers opt in memory capture with manual review"}']]);
+    const candidate: CandidateMemory = {
+      type: "note",
+      text: "morgan prefers opt in memory capture and manual review",
+      salience: 0.6,
+      isInsight: false,
+    };
+    // A zero thread cutoff: only the explicit task link may create a thread.
+    const actions = await reconcile([candidate], makeDeps(db, root, llm, { threadThreshold: 0 }));
+
+    expect(actions).toHaveLength(1);
+    expect(actions[0]?.kind).toBe("add");
+    const addedId = actions[0]?.kind === "add" ? actions[0].id : "";
+    expect(db.edges(addedId).filter((edge) => edge.kind === "thread").map(({ dst }) => dst)).toEqual(["TASK1"]);
+    const parsed = parseDailyFile(dailyContent(root)).bullets;
+    expect(parsed.find((b) => b.id === "TASK1")).toEqual(before);
+    expect(db.get("TASK1")).toMatchObject({ type: "task", status: "open", text: "morgan prefers opt in memory capture" });
+    const added = parsed.find((b) => b.id !== "TASK1");
+    expect(added).toMatchObject({ type: "note", text: candidate.text });
+  });
+
   it("case 4 — refinement candidate + LLM says update → target text merged, count unchanged", async () => {
     const root = newRoot();
     const db = openDb(root);

@@ -547,6 +547,27 @@ describe("host-validated capture labels", () => {
     } finally { db.close(); }
   });
 
+  it("recovers a retained task candidate as a history note, never an open task", async () => {
+    const root = mkdtempSync(join(tmpdir(), "capture-retained-task-"));
+    const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(8), dim: 8 });
+    const turn = "User: Remind me to water the Maple garden.\nAssistant: Scheduled.";
+    // Retained before capture stopped writing tasks.
+    retainCapturePlan(root, "c".repeat(64), capturePlanInputHash(turn), { candidates: [
+      { type: "task", text: "Water the Maple garden.", salience: 0.7, isInsight: false, entityIds: [] },
+    ], entities: [], relations: [] });
+    try {
+      await captureTurnStrict(turn, {
+        db, root, llm: { id: "no-extract", complete: async () => { throw new Error("must not re-extract"); } },
+        nextId: () => "RETAINED-TASK", now: () => at, conversationId: "web:fictional", captureSpeakerKind: "human-turn",
+        captureEvidence: evidence("Remind me to water the Maple garden.", { ownerTurn: true }),
+        captureRetentionKey: "c".repeat(64), canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
+      });
+      const bullet = parseDailyFile(readFileSync(join(root, "daily", "2026-07-12.md"), "utf8")).bullets
+        .find((item) => item.id === "RETAINED-TASK");
+      expect(bullet).toMatchObject({ type: "note", text: "Water the Maple garden." });
+    } finally { db.close(); }
+  });
+
   it("writes one validated label with its canonical bullet and restores parity on rebuild", async () => {
     const root = mkdtempSync(join(tmpdir(), "capture-labels-integration-"));
     const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(8), dim: 8 });

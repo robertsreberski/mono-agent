@@ -443,6 +443,13 @@ function planBatchAction(
       // and hide it from recall. Keep the remembered evidence exactly as it is
       // and record the refinement as its own memory (threaded to its
       // neighbour by the shared ADD path).
+      // Memory is not a task list: capture never rewrites a task line in
+      // place. The task stays exactly as written and the new information is
+      // its own dated note, always threaded to that task (even beyond the
+      // similarity thread cutoff).
+      if (deps.db.get(decision.targetId ?? "")?.type === "task") {
+        return planAddWithoutIndex(candidate, similar, deps, threadThreshold, decision.targetId);
+      }
       if (isRememberedUpdateTarget(decision, deps)
         || (decision.text !== undefined && [...decision.text].length > MAX_RECONCILIATION_TEXT_CODE_POINTS)) {
         return planAddWithoutIndex(candidate, similar, deps, threadThreshold);
@@ -462,6 +469,9 @@ function planBatchAction(
           || (label.kind === "preference" && !(ownerCorrection(candidate, deps) && ownerScope(label.scope, deps))))) {
         return planAddWithoutIndex(candidate, similar, deps, threadThreshold);
       }
+      // A task target is superseded like any line: the old task is marked
+      // invalidated and the replacement is a note. This is intended; memory is
+      // not a task tracker, and a superseded task becomes history.
       return planSupersede(candidate, decision, deps);
     }
     default:
@@ -486,6 +496,7 @@ function planAddWithoutIndex(
   similar: readonly ReconcileNeighbour[],
   deps: ReconcileDeps,
   threadThreshold: number,
+  threadTo?: string,
 ): Omit<BatchActionPlan, "index"> {
   const now = deps.now();
   const id = deps.nextId();
@@ -507,7 +518,12 @@ function planAddWithoutIndex(
     return Number.isFinite(weight) && weight > 0 && weight <= 1
       ? [{ src: id, dst: hit.record.id, weight }]
       : [];
-  }).slice(0, 5);
+  });
+  // An explicit target (a task an update could not rewrite) is always linked.
+  const target = threadTo === undefined || threadTo === id || threads.some((thread) => thread.dst === threadTo)
+    ? [] : [{ src: id, dst: threadTo, weight: Math.min(1, Math.max(0.01,
+      1 - (similar.find((hit) => hit.record.id === threadTo)?.distance ?? 1))) }];
+  const linked = [...target, ...threads].slice(0, 5);
   return {
     action: { kind: "add", id },
     intent: {
@@ -516,7 +532,7 @@ function planAddWithoutIndex(
       id,
       after: { file, bullet },
       record,
-      threads,
+      threads: linked,
     },
     record,
   };
