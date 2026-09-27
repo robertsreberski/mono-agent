@@ -3829,11 +3829,28 @@ it.each([undefined, "user-stop", "client-disconnect", "client-reconnect", "servi
 
 describe("conversation usage route", () => {
   it("returns an on-demand aggregate and 404 for missing threads", async () => {
-    const { baseUrl } = await start();
+    const { baseUrl, root } = await start();
     const id = await createThread(baseUrl, "agent-one");
+    const database = new DatabaseSync(join(root, "state", "state.sqlite"));
+    try {
+      const insert = database.prepare(`INSERT INTO messages
+        (id, thread_id, role, parts_json, created_at, updated_at, status)
+        VALUES (?, ?, 'assistant', ?, ?, ?, 'complete')`);
+      for (let index = 0; index < 90; index++) insert.run(`usage-${index}`, id, JSON.stringify([{
+        type: "telemetry", event: "usage_update", data: {
+          model: "atlas/standard", cumulativeUsd: 0.01, tokens: { input: 10, output: 1 },
+        },
+      }]), `2026-01-01T00:00:${String(index).padStart(2, "0")}Z`, "2026-01-01T00:02:00Z");
+    } finally { database.close(); }
+    const detail = await json(await fetch(`${baseUrl}/api/v1/threads/${id}`));
+    expect((detail.messages as unknown[])).toHaveLength(30);
     const response = await fetch(`${baseUrl}/api/v1/threads/${id}/usage`);
     expect(response.status).toBe(200);
-    expect(await json(response)).toMatchObject({ usage: { total: {}, byModel: [], computedAt: expect.any(String) } });
+    const usage = (await json(response)).usage as { total: { costUsd: number; tokens: { input: number; output: number } }; computedAt: string; byModel: unknown[] };
+    expect(usage.total.tokens).toMatchObject({ input: 900, output: 90 });
+    expect(usage.total.costUsd).toBeCloseTo(0.9);
+    expect(usage.byModel).toHaveLength(1);
+    expect(usage.computedAt).toEqual(expect.any(String));
     const missing = await fetch(`${baseUrl}/api/v1/threads/unknown/usage`);
     expect(missing.status).toBe(404);
   });

@@ -23,9 +23,17 @@ export function useThreadUsage(threadId: string | undefined, open: boolean, runn
     let active = true;
     let sequence = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let placeholderTimer: ReturnType<typeof setTimeout> | undefined;
     const controller = new AbortController();
     const cached = retained.get(threadId);
     setState({ threadId, ...(cached === undefined ? {} : { usage: cached }), loading: cached === undefined, error: false });
+    if (cached === undefined) placeholderTimer = setTimeout(() => {
+      if (!active) return;
+      setState((previous) => previous.threadId !== threadId || !previous.loading ? previous : {
+        threadId, ...(detail === undefined || detail === null ? {} : { usage: windowUsage(detail) }),
+        loading: false, error: true,
+      });
+    }, 1_500);
     const load = async () => {
       const request = ++sequence;
       try {
@@ -47,7 +55,7 @@ export function useThreadUsage(threadId: string | undefined, open: boolean, runn
       if (timer !== undefined) clearTimeout(timer);
       timer = setTimeout(() => { void load(); }, 300);
     });
-    return () => { active = false; controller.abort(); unsubscribe(); if (timer !== undefined) clearTimeout(timer); };
+    return () => { active = false; controller.abort(); unsubscribe(); if (timer !== undefined) clearTimeout(timer); if (placeholderTimer !== undefined) clearTimeout(placeholderTimer); };
   }, [threadId, open, running]);
   // A new thread must never flash the previous thread's figures before its effect runs.
   return { usage: state.threadId === threadId ? state.usage : undefined,

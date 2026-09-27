@@ -34,13 +34,31 @@ window.fetch = (input, init) => {
   if (pathname === "/api/v1/agents/atlas/cron/config-view" && (!init?.method || init.method === "GET")) {
     return Promise.resolve(Response.json({ configView: { label: "Example garden schedule", fields: [{ id: "schedule", label: "Schedule", value: "0 9 * * *", source: "example", redacted: false }, { id: "target", label: "Destination", value: "[redacted]", source: "example", redacted: true }] } }));
   }
-  const compact = /^\/api\/v1\/threads\/garden-compact-(result|error)\/compact$/.exec(pathname);
+  const compact = /^\/api\/v1\/threads\/garden-compact-(result|error|skipped|model|failed|pending|lost)\/compact$/.exec(pathname);
   if (compact && init?.method === "POST") {
-    return Promise.resolve(compact[1] === "result"
-      ? Response.json({ status: "succeeded", trigger: "manual", operationId: "fictional-operation", tokensBefore: 29000, tokensAfter: 9000, tokenCountsExact: true })
-      : Response.json({ error: { message: "Example compaction was unavailable.", code: "unavailable" } }, { status: 503 }));
+    const kind = compact[1];
+    if (kind === "pending") return new Promise((_resolve, reject) => init.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
+    if (kind === "lost") return Promise.reject(new TypeError("Example connection lost."));
+    if (kind === "error") return Promise.resolve(Response.json({ error: { message: "Example compaction was unavailable.", code: "unavailable" } }, { status: 503 }));
+    return Promise.resolve(Response.json(kind === "result"
+      ? { status: "succeeded", trigger: "manual", operationId: "fictional-operation", tokensBefore: 183400, tokensAfter: 41300, tokenCountsExact: false }
+      : { status: kind === "model" || kind === "skipped" ? "skipped" : "failed", trigger: "manual", operationId: "fictional-operation", ...(kind === "model" ? { reason: "model_changed" } : {}) }));
   }
-  if (/^\/api\/v1\/agents\/atlas-story-usage(?:-loading)?\/provider-usage$/.test(pathname) && (!init?.method || init.method === "GET")) {
+  const usage = /^\/api\/v1\/threads\/garden-usage-(typical|mixed|pending)\/usage$/.exec(pathname);
+  if (usage && (!init?.method || init.method === "GET")) {
+    if (usage[1] === "pending") return new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
+    const mixed = usage[1] === "mixed";
+    return Promise.resolve(Response.json({ usage: {
+      total: { tokens: mixed ? { input: 89000, cacheRead: 72000, cacheWrite: 3000, output: 22000 }
+        : { input: 68000, cacheRead: 45000, cacheWrite: 2000, output: 11000 },
+        costUsd: mixed ? 4.18 : 2.24, ...(mixed ? { tokensPartial: true } : {}) },
+      ...(mixed ? { subagents: { runs: 3, costUsd: 1.12, tokensPartial: true } } : {}),
+      byModel: mixed ? [{ model: "atlas/standard", costUsd: 3.06 }, { model: "grove/fast", costUsd: 1.12 }]
+        : [{ model: "atlas/standard", costUsd: 2.24 }],
+      computedAt: "2026-09-19T12:00:00Z",
+    } }));
+  }
+  if (/^\/api\/v1\/agents\/atlas-story-usage(?:-loading|-stale|-error)?\/provider-usage$/.test(pathname) && (!init?.method || init.method === "GET")) {
     if (pathname.includes("-loading/")) {
       return new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
     }
@@ -48,8 +66,11 @@ window.fetch = (input, init) => {
     const fetchedAt = new Date(Date.now() - hour).toISOString();
     const window = (kind: "session" | "weekly" | "model", label: "Session" | "Weekly" | "Fable", usedPercent: number, periodMs: number, remainingMs: number) =>
       ({ kind, label, usedPercent, periodMs, resetsAt: new Date(Date.parse(fetchedAt) + remainingMs).toISOString() });
-    return Promise.resolve(Response.json({ schema: "mono-agent.provider-usage.v1", providers: [{ providerId: "anthropic", label: "Claude", fetchedAt, stale: false,
-      windows: [window("session", "Session", 12, 5 * hour, 4 * hour), window("weekly", "Weekly", 52, 7 * 24 * hour, 5 * 24 * hour), window("model", "Fable", 92, 30 * 24 * hour, 20 * 24 * hour)],
+    const stale = pathname.includes("-stale/");
+    const error = pathname.includes("-error/");
+    return Promise.resolve(Response.json({ schema: "mono-agent.provider-usage.v1", providers: [{ providerId: "anthropic", label: "Claude", fetchedAt, stale,
+      windows: error ? [] : [window("session", "Session", 12, 5 * hour, 4 * hour), window("weekly", "Weekly", 52, 7 * 24 * hour, 5 * 24 * hour), window("model", "Fable", 92, 30 * 24 * hour, 20 * 24 * hour)],
+      ...(stale || error ? { error: { code: "auth_failed", message: "Credential rejected; re-login to this provider." } } : {}),
     }] }));
   }
   const auth = /^\/api\/v1\/agents\/(atlas-story-auth-(missing|verified))\/provider-auth$/.exec(pathname);

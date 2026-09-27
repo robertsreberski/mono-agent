@@ -180,6 +180,9 @@ export function useRunControls() {
 
   return {
     usage,
+    threadId: selectedThread?.id,
+    detail,
+    running: selectedThread?.runState.status === "running",
     compactThreadId: selectedAgent?.supportsManualCompaction === true
       && selectedAgent.status !== "offline" && selectedThread?.canSend === true
       && selectedThread.trigger?.kind !== "cron" ? selectedThread.id : undefined,

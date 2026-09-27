@@ -2,10 +2,8 @@ import type { ThreadDetail, WebMessage } from "./types";
 import {
   childRecord,
   dataLayers,
-  isAggregateUsageTelemetry,
   isCompactionTelemetry,
   isContextTelemetry,
-  latestMessageCostUsd,
   normalizeUsage,
   numericValue,
   stringValue,
@@ -13,7 +11,6 @@ import {
 import { messageUsageRollup } from "../../src/message-cost.js";
 import { sumThreadUsage } from "../../src/thread-usage.js";
 import type { WebThreadUsage } from "../../src/contracts.js";
-import type { NormalizedUsage } from "../../src/message-cost.js";
 
 export interface ConsoleTokenUsage {
   readonly input?: number;
@@ -47,8 +44,6 @@ export interface ConsoleContextProjection {
 
 export interface ConsoleUsage {
   readonly context: ConsoleContextProjection;
-  readonly processed?: ConsoleTokenUsage;
-  readonly cost?: number;
 }
 
 export interface ConsoleUsageOptions {
@@ -62,7 +57,7 @@ export interface ConsoleUsageOptions {
  * says nothing.
  */
 export const formatUsd = (cost: number): string =>
-  `${cost.toFixed(cost > 0 && cost < 0.01 ? 4 : 2)}`;
+  `$${cost.toFixed(cost > 0 && cost < 0.01 ? 4 : 2)}`;
 
 export const formatTokenCount = (tokens: number): string => {
   if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1).replace(/\.0$/u, "")}M`;
@@ -129,40 +124,6 @@ const contextUsage = (data: unknown): ConsoleContextUsage | undefined => {
     ...(contextWindow === undefined ? {} : { contextWindow }),
   };
 };
-
-const hasProcessedTokens = (usage: NormalizedUsage): boolean =>
-  usage.input !== undefined ||
-  usage.cachedInput !== undefined ||
-  usage.cacheCreation !== undefined ||
-  usage.output !== undefined ||
-  usage.reasoning !== undefined;
-
-const latestMessageProcessed = (
-  parts: ThreadDetail["messages"][number]["parts"],
-): ConsoleTokenUsage | null => {
-  for (let partIndex = parts.length - 1; partIndex >= 0; partIndex -= 1) {
-    const part = parts[partIndex];
-    if (part?.type !== "telemetry") continue;
-    const layers = dataLayers(part.data);
-    if (!isAggregateUsageTelemetry(part.event, layers)) continue;
-    const usage = normalizeUsage(part.data);
-    if (usage === null || !hasProcessedTokens(usage)) continue;
-    return {
-      ...(usage.input === undefined ? {} : { input: usage.input }),
-      ...(usage.cachedInput === undefined ? {} : { cachedInput: usage.cachedInput }),
-      ...(usage.cacheCreation === undefined ? {} : { cacheCreation: usage.cacheCreation }),
-      ...(usage.output === undefined ? {} : { output: usage.output }),
-      ...(usage.reasoning === undefined ? {} : { reasoning: usage.reasoning }),
-      ...(usage.model === undefined ? {} : { model: usage.model }),
-      ...(usage.cacheHitRatio === undefined ? {} : { cacheHitRatio: usage.cacheHitRatio }),
-    };
-  }
-  return null;
-};
-
-const latestMessageCost = (
-  parts: ThreadDetail["messages"][number]["parts"],
-): number | undefined => latestMessageCostUsd(parts);
 
 const occursAfter = (candidate: OrderedObservation, reference: OrderedObservation): boolean => {
   if (
@@ -239,10 +200,11 @@ const contextProjection = (
     const after = latestInvalidation.tokensAfter;
     return {
       status: "awaiting_measurement",
-      ...(after === undefined || after < 0 ? {} : { usage: {
-        total: after,
-        ...(latestExact?.usage.contextWindow === undefined ? {} : { contextWindow: latestExact.usage.contextWindow }),
-      } }),
+      ...(latestInvalidation.status === "running" && latestExact !== undefined ? { usage: latestExact.usage }
+        : after === undefined || after < 0 ? {} : { usage: {
+          total: after,
+          ...(latestExact?.usage.contextWindow === undefined ? {} : { contextWindow: latestExact.usage.contextWindow }),
+        } }),
       compaction: {
         running: latestInvalidation.status === "running",
         ...(latestInvalidation.tokensBefore === undefined ? {} : { tokensBefore: latestInvalidation.tokensBefore }),
@@ -310,17 +272,5 @@ export const conversationConsoleUsage = (
 ): ConsoleUsage | null => {
   if (detail === null) return null;
 
-  let processed: ConsoleTokenUsage | undefined;
-  let cost: number | undefined;
-  for (const message of detail.messages) {
-    const messageProcessed = latestMessageProcessed(message.parts);
-    if (messageProcessed !== null) processed = messageProcessed;
-    const messageCost = latestMessageCost(message.parts);
-    if (messageCost !== undefined) cost = (cost ?? 0) + messageCost;
-  }
-  return {
-    context: contextProjection(detail, options.selectedModel),
-    ...(processed === undefined ? {} : { processed }),
-    ...(cost === undefined ? {} : { cost }),
-  };
+  return { context: contextProjection(detail, options.selectedModel) };
 };

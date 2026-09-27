@@ -1,334 +1,266 @@
 "use client";
 
 import { isProviderUsageId, PROVIDER_USAGE_LABELS } from "@mono-agent/agent-contracts/provider-usage";
-import { Popover } from "@base-ui/react/popover";
-import { type CSSProperties, type ReactNode, useState } from "react";
 import type { AgentManualCompactionResult } from "@mono-agent/agent-contracts";
+import { Popover } from "@base-ui/react/popover";
+import { useId, useRef, useState } from "react";
+import type { WebThreadUsage, WebUsageSlice } from "../../../../src/contracts.js";
 import { api, ApiError } from "../../api";
-import type { AgentSummary, ProviderUsageId } from "../../types";
-import { formatUsd, type ConsoleContextProjection } from "../../usage";
-import { Icon } from "../Icon";
+import type { AgentSummary, ProviderUsageId, ThreadDetail } from "../../types";
+import { contextLevel, formatTokenCount, formatUsd, type ConsoleContextProjection } from "../../usage";
+import { useThreadUsage } from "../../use-thread-usage";
 import { ProviderUsageMeters, useProviderUsage } from "../ProviderUsageMeters";
-
-export interface ContextDisplayUsage {
-  readonly input?: number;
-  readonly cachedInput?: number;
-  readonly cacheCreation?: number;
-  readonly output?: number;
-  readonly reasoning?: number;
-  readonly cacheHitRatio?: number;
-}
+import { shortModelName } from "../route-label";
 
 export interface ContextDisplayProps {
-  /** Selected writable thread on an agent advertising manual compaction v1. */
+  readonly threadId?: string;
+  readonly detail?: ThreadDetail | null;
   readonly compactThreadId?: string;
-  /** A turn is running on that thread; the action waits for it to settle. */
   readonly compactBlocked?: boolean;
+  readonly running?: boolean;
   readonly context: ConsoleContextProjection;
-  readonly processed?: ContextDisplayUsage;
-  readonly conversationCost?: number;
-  readonly providerUsage?: {
-    readonly agent: AgentSummary;
-    readonly providerId: string;
-  };
+  /** Explicit stories and focused tests may provide a settled aggregate. */
+  readonly totals?: WebThreadUsage;
+  readonly providerUsage?: { readonly agent: AgentSummary; readonly providerId: string };
   readonly className?: string;
 }
 
-interface ContextSegment {
-  readonly key: keyof ContextDisplayUsage;
-  readonly label: string;
-  readonly tokens: number;
-}
-
-const formatTokenCount = (tokens: number): string => {
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1).replace(/\.0$/u, "")}M`;
-  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1).replace(/\.0$/u, "")}k`;
-  return String(tokens);
-};
-
-const tokenCount = (value: number | undefined): number =>
+const count = (value: number | undefined): number =>
   typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.round(value) : 0;
+const windowSize = (value: number | undefined): number | undefined =>
+  typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.round(value) : undefined;
+const percentText = (percent: number): string => percent > 0 && percent < 0.5 ? "<1%" : `${Math.round(percent)}%`;
+const exact = (value: number): string => value.toLocaleString();
+const modelName = (model: string | undefined): string => model === undefined ? "Unknown model" : shortModelName(model);
 
-const knownCost = (value: number | undefined): number | undefined =>
-  typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
-
-const knownContextWindow = (value: number | undefined): number | undefined => {
-  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
-  const rounded = Math.round(value);
-  return rounded > 0 ? rounded : undefined;
-};
-
-const joinClassNames = (...values: Array<string | undefined>): string =>
-  values.filter((value): value is string => Boolean(value)).join(" ");
-
-const usageSegments = (usage: ContextDisplayUsage | undefined): ContextSegment[] => {
-  const segments: ContextSegment[] = [
-    { key: "input", label: "Input", tokens: tokenCount(usage?.input) },
-    { key: "cachedInput", label: "Cache read", tokens: tokenCount(usage?.cachedInput) },
-    { key: "cacheCreation", label: "Cache write", tokens: tokenCount(usage?.cacheCreation) },
-    { key: "output", label: "Output", tokens: tokenCount(usage?.output) },
-    { key: "reasoning", label: "Reasoning", tokens: tokenCount(usage?.reasoning) },
-  ];
-  return segments.filter((segment) => segment.tokens > 0);
-};
-
-const processedTotal = (usage: ContextDisplayUsage | undefined): number =>
-  tokenCount(usage?.input) +
-  tokenCount(usage?.cachedInput) +
-  tokenCount(usage?.cacheCreation) +
-  tokenCount(usage?.output);
-
-function Breakdown({
-  usage,
-  total,
-  totalLabel = "Total",
-}: {
-  readonly usage: ContextDisplayUsage | undefined;
-  readonly total: number;
-  readonly totalLabel?: string;
-}) {
-  return (
-    <dl className="context-display-breakdown" data-slot="context-display-breakdown">
-      {usageSegments(usage).map((segment) => (
-        <div
-          className="context-display-breakdown-row"
-          data-slot="context-display-breakdown-row"
-          data-segment={segment.key}
-          key={segment.key}
-        >
-          <dt>{segment.label}</dt>
-          <dd>{formatTokenCount(segment.tokens)}</dd>
-        </div>
-      ))}
-      {usage?.cacheHitRatio !== undefined ? <div className="context-display-breakdown-row" data-segment="cacheHitRatio"><dt>Cache hit ratio</dt><dd>{(usage.cacheHitRatio * 100).toFixed(1)}%</dd></div> : null}
-      <div className="context-display-breakdown-row context-display-breakdown-total">
-        <dt>{totalLabel}</dt>
-        <dd>{formatTokenCount(total)}</dd>
-      </div>
-    </dl>
-  );
+function ContextRing({ percent, unknown }: { readonly percent?: number; readonly unknown: boolean }) {
+  const radius = 5.5;
+  const circumference = 2 * Math.PI * radius;
+  return <svg className="context-display-ring" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+    <circle className="ring-track" cx="7" cy="7" r={radius} strokeWidth="2" fill="none" strokeDasharray={unknown ? "2 2" : undefined} />
+    {!unknown && <circle className="ring-value" cx="7" cy="7" r={radius} strokeWidth="2" fill="none"
+      strokeDasharray={`${circumference * Math.min(100, percent ?? 0) / 100} ${circumference}`}
+      transform="rotate(-90 7 7)" />}
+  </svg>;
 }
 
-function SectionTitle({ children }: { readonly children: ReactNode }) {
-  return <h3 className="context-display-section-title">{children}</h3>;
+function ContextWindowSection({ context, running, id }: {
+  readonly context: ConsoleContextProjection; readonly running: boolean; readonly id: string;
+}) {
+  const { usage, measuredModel, status, compaction } = context;
+  const used = usage === undefined ? undefined : count(usage.total);
+  const size = windowSize(usage?.contextWindow);
+  const fraction = used === undefined || size === undefined ? undefined : Math.min(100, used / size * 100);
+  const estimate = status === "awaiting_measurement" && compaction?.running !== true && used !== undefined;
+  const busy = compaction?.running === true;
+  const muted = status === "last_measured" || busy;
+  const model = measuredModel ?? usage?.model;
+  const meta = busy ? "Compacting…" : status === "updating" || running ? "Updating"
+    : status === "last_measured" ? "Last measured" : status === "awaiting_measurement" ? "Estimate"
+      : model === undefined ? "" : modelName(model);
+  const note = status === "last_measured" ? context.reason?.includes("did not complete")
+    ? "The last turn didn't finish. This is the previous measurement."
+    : context.reason?.includes("did not identify")
+      ? `The measurement didn't name its model. The next turn uses ${context.reason.split("to ").at(-1)?.replace(/\.$/u, "") ?? "a different model"}.`
+      : context.reason?.includes("next turn is set to")
+        ? `Measured on ${model ?? "a different model"}. The next turn uses ${context.reason.split("to ").at(-1)?.replace(/\.$/u, "")}.`
+        : "The last turn didn't finish. This is the previous measurement."
+    : status === "awaiting_measurement" ? busy ? undefined : context.reason
+      : status === "updating" && used === undefined ? "The size appears when the first reply reports it."
+        : status === "unavailable" && context.reason?.includes("Claude") ? "This runtime doesn't report its context size."
+          : status === "unavailable" ? "No reply in this conversation has reported its context size." : undefined;
+  return <section className="context-display-section" aria-labelledby={id}>
+    <div className="context-display-section-heading"><h3 className="context-display-eyebrow" id={id}>Context window</h3>
+      <span className="context-display-meta" title={model} data-tone={busy || status === "updating" ? "accent" : status === "last_measured" ? "warning" : undefined}>{meta}</span>
+    </div>
+    <div className="context-display-figure" data-level={contextLevel(fraction)} data-muted={muted ? "" : undefined}>
+      <span>{used === undefined
+        ? <span className="context-display-figure-empty">{status === "unavailable" ? "Not reported" : context.reason?.includes("loading") ? "Loading…" : "Not measured yet"}</span>
+        : <><span className="context-display-figure-value">{estimate ? "≈" : ""}{formatTokenCount(used)}</span>
+          <span className="context-display-figure-of">{size === undefined ? " tokens" : ` / ${formatTokenCount(size)} tokens`}</span></>}
+      </span>
+      {fraction !== undefined && <span className="context-display-figure-percent">{percentText(fraction)}</span>}
+    </div>
+    {fraction !== undefined && used !== undefined && size !== undefined && <div className="context-display-progress" role="progressbar"
+      aria-label="Context window used" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Number(fraction.toFixed(1))}
+      aria-valuetext={`${estimate ? "About " : ""}${exact(used)} of ${exact(size)} tokens, ${percentText(fraction)}`}
+      data-level={contextLevel(fraction)} data-muted={muted ? "" : undefined} data-estimate={estimate ? "" : undefined} data-busy={busy ? "" : undefined}>
+      <span className="context-display-progress-value" style={{ width: `${fraction}%` }} />
+    </div>}
+    {note && <p className="context-display-note" data-tone={status === "last_measured" ? "warning" : undefined}>{note}</p>}
+  </section>;
 }
 
-function ProviderUsageSection({
-  agent,
-  providerId,
-}: {
-  readonly agent: AgentSummary;
-  readonly providerId: ProviderUsageId;
-}) {
+const tokenColumns = [
+  { key: "input", label: "Input", title: "Uncached input, including cache writes" },
+  { key: "cacheRead", label: "Cached", title: "Input read from the provider's prompt cache" },
+  { key: "output", label: "Output", title: "Generated output" },
+] as const;
+function TokensSection({ totals, loading, id }: { readonly totals?: WebThreadUsage; readonly loading: boolean; readonly id: string }) {
+  const total = totals?.total;
+  const sub = totals?.subagents;
+  const cells = (slice: WebUsageSlice, subLine = false) => {
+    if (slice.tokens === undefined) return <td colSpan={3} className="is-unreported">{subLine ? "not reported" : "No token counts reported"}</td>;
+    return tokenColumns.map(({ key }) => {
+      const value = key === "input" ? slice.tokens!.input + slice.tokens!.cacheWrite : slice.tokens![key];
+      return <td key={key} title={subLine && slice.tokensPartial
+        ? `At least. ${sub?.runs ?? 0} subagent runs include missing token reports. ${exact(value)} reported.` : exact(value)}
+        aria-label={`${slice.tokensPartial ? "at least " : ""}${exact(value)}`}>
+        {slice.tokensPartial ? "≥" : ""}{formatTokenCount(value)}
+      </td>;
+    });
+  };
+  return <section className="context-display-section" aria-labelledby={id} aria-busy={loading || undefined}>
+    <h3 className="context-display-eyebrow" id={id}>Tokens processed</h3>
+    {loading && totals === undefined ? <p className="context-display-empty">—</p> : total?.tokens === undefined && sub === undefined
+      ? <p className="context-display-empty">No reply in this conversation reported token counts.</p>
+      : <table className="context-display-tokens"><colgroup><col className="label" /><col /><col /><col /></colgroup>
+        <thead><tr><th aria-label="Row" />{tokenColumns.map(({ key, label, title }) => <th key={key} scope="col" title={title}>{label}</th>)}</tr></thead>
+        <tbody><tr><th scope="row">Total</th>{cells(total ?? {})}</tr>
+          {sub && <tr className="is-sub"><th scope="row">incl. subagents</th>{cells(sub, true)}</tr>}
+        </tbody></table>}
+  </section>;
+}
+
+function CostSection({ totals, loading, id }: { readonly totals?: WebThreadUsage; readonly loading: boolean; readonly id: string }) {
+  const total = totals?.total;
+  const models = totals?.byModel ?? [];
+  const duplicates = new Map<string, number>();
+  for (const row of models) duplicates.set(modelName(row.model), (duplicates.get(modelName(row.model)) ?? 0) + 1);
+  const cost = (slice: WebUsageSlice) => slice.costUsd === undefined ? "—" : `${slice.costPartial ? "≥" : ""}${formatUsd(slice.costUsd)}`;
+  const more = models.slice(4).reduce((sum, row) => sum + (row.costUsd ?? 0), 0);
+  return <section className="context-display-section" aria-labelledby={id} aria-busy={loading || undefined}>
+    <div className="context-display-section-heading"><h3 className="context-display-eyebrow" id={id}>Estimated cost</h3>
+      {(loading && totals === undefined || total?.costUsd !== undefined) && <span className="context-display-cost-total">{total === undefined ? "—" : cost(total)}</span>}
+    </div>
+    {loading && totals === undefined ? null : total?.costUsd === undefined
+      ? <p className="context-display-empty">No cost was reported for this conversation.</p>
+      : <dl className="context-display-cost">
+        {totals?.subagents?.costUsd !== undefined && totals.subagents.costUsd > 0 &&
+          <div className="context-display-cost-row is-sub"><dt>incl. subagents</dt><dd>{cost(totals.subagents)}</dd></div>}
+        {models.length >= 2 && <><div className="context-display-cost-divider" aria-hidden="true" />
+          {models.slice(0, 4).map((row, index) => <div className="context-display-cost-row is-model" key={`${row.model ?? "unknown"}-${index}`}>
+            <dt title={row.model}>{modelName(row.model)}{duplicates.get(modelName(row.model))! > 1 && row.model?.includes(":") ? ` · ${row.model.split(":", 1)[0]}` : ""}</dt>
+            <dd>{cost(row)}</dd>
+          </div>)}
+          {models.length > 4 && <div className="context-display-cost-row is-model"><dt>{models.length - 4} more models</dt><dd>{formatUsd(more)}</dd></div>}
+        </>}
+      </dl>}
+  </section>;
+}
+
+function ProviderUsageSection({ agent, providerId, id }: { readonly agent: AgentSummary; readonly providerId: ProviderUsageId; readonly id: string }) {
   const { snapshot, loading } = useProviderUsage(agent);
   const usage = snapshot?.providers.find((provider) => provider.providerId === providerId);
   const label = usage?.label ?? PROVIDER_USAGE_LABELS[providerId];
-
   if (!loading && usage === undefined) return null;
-  return (
-    <section className="context-display-section context-display-provider-usage" aria-label={`${label} usage`}>
-      <div className="context-display-provider-heading">
-        <SectionTitle>{label} usage</SectionTitle>
-        {usage?.plan !== undefined && <span className="provider-usage-plan">{usage.plan}</span>}
-      </div>
-      {loading
-        ? <p className="context-display-provider-loading" role="status">Loading usage…</p>
-        : <ProviderUsageMeters usage={usage} />}
-    </section>
-  );
+  return <section className="context-display-section context-display-provider-usage" aria-labelledby={id}>
+    <div className="context-display-provider-heading"><h3 className="context-display-eyebrow" id={id}>{label} plan</h3>
+      <span className="context-display-plan-meta">
+        {usage?.stale && <span className="context-display-meta" title={`Fetched ${new Date(usage.fetchedAt).toLocaleString()}`}>Last known</span>}
+        {usage?.plan && <span className="provider-usage-plan">{usage.plan}</span>}
+      </span></div>
+    {loading ? <p className="context-display-provider-loading" role="status">Loading usage…</p>
+      : <ProviderUsageMeters usage={usage} density="compact" />}
+  </section>;
 }
 
-export function ContextDisplay({
-  compactThreadId,
-  compactBlocked = false,
-  context,
-  processed,
-  conversationCost,
-  providerUsage,
-  className,
-}: ContextDisplayProps) {
+function CompactFooter({ id, compact, compacting, blocked, percent, result, error, measuredModel }: {
+  readonly id: string; readonly compact: () => void; readonly compacting: boolean; readonly blocked: boolean;
+  readonly percent?: number; readonly result: AgentManualCompactionResult | null; readonly error: string | null; readonly measuredModel?: string;
+}) {
+  const near = percent !== undefined && percent >= 80;
+  const before = result?.tokensBefore;
+  const after = result?.tokensAfter;
+  const status = error ?? (compacting ? "Summarizing earlier turns…" : blocked ? "Available when this turn finishes."
+    : result?.status === "succeeded" ? before === undefined || after === undefined ? "Compacted."
+      : `Compacted · ${formatTokenCount(before)} → ${result.tokenCountsExact ? "" : "≈"}${formatTokenCount(after)}`
+      : result?.status === "skipped" ? result.reason === "model_changed"
+        ? `Switch back to ${measuredModel ?? "this conversation's model"} to compact this session.` : "Nothing to compact yet."
+        : result?.status === "failed" ? "Compaction failed."
+          : near ? "Context is nearly full." : "Summarizes earlier turns to free space.");
+  const role = error !== null || result?.status === "failed" ? "alert"
+    : compacting || result !== null ? "status" : undefined;
+  const tone = error !== null || result?.status === "failed" ? "danger"
+    : result?.status === "succeeded" ? "success" : near && !blocked ? "warning" : undefined;
+  return <div className="context-display-compact">
+    <p id={id} className="context-display-compact-status" role={role} data-tone={tone}>{status}</p>
+    <button className="context-display-compact-button" type="button" onClick={compact}
+      aria-describedby={id} aria-disabled={blocked && !compacting ? true : undefined}
+      aria-busy={compacting || undefined} disabled={compacting} data-emphasis={near && !blocked && !compacting ? "" : undefined}>
+      {compacting && <span className="context-display-spinner" aria-hidden="true" />}{compacting ? "Compacting…" : "Compact"}
+    </button>
+  </div>;
+}
+
+export function ContextDisplay({ threadId, detail, compactThreadId, compactBlocked = false, running = false,
+  context, totals: providedTotals, providerUsage, className }: ContextDisplayProps) {
   const [open, setOpen] = useState(false);
   const [compacting, setCompacting] = useState(false);
   const [compactResult, setCompactResult] = useState<AgentManualCompactionResult | null>(null);
   const [compactError, setCompactError] = useState<string | null>(null);
+  const popupRef = useRef<HTMLDivElement>(null);
+  const id = useId();
+  const loaded = useThreadUsage(threadId, open, running, detail);
+  const totals = providedTotals ?? loaded.usage;
+  const loading = providedTotals === undefined && loaded.loading;
+  const used = context.usage === undefined ? undefined : count(context.usage.total);
+  const size = windowSize(context.usage?.contextWindow);
+  const percent = used === undefined || size === undefined ? undefined : Math.min(100, used / size * 100);
+  const estimate = context.status === "awaiting_measurement" && context.compaction?.running !== true && used !== undefined;
+  const last = context.status === "last_measured" || context.compaction?.running === true;
+  const badge = percent === undefined ? "—" : `${estimate ? "≈" : ""}${percentText(percent)}`;
+  const label = used === undefined || size === undefined
+    ? "context size not reported"
+    : `${estimate ? "about " : last ? "last measured " : ""}${exact(used)} of ${exact(size)} tokens (${estimate ? "about " : ""}${percentText(percent!)}${estimate ? ") after compaction" : ")"}${context.status === "updating" || running ? ", updating" : ""}`;
+  const ariaLabel = `Context usage: ${label}.${totals?.total.costUsd === undefined ? "" : ` Estimated cost ${formatUsd(totals.total.costUsd)}.`}`;
+  const availableProviderUsage = providerUsage !== undefined && providerUsage.agent.supportsProviderUsage === true
+    && providerUsage.agent.status !== "offline" && isProviderUsageId(providerUsage.providerId)
+    ? { agent: providerUsage.agent, providerId: providerUsage.providerId } : undefined;
   const compact = async () => {
     if (compactThreadId === undefined || compacting || compactBlocked) return;
-    setCompacting(true);
-    setCompactError(null);
-    setCompactResult(null);
-    try {
-      setCompactResult(await api.compactThread(compactThreadId));
-    } catch (error) {
-      // A server answer is authoritative; a lost connection (e.g. a network
-      // TypeError) may have compacted anyway, so never imply that it did not.
-      setCompactError(error instanceof ApiError
-        ? error.message
-        : "Connection lost; the compaction outcome is unknown. Refresh this conversation.");
-    } finally {
-      setCompacting(false);
-    }
+    setCompacting(true); setCompactError(null); setCompactResult(null);
+    try { setCompactResult(await api.compactThread(compactThreadId)); }
+    catch (error) { setCompactError(error instanceof ApiError ? error.message
+      : "Connection lost — the outcome is unknown. Refresh this conversation."); }
+    finally { setCompacting(false); }
   };
-  const usage = context.usage;
-  const totalTokens = tokenCount(usage?.total);
-  const cost = knownCost(conversationCost);
-  const windowTokens = knownContextWindow(usage?.contextWindow);
-  const percent = usage === undefined || windowTokens === undefined
-    ? undefined
-    : Math.min((totalTokens / windowTokens) * 100, 100);
-  const roundedPercent = percent === undefined ? undefined : Math.round(percent);
-  const statusLabel = context.status === "updating"
-    ? "Updating"
-    : context.status === "awaiting_measurement"
-      ? "Awaiting"
-      : context.status === "last_measured"
-        ? "Last measured"
-        : undefined;
-  const triggerContext = usage === undefined
-    ? context.status === "updating"
-      ? "updating"
-      : context.status === "awaiting_measurement"
-        ? "awaiting provider measurement"
-        : "unavailable"
-    : [
-        `${formatTokenCount(totalTokens)} tokens`,
-        ...(statusLabel === undefined ? [] : [statusLabel.toLowerCase()]),
-        ...(roundedPercent === undefined ? [] : [`${roundedPercent}%`]),
-      ].join(", ");
-  const triggerSummary = [triggerContext, ...(cost === undefined ? [] : [formatUsd(cost)])].join(", ");
-  const sectionTitle = context.status === "current"
-    ? "Current context"
-    : context.status === "updating"
-      ? "Latest provider measurement"
-      : "Last measured";
-  const sectionAriaLabel = sectionTitle;
-  const availableProviderUsage = providerUsage !== undefined
-    && providerUsage.agent.supportsProviderUsage === true
-    && providerUsage.agent.status !== "offline"
-    && isProviderUsageId(providerUsage.providerId)
-    ? { agent: providerUsage.agent, providerId: providerUsage.providerId }
-    : undefined;
-
-  return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
-      {/* The toolbar shares one narrow row with the model selector on a phone,
-          so the trigger carries the single number worth glancing at. Tokens,
-          state, and cost are a tap away in the popup, and the aria-label keeps
-          the full summary for anyone who cannot see the colour. */}
-      <Popover.Trigger
-        type="button"
-        className={joinClassNames("context-display-trigger", className)}
-        data-slot="context-display-trigger"
-        data-state={context.status}
-        aria-label={`Context usage: ${triggerSummary}`}
-      >
-        <Icon name="spark" size={14} className="context-display-icon" />
-        <span className="context-display-trigger-percent" data-slot="context-display-percent">
-          {roundedPercent === undefined ? "—" : `${roundedPercent}%`}
-        </span>
-      </Popover.Trigger>
-
-      <Popover.Portal>
-        <Popover.Positioner className="context-display-positioner" side="bottom" align="end" sideOffset={8}>
-          <Popover.Popup className="context-display-popover">
-            {/* The status word lives beside the title rather than inside it:
-                the title is the dialog's accessible name, which must stay
-                stable as measurement state changes. */}
-            <div className="context-display-header">
-              <Popover.Title className="context-display-title">Context usage</Popover.Title>
-              {statusLabel !== undefined && (
-                <span className="context-display-status" data-state={context.status}>
-                  {statusLabel}
-                </span>
-              )}
-            </div>
-
-            {usage === undefined ? (
-              <p className="context-display-unavailable" data-slot="context-display-unavailable">
-                {context.reason ?? "Exact context usage has not been reported for this conversation."}
-              </p>
-            ) : (
-              <section className="context-display-section" aria-label={sectionAriaLabel}>
-                <SectionTitle>{sectionTitle}</SectionTitle>
-                {context.reason !== undefined && context.status !== "current" && (
-                  <p className="context-display-state-note">{context.reason}</p>
-                )}
-                {(context.measuredModel ?? usage.model) !== undefined && (
-                  <p className="context-display-model">
-                    <span>Measured model</span>
-                    <code>{context.measuredModel ?? usage.model}</code>
-                  </p>
-                )}
-                {windowTokens !== undefined && percent !== undefined && roundedPercent !== undefined && (
-                  <div className="context-display-window" data-slot="context-display-window">
-                    <div className="context-display-window-summary">
-                      <span>{formatTokenCount(totalTokens)} of {formatTokenCount(windowTokens)} tokens</span>
-                      <span className="context-display-percent">{roundedPercent}%</span>
-                    </div>
-                    <div
-                      className="context-display-progress"
-                      role="progressbar"
-                      aria-label="Context window used"
-                      aria-valuemin={0}
-                      aria-valuemax={100}
-                      aria-valuenow={Number(percent.toFixed(1))}
-                      aria-valuetext={`${formatTokenCount(totalTokens)} of ${formatTokenCount(windowTokens)} tokens (${roundedPercent}%)`}
-                    >
-                      <span className="context-display-progress-value" style={{ width: `${percent}%` } as CSSProperties} />
-                    </div>
-                  </div>
-                )}
-                <Breakdown usage={usage} total={totalTokens} />
-              </section>
-            )}
-
-            {compactThreadId !== undefined && (
-              <div className="context-display-compact">
-                <button type="button" onClick={() => { void compact(); }} disabled={compacting || compactBlocked}>
-                  {compacting ? "Compacting…" : "Compact"}
-                </button>
-                {compactBlocked && !compacting && <p>Available when the current turn finishes.</p>}
-                {compacting && <p role="status">Compacting conversation context…</p>}
-                {compactResult !== null && (
-                  <p role={compactResult.status === "failed" ? "alert" : "status"}>
-                    {compactResult.status === "succeeded" ? "Context compacted"
-                      : compactResult.status === "skipped" && compactResult.reason === "model_changed"
-                        ? "The selected model differs from this conversation's session; switch back to compact it."
-                        : compactResult.status === "skipped" ? "Nothing to compact" : "Compaction failed"}
-                    {compactResult.tokensBefore !== undefined && compactResult.tokensAfter !== undefined
-                      ? `: ${compactResult.tokenCountsExact === true ? "" : "~"}${formatTokenCount(compactResult.tokensBefore)} → ${compactResult.tokenCountsExact === true ? "" : "~"}${formatTokenCount(compactResult.tokensAfter)} tokens`
-                      : ""}
-                  </p>
-                )}
-                {compactError !== null && <p role="alert">{compactError}</p>}
-              </div>
-            )}
-
-            {open && availableProviderUsage !== undefined && (
-              <ProviderUsageSection
-                key={`${availableProviderUsage.agent.sourceId}:${availableProviderUsage.agent.generation ?? "unknown"}:${availableProviderUsage.providerId}`}
-                agent={availableProviderUsage.agent}
-                providerId={availableProviderUsage.providerId}
-              />
-            )}
-
-            {processed !== undefined && (
-              <section className="context-display-section" aria-label="Last turn processed">
-                <SectionTitle>Last turn processed</SectionTitle>
-                <Breakdown usage={processed} total={processedTotal(processed)} totalLabel="Processed total" />
-              </section>
-            )}
-
-            {cost !== undefined && (
-              <dl className="context-display-breakdown context-display-cost-breakdown">
-                <div className="context-display-breakdown-row context-display-breakdown-cost">
-                  <dt>Conversation cost</dt>
-                  <dd>{formatUsd(cost)}</dd>
-                </div>
-              </dl>
-            )}
-          </Popover.Popup>
-        </Popover.Positioner>
-      </Popover.Portal>
-    </Popover.Root>
-  );
+  const changeOpen = (next: boolean) => {
+    setOpen(next);
+    if (!next) { setCompactResult(null); setCompactError(null); }
+  };
+  const firstTurn = totals !== undefined && totals.total.tokens === undefined && totals.total.costUsd === undefined
+    && totals.subagents === undefined && totals.byModel.length === 0;
+  return <Popover.Root open={open} onOpenChange={changeOpen}>
+    <Popover.Trigger type="button" className={["context-display-trigger", className].filter(Boolean).join(" ")}
+      data-slot="context-display-trigger" data-state={context.status} data-level={contextLevel(percent)}
+      data-estimate={estimate ? "" : undefined} data-muted={last ? "" : undefined} aria-label={ariaLabel}>
+      <ContextRing percent={percent} unknown={percent === undefined} />
+      <span className="context-display-trigger-percent" data-slot="context-display-percent">{badge}</span>
+    </Popover.Trigger>
+    <Popover.Portal>
+      <Popover.Backdrop className="context-display-backdrop" />
+      <Popover.Positioner className="context-display-positioner" side="top" align="end" sideOffset={8} collisionPadding={12}>
+        <Popover.Popup ref={popupRef} tabIndex={-1} initialFocus={() => popupRef.current} className="context-display-popover">
+          <div className="context-display-header">
+            <Popover.Title className="context-display-title">Context usage</Popover.Title>
+            <Popover.Close className="context-display-close" aria-label="Close" type="button">✕</Popover.Close>
+          </div>
+          <ContextWindowSection context={context} running={running} id={`${id}-window`} />
+          {firstTurn ? <section className="context-display-section" aria-labelledby={`${id}-empty`}>
+            <h3 className="context-display-eyebrow" id={`${id}-empty`}>Tokens &amp; cost</h3>
+            <p className="context-display-empty">Totals appear when the first turn finishes.</p>
+          </section> : <>
+            <TokensSection totals={totals} loading={loading} id={`${id}-tokens`} />
+            <CostSection totals={totals} loading={loading} id={`${id}-cost`} />
+          </>}
+          {open && availableProviderUsage && <ProviderUsageSection
+            key={`${availableProviderUsage.agent.sourceId}:${availableProviderUsage.agent.generation ?? "unknown"}:${availableProviderUsage.providerId}`}
+            agent={availableProviderUsage.agent} providerId={availableProviderUsage.providerId} id={`${id}-plan`} />}
+          {compactThreadId !== undefined && <CompactFooter id={`${id}-compact`} compact={() => { void compact(); }}
+            compacting={compacting} blocked={compactBlocked} percent={percent} result={compactResult} error={compactError} measuredModel={context.measuredModel ?? context.usage?.model} />}
+        </Popover.Popup>
+      </Popover.Positioner>
+    </Popover.Portal>
+  </Popover.Root>;
 }

@@ -1065,7 +1065,7 @@ describe("ModelControls", () => {
     render(<ModelControls />);
 
     fireEvent.click(screen.getByRole("button", {
-      name: "Context usage: 1k tokens, 50%, $0.03",
+      name: "Context usage: 1,000 of 2,000 tokens (50%).",
     }));
     expect(await screen.findByRole("progressbar", { name: "Context window used" })).toHaveAttribute(
       "aria-valuenow",
@@ -1099,11 +1099,11 @@ describe("ModelControls", () => {
     };
     render(<ModelControls />);
 
-    const trigger = screen.getByRole("button", { name: "Context usage: unavailable" });
+    const trigger = screen.getByRole("button", { name: "Context usage: context size not reported." });
     expect(trigger).toHaveTextContent("—");
     fireEvent.click(trigger);
     const popover = await screen.findByRole("dialog", { name: "Context usage" });
     expect(within(popover).queryByRole("progressbar")).not.toBeInTheDocument();
-    expect(within(popover).getByText("Exact context usage has not been reported for this conversation.")).toBeVisible();
+    expect(within(popover).getByText("No reply in this conversation has reported its context size.")).toBeVisible();
   });
 });

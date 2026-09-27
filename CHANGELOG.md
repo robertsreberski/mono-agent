@@ -6,9 +6,9 @@
   default to 2 GiB, and select a per-file limit up to the 20 MiB delivery cap.
   Group repeated storage-full reply failures into one card per reply.
 
-- Add an on-demand web conversation usage endpoint that totals processed tokens
-  and estimated cost across all persisted messages, including detached jobs.
-  Missing telemetry is identified as a lower bound.
+- Let the web Context usage sheet show the window, conversation-wide tokens,
+  estimated cost by model and subagent share, compact provider plan meters, and
+  manual Compact. Older detached jobs without token counts show a lower bound.
 
 - Fix manual context compaction for app-hosted conversations with durable Pi
   sessions, including web model selections; log safe unsupported reasons on the

@@ -6864,17 +6864,41 @@ describe("thread usage aggregation", () => {
         } }] : [{ type: "telemetry", event: "usage_update", data: {
           model: "atlas/standard", cumulativeUsd: 0.5,
           tokens: { input: 10, cacheRead: 2, cacheWrite: 1, output: 4 },
-        } }];
+        } },
+          ...(index === 1 ? [{ type: "telemetry", event: "cron_run", data: { silent: true } }] : [])];
         insert.run(`usage-${index}`, thread.id, JSON.stringify(parts), `2026-01-01T00:00:${String(index).padStart(2, "0")}Z`, "2026-01-01T00:02:00Z");
       }
+      raw.prepare("UPDATE messages SET cron_suppressed = 1 WHERE id = 'usage-1'").run();
+      expect(store.getMessage("usage-1")).toBeUndefined();
       expect(store.getThreadDetail(thread.id)?.messages).toHaveLength(30);
+      vi.stubEnv("DEBUG", "web");
+      const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
       const first = await store.threadUsage(thread.id);
+      expect(debug).toHaveBeenCalledWith("web thread usage", expect.objectContaining({ messages: 90, misses: 90, parsedBytes: expect.any(Number), elapsedMs: expect.any(Number) }));
+      debug.mockRestore();
+      vi.unstubAllEnvs();
       expect(first.total.costUsd).toBe(47.5);
       expect(first.total.tokens).toMatchObject({ input: 890, cacheRead: 178, cacheWrite: 89, output: 356 });
       expect(first.total.tokensPartial).toBe(true);
       expect(first.subagents?.costUsd).toBe(3);
       const held = memo.get("usage-1:0");
-      await store.threadUsage(thread.id);
+      const holder = store as unknown as { database: DatabaseSync };
+      const database = holder.database;
+      let partReads = 0;
+      holder.database = new Proxy(database, { get(target, property) {
+        if (property !== "prepare") return Reflect.get(target, property).bind(target) as unknown;
+        return (sql: string) => {
+          const statement = target.prepare(sql);
+          if (!sql.includes("SELECT id, parts_json FROM messages")) return statement;
+          return new Proxy(statement, { get(inner, method) {
+            if (method !== "all") return Reflect.get(inner, method).bind(inner) as unknown;
+            return (...args: unknown[]) => { partReads += 1; return inner.all(...args as string[]); };
+          } });
+        };
+      } }) as DatabaseSync;
+      try { await store.threadUsage(thread.id); }
+      finally { holder.database = database; }
+      expect(partReads).toBe(0);
       expect(memo.get("usage-1:0")).toBe(held);
       raw.prepare("UPDATE messages SET seq = seq + 1, parts_json = ? WHERE id = 'usage-1'")
         .run(JSON.stringify([{ type: "telemetry", event: "usage_update", data: { cumulativeUsd: 1 } }]));

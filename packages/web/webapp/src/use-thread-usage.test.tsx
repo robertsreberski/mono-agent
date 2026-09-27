@@ -21,10 +21,12 @@ describe("useThreadUsage", () => {
     expect(read).toHaveBeenCalledTimes(1);
     rerender({ open: true, running: false });
     await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    act(() => { notifyThreadUsageChanged("fresh-thread-one"); notifyThreadUsageChanged("fresh-thread-one"); });
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(3));
     rerender({ open: false, running: false });
     rerender({ open: true, running: false });
     expect(result.current.usage).toEqual(response);
-    await waitFor(() => expect(read).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(4));
   });
   it("falls back to the loaded window after endpoint failure and keeps a cursor lower bound", async () => {
     vi.spyOn(api, "threadUsage").mockRejectedValue(new Error("offline"));
