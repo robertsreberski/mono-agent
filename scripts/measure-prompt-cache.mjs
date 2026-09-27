@@ -249,31 +249,44 @@ async function runScenario({ args, root, model, transport, runtimeOptions, piAut
   return { runs, lifecycleEvents, cumulativeTotals: { ...aggregate, cacheHitRatio: ratio(aggregate) } };
 }
 
-const args = parseArgs(process.argv.slice(2));
-const scenario = String(args.scenario ?? "multi-turn");
-if (!SCENARIOS.has(scenario)) throw new Error(`Unknown scenario: ${scenario}`);
-if ((args["dry-run"] === true) === (args.live === true)) throw new Error("Select exactly one of --dry-run or --live.");
-const output = outputPath(args.output);
-const fixtureTokens = boundedInteger(args["fixture-tokens"], 8_192, "fixture-tokens", 1_024, 32_768);
-const requestedTransport = String(args.transport ?? "sse");
-if (!TRANSPORTS.has(requestedTransport)) throw new Error("--transport must be auto, sse, websocket, or websocket-cached.");
-const live = args.live === true ? await validateLiveAuthorization(args) : undefined;
-if (live !== undefined) refuseUnboundedLiveDispatch();
-const tempParent = join(WORKTREE, ".mono-agent", "cache-benchmark");
-await mkdir(tempParent, { recursive: true });
-const root = await mkdtemp(join(tempParent, "state-"));
-try {
-  const fixture = Array.from({ length: fixtureTokens }, (_, index) => `cache-fixture-${index % 97}`).join(" ");
-  const fixturePath = join(root, "fixture.txt");
-  await writeFile(join(root, "IDENTITY.md"), "You are a bounded prompt-cache measurement agent.", { mode: 0o600 });
-  await writeFile(fixturePath, fixture, { mode: 0o600 });
-  const fake = live === undefined ? await fakeProvider(fixturePath) : undefined;
-  const measured = await runScenario({ args, root, model: live?.model ?? fake.model, transport: live?.transport ?? requestedTransport, runtimeOptions: live?.runtimeOptions ?? fake?.runtimeOptions ?? {}, piAuthPath: live?.piAuthPath, ceiling: live?.ceiling });
-  const piPackage = JSON.parse(await readFile(join(piAiPackageRoot(), "package.json"), "utf8"));
-  const report = { schema: 2, mode: live === undefined ? "dry-run" : "live", scenario, model: (live?.model ?? fake.model).reference, effort: typeof args.effort === "string" ? args.effort : "none", transport: live?.transport ?? requestedTransport, piVersion: piPackage.version, sampling: { turns: boundedInteger(args.turns, scenario === "stateless" ? 34 : 4, "turns", 1, 40), repeats: boundedInteger(args.repeats, 1, "repeats", 1, 10), conversations: boundedInteger(args.conversations, scenario === "concurrent" ? 2 : 1, "conversations", 1, 8) }, fixture: { tokensRequested: fixtureTokens, bytes: Buffer.byteLength(fixture), sha256: hash(fixture) }, generatedAt: new Date().toISOString(), ...measured };
-  await mkdir(dirname(output), { recursive: true });
-  await writeFile(output, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
-  process.stdout.write(`${JSON.stringify({ output: relative(WORKTREE, output), mode: report.mode, scenario, runs: report.runs.length, requests: report.runs.reduce((sum, run) => sum + run.requests.length, 0), cacheHitRatio: report.cumulativeTotals.cacheHitRatio })}\n`);
-} finally {
-  await rm(root, { recursive: true, force: true });
+async function preflight(argv) {
+  const args = parseArgs(argv);
+  const scenario = String(args.scenario ?? "multi-turn");
+  if (!SCENARIOS.has(scenario)) throw new Error(`Unknown scenario: ${scenario}`);
+  if ((args["dry-run"] === true) === (args.live === true)) throw new Error("Select exactly one of --dry-run or --live.");
+  const output = outputPath(args.output);
+  const fixtureTokens = boundedInteger(args["fixture-tokens"], 8_192, "fixture-tokens", 1_024, 32_768);
+  const requestedTransport = String(args.transport ?? "sse");
+  if (!TRANSPORTS.has(requestedTransport)) throw new Error("--transport must be auto, sse, websocket, or websocket-cached.");
+  const live = args.live === true ? await validateLiveAuthorization(args) : undefined;
+  if (live !== undefined) refuseUnboundedLiveDispatch();
+  return { args, scenario, output, fixtureTokens, requestedTransport, live };
+}
+
+// Only pre-flight failures use natural exit; failures after runtime setup stay uncaught.
+const prepared = await preflight(process.argv.slice(2)).catch((error) => {
+  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+  process.exitCode = 1;
+  return undefined;
+});
+if (prepared !== undefined) {
+  const { args, scenario, output, fixtureTokens, requestedTransport, live } = prepared;
+  const tempParent = join(WORKTREE, ".mono-agent", "cache-benchmark");
+  await mkdir(tempParent, { recursive: true });
+  const root = await mkdtemp(join(tempParent, "state-"));
+  try {
+    const fixture = Array.from({ length: fixtureTokens }, (_, index) => `cache-fixture-${index % 97}`).join(" ");
+    const fixturePath = join(root, "fixture.txt");
+    await writeFile(join(root, "IDENTITY.md"), "You are a bounded prompt-cache measurement agent.", { mode: 0o600 });
+    await writeFile(fixturePath, fixture, { mode: 0o600 });
+    const fake = live === undefined ? await fakeProvider(fixturePath) : undefined;
+    const measured = await runScenario({ args, root, model: live?.model ?? fake.model, transport: live?.transport ?? requestedTransport, runtimeOptions: live?.runtimeOptions ?? fake?.runtimeOptions ?? {}, piAuthPath: live?.piAuthPath, ceiling: live?.ceiling });
+    const piPackage = JSON.parse(await readFile(join(piAiPackageRoot(), "package.json"), "utf8"));
+    const report = { schema: 2, mode: live === undefined ? "dry-run" : "live", scenario, model: (live?.model ?? fake.model).reference, effort: typeof args.effort === "string" ? args.effort : "none", transport: live?.transport ?? requestedTransport, piVersion: piPackage.version, sampling: { turns: boundedInteger(args.turns, scenario === "stateless" ? 34 : 4, "turns", 1, 40), repeats: boundedInteger(args.repeats, 1, "repeats", 1, 10), conversations: boundedInteger(args.conversations, scenario === "concurrent" ? 2 : 1, "conversations", 1, 8) }, fixture: { tokensRequested: fixtureTokens, bytes: Buffer.byteLength(fixture), sha256: hash(fixture) }, generatedAt: new Date().toISOString(), ...measured };
+    await mkdir(dirname(output), { recursive: true });
+    await writeFile(output, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
+    process.stdout.write(`${JSON.stringify({ output: relative(WORKTREE, output), mode: report.mode, scenario, runs: report.runs.length, requests: report.runs.reduce((sum, run) => sum + run.requests.length, 0), cacheHitRatio: report.cumulativeTotals.cacheHitRatio })}\n`);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 }

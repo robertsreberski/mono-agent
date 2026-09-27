@@ -57,6 +57,14 @@ describe("prompt cache measurement", () => {
     if (scenario === "capability-change") expect(report.runs[1].requests[0].toolDefinitionCount).toBe(0);
   });
 
+  it("reports argument validation failures without an uncaught-exception trailer", () => {
+    const child = spawnSync(process.execPath, [script, "--dry-run", "--scenario", "unknown"], { cwd: root, encoding: "utf8", timeout: 10_000 });
+    expect(child.status).toBe(1);
+    expect(child.stderr).toContain("Unknown scenario: unknown");
+    expect(child.stderr).not.toMatch(/Node\.js v\d+|^\s+at /mu);
+    expect(child.stdout).toBe("");
+  });
+
   it("refuses live mode before provider dispatch when authorization is incomplete", () => {
     const child = spawnSync(process.execPath, [script, "--live", "--scenario", "multi-turn", "--model", "openai:gpt-test", "--transport", "sse"], { cwd: root, encoding: "utf8", timeout: 10_000 });
     expect(child.status).toBe(1);
@@ -82,6 +90,7 @@ describe("prompt cache measurement", () => {
     });
     expect(child.status).toBe(1);
     expect(child.stderr).toContain("is not Pi's active API-key source for the selected provider");
+    expect(child.stderr).not.toMatch(/Node\.js v\d+|^\s+at /mu);
     expect(child.stderr).not.toContain("mismatched-benchmark-secret");
     expect(child.stdout).toBe("");
   });
@@ -97,6 +106,7 @@ describe("prompt cache measurement", () => {
     });
     expect(child.status).toBe(1);
     expect(child.stderr).toContain("cannot be enforced before dispatch");
+    expect(child.stderr).not.toMatch(/Node\.js v\d+|^\s+at /mu);
     expect(child.stderr).not.toContain("positive-benchmark-secret");
     expect(child.stdout).toBe("");
     expect(existsSync(output)).toBe(false);
