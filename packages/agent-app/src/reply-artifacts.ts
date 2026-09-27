@@ -70,6 +70,7 @@ const STAGING_NAMESPACE = ".staging";
 const DEFAULT_STAGING_GRACE_MS = 10 * 60 * 1000;
 export const DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES = 2 * 1024 * 1024 * 1024;
 const REPLY_ARTIFACT_STORAGE_NAMESPACES = ["reply-files", "mcp-apps"] as const;
+const STORAGE_FULL_FAILURE_MESSAGE = "Reply artifact storage is full; this file was not published.";
 const BIDI_CONTROL = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu;
 const DEFAULT_IGNORABLE = /\p{Default_Ignorable_Code_Point}/gu;
 const SENSITIVE_FILE_EXTENSIONS = [
@@ -454,7 +455,7 @@ export function createReplyArtifactService(options: ReplyArtifactServiceOptions)
   /** Group only surviving quota failures after retry supersession; tool results stay per-call. */
   const groupStorageFullFailures = (parts: readonly AgentReplyPart[]): AgentReplyPart[] => {
     const quotaFailures = parts.filter((part) => part.type === "failure"
-      && part.message === "Reply artifact storage is full; this file was not published.");
+      && part.message === STORAGE_FULL_FAILURE_MESSAGE);
     if (quotaFailures.length < 2) return [...parts];
     const first = quotaFailures[0]!;
     return parts.filter((part) => part === first || !quotaFailures.includes(part)).map((part) =>
@@ -1352,7 +1353,7 @@ function isExpectedPublishFailure(error: unknown): boolean {
  */
 function publishFailureMessage(error: unknown): string {
   if (error instanceof ReplyArtifactStorageFullError) {
-    return "Reply artifact storage is full; this file was not published.";
+    return STORAGE_FULL_FAILURE_MESSAGE;
   }
   if (error instanceof CodedError) return error.message;
   const code = errnoCode(error);
