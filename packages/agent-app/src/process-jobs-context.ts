@@ -156,7 +156,9 @@ export function bindProcessJobWakeContextToResponder(responder: AgentResponder):
       try {
         // The web operator already sends a delivery key, but its JSON field is
         // client-supplied. Only an exact active private flight can suppress
-        // automatic recall. Keep captureSpeakerKind and delivery unchanged.
+        // automatic recall. A client knowing that live key could suppress its
+        // own concurrent turn's automatic block; explicit recall and capture
+        // remain unchanged. Keep captureSpeakerKind and delivery unchanged.
         const response = await (context === undefined
           ? responder.respond(request, stream)
           : hostWakeRecallContext.run(true, () => responder.respond(request, stream)));
