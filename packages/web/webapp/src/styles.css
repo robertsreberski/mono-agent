@@ -873,6 +873,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .context-display-compact-button { flex: none; min-width: 84px; height: 30px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 12px; color: var(--text); background: var(--surface-subtle); border: 1px solid var(--line-strong); border-radius: 8px; cursor: pointer; font-size: 11px; font-weight: 650; }
 .context-display-compact-button[data-emphasis] { color: var(--on-accent); background: var(--accent-strong); border-color: var(--accent-strong); }
 .context-display-compact-button:disabled { opacity: .55; cursor: progress; }
+.context-display-compact-button[aria-disabled="true"] { opacity: .55; cursor: not-allowed; }
 .context-display-spinner { width: 11px; height: 11px; border: 1.5px solid var(--line-strong); border-top-color: var(--accent); border-radius: 50%; animation: spin 800ms linear infinite; }
 @media (max-width: 560px) {
   .context-display-backdrop { position: fixed; inset: 0; background: color-mix(in srgb, var(--text) 48%, transparent); backdrop-filter: blur(4px); z-index: 110; }

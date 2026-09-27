@@ -18,6 +18,7 @@ export interface ContextDisplayProps {
   readonly compactThreadId?: string;
   readonly compactBlocked?: boolean;
   readonly running?: boolean;
+  readonly contextLoading?: boolean;
   readonly context: ConsoleContextProjection;
   /** Explicit stories and focused tests may provide a settled aggregate. */
   readonly totals?: WebThreadUsage;
@@ -44,8 +45,8 @@ function ContextRing({ percent, unknown }: { readonly percent?: number; readonly
   </svg>;
 }
 
-function ContextWindowSection({ context, running, id }: {
-  readonly context: ConsoleContextProjection; readonly running: boolean; readonly id: string;
+function ContextWindowSection({ context, running, loading, id }: {
+  readonly context: ConsoleContextProjection; readonly running: boolean; readonly loading: boolean; readonly id: string;
 }) {
   const { usage, measuredModel, status, compaction } = context;
   const used = usage === undefined ? undefined : count(usage.total);
@@ -55,31 +56,33 @@ function ContextWindowSection({ context, running, id }: {
   const busy = compaction?.running === true;
   const muted = status === "last_measured" || busy;
   const model = measuredModel ?? usage?.model;
-  const meta = busy ? "Compacting…" : status === "updating" || running ? "Updating"
+  const meta = loading ? "" : busy ? "Compacting…" : status === "updating" || running ? "Updating"
     : status === "last_measured" ? "Last measured" : status === "awaiting_measurement" ? "Estimate"
       : model === undefined ? "" : modelName(model);
-  const note = status === "last_measured" ? context.reason?.includes("did not complete")
-    ? "The last turn didn't finish. This is the previous measurement."
-    : context.reason?.includes("did not identify")
-      ? `The measurement didn't name its model. The next turn uses ${context.reason.split("to ").at(-1)?.replace(/\.$/u, "") ?? "a different model"}.`
-      : context.reason?.includes("next turn is set to")
-        ? `Measured on ${model ?? "a different model"}. The next turn uses ${context.reason.split("to ").at(-1)?.replace(/\.$/u, "")}.`
-        : "The last turn didn't finish. This is the previous measurement."
-    : status === "awaiting_measurement" ? busy ? undefined : context.reason
-      : status === "updating" && used === undefined ? "The size appears when the first reply reports it."
-        : status === "unavailable" && context.reason?.includes("Claude") ? "This runtime doesn't report its context size."
-          : status === "unavailable" ? "No reply in this conversation has reported its context size." : undefined;
+  const note = loading ? undefined
+    : status === "last_measured" ? context.nextModel !== undefined
+      ? model === undefined
+        ? `The measurement didn't name its model. The next turn uses ${context.nextModel}.`
+        : `Measured on ${model}. The next turn uses ${context.nextModel}.`
+      : context.lastTurnFailed ? "The last turn didn't finish. This is the previous measurement." : undefined
+      : status === "awaiting_measurement" ? busy ? undefined
+        : context.compaction?.tokensAfter === undefined
+          ? "Compaction changed the context. It's measured again on the next turn."
+          : "Estimated after compaction. Measured exactly on the next turn."
+        : status === "updating" && used === undefined ? "The size appears when the first reply reports it."
+          : status === "unavailable" && context.noContextRuntime === "claude" ? "This runtime doesn't report its context size."
+            : status === "unavailable" ? "No reply in this conversation has reported its context size." : undefined;
   return <section className="context-display-section" aria-labelledby={id}>
     <div className="context-display-section-heading"><h3 className="context-display-eyebrow" id={id}>Context window</h3>
       <span className="context-display-meta" title={model} data-tone={busy || status === "updating" ? "accent" : status === "last_measured" ? "warning" : undefined}>{meta}</span>
     </div>
     <div className="context-display-figure" data-level={contextLevel(fraction)} data-muted={muted ? "" : undefined}>
       <span>{used === undefined
-        ? <span className="context-display-figure-empty">{status === "unavailable" ? "Not reported" : context.reason?.includes("loading") ? "Loading…" : "Not measured yet"}</span>
+        ? <span className="context-display-figure-empty">{loading ? "Loading…" : status === "unavailable" ? "Not reported" : "Not measured yet"}</span>
         : <><span className="context-display-figure-value">{estimate ? "≈" : ""}{formatTokenCount(used)}</span>
           <span className="context-display-figure-of">{size === undefined ? " tokens" : ` / ${formatTokenCount(size)} tokens`}</span></>}
       </span>
-      {fraction !== undefined && <span className="context-display-figure-percent">{percentText(fraction)}</span>}
+      {fraction !== undefined && <span className="context-display-figure-percent">{estimate ? "≈" : ""}{percentText(fraction)}</span>}
     </div>
     {fraction !== undefined && used !== undefined && size !== undefined && <div className="context-display-progress" role="progressbar"
       aria-label="Context window used" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Number(fraction.toFixed(1))}
@@ -184,7 +187,8 @@ function CompactFooter({ id, compact, compacting, blocked, percent, result, erro
   const tone = error !== null || result?.status === "failed" ? "danger"
     : result?.status === "succeeded" ? "success" : near && !blocked ? "warning" : undefined;
   return <div className="context-display-compact">
-    <p id={id} className="context-display-compact-status" role={role} data-tone={tone}>{status}</p>
+    <p id={id} className="context-display-compact-status" role={role === "alert" ? "alert" : undefined} data-tone={tone}>{status}</p>
+    <p className="sr-only" role="status" aria-atomic="true">{role === "status" ? status : ""}</p>
     <button className="context-display-compact-button" type="button" onClick={compact}
       aria-describedby={id} aria-disabled={blocked && !compacting ? true : undefined}
       aria-busy={compacting || undefined} disabled={compacting} data-emphasis={near && !blocked && !compacting ? "" : undefined}>
@@ -194,7 +198,7 @@ function CompactFooter({ id, compact, compacting, blocked, percent, result, erro
 }
 
 export function ContextDisplay({ threadId, detail, compactThreadId, compactBlocked = false, running = false,
-  context, totals: providedTotals, providerUsage, className }: ContextDisplayProps) {
+  contextLoading = false, context, totals: providedTotals, providerUsage, className }: ContextDisplayProps) {
   const [open, setOpen] = useState(false);
   const [compacting, setCompacting] = useState(false);
   const [compactResult, setCompactResult] = useState<AgentManualCompactionResult | null>(null);
@@ -210,9 +214,9 @@ export function ContextDisplay({ threadId, detail, compactThreadId, compactBlock
   const estimate = context.status === "awaiting_measurement" && context.compaction?.running !== true && used !== undefined;
   const last = context.status === "last_measured" || context.compaction?.running === true;
   const badge = percent === undefined ? "—" : `${estimate ? "≈" : ""}${percentText(percent)}`;
-  const label = used === undefined || size === undefined
-    ? "context size not reported"
-    : `${estimate ? "about " : last ? "last measured " : ""}${exact(used)} of ${exact(size)} tokens (${estimate ? "about " : ""}${percentText(percent!)}${estimate ? ") after compaction" : ")"}${context.status === "updating" || running ? ", updating" : ""}`;
+  const label = contextLoading ? "loading" : used === undefined ? "context size not reported"
+    : size === undefined ? `${exact(used)} tokens; context window size not reported`
+      : `${estimate ? "about " : last ? "last measured " : ""}${exact(used)} of ${exact(size)} tokens (${estimate ? "about " : ""}${percentText(percent!)}${estimate ? ") after compaction" : ")"}${context.status === "updating" || running ? ", updating" : ""}`;
   const ariaLabel = `Context usage: ${label}.${totals?.total.costUsd === undefined ? "" : ` Estimated cost ${formatUsd(totals.total.costUsd)}.`}`;
   const availableProviderUsage = providerUsage !== undefined && providerUsage.agent.supportsProviderUsage === true
     && providerUsage.agent.status !== "offline" && isProviderUsageId(providerUsage.providerId)
@@ -229,7 +233,8 @@ export function ContextDisplay({ threadId, detail, compactThreadId, compactBlock
     setOpen(next);
     if (!next) { setCompactResult(null); setCompactError(null); }
   };
-  const firstTurn = totals !== undefined && totals.total.tokens === undefined && totals.total.costUsd === undefined
+  const firstTurn = totals?.settledAssistantTurns === 0
+    && totals.total.tokens === undefined && totals.total.costUsd === undefined
     && totals.subagents === undefined && totals.byModel.length === 0;
   return <Popover.Root open={open} onOpenChange={changeOpen}>
     <Popover.Trigger type="button" className={["context-display-trigger", className].filter(Boolean).join(" ")}
@@ -246,7 +251,7 @@ export function ContextDisplay({ threadId, detail, compactThreadId, compactBlock
             <Popover.Title className="context-display-title">Context usage</Popover.Title>
             <Popover.Close className="context-display-close" aria-label="Close" type="button">✕</Popover.Close>
           </div>
-          <ContextWindowSection context={context} running={running} id={`${id}-window`} />
+          <ContextWindowSection context={context} running={running} loading={contextLoading} id={`${id}-window`} />
           {firstTurn ? <section className="context-display-section" aria-labelledby={`${id}-empty`}>
             <h3 className="context-display-eyebrow" id={`${id}-empty`}>Tokens &amp; cost</h3>
             <p className="context-display-empty">Totals appear when the first turn finishes.</p>

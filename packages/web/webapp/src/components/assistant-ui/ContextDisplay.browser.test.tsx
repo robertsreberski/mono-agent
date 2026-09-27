@@ -58,6 +58,15 @@ describe("Context usage layout", () => {
     expect(footer.getBoundingClientRect().top).toBeGreaterThanOrEqual(dialog.getBoundingClientRect().top);
     expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth);
   });
+  it("dims the focusable blocked Compact action without disabling keyboard focus", async () => {
+    await page.viewport(390, 844);
+    render(<ContextDisplay context={context} totals={totals} compactThreadId="one" compactBlocked />);
+    fireEvent.click(screen.getByRole("button", { name: /^Context usage:/ }));
+    const button = within(await screen.findByRole("dialog", { name: "Context usage" })).getByRole("button", { name: "Compact" });
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    expect(button).not.toBeDisabled();
+    expect(Number(getComputedStyle(button).opacity)).toBeLessThan(1);
+  });
   it("opens above its desktop toolbar trigger and fits 320 × 600", async () => {
     await page.viewport(1440, 1000);
     const { trigger, dialog } = await show();
@@ -80,13 +89,14 @@ describe("Context usage layout", () => {
     const button = within(dialog).getByRole("button", { name: "Compact" });
     fireEvent.click(button);
     expect(within(dialog).getByRole("button", { name: "Compacting…" })).toBeDisabled();
-    expect(within(dialog).getByText("Summarizing earlier turns…")).toBeVisible();
+    const status = () => dialog.querySelector(".context-display-compact-status");
+    expect(status()).toHaveTextContent("Summarizing earlier turns…");
     await shot("pending");
     finish({ status: "succeeded", trigger: "manual", operationId: "first", tokensBefore: 60_000, tokensAfter: 20_000 });
-    expect(await within(dialog).findByText("Compacted · 60k → ≈20k")).toBeVisible();
+    await waitFor(() => expect(status()).toHaveTextContent("Compacted · 60k → ≈20k"));
     await shot("success");
     fireEvent.click(button);
-    expect(await within(dialog).findByText("Nothing to compact yet.")).toBeVisible();
+    await waitFor(() => expect(status()).toHaveTextContent("Nothing to compact yet."));
     await shot("skipped");
     fireEvent.click(button);
     expect(await within(dialog).findByRole("alert")).toHaveTextContent("busy");

@@ -44,21 +44,27 @@ export const MultiModelSubagents: Story = { args: { ...base, context: { ...moder
 export const NearlyFull: Story = { args: { ...base, totals: mixed, context: { ...moderate, usage: { ...moderate.usage, total: 184_000 } } }, play: withPlan };
 export const Critical: Story = { args: { ...base, context: { ...moderate, usage: { ...moderate.usage, total: 192_000 } } }, play: withPlan };
 export const Running: Story = { args: { ...base, context: { ...moderate, status: "updating" }, running: true, compactBlocked: true }, play: withPlan };
-export const FirstTurn: Story = { args: { context: { status: "updating" }, running: true, compactBlocked: true, totals: { total: {}, byModel: [], computedAt: typical.computedAt }, compactThreadId: "garden-compact-result",
+export const FirstTurn: Story = { args: { context: { status: "updating" }, running: true, compactBlocked: true, totals: { total: {}, byModel: [], computedAt: typical.computedAt, settledAssistantTurns: 0 }, compactThreadId: "garden-compact-result",
   providerUsage: { ...providerUsage, agent: { ...providerAgent, sourceId: "atlas-story-usage-loading" } } }, play: open };
 export const AutoCompacting: Story = { args: { ...base, context: { status: "awaiting_measurement", usage: moderate.usage, compaction: { running: true } }, compactBlocked: true }, play: withPlan };
 export const Compacting: Story = { args: { ...base, compactThreadId: "garden-compact-pending" }, play: compact };
-export const Compacted: Story = { args: { ...base, context: { status: "awaiting_measurement", usage: { total: 41_300, contextWindow: 200_000 }, compaction: { running: false, tokensBefore: 183_400, tokensAfter: 41_300 }, reason: "Estimated after compaction. Measured exactly on the next turn." } }, play: withPlan };
+export const Compacted: Story = { args: { ...base, context: { status: "awaiting_measurement", usage: { total: 41_300, contextWindow: 200_000 }, compaction: { running: false, tokensBefore: 183_400, tokensAfter: 41_300 }, reason: "Estimated after compaction. Measured exactly on the next turn." } }, play: async (context) => {
+  await withPlan(context);
+  const button = context.canvasElement.ownerDocument.querySelector<HTMLButtonElement>('.context-display-compact-button');
+  if (!button) throw new Error("Compact control missing");
+  button.click();
+  await waitForOverlay(context.canvasElement, '.context-display-compact-status[data-tone="success"]');
+} };
 export const CompactBlocked: Story = { args: { ...base, compactBlocked: true }, play: withPlan };
 export const CompactSkipped: Story = { args: { ...base, compactThreadId: "garden-compact-skipped" }, play: compact };
 export const CompactModelChanged: Story = { args: { ...base, compactThreadId: "garden-compact-model" }, play: compact };
 export const CompactFailed: Story = { args: { ...base, compactThreadId: "garden-compact-failed" }, play: compact };
 export const CompactError: Story = { args: { ...base, compactThreadId: "garden-compact-error" }, play: compact };
 export const CompactConnectionLost: Story = { args: { ...base, compactThreadId: "garden-compact-lost" }, play: compact };
-export const LastMeasured: Story = { args: { ...base, context: { status: "last_measured", usage: moderate.usage,
+export const LastMeasured: Story = { args: { ...base, context: { status: "last_measured", usage: moderate.usage, nextModel: "grove/fast",
   reason: "This measurement belongs to atlas/standard; the next turn is set to grove/fast." } }, play: withPlan };
 export const Unavailable: Story = { args: { context: { status: "unavailable" }, totals: typical }, play: open };
-export const PartialData: Story = { args: { ...base, context: { status: "last_measured", usage: { total: 142_300, contextWindow: 200_000 }, reason: "The latest turn did not complete, so this is the last successful provider measurement." },
+export const PartialData: Story = { args: { ...base, context: { status: "last_measured", usage: { total: 142_300, contextWindow: 200_000 }, lastTurnFailed: true, reason: "The latest turn did not complete, so this is the last successful provider measurement." },
   totals: { ...mixed, total: { ...mixed.total, costPartial: true }, byModel: [{ model: "atlas/standard", costUsd: 3.06, costPartial: true }, mixed.byModel[1]!] },
   providerUsage: { ...providerUsage, agent: { ...providerAgent, sourceId: "atlas-story-usage-stale" } } }, play: withPlan };
 export const CostUnknown: Story = { args: { ...base, totals: { total: { tokens: typical.total.tokens, costPartial: true }, byModel: [], computedAt: typical.computedAt } }, play: open };

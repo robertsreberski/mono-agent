@@ -238,7 +238,7 @@ function ConversationTitle() {
 
 export function ModelControls() {
   const {
-    usage, providerUsage, compactThreadId, compactBlocked, threadId, detail, running, selectorModels, model, effort, setModel, setEffort,
+    usage, providerUsage, compactThreadId, compactBlocked, threadId, detail, running, contextLoading, selectorModels, model, effort, setModel, setEffort,
     agentDefaultModel, hasRunOverride, resetRunOverride, disabled, hasSettings,
     catalogStatusByProvider, openCatalog, requestProvider, agentProviders,
     showModelChangeHint,
@@ -273,6 +273,7 @@ export function ModelControls() {
           threadId={threadId}
           detail={detail}
           running={running}
+          contextLoading={contextLoading}
           compactThreadId={compactThreadId}
           compactBlocked={compactBlocked}
           context={usage.context}

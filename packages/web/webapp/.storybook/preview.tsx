@@ -55,7 +55,7 @@ window.fetch = (input, init) => {
       ...(mixed ? { subagents: { runs: 3, costUsd: 1.12, tokensPartial: true } } : {}),
       byModel: mixed ? [{ model: "atlas/standard", costUsd: 3.06 }, { model: "grove/fast", costUsd: 1.12 }]
         : [{ model: "atlas/standard", costUsd: 2.24 }],
-      computedAt: "2026-09-19T12:00:00Z",
+      computedAt: "2026-09-19T12:00:00Z", settledAssistantTurns: mixed ? 5 : 1,
     } }));
   }
   if (/^\/api\/v1\/agents\/atlas-story-usage(?:-loading|-stale|-error)?\/provider-usage$/.test(pathname) && (!init?.method || init.method === "GET")) {

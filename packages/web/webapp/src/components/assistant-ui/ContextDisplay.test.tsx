@@ -74,12 +74,26 @@ describe("ContextDisplay", () => {
     rerender(<ContextDisplay context={{ status: "awaiting_measurement", usage: { total: 41_300, contextWindow: 200_000 }, compaction: { running: false }, reason: "Estimated after compaction. Measured exactly on the next turn." }} totals={typical} />);
     expect(screen.getByRole("button", { name: /about 41,300 of 200,000 tokens \(about 21%\) after compaction/ })).toHaveTextContent("≈21%");
     expect(screen.getByRole("progressbar", { name: "Context window used" })).toHaveAttribute("aria-valuetext", "About 41,300 of 200,000 tokens, 21%");
+    expect(screen.getByRole("region", { name: "Context window" }).querySelector(".context-display-figure-percent")).toHaveTextContent("≈21%");
     rerender(<ContextDisplay context={{ ...context, status: "last_measured" }} totals={typical} />);
     expect(screen.getByRole("button", { name: /last measured 84,210/ })).toBeVisible();
     rerender(<ContextDisplay context={{ status: "unavailable" }} />);
     expect(screen.getByRole("button", { name: /context size not reported/ })).toHaveTextContent("—");
     rerender(<ContextDisplay context={{ status: "current", usage: { total: 1, contextWindow: 100_000 } }} />);
     expect(screen.getByRole("button", { name: /<1%/ })).toHaveTextContent("<1%");
+  });
+  it("uses explicit loading, names measured tokens with an unknown window, and reads structured note fields", async () => {
+    const { rerender } = render(<ContextDisplay context={{ status: "unavailable", reason: "Load is still in progress." }} contextLoading />);
+    expect(screen.getByRole("button", { name: "Context usage: loading." })).toHaveTextContent("—");
+    const popup = await open();
+    expect(within(popup).getByText("Loading…")).toBeVisible();
+    expect(within(popup).queryByText("No reply in this conversation has reported its context size.")).not.toBeInTheDocument();
+    rerender(<ContextDisplay context={{ status: "current", usage: { total: 84_210 } }} />);
+    expect(screen.getByRole("button", { name: "Context usage: 84,210 tokens; context window size not reported." })).toBeVisible();
+    expect(within(popup).getByText("84.2k")).toBeVisible();
+    rerender(<ContextDisplay context={{ status: "last_measured", usage: { total: 40_000, contextWindow: 100_000, model: "atlas/standard" },
+      nextModel: "grove/fast", reason: "Not used to render text." }} />);
+    expect(within(popup).getByText("Measured on atlas/standard. The next turn uses grove/fast.")).toBeVisible();
   });
   it("keeps initial focus away from Compact and makes blocked action focusable and inert", async () => {
     render(<ContextDisplay context={context} totals={typical} compactThreadId="thread-one" compactBlocked />);
@@ -109,7 +123,7 @@ describe("ContextDisplay", () => {
       "Switch back to atlas/standard to compact this session.", "Compaction failed.",
       "Wait for the current turn.", "Connection lost — the outcome is unknown. Refresh this conversation."]) {
       fireEvent.click(button);
-      await waitFor(() => expect(within(popup).getByText(expected)).toBeVisible());
+      await waitFor(() => expect(popup.querySelector(".context-display-compact-status")).toHaveTextContent(expected));
     }
     fireEvent.keyDown(popup, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Context usage" })).not.toBeInTheDocument());
@@ -121,13 +135,16 @@ describe("ContextDisplay", () => {
     const { rerender } = render(<ContextDisplay context={context} totals={zero} compactThreadId="one" />);
     const popup = await open();
     expect(within(popup).getByRole("region", { name: "Estimated cost" })).toHaveTextContent("$0.00");
-    rerender(<ContextDisplay context={{ status: "updating" }} totals={{ total: {}, byModel: [], computedAt: typical.computedAt }} compactThreadId="one" compactBlocked />);
+    rerender(<ContextDisplay context={{ status: "updating" }} totals={{ total: {}, byModel: [], computedAt: typical.computedAt, settledAssistantTurns: 0 }} compactThreadId="one" compactBlocked />);
     expect(within(popup).getByRole("region", { name: "Tokens & cost" })).toHaveTextContent("Totals appear when the first turn finishes.");
     expect(within(popup).queryByRole("region", { name: "Estimated cost" })).not.toBeInTheDocument();
+    rerender(<ContextDisplay context={{ status: "unavailable" }} totals={{ total: {}, byModel: [], computedAt: typical.computedAt, settledAssistantTurns: 1 }} />);
+    expect(within(popup).getByRole("region", { name: "Tokens processed" })).toHaveTextContent("No reply in this conversation reported token counts.");
+    expect(within(popup).getByRole("region", { name: "Estimated cost" })).toHaveTextContent("No cost was reported for this conversation.");
     apiMock.compactThread.mockResolvedValueOnce({ status: "succeeded", operationId: "exact", trigger: "manual", tokensBefore: 100_000, tokensAfter: 20_000, tokenCountsExact: true });
     rerender(<ContextDisplay context={context} totals={zero} compactThreadId="one" />);
     fireEvent.click(within(popup).getByRole("button", { name: "Compact" }));
-    expect(await within(popup).findByText("Compacted · 100k → 20k")).toBeVisible();
+    await waitFor(() => expect(popup.querySelector(".context-display-compact-status")).toHaveTextContent("Compacted · 100k → 20k"));
   });
   it("keeps the plan gate and loads the active provider only on open with compact rows", async () => {
     let finish!: (value: ProviderUsageSnapshot) => void;
@@ -138,7 +155,7 @@ describe("ContextDisplay", () => {
     expect(within(popup).getAllByRole("region").map((region) => region.querySelector("h3")?.textContent)).toEqual([
       "Context window", "Tokens processed", "Estimated cost", "Codex plan",
     ]);
-    expect(within(popup).getByRole("status", { name: "" })).toHaveTextContent("Loading usage…");
+    expect(within(within(popup).getByRole("region", { name: "Codex plan" })).getByRole("status")).toHaveTextContent("Loading usage…");
     await act(async () => finish(codexSnapshot));
     const region = within(popup).getByRole("region", { name: "Codex plan" });
     expect(within(region).getByText("Pro")).toBeVisible();

@@ -8,7 +8,8 @@
 
 - Let the web Context usage sheet show the window, conversation-wide tokens,
   estimated cost by model and subagent share, compact provider plan meters, and
-  manual Compact. Older detached jobs without token counts show a lower bound.
+  manual Compact. Detached subagent jobs do not report token counts yet, so
+  token totals show a lower bound when they ran.
 
 - Fix manual context compaction for app-hosted conversations with durable Pi
   sessions, including web model selections; log safe unsupported reasons on the

@@ -20,21 +20,33 @@ describe("useThreadUsage", () => {
     act(() => notifyThreadUsageChanged("fresh-thread-one"));
     expect(read).toHaveBeenCalledTimes(1);
     rerender({ open: true, running: false });
+    expect(read).toHaveBeenCalledTimes(1); // settlement is debounced
     await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
-    act(() => { notifyThreadUsageChanged("fresh-thread-one"); notifyThreadUsageChanged("fresh-thread-one"); });
+    rerender({ open: true, running: true });
+    expect(read).toHaveBeenCalledTimes(2); // starting a new turn never reads
+    rerender({ open: true, running: false });
     await waitFor(() => expect(read).toHaveBeenCalledTimes(3));
+    act(() => { notifyThreadUsageChanged("fresh-thread-one"); notifyThreadUsageChanged("fresh-thread-one"); });
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(4));
     rerender({ open: false, running: false });
     rerender({ open: true, running: false });
     expect(result.current.usage).toEqual(response);
-    await waitFor(() => expect(read).toHaveBeenCalledTimes(4));
+    expect(result.current.loading).toBe(false);
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(5));
   });
   it("falls back to the loaded window after endpoint failure and keeps a cursor lower bound", async () => {
     vi.spyOn(api, "threadUsage").mockRejectedValue(new Error("offline"));
     const detail = { messages: [{ role: "assistant", parts: [{ type: "telemetry", event: "usage_update", data: {
       cumulativeUsd: 0, tokens: { input: 2, output: 1 },
     } }] }], messagesNextCursor: "older" } as unknown as Parameters<typeof useThreadUsage>[3];
-    const { result } = renderHook(() => useThreadUsage("fresh-thread-two", true, false, detail));
+    const { result, rerender } = renderHook(({ current }) => useThreadUsage("fresh-thread-two", true, false, current),
+      { initialProps: { current: detail } });
     await waitFor(() => expect(result.current.error).toBe(true));
     expect(result.current.usage?.total).toMatchObject({ costUsd: 0, costPartial: true, tokensPartial: true });
+    const next = { ...detail!, messages: [{ role: "assistant", parts: [{ type: "telemetry", event: "usage_update",
+      data: { cumulativeUsd: 1, tokens: { input: 5, output: 2 } } }] }] } as unknown as typeof detail;
+    rerender({ current: next });
+    await waitFor(() => expect(result.current.usage?.total.costUsd).toBe(1));
+    expect(result.current.loading).toBe(false);
   });
 });

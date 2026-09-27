@@ -237,6 +237,7 @@ describe("conversationConsoleUsage", () => {
       status: "last_measured",
       usage: { total: 30_000, model: "pi:p:m" },
       measuredModel: "pi:p:m",
+      lastTurnFailed: true,
       reason: "The latest turn did not complete, so this is the last successful provider measurement.",
     });
   });
@@ -248,6 +249,7 @@ describe("conversationConsoleUsage", () => {
       status: "last_measured",
       usage: { total: 30_000, model: "pi:p:old" },
       measuredModel: "pi:p:old",
+      nextModel: "pi:p:new",
       reason: "This measurement belongs to pi:p:old; the next turn is set to pi:p:new.",
     });
   });
@@ -255,6 +257,7 @@ describe("conversationConsoleUsage", () => {
   it("states explicitly when direct Claude cannot provide a measurement", () => {
     expect(conversationConsoleUsage(detail([]), { selectedModel: "claude:sonnet" })?.context).toEqual({
       status: "unavailable",
+      noContextRuntime: "claude",
       reason: "This Claude runtime does not expose exact context measurements.",
     });
   });

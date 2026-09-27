@@ -39,6 +39,10 @@ export interface ConsoleContextProjection {
   readonly usage?: ConsoleContextUsage;
   readonly measuredModel?: string;
   readonly reason?: string;
+  /** Structured rendering facts; wording never has to be parsed from reason. */
+  readonly nextModel?: string;
+  readonly lastTurnFailed?: boolean;
+  readonly noContextRuntime?: "claude";
   readonly compaction?: { readonly tokensBefore?: number; readonly tokensAfter?: number; readonly tokenCountsExact?: boolean; readonly running: boolean };
 }
 
@@ -70,7 +74,9 @@ export const contextLevel = (percent: number | undefined): "normal" | "warning" 
 
 export function windowUsage(detail: ThreadDetail): WebThreadUsage {
   const rollups = detail.messages.filter((message) => message.role === "assistant").map(messageUsageRollup);
-  const usage = sumThreadUsage(rollups);
+  const settled = detail.messages.filter((message) => message.role === "assistant"
+    && message.turnId !== undefined && message.status !== "running").length;
+  const usage = sumThreadUsage(rollups, new Date().toISOString(), settled);
   if (detail.messagesNextCursor === undefined) return usage;
   return {
     ...usage,
@@ -243,6 +249,7 @@ const contextProjection = (
         status: "last_measured",
         usage: latestExact.usage,
         ...(measuredModel === undefined ? {} : { measuredModel }),
+        ...(modelMismatch ? { nextModel } : { lastTurnFailed: true }),
         reason: modelMismatch
           ? measuredModel === undefined
             ? `The exact measurement did not identify its model; the next turn is set to ${nextModel}.`
@@ -260,6 +267,7 @@ const contextProjection = (
   const nextModel = selectedModel?.trim();
   return {
     status: "unavailable",
+    ...(nextModel?.startsWith("claude:") ? { noContextRuntime: "claude" as const } : {}),
     reason: nextModel?.startsWith("claude:")
       ? "This Claude runtime does not expose exact context measurements."
       : "Exact context usage has not been reported for this conversation.",
