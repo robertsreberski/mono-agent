@@ -3850,6 +3850,7 @@ describe("conversation usage route", () => {
     expect(usage.total.tokens).toMatchObject({ input: 900, output: 90 });
     expect(usage.total.costUsd).toBeCloseTo(0.9);
     expect(usage.byModel).toHaveLength(1);
+    expect(usage).toHaveProperty("settledAssistantTurns", 0); // fixture rows have no provider turn
     expect(usage.computedAt).toEqual(expect.any(String));
     const missing = await fetch(`${baseUrl}/api/v1/threads/unknown/usage`);
     expect(missing.status).toBe(404);

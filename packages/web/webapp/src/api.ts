@@ -397,6 +397,8 @@ function validUsageSlice(value: unknown): value is WebUsageSlice {
 export function parseThreadUsage(value: unknown): WebThreadUsage {
   const usage = recordOf(value);
   if (usage === null || !validUsageSlice(usage.total)
+    || (usage.settledAssistantTurns !== undefined
+      && (!Number.isSafeInteger(usage.settledAssistantTurns) || Number(usage.settledAssistantTurns) < 0))
     || typeof usage.computedAt !== "string" || Number.isNaN(Date.parse(usage.computedAt))
     || !Array.isArray(usage.byModel) || !usage.byModel.every((row: unknown) => {
       const model = recordOf(row);

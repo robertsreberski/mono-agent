@@ -1075,11 +1075,13 @@ describe("conversation usage validator", () => {
     byModel: [{ model: "atlas/standard", costUsd: 0 }], computedAt: "2026-01-01T00:00:00.000Z" };
   it("accepts a priced zero and optional partials", () => {
     expect(parseThreadUsage(response)).toEqual(response);
+    expect(parseThreadUsage({ ...response, settledAssistantTurns: 0 }).settledAssistantTurns).toBe(0);
   });
   it("rejects invalid figures, dates and shapes", () => {
     expect(() => parseThreadUsage({ ...response, total: { costUsd: -1 } })).toThrow();
     expect(() => parseThreadUsage({ ...response, byModel: [{}], computedAt: "unknown" })).toThrow();
     expect(() => parseThreadUsage({ ...response, subagents: { runs: 0 } })).toThrow();
+    expect(() => parseThreadUsage({ ...response, settledAssistantTurns: -1 })).toThrow();
     expect(() => parseThreadUsage({ ...response, total: { tokens: { ...response.total.tokens, input: NaN } } })).toThrow();
   });
 });

@@ -2,21 +2,27 @@ import type { WebThreadUsage, WebUsageSlice, WebUsageTokens } from "./contracts.
 import type { MessageUsageRollup, MessageUsageSlice } from "./message-cost.js";
 
 type MutableSlice = { tokens?: WebUsageTokens; costUsd?: number; tokensPartial?: true; costPartial?: true };
+const safeSum = (left: number, right: number): number => Math.min(Number.MAX_SAFE_INTEGER, left + right);
 const addTokens = (left: WebUsageTokens | undefined, right: WebUsageTokens): WebUsageTokens =>
   ({
-    input: (left?.input ?? 0) + right.input,
-    cacheRead: (left?.cacheRead ?? 0) + right.cacheRead,
-    cacheWrite: (left?.cacheWrite ?? 0) + right.cacheWrite,
-    output: (left?.output ?? 0) + right.output,
+    input: safeSum(left?.input ?? 0, right.input),
+    cacheRead: safeSum(left?.cacheRead ?? 0, right.cacheRead),
+    cacheWrite: safeSum(left?.cacheWrite ?? 0, right.cacheWrite),
+    output: safeSum(left?.output ?? 0, right.output),
   });
 function add(target: MutableSlice, source: MessageUsageSlice) {
-  if (source.tokens !== undefined) target.tokens = addTokens(target.tokens, source.tokens);
+  if (source.tokens !== undefined) {
+    for (const key of ["input", "cacheRead", "cacheWrite", "output"] as const) {
+      if (source.tokens[key] > Number.MAX_SAFE_INTEGER - (target.tokens?.[key] ?? 0)) target.tokensPartial = true;
+    }
+    target.tokens = addTokens(target.tokens, source.tokens);
+  }
   if (source.costUsd !== undefined) target.costUsd = (target.costUsd ?? 0) + source.costUsd;
   if (source.costPartial) target.costPartial = true;
 }
 
 /** Fold per-message rollups without ever adding synchronous spend twice. */
-export function sumThreadUsage(rollups: readonly MessageUsageRollup[], computedAt = new Date().toISOString()): WebThreadUsage {
+export function sumThreadUsage(rollups: readonly MessageUsageRollup[], computedAt = new Date().toISOString(), settledAssistantTurns?: number): WebThreadUsage {
   const total: MutableSlice = {};
   const subagents: MutableSlice & { runs: number } = { runs: 0 };
   const byModel = new Map<string | undefined, MutableSlice>();
@@ -40,7 +46,10 @@ export function sumThreadUsage(rollups: readonly MessageUsageRollup[], computedA
         if (child.tokens === undefined) total.tokensPartial = true;
       }
       if (child.tokens === undefined) subagents.tokensPartial = true;
-      add(modelSlice(child.model), child);
+      // Parent aggregate tokens already include synchronous children. Preserve
+      // their model's cost, but never add their tokens a second time by model.
+      const { tokens: _syncTokens, ...costOnly } = child;
+      add(modelSlice(child.model), child.detached ? child : costOnly);
     }
   }
   const clean = (slice: MutableSlice): WebUsageSlice => ({
@@ -56,5 +65,6 @@ export function sumThreadUsage(rollups: readonly MessageUsageRollup[], computedA
       .sort((a, b) => (b[1].costUsd ?? 0) - (a[1].costUsd ?? 0))
       .map(([model, slice]) => ({ ...clean(slice), ...(model === undefined ? {} : { model }) })),
     computedAt,
+    ...(settledAssistantTurns === undefined ? {} : { settledAssistantTurns }),
   };
 }

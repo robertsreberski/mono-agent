@@ -225,7 +225,6 @@ export interface MessageUsageSlice {
   readonly model?: string;
   readonly tokens?: { readonly input: number; readonly cacheRead: number; readonly cacheWrite: number; readonly output: number };
   readonly costUsd?: number;
-  readonly hasCostKey?: boolean;
   readonly costPartial?: true;
 }
 export interface MessageUsageRollup {
@@ -238,7 +237,9 @@ const positiveCost = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 const tokenObservation = (value: unknown): MessageUsageSlice["tokens"] => {
   const usage = normalizeUsage(value);
-  if (usage === null || [usage.input, usage.cachedInput, usage.cacheCreation, usage.output].every((v) => v === undefined)) return undefined;
+  const values = [usage?.input, usage?.cachedInput, usage?.cacheCreation, usage?.output];
+  if (usage === null || values.every((value) => value === undefined)
+    || values.some((value) => value !== undefined && (!Number.isSafeInteger(value) || value < 0))) return undefined;
   return {
     input: usage.input ?? 0, cacheRead: usage.cachedInput ?? 0,
     cacheWrite: usage.cacheCreation ?? 0, output: usage.output ?? 0,
@@ -301,7 +302,7 @@ export function messageUsageRollup(message: {
     main: {
       ...(model === undefined ? {} : { model }),
       ...(tokens === undefined ? {} : { tokens }),
-      ...(costUsd === undefined ? {} : { costUsd, hasCostKey: true }),
+      ...(costUsd === undefined ? {} : { costUsd }),
       ...(tokens !== undefined && reportedCost === undefined ? { costPartial: true as const } : {}),
     },
     subagents,

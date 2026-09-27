@@ -6876,12 +6876,18 @@ describe("thread usage aggregation", () => {
       const first = await store.threadUsage(thread.id);
       expect(debug).toHaveBeenCalledWith("web thread usage", expect.objectContaining({ messages: 90, misses: 90, parsedBytes: expect.any(Number), elapsedMs: expect.any(Number) }));
       debug.mockRestore();
+      vi.stubEnv("DEBUG", "webpack");
+      const unrelatedDebug = vi.spyOn(console, "debug").mockImplementation(() => {});
+      await store.threadUsage(thread.id);
+      expect(unrelatedDebug).not.toHaveBeenCalled();
+      unrelatedDebug.mockRestore();
       vi.unstubAllEnvs();
       expect(first.total.costUsd).toBe(47.5);
       expect(first.total.tokens).toMatchObject({ input: 890, cacheRead: 178, cacheWrite: 89, output: 356 });
       expect(first.total.tokensPartial).toBe(true);
       expect(first.subagents?.costUsd).toBe(3);
-      const held = memo.get("usage-1:0");
+      const key = "usage-1:0:2026-01-01T00:00:01Z";
+      const held = memo.get(key);
       const holder = store as unknown as { database: DatabaseSync };
       const database = holder.database;
       let partReads = 0;
@@ -6899,16 +6905,63 @@ describe("thread usage aggregation", () => {
       try { await store.threadUsage(thread.id); }
       finally { holder.database = database; }
       expect(partReads).toBe(0);
-      expect(memo.get("usage-1:0")).toBe(held);
+      expect(memo.get(key)).toBe(held);
       raw.prepare("UPDATE messages SET seq = seq + 1, parts_json = ? WHERE id = 'usage-1'")
         .run(JSON.stringify([{ type: "telemetry", event: "usage_update", data: { cumulativeUsd: 1 } }]));
       expect((await store.threadUsage(thread.id)).total.costUsd).toBe(48);
-      expect(memo.has("usage-1:1")).toBe(true);
+      expect(memo.has("usage-1:1:2026-01-01T00:00:01Z")).toBe(true);
       for (let n = 0; n < 20_000; n++) memo.set(`eviction-${n}`, { main: {}, subagents: [] });
-      await store.threadUsage(thread.id);
+      const afterEviction = await store.threadUsage(thread.id);
+      expect(afterEviction.total.costUsd).toBe(48);
       expect(memo.size).toBe(20_000);
       expect(memo.has("eviction-0")).toBe(false);
       await expect(store.threadUsage("unknown-thread")).rejects.toMatchObject({ code: "thread_not_found" });
     } finally { raw.close(); store.close(); }
   });
+  it("keeps same-batch hits when misses precede them at LRU capacity, and does not reuse a reinserted id", async () => {
+    const root = await temporaryRoot();
+    cleanup.push(root);
+    const store = await WebStore.open({ stateDir: join(root, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const raw = new DatabaseSync(store.paths.database);
+    const memo = (store as unknown as { usageMemo: Map<string, unknown> }).usageMemo;
+    const insert = raw.prepare(`INSERT INTO messages
+      (id, thread_id, role, parts_json, created_at, updated_at, status)
+      VALUES (?, ?, 'assistant', ?, ?, ?, 'complete')`);
+    const parts = (cost: number) => JSON.stringify([{ type: "telemetry", event: "usage_update", data: {
+      model: "atlas/standard", cumulativeUsd: cost, tokens: { input: 10, output: 1 },
+    } }]);
+    try {
+      for (let index = 0; index < 10; index++) {
+        insert.run(`memo-${index}`, thread.id, parts(1), `2026-01-01T00:00:${String(index).padStart(2, "0")}Z`, "2026-01-01T00:01:00Z");
+      }
+      expect((await store.threadUsage(thread.id)).total.costUsd).toBe(10);
+      for (let index = 0; index < 19_990; index++) memo.set(`other-${index}`, { main: {}, subagents: [] });
+      expect(memo.size).toBe(20_000);
+      for (let index = 0; index < 3; index++) memo.delete(`memo-${index}:0:2026-01-01T00:00:0${index}Z`);
+      for (let index = 0; index < 3; index++) memo.set(`refill-${index}`, { main: {}, subagents: [] });
+      expect(memo.size).toBe(20_000);
+      expect((await store.threadUsage(thread.id)).total.costUsd).toBe(10);
+      raw.prepare("DELETE FROM messages WHERE id = 'memo-0'").run();
+      insert.run("memo-0", thread.id, parts(4), "2026-01-02T00:00:00Z", "2026-01-02T00:00:00Z");
+      expect((await store.threadUsage(thread.id)).total.costUsd).toBe(13);
+    } finally { raw.close(); store.close(); }
+  });
+
+  it("counts settled assistant turns even when none reported telemetry", async () => {
+    const root = await temporaryRoot();
+    cleanup.push(root);
+    const store = await WebStore.open({ stateDir: join(root, "state") });
+    try {
+      store.replaceAgents([agent()]);
+      const thread = store.createThread("agent-one");
+      expect((await store.threadUsage(thread.id)).settledAssistantTurns).toBe(0);
+      const turn = store.beginTurn({ threadId: thread.id, text: "Example prompt", attachmentIds: [] });
+      expect((await store.threadUsage(thread.id)).settledAssistantTurns).toBe(0);
+      store.completeTurn(turn.turnId, "Example answer");
+      expect(await store.threadUsage(thread.id)).toMatchObject({ settledAssistantTurns: 1, total: {} });
+    } finally { store.close(); }
+  });
+
 });

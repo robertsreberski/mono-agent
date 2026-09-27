@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   latestMessageCostUsd,
+  messageUsageRollup,
   normalizeUsage,
   sumMessageCosts,
   type CostTelemetryPart,
 } from "../message-cost.js";
+import { sumThreadUsage } from "../thread-usage.js";
 
 const telemetry = (event: string, data: unknown): CostTelemetryPart => ({ type: "telemetry", event, data });
 const text = (value: string): CostTelemetryPart => ({ type: "text", text: value }) as CostTelemetryPart;
@@ -102,11 +104,55 @@ describe("messageUsageRollup", () => {
     expect(sumThreadUsage([messageUsageRollup({ parts: [subagent(0), usage(0)] })]).total.costUsd).toBe(0);
     expect(sumThreadUsage([messageUsageRollup({ parts: [subagent(0)] })]).total.costUsd).toBe(0);
   });
+  it("drops malformed token samples without disabling the conversation aggregate", () => {
+    const bad = messageUsageRollup({ parts: [telemetry("usage_update", {
+      model: "atlas/standard", cumulativeUsd: 0.25, tokens: { input: -1, output: 3.2 },
+    })] });
+    const good = messageUsageRollup({ parts: [telemetry("usage_update", {
+      model: "atlas/standard", cumulativeUsd: 0.5, tokens: { input: 4, output: 1 },
+    })] });
+    expect(bad.main.tokens).toBeUndefined();
+    expect(sumThreadUsage([bad, good]).total).toMatchObject({
+      costUsd: 0.75, tokens: { input: 4, output: 1 }, tokensPartial: true,
+    });
+    const huge = { main: { tokens: { input: Number.MAX_SAFE_INTEGER, output: 0, cacheRead: 0, cacheWrite: 0 } }, subagents: [] };
+    expect(sumThreadUsage([huge, good]).total).toMatchObject({ tokens: { input: Number.MAX_SAFE_INTEGER }, tokensPartial: true });
+  });
   it("marks cost partial only for token telemetry without a cost observation", async () => {
     const { messageUsageRollup } = await import("../message-cost.js");
     expect(messageUsageRollup({ parts: [usage(undefined)] }).main.costPartial).toBe(true);
     expect(messageUsageRollup({ parts: [telemetry("context_usage", { tokens: { input: 5 } })] }).main.costPartial).toBeUndefined();
     expect(messageUsageRollup({ parts: [usage(0)] }).main.costPartial).toBeUndefined();
     expect(messageUsageRollup({ parts: [usage(2, "" )], attribution: { executed: { model: "grove/fast" } } }).main.model).toBe("grove/fast");
+  });
+});
+
+describe("model token attribution", () => {
+  it("does not add synchronous child tokens twice when future children report them", async () => {
+    const { sumThreadUsage } = await import("../thread-usage.js");
+    const tokens = (input: number) => ({ input, output: 0, cacheRead: 0, cacheWrite: 0 });
+    const result = sumThreadUsage([{ main: { model: "provider:parent", tokens: tokens(100), costUsd: 2 },
+      subagents: [
+        { detached: false, model: "provider:child", tokens: tokens(5), costUsd: 1 },
+        { detached: true, model: "provider:child", tokens: tokens(10), costUsd: 1 },
+      ] }]);
+    expect(result.total.tokens?.input).toBe(110);
+    expect(result.subagents?.tokens?.input).toBe(15);
+    expect(result.byModel.reduce((sum, row) => sum + (row.tokens?.input ?? 0), 0)).toBe(110);
+    expect(result.byModel.reduce((sum, row) => sum + (row.costUsd ?? 0), 0)).toBe(3);
+  });
+});
+
+describe("model-reference attribution", () => {
+  it("groups Pi's usage, synchronous result and detached route under one reference", () => {
+    const model = "openai-codex:gpt-5.6-sol";
+    const rollup = messageUsageRollup({ parts: [
+      { type: "telemetry", event: "usage_update", data: { model, cumulativeUsd: 2 } },
+      { type: "subagent", attribution: { executed: { model } }, costUsd: 1 } as unknown as CostTelemetryPart,
+      { type: "process-job", job: { subagentProgress: { route: { executed: { model } }, costUsd: 1 } } } as unknown as CostTelemetryPart,
+    ] });
+    const usage = sumThreadUsage([rollup]);
+    expect(usage.byModel).toEqual([{ model, costUsd: 3 }]);
+    expect(usage.total.costUsd).toBe(3);
   });
 });
