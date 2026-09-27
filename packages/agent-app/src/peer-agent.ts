@@ -390,9 +390,15 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
               relays.set(key, { relay, background: args.background === true, origin, depth,
                 setQuestionJobId: (id) => { questionJobId = id; } });
               let cancelAcp: (() => Promise<void>) | undefined;
+              let runSettled: Promise<void> | undefined;
               active.set(key, async () => {
                 stop.abort();
-                await cancelAcp?.();
+                try { await cancelAcp?.(); }
+                finally {
+                  // A parked background job has already returned its question,
+                  // but its ACP turn still owns the thread and can write on abort.
+                  await runSettled;
+                }
               });
               // The job store may launch an internal closure before startInternal
               // returns. Defer ACP dispatch until the durable started receipt has
@@ -437,8 +443,12 @@ export function createPeerAgentRuntimeExtension(options: PeerAgentExtensionOptio
                   description: `Peer ${args.peer} thread ${args.thread}`,
                   wakeOnCompletion: true,
                   run: async (signal) => {
-                    void run(signal).catch(() => undefined);
-                    return peerJobEvent(await relay.next());
+                    runSettled = run(signal).then(() => undefined, () => undefined);
+                    const event = await relay.next();
+                    // A terminal event must not publish before the ACP owner has
+                    // released its lease. A question stays parked across jobs.
+                    if (event.kind !== "question") await runSettled;
+                    return peerJobEvent(event);
                   },
                   cleanup: async () => {
                     if (!held || running) return;

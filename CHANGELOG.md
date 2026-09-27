@@ -49,6 +49,9 @@
   conversation; tool-set one-offs must be at least five minutes ahead. Fired
   turns arrive later in the same conversation.
 
+- Fix `PeerAgent` stop to wait for an interrupted peer turn to finish writing
+  thread state before reporting completion.
+
 - Add one-off and weekly timezone-aware wake-up schedules to ordinary web
   conversations, with edit, pause, resume, delete, live list status and a distinct
   scheduled transcript item. Keep busy occurrences pending until an idle turn;
