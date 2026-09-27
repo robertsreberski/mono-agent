@@ -71,6 +71,7 @@ import {
   type WebToolCall,
   type WebThreadDetail,
   type WebThreadUsage,
+  type WebUsageTokens,
   type WebThreadPage,
   type WebThreadListScope,
   type WebThreadSearchHit,
@@ -3027,16 +3028,15 @@ export class WebStore {
       throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
     }
     const start = performance.now();
-    const rows = this.database.prepare(`SELECT m.id, m.seq, m.created_at, m.status, m.turn_id, t.model AS executed_model
+    const rows = this.database.prepare(`SELECT m.rowid AS rowid, m.id, m.seq, m.status, m.turn_id, t.model AS executed_model
       FROM messages m LEFT JOIN turns t ON t.id = m.turn_id
       WHERE m.thread_id = ? AND m.role = 'assistant'`)
-      .all(threadId) as unknown as Array<{ id: string; seq: number; created_at: string; status: string; turn_id: string | null; executed_model: string | null }>;
+      .all(threadId) as unknown as Array<{ rowid: number; id: string; seq: number; status: string; turn_id: string | null; executed_model: string | null }>;
     const rollups: MessageUsageRollup[] = [];
     const fetch = this.database.prepare("SELECT id, parts_json FROM messages WHERE id IN (SELECT value FROM json_each(?))");
-    const fetchOne = this.database.prepare("SELECT parts_json FROM messages WHERE id = ?");
-    // Cron cards can reuse a deterministic id after retention deletes their row.
-    // A new row's creation time keeps its seq=0 from reusing the old rollup.
-    const memoKey = (row: (typeof rows)[number]) => `${row.id}:${row.seq}:${row.created_at}`;
+    // A same-run cron re-insert can reuse both the deterministic id and created_at.
+    // The SQLite row identity distinguishes it even when seq restarts at zero.
+    const memoKey = (row: (typeof rows)[number]) => `${row.id}:${row.rowid}:${row.seq}`;
     let misses = 0;
     let parsedBytes = 0;
     for (let index = 0; index < rows.length; index += 100) {
@@ -3055,9 +3055,8 @@ export class WebStore {
         const key = memoKey(row);
         let rollup = cached.get(key);
         if (rollup === undefined) {
-          // A deleted row may disappear between the key scan and the blob read;
-          // if the batch didn't return it, try once by id before skipping it.
-          const partsJson = blobs.get(row.id) ?? (fetchOne.get(row.id) as { parts_json: string } | undefined)?.parts_json;
+          // A row deleted after the key scan is absent from the batch read.
+          const partsJson = blobs.get(row.id);
           if (partsJson === undefined) continue;
           misses += 1;
           parsedBytes += Buffer.byteLength(partsJson);
@@ -7959,6 +7958,7 @@ function applyEvent(
           status,
           ...(executionMs === undefined ? {} : { executionMs }),
           ...(subagent.costUsd === undefined ? {} : { costUsd: subagent.costUsd }),
+          ...(subagent.usage === undefined ? {} : { usage: subagent.usage }),
           ...(subagent.attribution === undefined ? {} : { attribution: subagent.attribution }),
         }, historyUpdate));
         return;
@@ -8154,6 +8154,7 @@ function subagentOf(
   readonly name: string;
   readonly label?: string;
   readonly costUsd?: number;
+  readonly usage?: WebUsageTokens;
   readonly attribution?: WebRunAttribution;
 } | undefined {
   const subagent = event.metadata?.subagent;
@@ -8171,12 +8172,14 @@ function subagentOf(
   const costUsd = typeof record.costUsd === "number" && Number.isFinite(record.costUsd) && record.costUsd > 0
     ? record.costUsd
     : undefined;
+  const usage = validSubagentUsage(record.usage) ? record.usage : undefined;
   const attribution = canonicalRunAttribution(record.attribution);
   return {
     id: canonicalId,
     name: name.length === 0 ? "subagent" : name,
     ...(label.length === 0 ? {} : { label }),
     ...(costUsd === undefined ? {} : { costUsd }),
+    ...(usage === undefined ? {} : { usage }),
     ...(attribution === undefined ? {} : { attribution }),
   };
 }
@@ -9154,6 +9157,14 @@ function nonNegativeSafeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 0;
 }
 
+function validSubagentUsage(value: unknown): value is WebUsageTokens {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (!hasOnlyKeys(record, new Set(["input", "output", "cacheRead", "cacheWrite"]))) return false;
+  const tokens = [record.input, record.output, record.cacheRead, record.cacheWrite];
+  return tokens.every(nonNegativeSafeInteger) && tokens.some((token) => Number(token) > 0);
+}
+
 const DURABLE_REPLY_ATTACHMENT_KEYS = new Set([
   "type", "id", "artifactId", "name", "mediaType", "sizeBytes", "integrityId", "expiresAt",
 ]);
@@ -9182,6 +9193,7 @@ function isWebMessagePart(value: unknown): value is WebMessagePart {
       && (part.label === undefined || typeof part.label === "string")
       && (part.executionMs == null || typeof part.executionMs === "number")
       && (part.costUsd === undefined || typeof part.costUsd === "number")
+      && (part.usage === undefined || validSubagentUsage(part.usage))
       && (part.attribution === undefined || canonicalRunAttribution(part.attribution) !== undefined)
       && (part.history === undefined || isSessionToolHistoryMetadata(part.history))
       && isWebToolCallStatus(part.status)
