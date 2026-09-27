@@ -896,6 +896,35 @@ describe("runCli validate --json", () => {
     }
   });
 
+  it("validates and shows a classifier-only memory model", async () => {
+    const dir = await tempDir();
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n", "utf8");
+    await writeFile(join(dir, "mono-agent.config.json"), JSON.stringify({
+      runtime: { model: "openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      memory: {
+        path: "./memory", mode: "bujo", writeMode: "capture",
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+        llm: { provider: "agent-host", model: "openai-codex:gpt-5.5" },
+        capture: { reconcileModel: "openai-codex:gpt-5.6-terra" },
+      },
+    }), "utf8");
+    const validation = await captureCli(() => withCwd(dir, () => runCli(["validate", "--json"])));
+    const memoryValidation = (JSON.parse(validation.stdout) as { sections: readonly { id: string; details: readonly string[] }[] })
+      .sections.find((section) => section.id === "memory");
+    expect(memoryValidation?.details).toContain("Capture reconciliation model: openai-codex:gpt-5.6-terra (extraction and review use the chat LLM).");
+    // A newly configured BuJo path lacks its index until memory rebuild; that is
+    // unrelated to the accepted model reference and makes this fresh validation red.
+    expect(validation.code).toBe(1);
+    expect(memoryValidation?.details.some((detail) => detail.includes("Managed memory generation metadata is missing"))).toBe(true);
+    const display = await captureCli(() => withCwd(dir, () => runCli(["config", "--json"])));
+    expect(display.code).toBe(0);
+    const fields = (JSON.parse(display.stdout) as { config: readonly { fields: readonly { id: string; value: string }[] }[] })
+      .config.flatMap((section) => section.fields);
+    expect(fields.find((field) => field.id === "memory.capture.reconcileModel")?.value)
+      .toBe("openai-codex:gpt-5.6-terra");
+  });
+
   it("emits exactly one plain JSON object and exits according to its ok field", async () => {
     const dir = await tempDir();
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n", "utf8");

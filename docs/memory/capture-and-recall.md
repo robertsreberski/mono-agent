@@ -220,6 +220,26 @@ or tier downshift.
 { "memory": { "mode": "bujo", "writeMode": "capture" } }
 ```
 
+To use a different model only for the reconciliation classifier, set
+`memory.capture.reconcileModel` to a validated agent-host runtime model reference
+(for example, `openai-codex:gpt-6-sol`). Unset means all capture stages use
+`memory.llm` as before. Extraction and review **always** use `memory.llm`;
+classification alone uses the optional model. The alternate is not a fallback:
+its failure retries capture, and on the final durable attempt nonduplicate
+candidates are added rather than dropped while exact duplicates stay no-ops.
+The optional model uses the agent-host memory runtime and inherits applicable
+timeout and recording settings when the capture LLM is also agent-host. With
+an Ollama capture LLM, extraction/review remain on Ollama and the classifier
+runs through agent-host, so configure that provider's credentials separately.
+No tools or channel fallback are added. A separate classifier effort key is not
+supported.
+On a fictional EN/PL/ES correction set (12 expected corrections, 6 unrelated
+cases, repeated twice), missed corrections changed from 3 to 1 and from 3 to 0,
+with zero unrelated false supersedes in either condition. These are variable,
+bounded observations, not a correctness guarantee; classifier median call time
+rose from about 3.1–3.3 seconds to 7.3–7.5 seconds in the fictional trials.
+Provider costs and latency may vary.
+
 An agent can optionally narrow automatic capture with `memory.capture.focus` (up to
 2048 UTF-8 bytes of operator-written guidance, inside a delimited extraction-prompt
 section) and `memory.capture.only` (a subset of `fact`, `preference`, `lesson`).

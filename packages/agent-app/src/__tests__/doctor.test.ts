@@ -4484,6 +4484,27 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     expect(creds.details.join("\n")).toMatch(/Memory LLM openai-codex:gpt-5\.5: stored OAuth credential for `openai-codex` has no usable access or refresh token/u);
   });
 
+  it("flags missing credentials for the capture reconcile model separately from the capture LLM", async () => {
+    const authPath = await writeAuthStore({});
+    await writeModelsStore(["opencode-go"]);
+    const configPath = await writeCredConfig({
+      runtime: { model: "opencode-go:kimi-k2.6" },
+      providers: { piAuthPath: authPath },
+      memory: {
+        mode: "bujo", path: dir, writeMode: "capture",
+        embeddings: { provider: "openai", model: "text-embedding-3-small", apiKey: "sk-test" },
+        llm: { provider: "ollama", model: "qwen3.6:latest" },
+        capture: { reconcileModel: "openai-codex:gpt-5.5" },
+      },
+    });
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const creds = sectionById(report, "credentials");
+    expect(creds.status).toBe("waiting");
+    expect(creds.details.join("\n"))
+      .toMatch(/Capture reconcile model openai-codex:gpt-5\.5: no Pi credentials found for provider `openai-codex`/u);
+    expect(creds.details.join("\n")).not.toContain("Memory LLM openai-codex");
+  });
+
   it("ignores credentials and model resolution for a globally disabled webhook", async () => {
     const authPath = await writeAuthStore({});
     const configPath = await writeCredConfig({

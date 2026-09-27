@@ -60,6 +60,22 @@ describe("provider auth status", () => {
     ]);
   });
 
+  it("tracks classifier credentials as a separate memory usage", async () => {
+    const base = configWith("/missing");
+    const config = { ...base, memory: { ...base.memory,
+      capture: { reconcileModel: "openai-codex:gpt-5.5" } } } as MonoAgentConfig;
+    const refs = await collectUsedProviderReferences(config, [], { cwd: "/tmp", configPath: "/tmp/config.json", env: {} });
+    expect(refs.map(({ usage }) => [usage.kind, usage.label, usage.model])).toContainEqual([
+      "memory_llm", "Capture reconcile model", "openai-codex:gpt-5.5",
+    ]);
+    const snapshot = await providerAuthStatusSnapshot({ config, env: {}, drivers: [],
+      input: { cwd: "/tmp", configPath: "/tmp/config.json", env: {} },
+      observations: createProviderAuthObservationTracker(),
+    });
+    expect(snapshot.providers.find((provider) => provider.providerId === "openai-codex")?.usages)
+      .toContainEqual({ kind: "memory_llm", label: "Capture reconcile model", model: "openai-codex:gpt-5.5" });
+  });
+
   it("reports stored, expired, and keyless local states separately from live verification", async () => {
     const dir = await mkdtemp(join(tmpdir(), "mono-agent-provider-status-"));
     tempDirs.push(dir);

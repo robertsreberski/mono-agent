@@ -786,6 +786,13 @@ async function credentialsSection(
       // A malformed memory model reference is surfaced by the memory/runtime shape checks.
     }
   }
+  if (config.memory?.capture?.reconcileModel !== undefined) {
+    try {
+      refs.push({ label: "Capture reconcile model", ref: parseMonoRuntimeModelReference(config.memory.capture.reconcileModel) });
+    } catch {
+      // The capture model's shape is checked in the memory section.
+    }
+  }
 
   const authenticatedRefs = refs;
   if (authenticatedRefs.length === 0) {
@@ -1093,6 +1100,21 @@ async function memorySection(
           `Agent-host memory LLM ${displayText(config.memory.llm.model)}: ${displayReason(error)}.`,
         );
       }
+    }
+  }
+
+  if (config.memory.capture?.reconcileModel !== undefined) {
+    try {
+      const model = parseMonoRuntimeModelReference(config.memory.capture.reconcileModel);
+      details.push(`Capture reconciliation model: ${displayReferenceOf(model)} (extraction and review use the chat LLM).`);
+      const resolutionIssue = piModelResolutionIssue(config, model);
+      if (resolutionIssue !== undefined) {
+        status = "error";
+        details.push(`Capture reconciliation model ${displayReferenceOf(model)}: ${resolutionIssue}.`);
+      }
+    } catch (error) {
+      status = "error";
+      details.push(`Capture reconciliation model ${displayText(config.memory.capture.reconcileModel)}: ${displayReason(error)}.`);
     }
   }
 

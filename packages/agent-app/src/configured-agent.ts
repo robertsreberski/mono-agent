@@ -2075,14 +2075,32 @@ async function createConfiguredMemoryInternal(
   if (llm === undefined) {
     throw new Error("memory.mode 'bujo' could not construct the required memory.llm.");
   }
+  const reconcileModel = config.memory.capture?.reconcileModel;
+  const classifier = reconcileModel === undefined ? undefined : configuredMemoryLlm(
+    bujo, config,
+    { provider: "agent-host", model: reconcileModel,
+      ...(llmConfig.provider === "agent-host" && llmConfig.trace !== undefined ? { trace: llmConfig.trace } : {}),
+      ...(llmConfig.provider === "agent-host" && llmConfig.timeoutMs !== undefined ? { timeoutMs: llmConfig.timeoutMs } : {}),
+    },
+    deps.memoryRuntime, recording, deps.cwd ?? process.cwd(), protectionPosture,
+  );
+  if (reconcileModel !== undefined && classifier === undefined) throw new Error("memory.capture.reconcileModel could not construct a classifier LLM.");
+  const captureLlm = classifier === undefined ? llm : {
+    id: llm.id,
+    complete(prompt: string, options?: Parameters<typeof llm.complete>[1]) {
+      return (options?.label === "capture:reconcile-batch" || options?.label === "capture:reconcile"
+        ? classifier : llm).complete(prompt, options);
+    },
+  };
+  const { focus, only } = config.memory.capture ?? {};
   return bujo.createBujoMemoryStore({
     root,
     tier: "bujo",
     embeddings,
     dim,
     ...(maxBytes !== undefined && { maxBytes }),
-    llm,
-    ...(config.memory.capture === undefined ? {} : { capture: config.memory.capture }),
+    llm: captureLlm,
+    ...(config.memory.capture === undefined ? {} : { capture: { ...(focus === undefined ? {} : { focus }), ...(only === undefined ? {} : { only }) } }),
     ...(deps.logger !== undefined && { logger: deps.logger }),
   });
 }

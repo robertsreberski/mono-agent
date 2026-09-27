@@ -47,6 +47,16 @@ describe("buildMonoAgentConfigView", () => {
       .toMatchObject({ source: "json", restatesDefault: true });
   });
 
+  it("shows an explicitly selected classifier model without inventing an unset default", () => {
+    const memory = { mode: "bujo" as const, path: "/repo/memory", writeMode: "capture" as const,
+      embeddings: { provider: "ollama" as const, model: "nomic-embed-text" },
+      llm: { provider: "agent-host" as const, model: "openai-codex:gpt-5.5" } };
+    expect(buildView({ memory }).flatMap((section) => section.fields).some((entry) => entry.id === "memory.capture.reconcileModel"))
+      .toBe(false);
+    expect(field(buildView({ memory: { ...memory, capture: { reconcileModel: "openai-codex:gpt-5.6-terra" } } }),
+      "memory.capture.reconcileModel")).toMatchObject({ value: "openai-codex:gpt-5.6-terra", source: "json" });
+  });
+
   it("flags an inline core secret with a usable apiKeyEnv reference", () => {
     const sections = buildView({
       memory: {

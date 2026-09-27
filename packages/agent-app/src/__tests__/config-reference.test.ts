@@ -60,6 +60,7 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "memory.writeMode": "string",
   "memory.capture.focus": "string",
   "memory.capture.only": "string[]",
+  "memory.capture.reconcileModel": "string",
   "memory.embeddings.provider": "string",
   "memory.embeddings.model": "string",
   "memory.embeddings.endpoint": "string",
