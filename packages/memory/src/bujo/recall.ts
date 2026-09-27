@@ -38,11 +38,14 @@ export function selectPossiblyRelevantRecallHits<T extends {
   hits: readonly T[],
   options: { readonly maxLines?: number; readonly asOf?: string } = {},
 ): readonly T[] {
-  const top = hits[0]?.score;
+  // Tasks are history, not automatic turn context. Apply the floor to eligible
+  // lines so a strong task does not hide a usable non-task line below it.
+  const eligible = hits.filter((hit) => hit.record.type !== "task");
+  const top = eligible[0]?.score;
   if (top === undefined || !Number.isFinite(top) || top < POSSIBLY_RELEVANT_MIN_SCORE) return [];
   const maxLines = Math.max(1, Math.min(options.maxLines ?? POSSIBLY_RELEVANT_MAX_LINES, POSSIBLY_RELEVANT_MAX_LINES));
   const window: T[] = [];
-  for (const hit of hits) {
+  for (const hit of eligible) {
     if (hit.score < top - POSSIBLY_RELEVANT_WINDOW) break;
     window.push(hit);
   }
@@ -62,17 +65,27 @@ export function selectPossiblyRelevantRecallHits<T extends {
 
 export interface PossiblyRelevantRecord {
   readonly text: string;
+  readonly type?: "task" | "event" | "note";
   readonly createdAt?: string;
   readonly status?: string;
   readonly validTo?: string;
+  /** The store's structured due date; for dated events only, this is the event date. */
+  readonly dueAt?: string;
   readonly supersededBy?: string;
+}
+
+function endedDate(record: PossiblyRelevantRecord, asOf?: string): string | undefined {
+  if (asOf === undefined) return undefined;
+  const date = record.validTo ?? (record.type === "event" ? record.dueAt : undefined);
+  const day = /^\d{4}-\d{2}-\d{2}(?:$|T)/u.exec(date ?? "")?.[0]?.slice(0, 10);
+  return day !== undefined && !Number.isNaN(Date.parse(day)) && new Date(day).toISOString().slice(0, 10) === day
+    && day < asOf ? day : undefined;
 }
 
 /** Reader-facing currency of a recalled line on `asOf` (YYYY-MM-DD). */
 export function recallLineStatus(record: PossiblyRelevantRecord, asOf?: string): "current" | "superseded" | "ended" {
   if (record.supersededBy !== undefined || record.status === "invalidated" || record.status === "dropped") return "superseded";
-  if (record.validTo !== undefined && asOf !== undefined && record.validTo.slice(0, 10) < asOf) return "ended";
-  return "current";
+  return endedDate(record, asOf) === undefined ? "current" : "ended";
 }
 
 /** Shared formatting contract for standalone stores and the app's automatic block. */
@@ -100,7 +113,7 @@ export function formatPossiblyRelevantBlock<T extends { readonly record: Formatt
     const record = hit.record;
     const recorded = /^\d{4}-\d{2}-\d{2}/u.exec(record.createdAt ?? "")?.[0];
     const status = recallLineStatus(record, asOf);
-    const currency = status === "ended" ? `ended ${record.validTo!.slice(0, 10)}` : status;
+    const currency = status === "ended" ? `ended ${endedDate(record, asOf)}` : status;
     const note = [recorded === undefined ? undefined : `recorded ${recorded}`, currency, attributions.get(record.id)]
       .filter((part) => part !== undefined).join("; ");
     const body = record.type === undefined || record.status === undefined ? record.text

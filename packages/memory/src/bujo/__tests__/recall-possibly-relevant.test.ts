@@ -84,10 +84,20 @@ describe("possibly-relevant selection", () => {
     expect(await composeRecallBlock(db, "¿Qué té bebe Morgan?")).toBeUndefined();
   });
 
-  it("shares status markers, insight star, currency, and source with standalone composition", async () => {
+  it("keeps tasks out of automatic context without blocking eligible lines below them", () => {
     const rows = [
-      { score: 0.94, record: { id: "done", text: "Maple task completed.", type: "task" as const,
-        status: "done" as const, isInsight: true, createdAt: "2026-01-01T00:00:00Z" } },
+      { score: 0.94, record: { id: "open", text: "Maple should finish a report.", type: "task" as const, status: "open" as const } },
+      { score: 0.92, record: { id: "done", text: "Maple finished a report.", type: "task" as const, status: "done" as const } },
+      { score: 0.88, record: { id: "note", text: "Maple likes concise reports.", type: "note" as const } },
+    ];
+    expect(selectPossiblyRelevantRecallHits(rows)).toEqual([rows[2]]);
+    expect(selectPossiblyRelevantRecallHits(rows.slice(0, 2))).toEqual([]);
+  });
+
+  it("shares note markers, currency, and source with standalone composition", async () => {
+    const rows = [
+      { score: 0.94, record: { id: "done", text: "Maple note recorded.", type: "note" as const,
+        status: "open" as const, isInsight: true, createdAt: "2026-01-01T00:00:00Z" } },
       { score: 0.93, record: { id: "ended", text: "Maple event ended.", type: "event" as const,
         status: "scheduled" as const, validTo: "2026-02-01", createdAt: "2026-01-02T00:00:00Z" } },
     ];
@@ -96,7 +106,7 @@ describe("possibly-relevant selection", () => {
     const block = await composeRecallBlock(db, "Maple", { asOf: "2026-03-01" });
     expect(block).toMatchObject({ kind: "markdown", source: "memory-bujo", truncated: false });
     expect(block?.content).toContain(POSSIBLY_RELEVANT_HEADING);
-    expect(block?.content).toContain("- [x] Maple task completed. * (recorded 2026-01-01; current)");
+    expect(block?.content).toContain("- – Maple note recorded. * (recorded 2026-01-01; current)");
     expect(block?.content).toContain("Maple event ended. (recorded 2026-01-02; ended 2026-02-01)");
   });
 
@@ -126,5 +136,12 @@ describe("possibly-relevant selection", () => {
     expect(recallLineStatus({ text: "a", status: "invalidated" })).toBe("superseded");
     expect(recallLineStatus({ text: "a", validTo: "2026-04-01" }, "2026-09-24")).toBe("ended");
     expect(recallLineStatus({ text: "a", validTo: "2026-12-01" }, "2026-09-24")).toBe("current");
+    expect(recallLineStatus({ text: "a", type: "event", dueAt: "2026-04-01T10:00:00Z" }, "2026-09-24")).toBe("ended");
+    expect(recallLineStatus({ text: "a", type: "note", dueAt: "2026-04-01" }, "2026-09-24")).toBe("current");
+    expect(recallLineStatus({ text: "a", type: "event", dueAt: "2026-02-30" }, "2026-09-24")).toBe("current");
+    const event = { record: { id: "event", text: "Maple attended a gathering.", type: "event" as const,
+      status: "open" as const, dueAt: "2026-04-01" } };
+    expect(formatPossiblyRelevantBlock([event], new Map(), 500, "2026-09-24")?.content)
+      .toContain("ended 2026-04-01");
   });
 });

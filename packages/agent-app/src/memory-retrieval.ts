@@ -104,6 +104,7 @@ interface SharedRecallHit {
     readonly createdAt?: string;
     readonly validFrom?: string;
     readonly validTo?: string;
+    readonly dueAt?: string;
     readonly supersededBy?: string;
   };
 }

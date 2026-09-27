@@ -59,8 +59,8 @@ function fakeStore(options: { readonly fail?: boolean; readonly disputed?: boole
         record: {
           id: `hit-${index}`,
           text: `Morgan selected cobalt-${index} as the deployment color.`,
-          type: "task" as const,
-          status: index === 0 ? "done" as const : "open" as const,
+          type: "note" as const,
+          status: "open" as const,
           isInsight: index === 0,
         },
       }));
@@ -185,7 +185,7 @@ describe("MemoryRetrievalService", () => {
     expect(block).toBeDefined();
     expect(block?.content.match(/deployment color/gu)).toHaveLength(3);
     expect(block?.content).toContain("## Memory (possibly relevant — may be unrelated; verify before relying)");
-    expect(block?.content).toContain("- [x] Morgan selected cobalt-0 as the deployment color. * (current)");
+    expect(block?.content).toContain("- – Morgan selected cobalt-0 as the deployment color. * (current)");
     expect(Buffer.byteLength(block?.content ?? "", "utf8")).toBeLessThanOrEqual(1_500);
     expect(hits).toHaveLength(8);
     expect(store.queries).toEqual(["what deployment color did morgan select?", "different query"]);

@@ -35,6 +35,22 @@ describe("exact process-job wake silence", () => {
     expect(consumeSilentProcessJobWake(key)).toBe(false);
   });
 
+  it("marks host wake requests as triggers without changing genuine human turns", async () => {
+    const observed: Array<string | undefined> = [];
+    const responder = bindProcessJobWakeContextToResponder({ respond: async (input) => {
+      observed.push(input.captureSpeakerKind);
+      return { text: "Wake received." };
+    } });
+    const key = "process-job:memory";
+    const human = { ...request(), captureSpeakerKind: "human-turn" as const };
+    await responder.respond(human, stream);
+    await runWithProcessJobWakeContext({ jobId: "memory", chainDepth: 1 }, async () => {
+      await responder.respond({ ...human, metadata: request(key).metadata }, stream);
+    }, key);
+    await responder.respond({ ...human, metadata: request("process-job:stale").metadata }, stream);
+    expect(observed).toEqual(["human-turn", "trigger", "trigger"]);
+  });
+
   it("ignores missing, stale, and mismatched delivery keys", async () => {
     const response = { text: "NOTHING_TO_REPORT" };
     const responder = bindProcessJobWakeContextToResponder({ respond: async () => response });

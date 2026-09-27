@@ -373,7 +373,8 @@ Recall fuses two retrievers and re-ranks the result:
   - the strongest hybrid (embedding-first) hit must reach `0.62`;
   - further lines must score within `0.04` of it;
   - at most three lines are shown, and identical text appears once;
-  - current lines come before superseded or ended ones (`validTo` before the host date);
+  - tasks are excluded from automatic context (explicit `MemoryRecall` can still find them);
+  - current lines come before superseded or ended ones (`validTo`, or an event's structured `dueAt`, before the host date); events without a structured date are not inferred from prose;
   - the chosen lines are listed oldest first, so the latest statement reads last.
 
   Each line shows when it was recorded and whether it is `current`, `superseded` or `ended <date>`. When every label on the line agrees, it also shows who said it: `you said`, `assistant noted` or `from a document`.
@@ -382,7 +383,7 @@ Recall fuses two retrievers and re-ranks the result:
 
   Two cases show nothing automatically:
   - Lexical-only (degraded) results. The host warns instead.
-  - Turns that are not host-verified owner turns: group chats, other senders, triggers and peers. This is a privacy default. Those turns can still use `MemoryRecall` deliberately.
+  - Turns that are not host-verified owner turns: group chats, other senders, cron triggers, and peers. Host-owned process-job completion wakes remain triggers even when routed through an authenticated web channel. This is a privacy default; these turns can still use `MemoryRecall` deliberately.
 
   The floor, window and line count were measured on three real stores that use `nomic-embed-text:v1.5`, with English, Polish and Spanish questions. They were chosen to keep the answer present as often as possible while negative and near-miss probes average at most two lines.
 

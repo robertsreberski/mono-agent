@@ -146,7 +146,12 @@ export function bindProcessJobWakeContextToResponder(responder: AgentResponder):
         wakeContextByRequestMetadata.set(request.metadata, [...current, installed]);
       }
       try {
-        const response = await responder.respond(request, stream);
+        // The host created this wake, even when it is routed through an owner
+        // web channel. Do not let an adapter's authenticated-channel stamp turn
+        // it into a human-authored message for automatic memory injection.
+        // Preserve the metadata object's identity for the private wake binding.
+        const response = await responder.respond(deliveryKey === undefined && context === undefined
+          ? request : { ...request, captureSpeakerKind: "trigger" }, stream);
         const active = context === undefined ? [] : wakeFlightsByDeliveryKey.get(context.deliveryKey) ?? [];
         // A stale/missing/ambiguous key, narration, or any rich part stays visible.
         if (context !== undefined
