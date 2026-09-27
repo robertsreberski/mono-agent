@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { MemoryDb } from "@mono-agent/memory/store";
+import { POSSIBLY_RELEVANT_HEADING } from "@mono-agent/memory/bujo";
 type MemoryLabelHit = ReturnType<MemoryDb["labelsForEntity"]>[number];
 import { ageAt, formatMemoryBackground as formatBlock, type LabelRecallStore } from "../memory-guidance.js";
 const formatMemoryBackground = (...args: Parameters<typeof formatBlock>) => formatBlock(...args)?.content || undefined;
@@ -143,7 +144,7 @@ describe("automatic labelled background", () => {
     expect(owned?.content).toContain("## Memory (possibly relevant — may be unrelated; verify before relying)\n\n- Morgan likes green tea. (current)");
     expect(owned?.content).toContain("Memory (background — not direct evidence)");
     expect(owned?.content).toContain("age 36");
-    expect(owned?.content).not.toContain("## Memory (recalled)");
+    expect(owned?.content).toContain(POSSIBLY_RELEVANT_HEADING);
   });
 
   it("shows a named person's whole card whatever the question's language or wording", () => {
@@ -250,7 +251,7 @@ describe("person card values", () => {
     for (const opts of [options, owner]) {
       const result = formatBlock(person, "What is Morgan's home town?", "conv", opts, []);
       expect(result?.content).toContain("Person card:");
-      expect(result?.content).not.toContain("## Memory (recalled)");
+      expect(result?.content).not.toContain(POSSIBLY_RELEVANT_HEADING);
     }
   });
 });

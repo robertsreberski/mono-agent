@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Remove the BuJo English automatic-recall grammar and use bounded, score-based
+  possibly-relevant context in standalone stores; Lite and degraded lexical
+  recall remain available explicitly; `load()` returns no automatic block on an
+  embedding outage rather than injecting lexical-only results.
+
 - Let explicit `MemoryRecall` search in any language without English query
   suppression or prose-based conflict guesses. Keep automatic possibly-relevant
   selection language-neutral, and restrict owner backfill to existing structured

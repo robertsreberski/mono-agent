@@ -35,7 +35,7 @@ npm install @mono-agent/memory
 ```
 
 This provider-free Lite example creates a local store, admits one completed turn
-at the strong run-idempotent boundary, recalls it, and closes the writer lease:
+at the strong run-idempotent boundary, retrieves it explicitly, and closes the writer lease:
 
 <!-- doc-test:typescript -->
 
@@ -53,8 +53,8 @@ await store.persistCompletedTurn({
   summary: "User prefers concise answers.",
 });
 
-const recalled = await store.load("conv-1", "How should answers be written?");
-console.log(recalled?.content);
+const recalled = await store.recallWithOutcome("How should answers be written?");
+console.log(recalled.hits);
 await store.close();
 ```
 
@@ -147,26 +147,15 @@ memories are split into separate candidates up to the eight-memory plan limit
 rather than silently discarding later sentences. Overlong individual sentences
 still clamp at a word or clause boundary.
 
-### Automatic direct-fact evidence
+### Standalone automatic recall
 
-The provider-free automatic selector accepts only finite direct-fact query and
-record grammars. An exact first-party report may wrap an otherwise supported
-property, choice, or work/live location when its textual reporter matches the
-query subject exactly apart from case; broader canonical name stemming is not
-used for that boundary. NFKC is used only to detect compatibility characters
-that hide unsafe quotation or punctuation, never to sanitize a report into an
-accepted form. The selector returns and renders the attributed record unchanged;
-it does not authenticate a user, resolve real identity from the name, or verify
-the proposition. Assistant, third-party, quoted, uncertain, corrected,
-coordinated, causal, conditional, negated, and conflicting evidence still
-abstains and remains available to deliberate recall. A same-property correction
-blocks automatic selection without inferring either its old or replacement value.
-Bounded scheduled-time questions require an exact event identity and a direct
-`is`/`was scheduled for|on|at` fact. Valid ASCII `HH:MM` colons are accepted
-only in supported temporal answer spans. Quoted, uncertain, attributed,
-compatibility-hidden, or control/format-bearing payloads abstain instead of
-being normalized into evidence. Distinct schedule payload representations also
-abstain rather than invoking calendar or time-zone interpretation.
+`BujoMemoryStore.load()` uses the same score-based, language-neutral
+`selectPossiblyRelevantRecallHits` policy as the app's automatic block: hybrid
+results only, at most three lines, no grammar or claim of factual correctness.
+Lite and degraded lexical-only results never inject automatic context; use
+`recallWithOutcome()` for explicit retrieval and its degradation status. Unlike
+the app service, this standalone API has no host-verified owner-turn signal;
+callers must enforce their own audience/privacy policy before injecting a block.
 
 ### BuJo memory labels
 
@@ -221,8 +210,7 @@ scope is not injected until the host supplies a verified active project. Global
 agent preferences require a host-confirmed owner/operator turn; other identified
 speakers get user scope. Person cards show attribution/recorded date, omit
 conflicting values, and derive age from the UTC host observation date rather
-than storing it. The conservative direct-fact
-gate and ordinary recall hits do not change. UPDATE retains labels only when text is unchanged unless
+than storing it. Ordinary recall hits are unaffected. UPDATE retains labels only when text is unchanged unless
 replacements are supplied; SUPERSEDE does not copy them by default. Lite and
 Journal ignore labels. **Do not downgrade** to a binary without coarse fact
 support after writing keyless `fact` refs: older readers reject them on rebuild
@@ -530,9 +518,7 @@ Every symbol exported by each public code entrypoint is listed below.
 ```text
 AUTO_RECALL_BACKEND_HITS
 AUTO_RECALL_MAX_BYTES
-AUTO_RECALL_MAX_HITS
 AUTO_RECALL_MIN_SCORE
-AUTO_RECALL_RELATIVE_SCORE
 ApplyExplicitMemoryCurateOptions
 ApplyExplicitMemoryForgetOptions
 ApplyMemoryBundleImportOptions
@@ -593,6 +579,7 @@ ExplicitMemoryForgetRestoreResult
 ExportMemoryBundleOptions
 ExtractedEntity
 ExtractedRelation
+FormattedRecallRecord
 GraphBatchInput
 GraphBatchResult
 JournalBrowseCapableStore
@@ -655,6 +642,7 @@ MemoryRememberResult
 MigrateDeps
 MigrateResult
 OWNER_ENTITY_ID
+POSSIBLY_RELEVANT_HEADING
 POSSIBLY_RELEVANT_MAX_BYTES
 POSSIBLY_RELEVANT_MAX_LINES
 POSSIBLY_RELEVANT_MIN_SCORE
@@ -680,7 +668,6 @@ auditBujoMemoryHealth
 auditCanonicalGraphParity
 auditCompletedTurnIntake
 captureTurnStrict
-composeRecallBlock
 createBujoMemoryStore
 createIdFactory
 createOllamaLlm
@@ -691,10 +678,9 @@ extractCapturePlanStrict
 findCanonicalMemoryBullet
 findDuplicateEntityNames
 foldEntityName
-hasConflictingAutomaticRecallEvidence
+formatPossiblyRelevantBlock
 inspectCompletedTurnIntake
 inspectCurateSource
-isConversationRelativeQuery
 migrate
 normalizeMemoryText
 normalizedContentHash
@@ -731,7 +717,6 @@ restoreMemoryBundleImport
 retryCompletedTurnIntake
 rollbackMemoryIndex
 safeRebuildMemoryIndex
-selectAutomaticRecallHits
 selectKnownEntityHints
 selectPossiblyRelevantRecallHits
 serializeBullet

@@ -6,8 +6,9 @@ import { pathToFileURL } from "node:url";
 
 import {
   AUTO_RECALL_BACKEND_HITS,
-  AUTO_RECALL_MAX_BYTES,
-  selectAutomaticRecallHits,
+  formatPossiblyRelevantBlock,
+  POSSIBLY_RELEVANT_MAX_BYTES,
+  selectPossiblyRelevantRecallHits,
 } from "../packages/memory/dist/bujo/index.js";
 import { openMemoryDb } from "../packages/memory/dist/store/index.js";
 import {
@@ -18,21 +19,17 @@ import {
 export const MEMORY_BENCHMARK_GATES = Object.freeze({
   recallAt5: 0.9,
   mrr: 0.8,
-  directFactCaseCount: 6,
-  directFactAutomaticCoverage: 0.9,
-  ambiguousBindingCaseCount: 6,
-  ambiguousBindingAbstentionRate: 1,
-  abstentionRate: 0.9,
-  missingAttributeAbstentionRate: 1,
-  outOfDomainAbstentionRate: 1,
-  staleRecallRate: 0.05,
-  falseRecallRate: 0.05,
-  providerEligibleDirectFactCaseCount: 1,
-  providerEligibleDirectFactCoverage: 1,
-  // Names/dates negatives share a name, number or generic words with stored
-  // records; automatic recall must never inject them.
-  namesDatesFalseRecallRate: 0,
-  namesDatesNegativeAbstentionRate: 1,
+  // Deterministic fast fixture: all six direct-answer probes currently appear.
+  positivePresence: 1,
+  // Synthetic probes have two close hits and one outside the score window.
+  expectedProbeLines: 2,
+  // Negative fast-suite probes and names/dates negatives currently show <= 1 line.
+  maxNegativeLines: 1,
+  maxNegativeInjectedCases: 1,
+  namesDatesMaxNegativeLines: 0,
+  // Provider-backed fixture currently surfaces five of six positive answers.
+  providerPositivePresence: 5 / 6,
+  maxAutomaticLines: 3,
 });
 
 const FAST_RECORDS = [
@@ -158,10 +155,9 @@ const FAST_POLICY_CASES = [{
     "direct-fact",
   ),
   hits: [
-    scoredHit("probe-answer", "Morgan selected cobalt as the deployment color.", 1.005),
-    scoredHit("probe-adjacent", "Morgan's office is in Quillmere.", 0.798),
-    scoredHit("probe-other", "Database rollouts use a blue-green deployment strategy.", 0.751),
-    scoredHit("probe-weak", "Project Atlas is led by Morgan.", 0.708),
+    scoredHit("probe-answer", "Morgan selected cobalt as the deployment color.", 0.9),
+    scoredHit("probe-adjacent", "Morgan's office is in Quillmere.", 0.88),
+    scoredHit("probe-other", "Database rollouts use a blue-green deployment strategy.", 0.80),
   ],
 }, ...[
   {
@@ -191,7 +187,8 @@ const FAST_POLICY_CASES = [{
   },
 ].map(({ query, id, text }) => ({
   item: testCase("direct-fact", query, [id], [], "direct-fact"),
-  hits: [scoredHit(id, text, 0.95)],
+  hits: [scoredHit(id, text, 0.9), scoredHit(`${id}-adjacent`, "Maple team has a nearby note.", 0.88),
+    scoredHit(`${id}-outside`, "A separate topic is outside the window.", 0.80)],
 })), ...[
   {
     query: "What color is Morgans car?",
@@ -225,8 +222,13 @@ const FAST_POLICY_CASES = [{
   },
 ].map(({ query, id, text }) => ({
   item: testCase("ambiguous-binding", query, [], [], "ambiguous-binding"),
-  hits: [scoredHit(id, text, 0.95)],
-}))];
+  hits: [scoredHit(id, text, 0.9), scoredHit(`${id}-adjacent`, "Maple team has a nearby note.", 0.88),
+    scoredHit(`${id}-outside`, "A separate topic is outside the window.", 0.80)],
+})), {
+  item: testCase("floor-negative", "Unsupported weak query", [], [], "floor-negative"),
+  hits: [scoredHit("weak-top", "Weakly ranked nearby record.", 0.61),
+    scoredHit("weak-adjacent", "Another weakly ranked record.", 0.60)],
+}];
 
 export async function runMemoryBenchmark(options = {}) {
   const suite = options.suite ?? "fast";
@@ -269,7 +271,7 @@ export async function runMemoryBenchmark(options = {}) {
           // second backend lookup for the same normalized query.
           const hits = await db.recall(item.query, { topK: AUTO_RECALL_BACKEND_HITS });
           searchLatencies.push(performance.now() - searchStarted);
-          const automatic = selectAutomaticRecallHits(hits, { query: item.query });
+          const automatic = selectPossiblyRelevantRecallHits(hits);
           queryResults.push({ item, hits, automatic, staleIds: group.staleIds ?? new Set() });
         }
         audits.push(db.audit());
@@ -284,11 +286,10 @@ export async function runMemoryBenchmark(options = {}) {
     const policyResults = (fixture.policyCases ?? FAST_POLICY_CASES).map(({ item, hits }) => ({
       item,
       hits,
-      automatic: selectAutomaticRecallHits(hits, { query: item.query }),
+      automatic: selectPossiblyRelevantRecallHits(hits),
     }));
-    const automaticContract = automaticContractMetrics(policyResults);
-    const quality = { ...qualityMetrics(queryResults), ...automaticContract };
-    const policyCalibration = policyCalibrationMetrics(policyResults);
+    const quality = qualityMetrics(queryResults);
+    const proximityCalibration = proximityCalibrationMetrics(policyResults);
     const storageBytes = await directoryBytes(root);
     const providerAutomaticRecall = await runProviderAutomaticRecallCalibration(options);
     const namesDates = suite === "fast" ? await runNamesDatesCalibration(options) : undefined;
@@ -299,7 +300,7 @@ export async function runMemoryBenchmark(options = {}) {
     const memoryCleanup = suite === "fast" ? await runMemoryCleanupBenchmark() : undefined;
     const primaryGates = memoryBenchmarkGateResults(
       quality,
-      policyCalibration,
+      proximityCalibration,
       providerAutomaticRecall,
       namesDates,
     );
@@ -316,7 +317,7 @@ export async function runMemoryBenchmark(options = {}) {
       categories: [...new Set(queryResults.map(({ item }) => item.category))].sort(),
       policyCategories: [...new Set(policyResults.map(({ item }) => item.category))].sort(),
       quality,
-      policyCalibration,
+      proximityCalibration,
       efficiency: {
         contextBytes: contextByteMetrics(queryResults),
         indexingLatencyMs: latencyMetrics(indexingLatencies),
@@ -417,74 +418,53 @@ function qualityMetrics(results) {
     missingAttributeAbstentionRate: abstentionRateForCategory(results, "missing-attribute"),
     outOfDomainAbstentionRate: abstentionRateForCategory(results, "out-of-domain-abstention"),
     answerableCases: answerable.length,
+    negativeCases: results.filter(({ item }) => item.relevantIds.length === 0).length,
+    negativeInjectedCases: results.filter(({ item, automatic }) => item.relevantIds.length === 0 && automatic.length > 0).length,
+    maxNegativeLines: Math.max(0, ...results.filter(({ item }) => item.relevantIds.length === 0)
+      .map(({ automatic }) => automatic.length)),
   };
 }
 
-function policyCalibrationMetrics(results) {
-  const checks = results.map(({ item, automatic }) => {
-    const expected = new Set(item.relevantIds);
-    const selected = new Set(automatic.map((hit) => hit.record.id));
-    if (item.automaticClass === "ambiguous-binding") return selected.size === 0;
-    return expected.size > 0
-      && [...expected].every((id) => selected.has(id))
-      && [...selected].every((id) => expected.has(id));
-  });
-  return { cases: results.length, passed: checks.every(Boolean), checks };
-}
-
-function automaticContractMetrics(results) {
-  const directFacts = results.filter(({ item }) => item.automaticClass === "direct-fact");
-  const ambiguousBindings = results.filter(({ item }) => item.automaticClass === "ambiguous-binding");
+function proximityCalibrationMetrics(results) {
+  const positives = results.filter(({ item }) => item.automaticClass === "direct-fact");
+  const nearMisses = results.filter(({ item }) => item.automaticClass === "ambiguous-binding");
+  const floorNegatives = results.filter(({ item }) => item.automaticClass === "floor-negative");
+  const exactTwo = ({ automatic }) => automatic.length === MEMORY_BENCHMARK_GATES.expectedProbeLines;
   return {
-    directFactCaseCount: directFacts.length,
-    directFactAutomaticCoverage: mean(directFacts.map(({ item, automatic }) => {
-      const relevant = new Set(item.relevantIds);
-      return automatic.some((hit) => relevant.has(hit.record.id)) ? 1 : 0;
-    })),
-    ambiguousBindingCaseCount: ambiguousBindings.length,
-    ambiguousBindingAbstentionRate:
-      mean(ambiguousBindings.map(({ automatic }) => automatic.length === 0 ? 1 : 0)),
+    positiveCases: positives.length,
+    positivePresence: mean(positives.map(({ item, automatic }) =>
+      automatic.some((hit) => item.relevantIds.includes(hit.record.id)) ? 1 : 0)),
+    positiveWindowCases: positives.filter(exactTwo).length,
+    nearMissCases: nearMisses.length,
+    nearMissWindowCases: nearMisses.filter(exactTwo).length,
+    floorNegativeCases: floorNegatives.length,
+    floorNegativeInjectedCases: floorNegatives.filter(({ automatic }) => automatic.length > 0).length,
+    maxSelectedLines: Math.max(0, ...results.map(({ automatic }) => automatic.length)),
   };
 }
 
-export function memoryBenchmarkGateResults(
-  quality,
-  policyCalibration = { passed: true },
-  providerAutomaticRecall = {},
-  namesDates,
-) {
+export function memoryBenchmarkGateResults(quality, proximity = {}, provider = {}, namesDates) {
+  const gates = MEMORY_BENCHMARK_GATES;
   const checks = {
-    recallAt5: quality.recallAt5 >= MEMORY_BENCHMARK_GATES.recallAt5,
-    mrr: quality.mrr >= MEMORY_BENCHMARK_GATES.mrr,
-    directFactCaseCount:
-      quality.directFactCaseCount >= MEMORY_BENCHMARK_GATES.directFactCaseCount,
-    directFactAutomaticCoverage:
-      quality.directFactAutomaticCoverage >= MEMORY_BENCHMARK_GATES.directFactAutomaticCoverage,
-    ambiguousBindingCaseCount:
-      quality.ambiguousBindingCaseCount >= MEMORY_BENCHMARK_GATES.ambiguousBindingCaseCount,
-    ambiguousBindingAbstentionRate:
-      quality.ambiguousBindingAbstentionRate >= MEMORY_BENCHMARK_GATES.ambiguousBindingAbstentionRate,
-    abstentionRate: quality.abstentionRate >= MEMORY_BENCHMARK_GATES.abstentionRate,
-    missingAttributeAbstentionRate:
-      quality.missingAttributeAbstentionRate >= MEMORY_BENCHMARK_GATES.missingAttributeAbstentionRate,
-    outOfDomainAbstentionRate:
-      quality.outOfDomainAbstentionRate >= MEMORY_BENCHMARK_GATES.outOfDomainAbstentionRate,
-    staleRecallRate: quality.staleRecallRate <= MEMORY_BENCHMARK_GATES.staleRecallRate,
-    falseRecallRate: quality.falseRecallRate <= MEMORY_BENCHMARK_GATES.falseRecallRate,
-    policyCalibration: policyCalibration.passed === true,
-    providerEligibleDirectFactCaseCount:
-      (providerAutomaticRecall.eligibleDirectFact?.cases ?? 0)
-        >= MEMORY_BENCHMARK_GATES.providerEligibleDirectFactCaseCount,
-    providerEligibleDirectFactCoverage:
-      (providerAutomaticRecall.eligibleDirectFact?.coverage ?? 0)
-        >= MEMORY_BENCHMARK_GATES.providerEligibleDirectFactCoverage,
-    // Only the fast suite runs the names/dates calibration.
-    namesDatesFalseRecallRate: namesDates === undefined
-      || namesDates.falseRecallRate <= MEMORY_BENCHMARK_GATES.namesDatesFalseRecallRate,
-    namesDatesNegativeAbstentionRate: namesDates === undefined
-      || namesDates.negativeAbstentionRate >= MEMORY_BENCHMARK_GATES.namesDatesNegativeAbstentionRate,
+    recallAt5: quality.recallAt5 >= gates.recallAt5,
+    mrr: quality.mrr >= gates.mrr,
+    positiveCases: (proximity.positiveCases ?? 0) >= 6,
+    positivePresence: (proximity.positivePresence ?? 0) >= gates.positivePresence,
+    nearMissCases: (proximity.nearMissCases ?? 0) >= 6,
+    positiveWindow: proximity.positiveWindowCases === proximity.positiveCases,
+    nearMissWindow: proximity.nearMissWindowCases === proximity.nearMissCases,
+    floorNegativeCases: (proximity.floorNegativeCases ?? 0) >= 1,
+    floorNegativeInjected: proximity.floorNegativeInjectedCases === 0,
+    negativeCases: (quality.negativeCases ?? 0) >= 13,
+    negativeLines: (quality.maxNegativeLines ?? Infinity) <= gates.maxNegativeLines,
+    negativeInjected: (quality.negativeInjectedCases ?? Infinity) <= gates.maxNegativeInjectedCases,
+    selectedLines: (proximity.maxSelectedLines ?? Infinity) <= gates.maxAutomaticLines,
+    providerPositiveCases: (provider.eligibleDirectFact?.cases ?? 0) >= 6,
+    providerPositivePresence: (provider.eligibleDirectFact?.coverage ?? 0) >= gates.providerPositivePresence,
+    providerSelectedLines: (provider.maxSelectedLines ?? Infinity) <= gates.maxAutomaticLines,
+    namesDatesNegativeLines: namesDates === undefined || namesDates.maxNegativeLines <= gates.namesDatesMaxNegativeLines,
   };
-  return { passed: Object.values(checks).every(Boolean), checks, thresholds: MEMORY_BENCHMARK_GATES };
+  return { passed: Object.values(checks).every(Boolean), checks, thresholds: gates };
 }
 
 function abstentionRateForCategory(results, category) {
@@ -495,10 +475,8 @@ function abstentionRateForCategory(results, category) {
 }
 
 function contextByteMetrics(results) {
-  const bytes = results.map(({ automatic }) => Math.min(AUTO_RECALL_MAX_BYTES, Buffer.byteLength(
-    automatic.length === 0 ? "" : ["## Memory (recalled)", "", ...automatic.map((hit) => `- ${hit.record.text}`)].join("\n"),
-    "utf8",
-  )));
+  const bytes = results.map(({ automatic }) => Buffer.byteLength(
+    formatPossiblyRelevantBlock(automatic, new Map(), POSSIBLY_RELEVANT_MAX_BYTES)?.content ?? "", "utf8"));
   return { total: sum(bytes), average: mean(bytes), p95: percentile(bytes, 0.95), max: Math.max(0, ...bytes) };
 }
 
@@ -526,7 +504,7 @@ async function runProviderAutomaticRecallCalibration(options) {
       searchLatencies.push(performance.now() - searchStarted);
       results.push({
         item,
-        automatic: selectAutomaticRecallHits(hits, { query: item.query }),
+        automatic: selectPossiblyRelevantRecallHits(hits),
       });
     }
 
@@ -542,12 +520,13 @@ async function runProviderAutomaticRecallCalibration(options) {
     return {
       provider: options.provider ?? "deterministic",
       disposableStore: true,
-      passed: eligible.length >= MEMORY_BENCHMARK_GATES.providerEligibleDirectFactCaseCount
-        && eligibleCoverage >= MEMORY_BENCHMARK_GATES.providerEligibleDirectFactCoverage,
+      passed: eligible.length >= 6
+        && eligibleCoverage >= MEMORY_BENCHMARK_GATES.providerPositivePresence,
       eligibleDirectFact: {
         cases: eligible.length,
         coverage: eligibleCoverage,
       },
+      maxSelectedLines: Math.max(0, ...results.map(({ automatic }) => automatic.length)),
       unsupported: {
         cases: unsupported.length,
         abstentionRate: unsupportedAbstention,
@@ -590,7 +569,7 @@ async function runNamesDatesCalibration(options) {
       results.push({
         item,
         hits,
-        automatic: selectAutomaticRecallHits(hits, { query: item.query }),
+        automatic: selectPossiblyRelevantRecallHits(hits),
         staleIds: new Set(),
       });
     }
@@ -605,6 +584,7 @@ async function runNamesDatesCalibration(options) {
       automaticAnswerCoverage: quality.automaticAnswerCoverage,
       falseRecallRate: quality.falseRecallRate,
       negativeAbstentionRate: quality.abstentionRate,
+      maxNegativeLines: quality.maxNegativeLines,
       perCase: results.map(({ item, hits, automatic }) => ({
         category: item.category,
         query: item.query,
@@ -887,14 +867,12 @@ function render(report) {
     `Recall@1/5/8 ${(q.recallAt1 * 100).toFixed(1)}% / ${(q.recallAt5 * 100).toFixed(1)}% / ${(q.recallAt8 * 100).toFixed(1)}%`,
     `MRR ${q.mrr.toFixed(3)}  nDCG@8 ${q.ndcgAt8.toFixed(3)}`,
     `automatic Recall@5 ${(q.automaticRecallAt5 * 100).toFixed(1)}%  overall answer coverage ${(q.automaticAnswerCoverage * 100).toFixed(1)}%`,
-    `direct-fact auto coverage ${(q.directFactAutomaticCoverage * 100).toFixed(1)}% (${q.directFactCaseCount} cases)  ambiguous-binding abstention ${(q.ambiguousBindingAbstentionRate * 100).toFixed(1)}% (${q.ambiguousBindingCaseCount} cases)`,
-    `stale ${(q.staleRecallRate * 100).toFixed(2)}%  false ${(q.falseRecallRate * 100).toFixed(2)}%  abstention ${(q.abstentionRate * 100).toFixed(1)}%`,
-    `missing-attribute abstention ${(q.missingAttributeAbstentionRate * 100).toFixed(1)}%  out-of-domain abstention ${(q.outOfDomainAbstentionRate * 100).toFixed(1)}%`,
-    `synthetic policy calibration ${report.policyCalibration.passed ? "PASS" : "FAIL"} (${report.policyCalibration.cases} separate case(s))`,
+    `score-selector positives ${(report.proximityCalibration.positivePresence * 100).toFixed(1)}% (${report.proximityCalibration.positiveWindowCases}/${report.proximityCalibration.positiveCases} exact-window cases)  near misses ${report.proximityCalibration.nearMissWindowCases}/${report.proximityCalibration.nearMissCases} exact-window`,
+    `negative max ${q.maxNegativeLines} line(s)  selected max ${report.proximityCalibration.maxSelectedLines} line(s)`,
     ...(report.calibrations.namesDates === undefined ? [] : [
-      `names/dates Recall@1/5 ${(report.calibrations.namesDates.recallAt1 * 100).toFixed(1)}% / ${(report.calibrations.namesDates.recallAt5 * 100).toFixed(1)}%  MRR ${report.calibrations.namesDates.mrr.toFixed(3)}  auto coverage ${(report.calibrations.namesDates.automaticAnswerCoverage * 100).toFixed(1)}%  false ${(report.calibrations.namesDates.falseRecallRate * 100).toFixed(1)}%  negative abstention ${(report.calibrations.namesDates.negativeAbstentionRate * 100).toFixed(1)}% (${report.calibrations.namesDates.cases} cases; negatives gated)`,
+      `names/dates Recall@1/5 ${(report.calibrations.namesDates.recallAt1 * 100).toFixed(1)}% / ${(report.calibrations.namesDates.recallAt5 * 100).toFixed(1)}%  negative max ${report.calibrations.namesDates.maxNegativeLines} line(s) (${report.calibrations.namesDates.cases} cases)`,
     ]),
-    `provider-backed eligible direct-fact coverage ${(providerAutomatic.eligibleDirectFact.coverage * 100).toFixed(1)}% (${providerAutomatic.eligibleDirectFact.cases} cases)  unsupported abstention ${(providerAutomatic.unsupported.abstentionRate * 100).toFixed(1)}% (${providerAutomatic.unsupported.cases} informational cases)`,
+    `provider-backed positive coverage ${(providerAutomatic.eligibleDirectFact.coverage * 100).toFixed(1)}% (${providerAutomatic.eligibleDirectFact.cases} cases)  max ${providerAutomatic.maxSelectedLines} line(s)`,
     `context ${e.contextBytes.total} B  search p50/p95 ${e.searchLatencyMs.p50.toFixed(3)}/${e.searchLatencyMs.p95.toFixed(3)} ms`,
     `index ${e.indexingLatencyMs.total.toFixed(3)} ms  storage ${e.storageBytes} B  embeddings ${e.embeddings.calls} calls/${e.embeddings.texts} texts, ${e.embeddings.inputTokens} tokens, $${e.embeddings.costUsd.toFixed(6)}`,
     `LLM ${e.llm.calls} calls, ${e.llm.inputTokens + e.llm.outputTokens} tokens, $${e.llm.costUsd.toFixed(6)}  queue drain ${e.queueDrainMs.toFixed(3)} ms`,

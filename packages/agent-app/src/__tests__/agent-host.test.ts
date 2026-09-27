@@ -13,7 +13,7 @@ import type {
   RunSummary,
 } from "@mono-agent/observability";
 import type { MemoryStore } from "@mono-agent/agent-contracts";
-import { createBujoMemoryStore } from "@mono-agent/memory/bujo";
+import { createBujoMemoryStore, POSSIBLY_RELEVANT_HEADING } from "@mono-agent/memory/bujo";
 import type { EmbeddingProvider } from "@mono-agent/memory/search";
 import type { JournalBrowseSnapshot } from "@mono-agent/memory/store";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
@@ -752,7 +752,7 @@ describe("agent host composition helpers", () => {
       );
       const recalledMessage = String(fake.calls[1]?.options.messages?.[0]?.content);
       expect(recalledMessage).toMatch(/<\/host_turn_context>\n\nLogged answer$/u);
-      expect(fake.calls[1]?.prompt).not.toContain("## Memory (recalled)");
+      expect(fake.calls[1]?.prompt).not.toContain(POSSIBLY_RELEVANT_HEADING);
     } finally {
       await memory.close();
     }
@@ -1169,11 +1169,14 @@ describe("agent host composition helpers", () => {
     } as MonoAgentConfig);
 
     try {
-      // First load drives an embedding request that fails and trips the breaker.
-      await expect(memory!.load("conv")).rejects.toThrow();
+      // Explicit strict recall still fails on an embedding outage, while the
+      // standalone automatic block stays empty instead of injecting lexical hits.
+      const recall = memory as unknown as { recall(query: string): Promise<unknown> };
+      await expect(recall.recall("conv")).rejects.toThrow();
       expect(requests).toBe(1);
-      // Second load fast-fails on the OPEN breaker without hitting the server again.
-      await expect(memory!.load("conv")).rejects.toThrow();
+      expect(await memory!.load("conv")).toBeUndefined();
+      // Further explicit recall fast-fails on the OPEN breaker.
+      await expect(recall.recall("conv")).rejects.toThrow();
       expect(requests).toBe(1);
     } finally {
       await (memory as unknown as { close(): Promise<void> }).close();

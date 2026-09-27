@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
+import type { MemoryDb } from "../../store/index.js";
 
 import {
+  composeRecallBlock,
+  formatPossiblyRelevantBlock,
+  POSSIBLY_RELEVANT_HEADING,
   POSSIBLY_RELEVANT_MAX_LINES,
   POSSIBLY_RELEVANT_MIN_SCORE,
   POSSIBLY_RELEVANT_WINDOW,
@@ -53,6 +57,67 @@ describe("possibly-relevant selection", () => {
       hit(0.88, "Morgan brews tea at seven.", { createdAt: "2026-02-01T00:00:00Z" }),
     ], { asOf: "2026-09-24", maxLines: 2 });
     expect(selected.map((h) => h.record.text)).toEqual(["Morgan brews tea at seven.", "Morgan drinks green tea."]);
+  });
+
+  it("standalone composition never injects degraded/lexical results and bounds multilingual hybrid context", async () => {
+    const accessed: string[][] = [];
+    let retrievalMode: "hybrid" | "lexical_only" = "hybrid";
+    const rows = [
+      { score: 0.91, record: { id: "a", text: "Morgan prefiere el té verde.", type: "note", status: "open" } },
+      { score: 0.9, record: { id: "b", text: "Morgan woli zieloną herbatę.", type: "note", status: "open" } },
+      { score: 0.89, record: { id: "c", text: "Morgan prefers green tea.", type: "note", status: "open" } },
+      { score: 0.88, record: { id: "d", text: "Maple tea club.", type: "note", status: "open" } },
+    ];
+    const requests: unknown[] = [];
+    const db = {
+      recallWithOutcome: async (_query: string, options: unknown) => { requests.push(options); return { retrievalMode, hits: rows }; },
+      recordAccess: (ids: string[]) => { accessed.push(ids); },
+    } as unknown as MemoryDb;
+    const block = await composeRecallBlock(db, "¿Qué té bebe Morgan?", { topK: 50 });
+    expect(block?.content).toContain("possibly relevant");
+    expect(block?.content).toContain("prefiere el té verde");
+    expect(block?.content).toContain("woli zieloną herbatę");
+    expect(block?.content).not.toContain("Maple tea club");
+    expect(accessed).toEqual([["a", "b", "c"]]);
+    expect(requests[0]).toMatchObject({ topK: 50, trackAccess: false });
+    retrievalMode = "lexical_only";
+    expect(await composeRecallBlock(db, "¿Qué té bebe Morgan?")).toBeUndefined();
+  });
+
+  it("shares status markers, insight star, currency, and source with standalone composition", async () => {
+    const rows = [
+      { score: 0.94, record: { id: "done", text: "Maple task completed.", type: "task" as const,
+        status: "done" as const, isInsight: true, createdAt: "2026-01-01T00:00:00Z" } },
+      { score: 0.93, record: { id: "ended", text: "Maple event ended.", type: "event" as const,
+        status: "scheduled" as const, validTo: "2026-02-01", createdAt: "2026-01-02T00:00:00Z" } },
+    ];
+    const db = { recallWithOutcome: async () => ({ retrievalMode: "hybrid", hits: rows }),
+      recordAccess: () => undefined } as unknown as MemoryDb;
+    const block = await composeRecallBlock(db, "Maple", { asOf: "2026-03-01" });
+    expect(block).toMatchObject({ kind: "markdown", source: "memory-bujo", truncated: false });
+    expect(block?.content).toContain(POSSIBLY_RELEVANT_HEADING);
+    expect(block?.content).toContain("- [x] Maple task completed. * (recorded 2026-01-01; current)");
+    expect(block?.content).toContain("Maple event ended. (recorded 2026-01-02; ended 2026-02-01)");
+  });
+
+  it("clamps UTF-8 lines safely and drops whole excess lines with a truncation flag", async () => {
+    const long = { record: { id: "long", text: "é".repeat(300), type: "note" as const, status: "open" as const } };
+    const short = { record: { id: "short", text: "Maple kept the note.", type: "note" as const, status: "open" as const } };
+    const clamped = formatPossiblyRelevantBlock([long], new Map(), 800);
+    expect(clamped).toMatchObject({ truncated: false, shown: [long] });
+    expect(clamped?.content).toContain("é…");
+    expect(clamped?.content).not.toContain("�");
+    const bounded = formatPossiblyRelevantBlock([short, long], new Map(), 180);
+    expect(bounded).toMatchObject({ truncated: true, shown: [short] });
+    expect(bounded?.content).toContain("Maple kept the note.");
+    expect(bounded?.content).not.toContain("é");
+    expect(Buffer.byteLength(bounded!.content, "utf8")).toBeLessThanOrEqual(180);
+    const db = { recallWithOutcome: async () => ({ retrievalMode: "hybrid", hits: [
+      { ...short, score: 0.9 }, { ...long, score: 0.89 },
+    ] }), recordAccess: () => undefined } as unknown as MemoryDb;
+    expect(await composeRecallBlock(db, "Maple", { maxBytes: 180 })).toMatchObject({
+      source: "memory-bujo", truncated: true, content: bounded!.content,
+    });
   });
 
   it("reports each line's currency", () => {

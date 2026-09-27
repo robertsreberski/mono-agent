@@ -39,6 +39,7 @@ programmatic surfaces are simply no longer exported.
 | `memory-bujo` standalone CLI bin | `mono-agent memory <subcommand>` from the agent folder |
 | Runtime compatibility exports `./ai/backend.js`, `./ai/registry.js`, `findProviderForModel`, `listProviders`, and backend capability/provider constants | `resolveRuntimeBridge` and `listRuntimeBridges` |
 | Memory helpers `reflect`, `ReflectDeps`, `ReflectResult`, and no-op `applyDecay` | Supported capture, consolidate, reconcile, and store APIs |
+| BuJo English automatic-recall helpers (`composeRecallBlock`, `selectAutomaticRecallHits`, `hasConflictingAutomaticRecallEvidence`, `isConversationRelativeQuery`, `AUTO_RECALL_MAX_HITS`, `AUTO_RECALL_RELATIVE_SCORE`) | `selectPossiblyRelevantRecallHits` for score-only context; `BujoMemoryStore.recallWithOutcome()` for explicit retrieval |
 | First-party Phoenix/OTLP package, `observability.exporters`, `MONO_AGENT_OBSERVABILITY_EXPORTERS`, `mono-agent backfill`, exporter status/probing, and `@mono-agent/observability/run-export` | Bounded local JSONL artifacts, `mono-agent runs` / `runs audit` / `runs report`, trace-source discovery, and provider-neutral `RunExporter` composition. Perform any final legacy export before upgrading with the complete working version set already in use. |
 
 First-party Phoenix/OTLP support is removed without an automatic replacement.
