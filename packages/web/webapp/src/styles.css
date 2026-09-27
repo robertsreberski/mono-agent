@@ -1816,3 +1816,26 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
   .agent-settings-sheet { width: min(100%, 520px); padding: 18px 20px; max-height: calc(100dvh - 48px); border-radius: 18px; }
 }
 
+
+/* Scheduled-wake sheet uses the same responsive sheet and form tokens as project settings. */
+.wake-indicator { color: var(--accent); display: inline-flex; align-items: center; }
+.scheduled-wake-item { margin: .5rem 0; padding: .65rem .8rem; border-left: 3px solid currentColor; border-radius: .3rem; background: color-mix(in srgb, currentColor 6%, transparent); white-space: pre-wrap; overflow-wrap: anywhere; }
+.scheduled-wake-item strong { display: block; }
+.scheduled-wake-item time { display: block; font-size: .8rem; opacity: .75; }
+.scheduled-wake-item p { margin: .5rem 0 0; }
+.wake-schedule-sheet { max-width: 570px; }
+.wake-schedule-sheet .icon-button { width: 34px; height: 34px; flex: none; color: var(--text-muted); background: var(--surface-subtle); border-radius: 9px; }
+.wake-schedule-sheet .sheet-field select { min-height: 44px; padding: 0 14px; color: var(--text); background: var(--surface-subtle); border: 1px solid var(--line-strong); border-radius: 12px; font: inherit; }
+.wake-choice-group { min-width: 0; margin: 0; padding: 0; border: 0; }
+.wake-choice-group legend { margin-bottom: 8px; }
+.wake-choice-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(115px, 1fr)); gap: 8px; color: var(--text); font-size: 12px; }
+.wake-choice-grid label { display: flex; align-items: center; gap: 8px; min-height: 32px; }
+.wake-choice-grid input { accent-color: var(--accent); }
+.wake-times { display: grid; gap: 6px; }
+.wake-time-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.wake-times .sheet-row { border-radius: 9px; }
+.wake-schedule-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.conversation-menu-item .conversation-menu-hint { overflow-wrap: anywhere; white-space: normal; }
+.conversation-menu-item.is-wake { height: auto; padding-top: 8px; padding-bottom: 8px; }
+.conversation-menu-item.is-wake .wake-menu-copy { display: grid; flex: 1; gap: 2px; white-space: normal; }
+.conversation-menu-item.is-wake .conversation-menu-hint { max-width: none; white-space: normal; overflow: visible; }

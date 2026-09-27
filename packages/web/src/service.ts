@@ -84,6 +84,8 @@ import {
   type WebProject,
   type WebProjectChangedPayload,
   type WebThread,
+  type WebWakeSchedule,
+  type WebWakeScheduleDefinition,
   type WebThreadChangedPayload,
   type WebThreadDetail,
   type WebActiveThreads,
@@ -707,6 +709,7 @@ export class WebService {
   private sweepingJobCards = false;
   private discoveryTimer: ReturnType<typeof setInterval> | undefined;
   private purgeTimer: ReturnType<typeof setInterval> | undefined;
+  private wakeTimer: ReturnType<typeof setInterval> | undefined;
   private purgePromise: Promise<void> | undefined;
   private refreshPromise: Promise<void> | undefined;
   private refreshController: AbortController | undefined;
@@ -770,6 +773,7 @@ export class WebService {
       await service.purgeOrphans();
       await service.refreshAgents();
       service.startTimers();
+      service.dispatchWakes();
       service.pushDispatcher.start();
       return service;
     } catch (error) {
@@ -2167,6 +2171,7 @@ export class WebService {
       this.activeCompactions.delete(threadId);
       // Live input queued while compacting was held back; drain it now.
       if (!this.stopped) void this.drainQueuedLiveInputs(threadId);
+      this.dispatchWake(threadId);
     }
   }
 
@@ -2527,6 +2532,7 @@ export class WebService {
     this.stopped = true;
     if (this.discoveryTimer !== undefined) clearInterval(this.discoveryTimer);
     if (this.purgeTimer !== undefined) clearInterval(this.purgeTimer);
+    if (this.wakeTimer !== undefined) clearInterval(this.wakeTimer);
     const pendingRefresh = this.refreshPromise;
     const pendingPurge = this.purgePromise;
     this.refreshController?.abort(new Error("Web service is stopping."));
@@ -2575,6 +2581,7 @@ export class WebService {
     operatorText: string,
     hostWakeDeliveryKey?: string,
     onAdmitted?: () => void,
+    scheduledWake = false,
   ): Promise<void> {
     const coalescer = new StreamFrameCoalescer(
       async (frames) => {
@@ -2612,7 +2619,7 @@ export class WebService {
             turnId: started.turnId,
             ...modelMetadata,
             ...(consoleTools ? { consoleProjects: { schema: 1 } } : {}),
-            ...(hostWakeDeliveryKey === undefined && this.store.canApplyAgentTitle(started.thread.id)
+            ...(!scheduledWake && hostWakeDeliveryKey === undefined && this.store.canApplyAgentTitle(started.thread.id)
               ? { conversationTitle: { schema: 1, writable: true } }
               : {}),
           },
@@ -2696,6 +2703,7 @@ export class WebService {
     client: OperatorClient,
     operatorText: string,
     hostWakeDeliveryKey?: string,
+    scheduledWake = false,
   ): { readonly completion: Promise<void>; readonly admitted: Promise<boolean> } {
     operatorText = withProjectContext(operatorText, this.projectContextForThread(started.thread.id), this.store.conversationMarkersForTurn(started.turnId));
     const threadId = started.thread.id;
@@ -2709,14 +2717,25 @@ export class WebService {
       operatorText,
       hostWakeDeliveryKey,
       () => { resolveAdmitted(true); },
+      scheduledWake,
     ).finally(() => {
       // Inert once admission already resolved; the turn settled without the
       // operator ever returning a stream when it did not.
       resolveAdmitted(false);
       const active = this.activeTurns.get(threadId);
       if (active?.turnId === started.turnId) this.activeTurns.delete(threadId);
+      if (scheduledWake) {
+        try {
+          if (this.store.finishWake(started.turnId) !== null) this.emitWakeThread(threadId);
+        } catch (error) {
+          this.options.logger?.error?.("Scheduled wake-up outcome could not be settled.", {
+            threadId, errorCode: errorCode(error) ?? "unknown",
+          });
+        }
+      }
       if (!this.stopped && !this.hostWakeReservations.has(threadId)) {
         void this.drainQueuedLiveInputs(threadId);
+        this.dispatchWake(threadId);
       }
     });
     this.activeTurns.set(threadId, {
@@ -2890,6 +2909,7 @@ export class WebService {
       }
     } finally {
       this.drainingLiveInputThreads.delete(threadId);
+      this.dispatchWake(threadId);
     }
   }
 
@@ -3615,6 +3635,7 @@ export class WebService {
     for (const sourceId of cronChangedSources) this.emit("cron.changed", undefined, { sourceId });
     if (cronChangedSources.size > 0) this.emit("threads.changed");
     await this.reconcileDueProcessJobCards(previousConnections, nextConnections, signal);
+    this.dispatchWakes();
     for (const threadId of this.store.queuedLiveInputThreadIds()) {
       void this.drainQueuedLiveInputs(threadId);
     }
@@ -3721,7 +3742,71 @@ export class WebService {
     });
   }
 
+  wakeSchedule(threadId: string): WebWakeSchedule | null { return this.store.wakeSchedule(threadId); }
+
+  createWakeSchedule(threadId: string, definition: WebWakeScheduleDefinition): WebWakeSchedule {
+    const schedule = this.store.createWakeSchedule(threadId, definition);
+    this.emitWakeThread(threadId);
+    this.dispatchWakes();
+    return schedule;
+  }
+
+  changeWakeSchedule(threadId: string, expectedRevision: number,
+    change: { readonly definition: WebWakeScheduleDefinition } | { readonly state: "active" | "paused" } | { readonly delete: true },
+  ): WebWakeSchedule | null {
+    const schedule = this.store.changeWakeSchedule(threadId, expectedRevision, change);
+    this.emitWakeThread(threadId);
+    this.dispatchWakes();
+    return schedule;
+  }
+
+  private emitWakeThread(threadId: string): void {
+    const thread = this.store.getThread(threadId);
+    if (thread === undefined) return;
+    this.emitThread("thread.changed", { thread });
+    this.emitThread("threads.changed", { thread });
+  }
+
+  /** Indexed due scan; sync admission avoids an interleaving with ordinary user input. */
+  private dispatchWakes(): void {
+    if (this.stopped) return;
+    for (const threadId of this.store.wakeDueThreadIds()) this.dispatchWake(threadId);
+  }
+
+  private dispatchWake(threadId: string): void {
+    if (this.stopped) return;
+    const thread = this.store.getThread(threadId);
+    if (thread === undefined) return;
+    const connection = this.connections.get(thread.sourceId);
+    const revision = thread.revision;
+    this.store.reconcileWake(threadId, connection !== undefined);
+    if (this.store.getThread(threadId)?.revision !== revision) this.emitWakeThread(threadId);
+    if (connection === undefined || this.activeTurns.has(threadId) || this.activeCompactions.has(threadId)
+      || this.hostWakeReservations.has(threadId) || this.drainingLiveInputThreads.has(threadId)) return;
+    const selection = this.resolveTurnSelection(threadId);
+    const claimed = this.store.claimWake(threadId, thread.sourceId,
+      () => !this.stopped && this.connections.get(thread.sourceId) === connection
+        && !this.hostWakeReservations.has(threadId) && !this.activeCompactions.has(threadId), selection);
+    if (claimed === null) return;
+    const { started, prompt } = claimed;
+    this.emitWakeThread(threadId);
+    this.emit("message.changed", threadId, { messageId: started.assistantMessageId, updatedAt: started.thread.updatedAt });
+    this.emit("turn.changed", threadId, { turn: started.thread.runState });
+    const { completion, admitted } = this.launchTurn(started, connection.client, prompt, undefined, true);
+    void admitted.then((accepted) => {
+      if (accepted && !this.stopped) {
+        this.store.markWakeAdmitted(started.turnId);
+        this.emitWakeThread(threadId);
+      }
+    });
+    void completion.catch((error: unknown) => {
+      this.options.logger?.error?.("Scheduled wake-up settlement failed.", { threadId, errorCode: errorCode(error) ?? "unknown" });
+    });
+  }
+
   private startTimers(): void {
+    this.wakeTimer = setInterval(() => this.dispatchWakes(), 15_000);
+    this.wakeTimer.unref();
     const discoveryInterval = this.options.discoveryIntervalMs ?? DEFAULT_DISCOVERY_INTERVAL_MS;
     const purgeInterval = this.options.purgeIntervalMs ?? DEFAULT_PURGE_INTERVAL_MS;
     if (discoveryInterval > 0) {

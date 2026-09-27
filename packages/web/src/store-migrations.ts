@@ -43,6 +43,35 @@ function assertIndex(database: DatabaseSync, index: string, expected: readonly s
   if (actual.join(",") !== expected.join(",")) throw new Error("Invalid migration index.");
 }
 
+function assertWakeScheduleShape(database: DatabaseSync): void {
+  assertColumns(database, "wake_schedules", ["thread_id", "source_id", "schedule_id", "generation", "revision", "definition_json", "kind", "state", "next_due_at", "last_outcome", "created_at", "updated_at"]);
+  assertColumns(database, "wake_occurrences", ["id", "thread_id", "schedule_id", "generation", "scheduled_at", "message", "state", "reason", "claimed_at", "turn_id"]);
+  assertIndex(database, "wake_schedules_due", ["state", "next_due_at"]);
+  assertIndex(database, "wake_occurrences_pending", ["thread_id", "state", "scheduled_at"]);
+  const scheduleDdl = (database.prepare("SELECT sql FROM sqlite_master WHERE name = 'wake_schedules'").get() as { sql: string }).sql;
+  const occurrenceDdl = (database.prepare("SELECT sql FROM sqlite_master WHERE name = 'wake_occurrences'").get() as { sql: string }).sql;
+  const foreignKey = (table: string, from: string, target: string, to: string): boolean =>
+    (database.prepare(`PRAGMA foreign_key_list(${table})`).all() as Array<{
+      from: string; table: string; to: string; on_delete: string;
+    }>).some((key) => key.from === from && key.table === target && key.to === to && key.on_delete === "CASCADE");
+  const occurrenceForeignKey = (database.prepare("PRAGMA foreign_key_list(wake_occurrences)").all() as Array<{
+    from: string; table: string; to: string; on_delete: string;
+  }>).some((key) => key.from === "thread_id" && key.table === "wake_schedules" && key.to === "thread_id" && key.on_delete === "CASCADE");
+  const uniqueOccurrence = (database.prepare("PRAGMA index_list(wake_occurrences)").all() as Array<{
+    name: string; unique: number;
+  }>).some((index) => index.unique === 1 && (database.prepare(`PRAGMA index_info(${index.name})`).all() as Array<{ name: string }>)
+    .map((column) => column.name).join(",") === "schedule_id,generation,scheduled_at");
+  if (!foreignKey("wake_schedules", "thread_id", "threads", "id") || !foreignKey("wake_schedules", "source_id", "agents", "source_id")
+    || !occurrenceForeignKey || !uniqueOccurrence
+    || !/thread_id\s+TEXT\s+PRIMARY\s+KEY\s+REFERENCES\s+threads\(id\)\s+ON\s+DELETE\s+CASCADE/iu.test(scheduleDdl)
+    || !/source_id\s+TEXT\s+NOT\s+NULL\s+REFERENCES\s+agents\(source_id\)\s+ON\s+DELETE\s+CASCADE/iu.test(scheduleDdl)
+    || !/schedule_id\s+TEXT\s+NOT\s+NULL\s+UNIQUE/iu.test(scheduleDdl)
+    || !/thread_id\s+TEXT\s+NOT\s+NULL\s+REFERENCES\s+wake_schedules\(thread_id\)\s+ON\s+DELETE\s+CASCADE/iu.test(occurrenceDdl)
+    || !/UNIQUE\s*\(schedule_id,\s*generation,\s*scheduled_at\)/iu.test(occurrenceDdl)) {
+    throw new Error("Invalid wake schedule ledger constraints.");
+  }
+}
+
 /** Read-path lookup indexes; bootstrap DDL creates them, so the step only asserts them. */
 const THREAD_READ_INDEXES: ReadonlyArray<readonly [string, readonly string[]]> = [
   ["messages_by_turn", ["turn_id"]],
@@ -262,6 +291,9 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
     assertColumns(database, "restart_proposal_bindings", ["message_id", "part_id", "thread_id", "source_id", "generation", "operation_id"]);
     assertIndex(database, "restart_proposal_bindings_by_source", ["source_id", "generation"]);
   } },
+  { version: 37, name: "conversation-wake-schedules", up: ({ database }) => {
+    assertWakeScheduleShape(database);
+  } },
 ] satisfies WebStorageMigration[]).map((step) => Object.freeze(step)));
 
 export const WEB_STORAGE_SCHEMA_VERSION = WEB_STORAGE_MIGRATIONS.at(-1)!.version;
@@ -335,6 +367,7 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       ],
     };
     for (const [table, names] of Object.entries(required)) assertColumns(database, table, names);
+    assertWakeScheduleShape(database);
     if (database.prepare("SELECT 1 FROM sqlite_master WHERE name IN ('model_transitions', 'project_transitions')").get() !== undefined) throw new Error("Legacy transition tables remain.");
     const readRevision = (database.prepare("PRAGMA table_info(threads)").all() as Array<{
       name: string; type: string; notnull: number; dflt_value: string | null;

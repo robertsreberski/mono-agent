@@ -55,6 +55,7 @@ import {
 } from "./ActivityRow";
 import { finiteDuration, formatToolDuration } from "./duration";
 import { Icon } from "./Icon";
+import { shortDateTime } from "./time";
 import { MessageGallery } from "./ImageGallery";
 import { toolHistoryFailure } from "./tool-history";
 import { useToolCallRepair } from "./tool-call-repair";
@@ -866,6 +867,15 @@ const compactionPayload = (value: unknown): Record<string, unknown> => {
   return best;
 };
 
+function ScheduledWakePart({ data }: DataMessagePartProps) {
+  const message = typeof data.message === "string" ? data.message : "";
+  return <section className="scheduled-wake-item" aria-label="Scheduled wake-up">
+    <strong>Scheduled wake-up</strong>
+    <time dateTime={String(data.scheduledAt)}>{shortDateTime(String(data.scheduledAt))}</time>
+    {message && <p>{message}</p>}
+  </section>;
+}
+
 function ContextCompactionPart({ data, status: messageStatus }: DataMessagePartProps) {
   const payload = compactionPayload(data);
   const reported = ["running", "succeeded", "skipped", "failed"].includes(String(payload.status))
@@ -1320,6 +1330,7 @@ const parts = {
       "restart-proposal": RestartProposalPart,
       "reply-failure": ReplyFailurePart,
       "process-job-event": ProcessJobActivityEventPart,
+      "scheduled-wake": ScheduledWakePart,
     },
   },
 } as const;
@@ -1446,6 +1457,7 @@ function AssistantParts() {
             if (part.name === "restart-proposal") return <RestartProposalPart {...part} />;
             if (part.name === "reply-failure") return <ReplyFailurePart {...part} />;
             if (part.name === "process-job-event") return <ProcessJobActivityEventPart {...part} />;
+            if (part.name === "scheduled-wake") return <ScheduledWakePart {...part} />;
             return part.dataRendererUI;
           case "indicator":
             return <RunningText status={{ type: "running" }} />;

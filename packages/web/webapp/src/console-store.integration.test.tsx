@@ -4793,6 +4793,25 @@ describe("ConsoleStoreProvider integration", () => {
       expect(vi.mocked(api.thread).mock.calls.length).toBe(detailReads);
     });
 
+    it("applies scheduled wake create, pause and deletion summaries to a paged row without reloading", async () => {
+      const store = await openOnAlpha([alphaThread, olderAlpha]);
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+      const scheduled = { state: "active" as const, kind: "weekly" as const,
+        nextFireAt: "2027-01-04T09:00:00Z", revision: 1 };
+      emit("threads.changed", { threadId: olderAlpha.id,
+        payload: { thread: { ...olderAlpha, revision: 2, wakeSchedule: scheduled } } });
+      await waitFor(() => expect(store.current.threads.find((item) => item.id === olderAlpha.id)?.wakeSchedule?.state).toBe("active"));
+      emit("thread.changed", { threadId: olderAlpha.id,
+        payload: { thread: { ...olderAlpha, revision: 3,
+          wakeSchedule: { ...scheduled, state: "paused", nextFireAt: null, revision: 2 } } } });
+      await waitFor(() => expect(store.current.threads.find((item) => item.id === olderAlpha.id)?.wakeSchedule?.state).toBe("paused"));
+      emit("threads.changed", { threadId: olderAlpha.id,
+        payload: { thread: { ...olderAlpha, revision: 4 } } });
+      await waitFor(() => expect(store.current.threads.find((item) => item.id === olderAlpha.id)?.wakeSchedule).toBeUndefined());
+      expect(api.threads).not.toHaveBeenCalled();
+      expect(api.bootstrap).toHaveBeenCalledTimes(1);
+    });
+
     it("applies the summary an event carries and reads nothing for it", async () => {
       // The summary IS the sidebar row, and applying it is the whole of what
       // this event means. It used to re-read the entire conversation for the

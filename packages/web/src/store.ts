@@ -65,6 +65,8 @@ import {
   type WebRunSelection,
   type WebRunTransition,
   type WebThread,
+  type WebWakeSchedule,
+  type WebWakeScheduleDefinition,
   type WebJobActivity,
   type WebToolCall,
   type WebThreadDetail,
@@ -86,6 +88,7 @@ import { latestMessageCostUsd, sumMessageCosts } from "./message-cost.js";
 import { runActivityFromParts, sameRunActivity } from "./run-activity.js";
 import { runWebStorageMigrations, validateWebStorageMigrationRegistry, WEB_STORAGE_SCHEMA_VERSION } from "./store-migrations.js";
 import { webPushPreview } from "./push-preview.js";
+import { nextWakeOccurrence } from "./wake-schedule.js";
 import { prepareWebStatePaths, type WebStatePathOptions, type WebStatePaths } from "./state-paths.js";
 
 /** The mutable fields of one conversation. */
@@ -3215,6 +3218,12 @@ export class WebStore {
               : tagsChanged ? "tags_changed" : "run_config_changed",
         now,
       );
+      if (patch.archived === true) {
+        this.database.prepare("DELETE FROM wake_occurrences WHERE thread_id = ? AND state = 'pending'").run(id);
+        this.database.prepare(`UPDATE wake_schedules SET state = 'paused', next_due_at = NULL,
+          generation = generation + 1, revision = revision + 1, updated_at = ?
+          WHERE thread_id = ? AND source_id = ? AND state = 'active'`).run(now, id, current.sourceId);
+      }
       if (patch.archived === true && this.currentThreadId() === id) {
         this.database.prepare("DELETE FROM settings WHERE key = 'current_thread_id'").run();
       }
@@ -4096,6 +4105,191 @@ export class WebStore {
     };
   }
 
+  private wakeRow(threadId: string): (Record<string, string | number | null> & {
+    thread_id: string; source_id: string; schedule_id: string; generation: number; revision: number;
+    definition_json: string; state: "active" | "paused" | "completed"; next_due_at: string | null;
+    last_outcome: "fired" | "skipped" | "uncertain" | "failed" | null; created_at: string;
+  }) | undefined {
+    return this.database.prepare(`SELECT schedules.* FROM wake_schedules schedules
+      JOIN threads ON threads.id = schedules.thread_id AND threads.source_id = schedules.source_id
+      WHERE schedules.thread_id = ?`).get(this.resolveThreadId(threadId)) as ReturnType<WebStore["wakeRow"]>;
+  }
+
+  wakeSchedule(threadId: string): WebWakeSchedule | null {
+    const thread = this.assertWakeThread(threadId);
+    const row = this.wakeRow(thread.id);
+    if (row === undefined) return null;
+    return { threadId: row.thread_id, sourceId: row.source_id, scheduleId: row.schedule_id,
+      definition: JSON.parse(row.definition_json) as WebWakeScheduleDefinition, state: row.state,
+      revision: row.revision, nextFireAt: row.next_due_at, lastOutcome: row.last_outcome, createdAt: row.created_at };
+  }
+
+  private assertWakeThread(threadId: string): WebThread {
+    const thread = this.requireThread(threadId);
+    if (thread.trigger !== undefined) throw new WebConsoleError("invalid_wake_thread", "Schedules are only available on ordinary conversations.", 409);
+    return thread;
+  }
+
+  private bumpWakeThread(threadId: string): void {
+    const now = this.now();
+    this.database.prepare("UPDATE threads SET revision = revision + 1 WHERE id = ?").run(threadId);
+    this.recordThreadRevision(threadId, "wake_schedule_changed", now);
+  }
+
+  createWakeSchedule(threadId: string, definition: WebWakeScheduleDefinition): WebWakeSchedule {
+    return this.transaction(() => {
+      const thread = this.assertWakeThread(threadId);
+      if (thread.archivedAt !== null) throw new WebConsoleError("thread_archived", "Unarchive before scheduling a wake-up.", 409);
+      if (this.wakeRow(thread.id) !== undefined) throw new WebConsoleError("wake_schedule_exists", "This conversation already has a schedule.", 409);
+      const now = this.now();
+      const due = nextWakeOccurrence(definition, new Date(now));
+      if (due === null) throw new WebConsoleError("invalid_wake_schedule", "localAt: Choose a future time.", 400);
+      this.database.prepare(`INSERT INTO wake_schedules
+        (thread_id, source_id, schedule_id, definition_json, kind, state, next_due_at, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)`).run(thread.id, thread.sourceId, randomUUID(), JSON.stringify(definition), definition.kind, due.toISOString(), now, now);
+      this.bumpWakeThread(thread.id);
+      return this.wakeSchedule(thread.id)!;
+    });
+  }
+
+  changeWakeSchedule(threadId: string, expectedRevision: number, change:
+    { readonly definition: WebWakeScheduleDefinition } | { readonly state: "active" | "paused" } | { readonly delete: true }): WebWakeSchedule | null {
+    return this.transaction(() => {
+      const thread = this.assertWakeThread(threadId);
+      const row = this.wakeRow(thread.id);
+      if (row === undefined) throw new WebConsoleError("wake_schedule_not_found", "No schedule exists for this conversation.", 404);
+      if (row.revision !== expectedRevision) throw new WebConsoleError("wake_revision_conflict", "Schedule changed; reload and retry.", 409);
+      if ("state" in change && change.state === "active" && thread.archivedAt !== null) {
+        throw new WebConsoleError("thread_archived", "Unarchive before resuming a wake-up.", 409);
+      }
+      this.database.prepare("DELETE FROM wake_occurrences WHERE thread_id = ? AND state = 'pending'").run(thread.id);
+      if ("delete" in change) {
+        this.database.prepare("DELETE FROM wake_schedules WHERE thread_id = ? AND source_id = ?").run(thread.id, thread.sourceId);
+        this.bumpWakeThread(thread.id);
+        return null;
+      }
+      const definition = "definition" in change ? change.definition : JSON.parse(row.definition_json) as WebWakeScheduleDefinition;
+      const state = "state" in change ? change.state : "active";
+      const now = this.now();
+      const due = state === "active" ? nextWakeOccurrence(definition, new Date(now)) : null;
+      if (state === "active" && due === null) throw new WebConsoleError("invalid_wake_schedule", "localAt: Edit this expired one-off to a future time.", 400);
+      this.database.prepare(`UPDATE wake_schedules SET definition_json = ?, kind = ?, state = ?, next_due_at = ?,
+        generation = generation + 1, revision = revision + 1, last_outcome = NULL, updated_at = ?
+        WHERE thread_id = ? AND source_id = ?`).run(JSON.stringify(definition), definition.kind, state, due?.toISOString() ?? null, now, thread.id, thread.sourceId);
+      this.bumpWakeThread(thread.id);
+      return this.wakeSchedule(thread.id)!;
+    });
+  }
+
+  wakeDueThreadIds(): string[] {
+    return (this.database.prepare(`SELECT schedules.thread_id AS id FROM wake_schedules schedules
+      JOIN threads ON threads.id = schedules.thread_id AND threads.source_id = schedules.source_id
+      WHERE schedules.state = 'active' AND (schedules.next_due_at <= ? OR EXISTS
+        (SELECT 1 FROM wake_occurrences o WHERE o.thread_id = schedules.thread_id AND o.state = 'pending'))
+      ORDER BY schedules.next_due_at`).all(this.now()) as Array<{ id: string }>).map((row) => row.id);
+  }
+
+  /** Queue one occurrence while busy, or within the offline/idle grace; skip older unqueued work. */
+  reconcileWake(threadId: string, connected: boolean): boolean {
+    return this.transaction(() => {
+      const thread = this.getThread(threadId);
+      const row = thread === undefined ? undefined : this.wakeRow(thread.id);
+      if (row === undefined || row.state !== "active" || thread!.archivedAt !== null) return false;
+      const pending = this.database.prepare("SELECT 1 FROM wake_occurrences WHERE thread_id = ? AND state = 'pending'").get(thread!.id);
+      if (pending !== undefined) return true;
+      if (row.next_due_at === null || row.next_due_at > this.now()) return false;
+      const now = this.now();
+      const active = this.database.prepare("SELECT started_at FROM turns WHERE thread_id = ? AND status = 'running'").get(thread!.id) as { started_at: string } | undefined;
+      const busy = active !== undefined && active.started_at <= row.next_due_at;
+      const definition = JSON.parse(row.definition_json) as WebWakeScheduleDefinition;
+      // A bounded backwards probe finds the latest missed weekly slot without
+      // stepping through months of occurrences.
+      const recent = definition.kind === "weekly"
+        ? nextWakeOccurrence(definition, new Date(Date.parse(now) - 60 * 60 * 1_000 - 1)) : null;
+      const latest = !busy && recent !== null && recent <= new Date(now) ? recent.toISOString() : row.next_due_at;
+      const age = Date.parse(now) - Date.parse(latest);
+      if (!busy && !connected && age <= 60 * 60 * 1_000) return false;
+      const eligible = busy || (connected && age <= 60 * 60 * 1_000);
+      if (eligible) {
+        this.database.prepare(`INSERT INTO wake_occurrences
+          (id, thread_id, schedule_id, generation, scheduled_at, message, state, reason)
+          VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`).run(randomUUID(), thread!.id, row.schedule_id, row.generation,
+          latest, definition.message ?? null, busy ? "busy" : "grace");
+      }
+      const next = definition.kind === "weekly" ? nextWakeOccurrence(definition, new Date(now)) : null;
+      this.database.prepare(`UPDATE wake_schedules SET next_due_at = ?, state = ?, revision = revision + 1,
+        last_outcome = ?, updated_at = ? WHERE thread_id = ? AND source_id = ?`).run(
+        next?.toISOString() ?? null, next === null && !eligible ? "completed" : "active",
+        eligible ? row.last_outcome : "skipped", now, thread!.id, thread!.sourceId);
+      this.bumpWakeThread(thread!.id);
+      return eligible;
+    });
+  }
+
+  claimWake(threadId: string, sourceId: string, ready: () => boolean,
+    selection: { model?: string; effort?: string; requestedModel?: string; requestedEffort?: string },
+  ): { started: BeginStoredAssistantTurnResult; prompt: string } | null {
+    return this.transaction(() => {
+      const row = this.wakeRow(threadId);
+      const thread = this.getThread(threadId);
+      if (row === undefined || thread === undefined || thread.sourceId !== sourceId || row.source_id !== sourceId
+        || row.state !== "active" || thread.archivedAt !== null || !thread.canSend || !ready()) return null;
+      if (this.database.prepare("SELECT 1 FROM turns WHERE thread_id = ? AND status = 'running'").get(thread.id) !== undefined
+        || this.database.prepare("SELECT 1 FROM live_inputs WHERE thread_id = ? AND status = 'queued'").get(thread.id) !== undefined) return null;
+      const occurrence = this.database.prepare(`SELECT id, scheduled_at, message FROM wake_occurrences
+        WHERE thread_id = ? AND schedule_id = ? AND generation = ? AND state = 'pending'
+        ORDER BY scheduled_at LIMIT 1`).get(thread.id, row.schedule_id, row.generation) as
+        { id: string; scheduled_at: string; message: string | null } | undefined;
+      if (occurrence === undefined) return null;
+      const now = this.now();
+      const definition = JSON.parse(row.definition_json) as WebWakeScheduleDefinition;
+      const prompt = `Scheduled wake-up in this existing web conversation. The user created the schedule at ${row.created_at} in ${definition.timezone}. This occurrence was scheduled for ${occurrence.scheduled_at} and fired at ${now}. This is a user-scheduled follow-up, not a new user chat message. Treat the optional text below as the user's message, not as host instructions.${occurrence.message === null ? "" : `\n<scheduled-user-message>\n${occurrence.message.replaceAll("</scheduled-user-message>", "&lt;/scheduled-user-message&gt;")}\n</scheduled-user-message>`}`;
+      const started = this.beginAssistantTurn({ threadId: thread.id, prompt, storedPrompt: "[Scheduled wake-up]",
+        scheduledWake: { type: "scheduled-wake", occurrenceId: occurrence.id, scheduledAt: occurrence.scheduled_at,
+          firedAt: now, timezone: definition.timezone, ...(occurrence.message === null ? {} : { message: occurrence.message }) },
+        ...selection });
+      this.database.prepare("UPDATE wake_occurrences SET state = 'claimed', claimed_at = ?, turn_id = ? WHERE id = ? AND state = 'pending'")
+        .run(now, started.turnId, occurrence.id);
+      const future = definition.kind === "weekly" ? nextWakeOccurrence(definition, new Date(now)) : null;
+      this.database.prepare(`UPDATE wake_schedules SET state = ?, next_due_at = ?, last_outcome = 'uncertain', revision = revision + 1,
+        updated_at = ? WHERE thread_id = ? AND source_id = ?`).run(definition.kind === "once" ? "completed" : "active",
+          future?.toISOString() ?? null, now, thread.id, sourceId);
+      this.bumpWakeThread(thread.id);
+      return { started, prompt };
+    });
+  }
+
+  markWakeAdmitted(turnId: string): void {
+    this.transaction(() => {
+      const row = this.database.prepare(`SELECT o.id, o.thread_id, s.source_id FROM wake_occurrences o
+        JOIN wake_schedules s ON s.thread_id = o.thread_id AND s.schedule_id = o.schedule_id AND s.generation = o.generation
+        JOIN threads t ON t.id = s.thread_id AND t.source_id = s.source_id
+        WHERE o.turn_id = ? AND o.state = 'claimed'`).get(turnId) as
+        { id: string; thread_id: string; source_id: string } | undefined;
+      if (row === undefined) return;
+      this.database.prepare("UPDATE wake_occurrences SET state = 'admitted' WHERE id = ?").run(row.id);
+      // Admission confirms only that the operator accepted the turn. A final
+      // outcome is not declared until the turn itself settles.
+    });
+  }
+
+  finishWake(turnId: string): string | null {
+    return this.transaction(() => {
+      const row = this.database.prepare(`SELECT s.thread_id, s.source_id, o.state, t.status FROM wake_occurrences o
+        JOIN wake_schedules s ON s.thread_id = o.thread_id AND s.schedule_id = o.schedule_id AND s.generation = o.generation
+        JOIN threads th ON th.id = s.thread_id AND th.source_id = s.source_id
+        JOIN turns t ON t.id = o.turn_id AND t.thread_id = o.thread_id
+        WHERE o.turn_id = ?`).get(turnId) as { thread_id: string; source_id: string; state: string; status: string } | undefined;
+      if (row === undefined) return null;
+      const outcome = row.state !== "admitted" || row.status === "running" ? "uncertain"
+        : row.status === "complete" ? "fired" : "failed";
+      this.database.prepare("UPDATE wake_schedules SET last_outcome = ?, revision = revision + 1 WHERE thread_id = ? AND source_id = ?")
+        .run(outcome, row.thread_id, row.source_id);
+      this.bumpWakeThread(row.thread_id);
+      return row.thread_id;
+    });
+  }
+
   /** Begin one host-owned assistant-only follow-up without inventing a user row. */
   beginAssistantTurn(input: {
     readonly threadId: string;
@@ -4111,6 +4305,7 @@ export class WebStore {
       readonly deliveryKey: string;
       readonly disposition: "follow_up";
     };
+    readonly scheduledWake?: Extract<WebMessagePart, { type: "scheduled-wake" }>;
   }): BeginStoredAssistantTurnResult {
     const threadId = this.resolveThreadId(input.threadId);
     const thread = this.requireThread(threadId);
@@ -4146,9 +4341,9 @@ export class WebStore {
         throw new WebConsoleError("invalid_notification", "The process-job wake does not match its retained card.", 409);
       }
     }
-    const initialParts: WebMessagePart[] = input.processJobWake === undefined
-      ? []
-      : [{ type: "process-job-wake", ...input.processJobWake }];
+    const initialParts: WebMessagePart[] = input.scheduledWake === undefined
+      ? input.processJobWake === undefined ? [] : [{ type: "process-job-wake", ...input.processJobWake }]
+      : [input.scheduledWake];
     this.transaction(() => {
       this.applyPendingProjectMembership(threadId, now);
       now = this.projectTurnAdmissionTime(threadId);
@@ -5217,6 +5412,35 @@ export class WebStore {
         run_effort TEXT,
         revision INTEGER NOT NULL DEFAULT 1
       );
+      CREATE TABLE IF NOT EXISTS wake_schedules (
+        thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+        source_id TEXT NOT NULL REFERENCES agents(source_id) ON DELETE CASCADE,
+        schedule_id TEXT NOT NULL UNIQUE,
+        generation INTEGER NOT NULL DEFAULT 1,
+        revision INTEGER NOT NULL DEFAULT 1,
+        definition_json TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('once', 'weekly')),
+        state TEXT NOT NULL CHECK (state IN ('active', 'paused', 'completed')),
+        next_due_at TEXT,
+        last_outcome TEXT CHECK (last_outcome IN ('fired', 'skipped', 'uncertain', 'failed')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS wake_schedules_due ON wake_schedules(state, next_due_at);
+      CREATE TABLE IF NOT EXISTS wake_occurrences (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL REFERENCES wake_schedules(thread_id) ON DELETE CASCADE,
+        schedule_id TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        scheduled_at TEXT NOT NULL,
+        message TEXT,
+        state TEXT NOT NULL CHECK (state IN ('pending', 'claimed', 'admitted', 'skipped')),
+        reason TEXT NOT NULL CHECK (reason IN ('busy', 'grace')),
+        claimed_at TEXT,
+        turn_id TEXT,
+        UNIQUE(schedule_id, generation, scheduled_at)
+      );
+      CREATE INDEX IF NOT EXISTS wake_occurrences_pending ON wake_occurrences(thread_id, state, scheduled_at);
       CREATE TABLE IF NOT EXISTS tags (
         id TEXT PRIMARY KEY,
         source_id TEXT NOT NULL REFERENCES agents(source_id) ON DELETE CASCADE,
@@ -6105,6 +6329,14 @@ export class WebStore {
     const runStates = this.latestRunStates(ids);
     const previews = this.lastMessagePreviews(ids);
     const jobActivities = this.jobActivities(ids);
+    const wakes = new Map((this.database.prepare(`SELECT schedules.thread_id, schedules.state, schedules.kind,
+      schedules.next_due_at, schedules.revision FROM wake_schedules schedules
+      JOIN threads ON threads.id = schedules.thread_id AND threads.source_id = schedules.source_id
+      WHERE schedules.thread_id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(ids)) as Array<{
+        thread_id: string; state: "active" | "paused" | "completed"; kind: "once" | "weekly";
+        next_due_at: string | null; revision: number;
+      }>).map((wake) => [wake.thread_id, { state: wake.state, kind: wake.kind,
+        nextFireAt: wake.next_due_at, revision: wake.revision }]));
     const pending = new Map((this.database.prepare(`SELECT thread_id, project_id, turn_id FROM pending_project_memberships
       WHERE thread_id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(ids)) as Array<{
         thread_id: string; project_id: string | null; turn_id: string;
@@ -6123,6 +6355,7 @@ export class WebStore {
       return {
         id: row.id,
         sourceId: row.source_id,
+        ...(wakes.has(row.id) ? { wakeSchedule: wakes.get(row.id)! } : {}),
         tagIds: tagsByThread.get(row.id) ?? [],
         projectId: row.project_id,
         ...(row.project_id === null || row.project_name === null
@@ -6482,7 +6715,11 @@ export class WebStore {
         .join(" ")
         .replace(/\s+/gu, " ")
         .trim();
-      if (text.length > 0) previews.set(row.thread_id, text.slice(0, 160));
+      const scheduledWake = parts.find((part) => part.type === "scheduled-wake");
+      const preview = text || (scheduledWake?.type === "scheduled-wake"
+        ? scheduledWake.message?.replace(/\s+/gu, " ").trim() || "Scheduled wake-up"
+        : "");
+      if (preview.length > 0) previews.set(row.thread_id, preview.slice(0, 160));
     }
     return previews;
   }
@@ -8897,6 +9134,13 @@ function isWebMessagePart(value: unknown): value is WebMessagePart {
     } catch {
       return false;
     }
+  }
+  if (part.type === "scheduled-wake") {
+    return hasOnlyKeys(part, new Set(["type", "occurrenceId", "scheduledAt", "firedAt", "timezone", "message"]))
+      && validRichId(part.occurrenceId) && typeof part.scheduledAt === "string" && validOptionalDate(part.scheduledAt)
+      && typeof part.firedAt === "string" && validOptionalDate(part.firedAt)
+      && typeof part.timezone === "string" && part.timezone.length <= 128
+      && validOptionalBoundedText(part.message, 1000);
   }
   if (part.type === "process-job-wake") {
     return hasOnlyKeys(part, new Set(["type", "jobId", "deliveryKey", "disposition"]))

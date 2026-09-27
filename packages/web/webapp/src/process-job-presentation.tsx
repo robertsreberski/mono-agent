@@ -195,6 +195,7 @@ const partHasTranscriptPresentation = (part: MessagePart): boolean => {
     case "process-job":
       return false;
     case "process-job-wake":
+    case "scheduled-wake":
       return true;
     case "steer":
       return true;

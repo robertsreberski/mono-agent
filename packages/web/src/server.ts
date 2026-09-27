@@ -56,6 +56,7 @@ import {
   type WebThreadListScope,
 } from "./contracts.js";
 import { errorMessage, WebConsoleError } from "./errors.js";
+import { parseWakeDefinition } from "./wake-schedule.js";
 import {
   WEB_MESSAGE_PAGE_DEFAULT,
   WEB_MESSAGE_PAGE_MAX,
@@ -899,6 +900,45 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     )
       .then((job) => res.status(200).json({ job }))
       .catch(next);
+  });
+
+  app.get("/api/v1/threads/:id/wake-schedule", (req, res, next) => {
+    try { res.status(200).json({ schedule: service.wakeSchedule(pathParam(req.params.id)) }); }
+    catch (error) { next(error); }
+  });
+  app.post("/api/v1/threads/:id/wake-schedule", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      res.status(201).json({ schedule: service.createWakeSchedule(pathParam(req.params.id), parseWakeDefinition(req.body)) });
+    } catch (error) { next(error); }
+  });
+  app.put("/api/v1/threads/:id/wake-schedule", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      const body = wakeMutationBody(req.body);
+      res.status(200).json({ schedule: service.changeWakeSchedule(pathParam(req.params.id), body.expectedRevision,
+        { definition: parseWakeDefinition(body.fields) }) });
+    } catch (error) { next(error); }
+  });
+  app.patch("/api/v1/threads/:id/wake-schedule", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      const { expectedRevision, fields } = wakeMutationBody(req.body);
+      if (Object.keys(fields).length !== 1 || (fields.state !== "paused" && fields.state !== "active")) {
+        throw new WebConsoleError("invalid_wake_schedule", "state: Choose active or paused.", 400);
+      }
+      res.status(200).json({ schedule: service.changeWakeSchedule(pathParam(req.params.id), expectedRevision,
+        { state: fields.state }) });
+    } catch (error) { next(error); }
+  });
+  app.delete("/api/v1/threads/:id/wake-schedule", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      const { expectedRevision, fields } = wakeMutationBody(req.body);
+      if (Object.keys(fields).length !== 0) throw new WebConsoleError("invalid_wake_schedule", "Unknown deletion field.", 400);
+      service.changeWakeSchedule(pathParam(req.params.id), expectedRevision, { delete: true });
+      res.status(204).end();
+    } catch (error) { next(error); }
   });
 
   app.patch("/api/v1/threads/:id", (req, res, next) => {
@@ -1753,6 +1793,17 @@ function parsePatchAgent(value: unknown): PatchWebAgentInput {
 function parseTagIds(value: unknown): string[] {
   if (!Array.isArray(value)) throw invalidBody("tagIds must be an array.");
   return value.map((id: unknown) => requireString(id, "tagId", 128));
+}
+
+function wakeMutationBody(value: unknown): { expectedRevision: number; fields: Record<string, unknown> } {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new WebConsoleError("invalid_wake_schedule", "Expected a schedule mutation object.", 400);
+  }
+  const { expectedRevision, ...fields } = value as Record<string, unknown>;
+  if (!Number.isSafeInteger(expectedRevision) || (expectedRevision as number) < 1) {
+    throw new WebConsoleError("invalid_wake_schedule", "expectedRevision: Enter the current schedule revision.", 400);
+  }
+  return { expectedRevision: expectedRevision as number, fields };
 }
 
 function parsePatchThread(value: unknown): PatchWebThreadInput {

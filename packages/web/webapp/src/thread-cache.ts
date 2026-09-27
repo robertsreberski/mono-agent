@@ -540,6 +540,9 @@ const isMessagePart = (value: unknown): value is MessagePart => {
         && (part.attribution === undefined || isRunAttribution(part.attribution));
     case "process-job":
       return typeof part.job === "object" && part.job !== null;
+    case "scheduled-wake":
+      return text("occurrenceId") && text("scheduledAt") && text("firedAt") && text("timezone")
+        && (part.message === undefined || (text("message") && new TextEncoder().encode(part.message as string).length <= 1000));
     case "process-job-wake":
       return text("jobId") && text("deliveryKey")
         && (part.disposition === "steered" || part.disposition === "follow_up");
