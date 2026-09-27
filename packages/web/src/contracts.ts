@@ -675,6 +675,8 @@ export type WebMessagePart =
       readonly executionMs?: number;
       /** What this delegation cost, when the runtime priced its model. */
       readonly costUsd?: number;
+      /** Child token counts, when measured; omitted for unreported runs. */
+      readonly usage?: WebUsageTokens;
       /** Provider route requested, attempted, and executed by this child. */
       readonly attribution?: WebRunAttribution;
       /** Metadata for the persisted parent `Agent` call; child internals omit it. */
@@ -855,12 +857,12 @@ export interface WebUsageSlice {
 
 export interface WebThreadUsage {
   readonly total: WebUsageSlice;
-  readonly subagents?: WebUsageSlice & { readonly runs: number };
+  readonly subagents?: WebUsageSlice & { readonly runs: number; readonly runsWithTokens?: number };
   /** Costs are additive. Tokens are main-run and detached tokens only: synchronous
    * child tokens are folded into their parent's model, not added to child rows. */
   readonly byModel: readonly (WebUsageSlice & { readonly model?: string })[];
   readonly computedAt: string;
-  /** Settled provider turns, including ones without usage telemetry; excludes cards/notices. */
+  /** Settled assistant rows with a turn, including cron/notification runs; excludes process-job cards. */
   readonly settledAssistantTurns?: number;
 }
 

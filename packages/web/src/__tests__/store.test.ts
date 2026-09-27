@@ -9,6 +9,7 @@ import {
   MAX_AGENT_REPLY_PARTS,
   type AgentReplyPart,
   type AgentStreamWireFrame,
+  type ProcessJobProjection,
 } from "@mono-agent/agent-contracts";
 
 import type {
@@ -2791,8 +2792,12 @@ describe("WebStore", () => {
     const job = { ...fakeProcessJob({ conversationId: "web:" + thread.id }), tool: "Agent" as const,
       kind: "internal" as const, instanceId: "helper", childStillBusy: false,
       subagentProgress: { revision: 3, profile: "helper", toolCalls: 1, failedCalls: 0,
-        recent: [{ id: "call", toolName: "Read", status: "complete" as const, argsSummary: "src/file.ts" }], answerHead: "Safe report" } };
+        recent: [{ id: "call", toolName: "Read", status: "complete" as const, argsSummary: "src/file.ts" }], answerHead: "Safe report",
+        usage: { input: 8, output: 3, cacheRead: 2, cacheWrite: 1 } } };
     store.upsertProcessJobCard({ sourceId: "agent-one", threadId: thread.id, processJob: job, deliveryKey: job.wake.deliveryKey });
+    expect(() => store.upsertProcessJobCard({ sourceId: "agent-one", threadId: thread.id,
+      processJob: { ...job, subagentProgress: { ...job.subagentProgress, privateField: "never" } } as unknown as ProcessJobProjection,
+      deliveryKey: job.wake.deliveryKey })).toThrow();
     store.upsertProcessJobCard({ sourceId: "agent-one", threadId: thread.id,
       processJob: { ...job, subagentProgress: { ...job.subagentProgress, revision: 1, recent: [], toolCalls: 0 } }, deliveryKey: job.wake.deliveryKey });
     store.close();
@@ -4008,6 +4013,16 @@ describe("WebStore subagent parts", () => {
     ]);
 
     expect(parts.find((part) => part.type === "tool-call")).toMatchObject({ type: "tool-call", toolCallId: "t1", toolName: "Read" });
+  });
+
+  it("persists safe token counts from the closing delegation bookend", async () => {
+    const usage = { input: 42, output: 9, cacheRead: 7, cacheWrite: 2 };
+    const parts = await turnWith([
+      launch("call-1", "researcher"), bookend("call-1", "researcher"),
+      { kind: "event", event: { type: "tool_call_completed", id: "agent:call-1", name: "Agent(researcher)",
+        metadata: { subagent: { id: "call-1", name: "researcher", usage }, subagentLifecycle: true } } },
+    ]);
+    expect(parts.find((part) => part.type === "subagent")).toMatchObject({ usage });
   });
 
   it("records what a delegation cost from its closing bookend", async () => {
@@ -6886,7 +6901,8 @@ describe("thread usage aggregation", () => {
       expect(first.total.tokens).toMatchObject({ input: 890, cacheRead: 178, cacheWrite: 89, output: 356 });
       expect(first.total.tokensPartial).toBe(true);
       expect(first.subagents?.costUsd).toBe(3);
-      const key = "usage-1:0:2026-01-01T00:00:01Z";
+      const row = raw.prepare("SELECT rowid FROM messages WHERE id = 'usage-1'").get() as { rowid: number };
+      const key = `usage-1:${row.rowid}:0`;
       const held = memo.get(key);
       const holder = store as unknown as { database: DatabaseSync };
       const database = holder.database;
@@ -6909,7 +6925,7 @@ describe("thread usage aggregation", () => {
       raw.prepare("UPDATE messages SET seq = seq + 1, parts_json = ? WHERE id = 'usage-1'")
         .run(JSON.stringify([{ type: "telemetry", event: "usage_update", data: { cumulativeUsd: 1 } }]));
       expect((await store.threadUsage(thread.id)).total.costUsd).toBe(48);
-      expect(memo.has("usage-1:1:2026-01-01T00:00:01Z")).toBe(true);
+      expect(memo.has(`usage-1:${row.rowid}:1`)).toBe(true);
       for (let n = 0; n < 20_000; n++) memo.set(`eviction-${n}`, { main: {}, subagents: [] });
       const afterEviction = await store.threadUsage(thread.id);
       expect(afterEviction.total.costUsd).toBe(48);
@@ -6939,12 +6955,19 @@ describe("thread usage aggregation", () => {
       expect((await store.threadUsage(thread.id)).total.costUsd).toBe(10);
       for (let index = 0; index < 19_990; index++) memo.set(`other-${index}`, { main: {}, subagents: [] });
       expect(memo.size).toBe(20_000);
-      for (let index = 0; index < 3; index++) memo.delete(`memo-${index}:0:2026-01-01T00:00:0${index}Z`);
+      for (let index = 0; index < 3; index++) {
+        const row = raw.prepare("SELECT rowid FROM messages WHERE id = ?").get(`memo-${index}`) as { rowid: number };
+        memo.delete(`memo-${index}:${row.rowid}:0`);
+      }
       for (let index = 0; index < 3; index++) memo.set(`refill-${index}`, { main: {}, subagents: [] });
       expect(memo.size).toBe(20_000);
       expect((await store.threadUsage(thread.id)).total.costUsd).toBe(10);
+      const before = raw.prepare("SELECT rowid FROM messages WHERE id = 'memo-0'").get() as { rowid: number };
       raw.prepare("DELETE FROM messages WHERE id = 'memo-0'").run();
-      insert.run("memo-0", thread.id, parts(4), "2026-01-02T00:00:00Z", "2026-01-02T00:00:00Z");
+      // The same cron run keeps its ordering time: id, seq and created_at all recur.
+      insert.run("memo-0", thread.id, parts(4), "2026-01-01T00:00:00Z", "2026-01-01T00:01:00Z");
+      const after = raw.prepare("SELECT rowid FROM messages WHERE id = 'memo-0'").get() as { rowid: number };
+      expect(after.rowid).not.toBe(before.rowid);
       expect((await store.threadUsage(thread.id)).total.costUsd).toBe(13);
     } finally { raw.close(); store.close(); }
   });

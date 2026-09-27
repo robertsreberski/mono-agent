@@ -67,6 +67,21 @@ afterEach(async () => {
 });
 
 describe("held subagent obligations", () => {
+  it("reopens optional child tokens from a durable progress record without producing them", async () => {
+    const cwd = await mkdtemp(join(process.cwd(), ".job-usage-reader-")); ownershipRoots.push(cwd);
+    const stateDir = join(cwd, "jobs");
+    const store = await openProcessJobStore(cwd, stateDir);
+    const jobId = randomUUID();
+    const record = durableRecord(jobId, { tool: "Agent", kind: "internal", instanceId: "child", childStillBusy: false,
+      pid: null, pgid: null, state: "succeeded", completedAt: "2026-08-14T10:00:03.000Z", exitCode: 0, durationMs: 2_000 });
+    const usage = { input: 8, output: 3, cacheRead: 2, cacheWrite: 1 };
+    delete record.processIncarnation;
+    record.subagentProgress = { revision: 1, profile: "helper", toolCalls: 0, failedCalls: 0, recent: [], usage };
+    await store.mutate((draft) => { draft.set(jobId, record); });
+    await store.ensureArtifacts(jobId);
+    const reopened = await openProcessJobStore(cwd, stateDir);
+    expect((await reopened.get(jobId))?.subagentProgress?.usage).toEqual(usage);
+  });
   it.each(["ownership", "publication", "legacy"])("pins terminal %s through retention, reopen, admission and projection", async (mode) => {
     const cwd = await mkdtemp(join(process.cwd(), ".job-ownership-")); ownershipRoots.push(cwd);
     const fixture = { cwd, settings: { ...PROCESS_JOBS_DEFAULTS, configured: true, enabled: true, stateDir: join(cwd, "jobs"),

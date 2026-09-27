@@ -1122,7 +1122,8 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
   });
 
   it("flags the lifecycle bookends so renderers need not parse the id format", () => {
-    const subagent = { id: "call-1", name: "researcher", callIndex: 1 };
+    const subagent = { id: "call-1", name: "researcher", callIndex: 1,
+      usage: { input: 12, output: 2, cacheRead: 3, cacheWrite: 1 } };
     const bookends = (["agent_started", "agent_completed"] as const).map((phase) =>
       streamEventFromRuntimeEvent({
         type: "subagent_activity",

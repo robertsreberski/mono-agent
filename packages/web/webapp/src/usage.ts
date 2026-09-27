@@ -78,8 +78,10 @@ export function windowUsage(detail: ThreadDetail): WebThreadUsage {
     && message.turnId !== undefined && message.status !== "running").length;
   const usage = sumThreadUsage(rollups, new Date().toISOString(), settled);
   if (detail.messagesNextCursor === undefined) return usage;
+  // Unseen pages may contain settled turns even when this window has none.
+  const { settledAssistantTurns: _windowOnly, ...partial } = usage;
   return {
-    ...usage,
+    ...partial,
     total: { ...usage.total, tokensPartial: true, costPartial: true },
     byModel: usage.byModel.map((model) => ({ ...model, costPartial: true as const, tokensPartial: true as const })),
     ...(usage.subagents === undefined ? {} : { subagents: {

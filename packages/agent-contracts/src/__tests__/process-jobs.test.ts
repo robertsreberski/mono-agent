@@ -254,6 +254,21 @@ describe("internal subagent progress projection", () => {
     expect(() => parseProcessJobProjection({ ...projection(), subagentProgress: progress })).toThrow();
   });
 
+  it("accepts a reported token sample without allowing unknown or malformed fields", () => {
+    const usage = { input: 12, output: 3, cacheRead: 4, cacheWrite: 1 };
+    const withTokens = { ...progress, usage };
+    expect(isProcessJobSubagentProgress(withTokens)).toBe(true);
+    expect(parseProcessJobProjection({ ...internal(), subagentProgress: withTokens })).toEqual({ ...internal(), subagentProgress: withTokens });
+    for (const invalid of [{ ...withTokens, privateText: "redacted" },
+      { ...withTokens, usage: { ...usage, output: -1 } },
+      { ...withTokens, usage: { ...usage, input: 0.5 } },
+      { ...withTokens, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } },
+      { ...withTokens, usage: { ...usage, extra: 1 } }]) {
+      expect(isProcessJobSubagentProgress(invalid)).toBe(false);
+      expect(() => parseProcessJobProjection({ ...internal(), subagentProgress: invalid })).toThrow(TypeError);
+    }
+  });
+
   it("accepts a bounded optional command directory and rejects malformed locations", () => {
     const withDirectory = { ...progress, recent: [{ ...progress.recent[0], workdir: "~/worktrees/project" }] };
     expect(parseProcessJobProjection({ ...internal(), subagentProgress: withDirectory }))

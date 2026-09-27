@@ -60,6 +60,22 @@ describe("ContextDisplay", () => {
     expect(within(popup).getAllByText("$1.12")).toHaveLength(2);
     expect(within(popup).getByText("$3.06")).toBeVisible();
   });
+  it("renders reported, mixed, and missing subagent token samples distinctly", async () => {
+    const tokens = { input: 12, cacheRead: 3, cacheWrite: 1, output: 2 };
+    const { rerender } = render(<ContextDisplay context={context} totals={{ ...typical,
+      subagents: { runs: 2, runsWithTokens: 2, tokens } }} />);
+    const popup = await open();
+    const row = () => within(popup).getByRole("row", { name: /incl. subagents/ });
+    expect(row()).toHaveTextContent("13");
+    expect(row()).not.toHaveTextContent("≥");
+    rerender(<ContextDisplay context={context} totals={{ ...typical,
+      subagents: { runs: 3, runsWithTokens: 1, tokens, tokensPartial: true } }} />);
+    expect(row()).toHaveTextContent("≥13");
+    expect(row().querySelector("td")?.title).toBe("At least. 2 of 3 subagent runs didn't report tokens.");
+    rerender(<ContextDisplay context={context} totals={{ ...typical,
+      subagents: { runs: 3, runsWithTokens: 0, tokensPartial: true } }} />);
+    expect(row()).toHaveTextContent("not reported");
+  });
   it.each([[79.9, "normal"], [80, "warning"], [94.9, "warning"], [95, "danger"]] as const)("applies unrounded level at %s", (percent, level) => {
     const trigger = render(<ContextDisplay context={{ status: "current", usage: { total: percent * 1_000, contextWindow: 100_000 } }} />).container.querySelector(".context-display-trigger");
     expect(trigger).toHaveAttribute("data-level", level);
@@ -106,6 +122,24 @@ describe("ContextDisplay", () => {
     fireEvent.click(button);
     expect(apiMock.compactThread).not.toHaveBeenCalled();
     expect(within(popup).getByText("Available when this turn finishes.")).toBeVisible();
+  });
+  it("announces progress and success in the pre-mounted status region, but not errors", async () => {
+    let finish!: (value: unknown) => void;
+    apiMock.compactThread.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }))
+      .mockRejectedValueOnce(new ApiError("Busy.", 409));
+    render(<ContextDisplay context={context} compactThreadId="one" />);
+    const popup = await open();
+    const footer = popup.querySelector(".context-display-compact") as HTMLElement;
+    const live = within(footer).getByRole("status");
+    expect(live).toHaveTextContent("");
+    const button = within(footer).getByRole("button", { name: "Compact" });
+    fireEvent.click(button);
+    expect(live).toHaveTextContent("Summarizing earlier turns…");
+    await act(async () => finish({ status: "succeeded", operationId: "one", trigger: "manual" }));
+    expect(live).toHaveTextContent("Compacted.");
+    fireEvent.click(button);
+    await waitFor(() => expect(within(footer).getByRole("alert")).toHaveTextContent("Busy."));
+    expect(live).toHaveTextContent("");
   });
   it("shows nearly-full emphasis and all compaction outcomes, clearing results on close", async () => {
     apiMock.compactThread.mockResolvedValueOnce({ status: "succeeded", operationId: "one", trigger: "manual", tokensBefore: 183_400, tokensAfter: 41_300 });

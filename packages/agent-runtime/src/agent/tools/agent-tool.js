@@ -147,6 +147,14 @@ function emptyUsage() {
   return { costUsd: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 }
 
+/** @param {ReturnType<typeof emptyUsage>} usage */
+function reportedTokens(usage) {
+  const { input, output, cacheRead, cacheWrite } = usage;
+  const values = [input, output, cacheRead, cacheWrite];
+  return values.every((value) => Number.isSafeInteger(value) && value >= 0)
+    && values.some((value) => value > 0) ? { input, output, cacheRead, cacheWrite } : undefined;
+}
+
 /**
  * Per-logical-run call, byte and subagent-usage budget, shared across router
  * attempts. `usage` rides the same entry so delegated spend inherits the
@@ -1138,6 +1146,7 @@ function createActivityCollector({ callId, profileName, callIndex, requested = {
             ...(routeState.truncated ? { truncated: true } : {}),
           };
       finalAttribution = attribution;
+      const tokenUsage = reportedTokens(usage);
       publish({
         phase: "agent_completed",
         id: `agent:${callId}`,
@@ -1145,10 +1154,11 @@ function createActivityCollector({ callId, profileName, callIndex, requested = {
         // The one place the child's price is knowable per delegation: operator
         // surfaces show it on the row so an expensive one is identifiable, not
         // just visible in the run total it disappears into.
-        ...((usage.costUsd > 0 || attribution !== undefined)
+        ...((usage.costUsd > 0 || tokenUsage !== undefined || attribution !== undefined)
           ? { subagent: {
               ...subagent,
               ...(usage.costUsd > 0 ? { costUsd: usage.costUsd } : {}),
+              ...(tokenUsage === undefined ? {} : { usage: tokenUsage }),
               ...(attribution === undefined ? {} : { attribution }),
             } }
           : {}),

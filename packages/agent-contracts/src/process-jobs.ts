@@ -148,6 +148,8 @@ export interface ProcessJobSubagentProgress {
   readonly failedCalls: number;
   /** This detached child turn's priced usage in USD; absent when pricing is unavailable. */
   readonly costUsd?: number;
+  /** Non-zero child-turn token counts when the producer reports them. */
+  readonly usage?: { readonly input: number; readonly output: number; readonly cacheRead: number; readonly cacheWrite: number };
   readonly recent: readonly {
     readonly id: string;
     readonly toolName: string;
@@ -186,13 +188,17 @@ export function isProcessJobSubagentRoute(value: unknown): value is ProcessJobSu
 export function isProcessJobSubagentProgress(value: unknown): value is ProcessJobSubagentProgress {
   if (!isRecord(value)
     || !hasExactlyKeys(value, ["revision", "profile", "toolCalls", "failedCalls", "recent",
-      ...["label", "route", "costUsd", "answerHead", "answerTruncated"].filter((key) => Object.hasOwn(value, key))])
+      ...["label", "route", "costUsd", "usage", "answerHead", "answerTruncated"].filter((key) => Object.hasOwn(value, key))])
     || !nonNegativeInteger(value.revision) || !boundedNonEmptyString(value.profile, 128)
     || (value.label !== undefined && !boundedString(value.label, 256))
     || (value.route !== undefined && !isProcessJobSubagentRoute(value.route))
     || !nonNegativeInteger(value.toolCalls) || !nonNegativeInteger(value.failedCalls)
     || (value.costUsd !== undefined && (typeof value.costUsd !== "number" || !Number.isFinite(value.costUsd)
       || value.costUsd < 0 || value.costUsd > Number.MAX_SAFE_INTEGER))
+    || (value.usage !== undefined && (!isRecord(value.usage)
+      || !hasExactlyKeys(value.usage, ["input", "output", "cacheRead", "cacheWrite"])
+      || ![value.usage.input, value.usage.output, value.usage.cacheRead, value.usage.cacheWrite].every(nonNegativeInteger)
+      || ![value.usage.input, value.usage.output, value.usage.cacheRead, value.usage.cacheWrite].some((token) => Number(token) > 0)))
     || value.failedCalls > value.toolCalls
     || (value.answerHead !== undefined && !boundedString(value.answerHead, 8_000))
     || (value.answerTruncated !== undefined && typeof value.answerTruncated !== "boolean")

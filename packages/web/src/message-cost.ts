@@ -21,6 +21,8 @@ export interface CostTelemetryPart {
   readonly type: string;
   readonly event?: string;
   readonly data?: unknown;
+  readonly usage?: unknown;
+  readonly attribution?: unknown;
 }
 
 export interface NormalizedUsage {
@@ -226,6 +228,7 @@ export interface MessageUsageSlice {
   readonly tokens?: { readonly input: number; readonly cacheRead: number; readonly cacheWrite: number; readonly output: number };
   readonly costUsd?: number;
   readonly costPartial?: true;
+  readonly tokensPartial?: true;
 }
 export interface MessageUsageRollup {
   readonly main: MessageUsageSlice;
@@ -246,22 +249,34 @@ const tokenObservation = (value: unknown): MessageUsageSlice["tokens"] => {
   };
 };
 
+function hasTokenFields(value: unknown): boolean {
+  const layers = dataLayers(value);
+  return layers.some((layer) => [layer, recordValue(layer.tokens)].some((record) => record !== undefined
+    && [...INPUT_KEYS, ...CACHED_INPUT_KEYS, ...CACHE_CREATION_KEYS, ...OUTPUT_KEYS]
+      .some((key) => Object.hasOwn(record, key))));
+}
+
 export function messageUsageRollup(message: {
   readonly parts: readonly CostTelemetryPart[];
   readonly attribution?: { readonly executed?: { readonly model?: string }; readonly attempted?: { readonly model?: string } };
 }): MessageUsageRollup {
   let aggregate: NormalizedUsage | null = null;
   let tokens: MessageUsageSlice["tokens"];
+  let rejectedTokens = false;
   for (const part of message.parts) {
     if (part.type !== "telemetry" || part.event === undefined) continue;
     const layers = dataLayers(part.data);
     if (!isAggregateUsageTelemetry(part.event, layers)) continue;
     const observation = normalizeUsage(part.data);
-    if (observation === null) continue;
+    if (observation === null) {
+      if (hasTokenFields(part.data)) rejectedTokens = true;
+      continue;
+    }
     if (observation.cost !== undefined) aggregate = observation;
     // A cost-only update must not erase the most recent aggregate token sample.
     const observed = tokenObservation(part.data);
     if (observed !== undefined) tokens = observed;
+    else if (hasTokenFields(part.data)) rejectedTokens = true;
   }
   const subagents: Array<MessageUsageSlice & { readonly detached: boolean }> = [];
   for (const part of message.parts) {
@@ -306,6 +321,7 @@ export function messageUsageRollup(message: {
       ...(tokens === undefined ? {} : { tokens }),
       ...(costUsd === undefined ? {} : { costUsd }),
       ...(tokens !== undefined && reportedCost === undefined ? { costPartial: true as const } : {}),
+      ...(rejectedTokens ? { tokensPartial: true as const } : {}),
     },
     subagents,
   };

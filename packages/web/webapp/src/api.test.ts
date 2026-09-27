@@ -1076,12 +1076,14 @@ describe("conversation usage validator", () => {
   it("accepts a priced zero and optional partials", () => {
     expect(parseThreadUsage(response)).toEqual(response);
     expect(parseThreadUsage({ ...response, settledAssistantTurns: 0 }).settledAssistantTurns).toBe(0);
+    expect(parseThreadUsage({ ...response, subagents: { ...response.subagents, runsWithTokens: 0 } }).subagents?.runsWithTokens).toBe(0);
   });
   it("rejects invalid figures, dates and shapes", () => {
     expect(() => parseThreadUsage({ ...response, total: { costUsd: -1 } })).toThrow();
     expect(() => parseThreadUsage({ ...response, byModel: [{}], computedAt: "unknown" })).toThrow();
     expect(() => parseThreadUsage({ ...response, subagents: { runs: 0 } })).toThrow();
     expect(() => parseThreadUsage({ ...response, settledAssistantTurns: -1 })).toThrow();
+    expect(() => parseThreadUsage({ ...response, subagents: { ...response.subagents, runsWithTokens: 2 } })).toThrow();
     expect(() => parseThreadUsage({ ...response, total: { tokens: { ...response.total.tokens, input: NaN } } })).toThrow();
   });
 });
