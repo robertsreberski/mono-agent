@@ -11,6 +11,10 @@
   manual Compact. Detached subagent jobs do not report token counts yet, so
   token totals show a lower bound when they ran.
 
+- Show measured synchronous subagent tokens in the web Context usage sub-line,
+  distinguish mixed reports from missing reports, and accept future detached
+  job token counts without emitting them yet.
+
 - Fix manual context compaction for app-hosted conversations with durable Pi
   sessions, including web model selections; log safe unsupported reasons on the
   host while keeping operator responses generic.

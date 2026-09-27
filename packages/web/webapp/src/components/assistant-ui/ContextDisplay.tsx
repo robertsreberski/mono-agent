@@ -107,7 +107,10 @@ function TokensSection({ totals, loading, id }: { readonly totals?: WebThreadUsa
     return tokenColumns.map(({ key }) => {
       const value = key === "input" ? slice.tokens!.input + slice.tokens!.cacheWrite : slice.tokens![key];
       return <td key={key} title={subLine && slice.tokensPartial
-        ? `At least. ${sub?.runs ?? 0} subagent runs include missing token reports. ${exact(value)} reported.` : exact(value)}
+        ? sub?.runsWithTokens === undefined
+          ? `At least. Some subagent runs didn't report tokens. ${exact(value)} reported.`
+          : `At least. ${sub.runs - sub.runsWithTokens} of ${sub.runs} subagent runs didn't report tokens.`
+        : exact(value)}
         aria-label={`${slice.tokensPartial ? "at least " : ""}${exact(value)}`}>
         {slice.tokensPartial ? "≥" : ""}{formatTokenCount(value)}
       </td>;

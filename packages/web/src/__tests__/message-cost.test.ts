@@ -118,6 +118,30 @@ describe("messageUsageRollup", () => {
     const huge = { main: { tokens: { input: Number.MAX_SAFE_INTEGER, output: 0, cacheRead: 0, cacheWrite: 0 } }, subagents: [] };
     expect(sumThreadUsage([huge, good]).total).toMatchObject({ tokens: { input: Number.MAX_SAFE_INTEGER }, tokensPartial: true });
   });
+  it("marks partial when a later malformed sample supersedes an earlier valid one", () => {
+    const rolled = messageUsageRollup({ parts: [usage(0.25), telemetry("usage_update", {
+      cumulativeUsd: 0.5, tokens: { input: -2, output: 1 },
+    })] });
+    expect(rolled.main.tokens?.input).toBe(50);
+    expect(rolled.main.tokensPartial).toBe(true);
+    expect(sumThreadUsage([rolled]).total).toMatchObject({ tokensPartial: true, costUsd: 0.5 });
+    const unpriced = messageUsageRollup({ parts: [usage(0.25), telemetry("usage_update", { tokens: { input: -2 } })] });
+    expect(unpriced.main.tokensPartial).toBe(true);
+  });
+  it("counts reported child tokens, retains mixed gaps and keeps sync tokens out of model rows", () => {
+    const sample = { input: 8, output: 2, cacheRead: 3, cacheWrite: 1 };
+    const rolled = messageUsageRollup({ parts: [usage(2),
+      { ...subagent(0.5), usage: sample, attribution: { executed: { model: "grove/fast" } } },
+      subagent(0.25),
+    ] });
+    const total = sumThreadUsage([rolled]);
+    expect(total.subagents).toMatchObject({ runs: 2, runsWithTokens: 1, tokens: sample, tokensPartial: true });
+    expect(total.total.tokens).toMatchObject({ input: 50 });
+    expect(total.byModel.find((row) => row.model === "grove/fast")?.tokens).toBeUndefined();
+    const complete = sumThreadUsage([messageUsageRollup({ parts: [usage(2), { ...subagent(0.5), usage: sample }] })]);
+    expect(complete.subagents).toMatchObject({ runs: 1, runsWithTokens: 1 });
+    expect(complete.subagents?.tokensPartial).toBeUndefined();
+  });
   it("marks cost partial only for token telemetry without a cost observation", async () => {
     const { messageUsageRollup } = await import("../message-cost.js");
     expect(messageUsageRollup({ parts: [usage(undefined)] }).main.costPartial).toBe(true);

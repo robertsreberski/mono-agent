@@ -19,12 +19,13 @@ function add(target: MutableSlice, source: MessageUsageSlice) {
   }
   if (source.costUsd !== undefined) target.costUsd = (target.costUsd ?? 0) + source.costUsd;
   if (source.costPartial) target.costPartial = true;
+  if (source.tokensPartial) target.tokensPartial = true;
 }
 
 /** Fold per-message rollups without ever adding synchronous spend twice. */
 export function sumThreadUsage(rollups: readonly MessageUsageRollup[], computedAt = new Date().toISOString(), settledAssistantTurns?: number): WebThreadUsage {
   const total: MutableSlice = {};
-  const subagents: MutableSlice & { runs: number } = { runs: 0 };
+  const subagents: MutableSlice & { runs: number; runsWithTokens: number } = { runs: 0, runsWithTokens: 0 };
   const byModel = new Map<string | undefined, MutableSlice>();
   const modelSlice = (model: string | undefined): MutableSlice => {
     let slice = byModel.get(model);
@@ -40,6 +41,7 @@ export function sumThreadUsage(rollups: readonly MessageUsageRollup[], computedA
     if (rollup.main.costUsd !== undefined && rollup.main.tokens === undefined) total.tokensPartial = true;
     for (const child of rollup.subagents) {
       subagents.runs += 1;
+      if (child.tokens !== undefined) subagents.runsWithTokens += 1;
       add(subagents, child);
       if (child.detached) {
         add(total, child);
@@ -60,7 +62,7 @@ export function sumThreadUsage(rollups: readonly MessageUsageRollup[], computedA
   });
   return {
     total: clean(total),
-    ...(subagents.runs === 0 ? {} : { subagents: { ...clean(subagents), runs: subagents.runs } }),
+    ...(subagents.runs === 0 ? {} : { subagents: { ...clean(subagents), runs: subagents.runs, runsWithTokens: subagents.runsWithTokens } }),
     byModel: [...byModel.entries()].filter(([, slice]) => slice.costUsd !== undefined)
       .sort((a, b) => (b[1].costUsd ?? 0) - (a[1].costUsd ?? 0))
       .map(([model, slice]) => ({ ...clean(slice), ...(model === undefined ? {} : { model }) })),

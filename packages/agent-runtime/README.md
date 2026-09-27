@@ -872,6 +872,8 @@ requires an authored `systemPrompt`. For model and effort independently, call-ti
 values override profile pins, then inherit the parent's effective turn values.
 Pinned or overridden routes appear in the result header and `details.subagent.requested`;
 `details.subagent.executed` records the successful child route when available.
+Synchronous delegation completion events also carry measured non-zero token usage
+(input, output, cache read and cache write) beside priced cost when available.
 
 Hosts may inject a conversation-scoped `subagents.instances` facade to enable
 `Agent({persist: true, id?})` and `AgentManage({id, message?, close?, stop?})`. Continuations

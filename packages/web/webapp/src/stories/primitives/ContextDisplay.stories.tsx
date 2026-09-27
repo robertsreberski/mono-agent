@@ -41,6 +41,12 @@ export const Current: Story = Typical;
 export const WithCost: Story = Typical;
 export const WithProviderUsage: Story = Typical;
 export const MultiModelSubagents: Story = { args: { ...base, context: { ...moderate, usage: { ...moderate.usage, total: 132_000 } }, threadId: "garden-usage-mixed", totals: undefined }, play: withPlan };
+const reportedTokens = { input: 8_200, output: 1_700, cacheRead: 4_100, cacheWrite: 500 };
+export const SubagentTokensReported: Story = { args: { ...base, totals: { ...mixed,
+  subagents: { ...mixed.subagents!, runsWithTokens: 3, tokens: reportedTokens, tokensPartial: undefined },
+  total: { ...mixed.total, tokensPartial: undefined } } }, play: withPlan };
+export const SubagentTokensMixed: Story = { args: { ...base, totals: { ...mixed,
+  subagents: { ...mixed.subagents!, runsWithTokens: 1, tokens: reportedTokens } } }, play: withPlan };
 export const NearlyFull: Story = { args: { ...base, totals: mixed, context: { ...moderate, usage: { ...moderate.usage, total: 184_000 } } }, play: withPlan };
 export const Critical: Story = { args: { ...base, context: { ...moderate, usage: { ...moderate.usage, total: 192_000 } } }, play: withPlan };
 export const Running: Story = { args: { ...base, context: { ...moderate, status: "updating" }, running: true, compactBlocked: true }, play: withPlan };

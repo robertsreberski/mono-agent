@@ -404,7 +404,11 @@ export function parseThreadUsage(value: unknown): WebThreadUsage {
       const model = recordOf(row);
       return validUsageSlice(row) && model !== null && (model.model === undefined || typeof model.model === "string");
     }) || (usage.subagents !== undefined && (!validUsageSlice(usage.subagents)
-      || !Number.isSafeInteger(recordOf(usage.subagents)?.runs) || Number(recordOf(usage.subagents)?.runs) < 1))) {
+      || !Number.isSafeInteger(recordOf(usage.subagents)?.runs) || Number(recordOf(usage.subagents)?.runs) < 1
+      || (recordOf(usage.subagents)?.runsWithTokens !== undefined
+        && (!Number.isSafeInteger(recordOf(usage.subagents)?.runsWithTokens)
+          || Number(recordOf(usage.subagents)?.runsWithTokens) < 0
+          || Number(recordOf(usage.subagents)?.runsWithTokens) > Number(recordOf(usage.subagents)?.runs)))))) {
     throw new Error("Invalid conversation usage response.");
   }
   return usage as unknown as WebThreadUsage;

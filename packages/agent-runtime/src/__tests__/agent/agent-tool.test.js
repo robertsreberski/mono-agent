@@ -832,7 +832,25 @@ describe("subagentUsageForRun", () => {
 
     expect(events.some((event) => event.type === "cost_accumulated")).toBe(false);
     const completed = events.find((event) => event.phase === "agent_completed");
-    expect(completed.subagent).toMatchObject({ id: "c1", name: "researcher", costUsd: 0.02 });
+    expect(completed.subagent).toMatchObject({ id: "c1", name: "researcher", costUsd: 0.02,
+      usage: { input: 100, output: 20, cacheRead: 5, cacheWrite: 3 } });
+  });
+
+  it("emits tokens even if the child was not priced, and omits an all-zero sample", async () => {
+    const events = [];
+    const run = async (request) => {
+      request.onEvent({ type: "cost_accumulated", cumulativeUsd: 0, tokens: { input: 12, output: 2 } });
+      return { text: "done", events: [] };
+    };
+    const tool = createAgentTool(subagentOptions({ run }), { onEvent: (event) => events.push(event) });
+    await tool.execute("c1", { prompt: "x" });
+    expect(events.find((event) => event.phase === "agent_completed")?.subagent).toMatchObject({
+      usage: { input: 12, output: 2, cacheRead: 0, cacheWrite: 0 },
+    });
+    expect(events.find((event) => event.phase === "agent_completed")?.subagent).not.toHaveProperty("costUsd");
+    const unmeasured = [];
+    await createAgentTool(subagentOptions({ run: okRun() }), { onEvent: (event) => unmeasured.push(event) }).execute("c2", { prompt: "x" });
+    expect(unmeasured.find((event) => event.phase === "agent_completed")?.subagent).not.toHaveProperty("usage");
   });
 
   it("leaves the price off a delegation the runtime never priced", async () => {
