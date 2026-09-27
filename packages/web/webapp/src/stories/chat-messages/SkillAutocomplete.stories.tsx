@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useEffect } from "react";
 import { AssistantRuntimeProvider, ComposerPrimitive, useLocalRuntime } from "@assistant-ui/react";
 import { SkillAutocomplete } from "../../components/assistant-ui/SkillPicker";
+import { waitForOverlay } from "../overlay-play";
 import type { SkillInfo } from "../../types";
 const skills: SkillInfo[] = [
   { name: "garden-planning", description: "Sketch a fictional garden plan", reference: "$garden-planning", availability: "on-demand" },
@@ -26,6 +27,7 @@ const typeSuggestion: NonNullable<Story["play"]> = async ({ canvasElement }) => 
   const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
   setter?.call(field, "$garden");
   field.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: "$garden" }));
+  await waitForOverlay(canvasElement, '[data-slot="skill-autocomplete-list"]');
 };
 export const SuggestionsOpen: Story = { render: () => <Suggestions />, play: typeSuggestion };
 export const Filtered: Story = { render: () => <Suggestions query="notes" />, play: typeSuggestion };

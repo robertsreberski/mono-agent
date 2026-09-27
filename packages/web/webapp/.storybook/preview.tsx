@@ -28,6 +28,30 @@ const originalFetch = window.fetch.bind(window);
 window.fetch = (input, init) => {
   const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
   const pathname = new URL(url, location.href).pathname;
+  if (pathname === "/api/v1/agents/atlas/cron/jobs/garden-daily/run" && init?.method === "POST") {
+    return Promise.resolve(Response.json({ kind: "confirmation_required", confirmation: { token: "fictional-confirmation", expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(), message: "Run the fictional garden schedule now?" } }, { status: 428 }));
+  }
+  if (pathname === "/api/v1/agents/atlas/cron/config-view" && (!init?.method || init.method === "GET")) {
+    return Promise.resolve(Response.json({ configView: { label: "Example garden schedule", fields: [{ id: "schedule", label: "Schedule", value: "0 9 * * *", source: "example", redacted: false }, { id: "target", label: "Destination", value: "[redacted]", source: "example", redacted: true }] } }));
+  }
+  const compact = /^\/api\/v1\/threads\/garden-compact-(result|error)\/compact$/.exec(pathname);
+  if (compact && init?.method === "POST") {
+    return Promise.resolve(compact[1] === "result"
+      ? Response.json({ status: "succeeded", trigger: "manual", operationId: "fictional-operation", tokensBefore: 29000, tokensAfter: 9000, tokenCountsExact: true })
+      : Response.json({ error: { message: "Example compaction was unavailable.", code: "unavailable" } }, { status: 503 }));
+  }
+  if (/^\/api\/v1\/agents\/atlas-story-usage(?:-loading)?\/provider-usage$/.test(pathname) && (!init?.method || init.method === "GET")) {
+    if (pathname.includes("-loading/")) {
+      return new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
+    }
+    const hour = 60 * 60 * 1000;
+    const fetchedAt = new Date(Date.now() - hour).toISOString();
+    const window = (kind: "session" | "weekly" | "model", label: "Session" | "Weekly" | "Fable", usedPercent: number, periodMs: number, remainingMs: number) =>
+      ({ kind, label, usedPercent, periodMs, resetsAt: new Date(Date.parse(fetchedAt) + remainingMs).toISOString() });
+    return Promise.resolve(Response.json({ schema: "mono-agent.provider-usage.v1", providers: [{ providerId: "anthropic", label: "Claude", fetchedAt, stale: false,
+      windows: [window("session", "Session", 12, 5 * hour, 4 * hour), window("weekly", "Weekly", 52, 7 * 24 * hour, 5 * 24 * hour), window("model", "Fable", 92, 30 * 24 * hour, 20 * 24 * hour)],
+    }] }));
+  }
   const auth = /^\/api\/v1\/agents\/(atlas-story-auth-(missing|verified))\/provider-auth$/.exec(pathname);
   if (auth && (!init?.method || init.method === "GET")) {
     const verified = auth[2] === "verified";

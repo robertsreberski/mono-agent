@@ -1,9 +1,11 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { ImageGrid, MessageGallery } from "../../components/ImageGallery";
+import { openOverlay } from "../overlay-play";
 const image = { key: "garden", name: "Fictional garden illustration", src: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='320' height='200'%3E%3Crect width='320' height='200' fill='%2324725f'/%3E%3Ccircle cx='160' cy='100' r='45' fill='%23e6b566'/%3E%3C/svg%3E" };
 export default { title: "Chat & Messages/ImageGallery", component: ImageGrid, tags: ["autodocs"], decorators: [(Story) => <MessageGallery><Story /></MessageGallery>] } satisfies Meta<typeof ImageGrid>;
 type Story = StoryObj<typeof ImageGrid>;
 export const Single: Story = { args: { images: [image] } };
 export const Multiple: Story = { args: { images: [image, { ...image, key: "garden-two", name: "Second fictional garden illustration" }] } };
+export const LightboxOpen: Story = { args: Multiple.args, play: async ({ canvasElement }) => { await openOverlay(canvasElement, '[aria-label="View Fictional garden illustration"]', '.lightbox-popup'); } };
 export const Empty: Story = { args: { images: [] } };
 export const Mobile: Story = { args: { images: [image] }, globals: { viewport: { value: "phone" } } };

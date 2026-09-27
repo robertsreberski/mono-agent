@@ -32,6 +32,7 @@ export const storyStore = {
   retryThreadList: noop, loadMoreThreads: asyncNoop, refreshCron: asyncNoop,
   setAgentPinned: asyncNoop, ensureProviderCatalog: asyncNoop, createThread: asyncNoop, updateProject: asyncNoop,
   createProject: asyncNoop, createTag: asyncNoop, updateTag: asyncNoop,
+  loadTags: asyncNoop, setThreadTags: asyncNoop, loadProjects: asyncNoop,
 };
 export const useConsoleStore = () => storyStore;
 export const useUploadLimits = () => uploadLimits;
