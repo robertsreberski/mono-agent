@@ -118,11 +118,6 @@ jobs:
       - name: Build packages
         run: pnpm run build
 
-      # Stories import the workspace contracts barrel, which exists only after
-      # the package build; the standalone Webapp browser lane has no root install.
-      - name: Typecheck web console stories
-        run: pnpm --dir packages/web/webapp run typecheck:storybook
-
       - name: Typecheck marked documentation snippets
         run: pnpm run check:doc-snippets
 

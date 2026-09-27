@@ -28,7 +28,7 @@
   ],
   "scripts": {
     "build": "pnpm --dir webapp install --frozen-lockfile && pnpm --dir webapp run build && tsc -p tsconfig.build.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && pnpm --dir webapp run typecheck:storybook",
     "test": "vitest run src/__tests__ && pnpm --dir webapp run test"
   },
   "dependencies": {
