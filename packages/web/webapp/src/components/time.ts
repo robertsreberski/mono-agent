@@ -1,11 +1,12 @@
+/** An absolute local date and time without seconds, for schedule and wake-up labels. */
+export const shortDateTime = (date: string): string =>
+  new Date(date).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
+
 /**
  * A conversation's age, at the precision a sidebar row can use: recency matters
  * for the last week, and after that only the date does. Shared so the
  * conversation list and its search results cannot drift apart.
  */
-export const shortDateTime = (date: string): string =>
-  new Date(date).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
-
 export const relativeTime = (date: string): string => {
   const elapsed = Math.max(0, Date.now() - Date.parse(date));
   const minutes = Math.floor(elapsed / 60_000);
