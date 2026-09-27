@@ -185,7 +185,7 @@ describe("MemoryRetrievalService", () => {
     expect(block).toBeDefined();
     expect(block?.content.match(/deployment color/gu)).toHaveLength(3);
     expect(block?.content).toContain("## Memory (possibly relevant — may be unrelated; verify before relying)");
-    expect(block?.content).toContain("- Morgan selected cobalt-0 as the deployment color. (task/plan recorded)");
+    expect(block?.content).toContain("- Morgan selected cobalt-0 as the deployment color. * (current; done; task/plan recorded)");
     expect(Buffer.byteLength(block?.content ?? "", "utf8")).toBeLessThanOrEqual(1_500);
     expect(hits).toHaveLength(8);
     expect(store.queries).toEqual(["what deployment color did morgan select?", "different query"]);
@@ -406,6 +406,25 @@ describe("MemoryRetrievalService", () => {
     expect(hits.map((hit) => hit.record.id)).toContain("conflict");
     // Still one shared backend lookup; abstention paid for no extra retrieval.
     expect(store.queries).toEqual(["what color did mira select for the velin launch?"]);
+  });
+
+  it("uses the host's local day for date-only values and its instant for offset event timestamps", async () => {
+    const store = fakeStore();
+    store.recall = async () => [
+      { score: 0.94, record: { id: "day", text: "Maple club met on the local day.",
+        type: "event", status: "open", validTo: "2026-09-24" } },
+      { score: 0.93, record: { id: "instant", text: "Maple hosted an offset meeting.",
+        type: "event", status: "open", dueAt: "2026-09-24T23:30:00-05:00" } },
+    ];
+    const memory = new MemoryRetrievalService(store);
+    const block = await memory.load("conversation", "Maple meetings", { turnId: "local-date", ownerTurn: true,
+      hostDate: "2026-09-25", hostLocalDate: "2026-09-24", hostInstant: "2026-09-25T03:00:00Z" });
+    expect(block?.content).toContain("local day. (current)");
+    expect(block?.content).toContain("offset meeting. (current)");
+    const later = await memory.load("conversation", "Maple meetings", { turnId: "later", ownerTurn: true,
+      hostDate: "2026-09-25", hostLocalDate: "2026-09-25", hostInstant: "2026-09-25T05:00:00Z" });
+    expect(later?.content).toContain("ended 2026-09-24");
+    expect(later?.content).toContain("ended 2026-09-24T23:30:00-05:00");
   });
 
   it("shows the strongest lines within the window; a distant conflict is left to explicit recall", async () => {

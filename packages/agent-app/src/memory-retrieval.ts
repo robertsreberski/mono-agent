@@ -197,11 +197,16 @@ export class MemoryRetrievalService implements MemoryStore {
       // Language-neutral selection relies on embedding scores; a lexical-only
       // store (e.g. Lite) never feeds the automatic block.
       if (outcome.retrievalMode !== "hybrid") return undefined;
-      const asOf = options.hostDate !== undefined && /^\d{4}-\d{2}-\d{2}$/u.test(options.hostDate) ? options.hostDate : undefined;
-      const hits = selectPossiblyRelevantRecallHits(outcome.hits, asOf === undefined ? {} : { asOf });
+      const asOf = [options.hostLocalDate, options.hostDate]
+        .find((value) => value !== undefined && /^\d{4}-\d{2}-\d{2}$/u.test(value));
+      const now = options.hostInstant !== undefined && Number.isFinite(Date.parse(options.hostInstant))
+        ? options.hostInstant : undefined;
+      const hits = selectPossiblyRelevantRecallHits(outcome.hits, {
+        ...(asOf === undefined ? {} : { asOf }), ...(now === undefined ? {} : { now }),
+      });
       const budget = Math.min(this.maxBytes, POSSIBLY_RELEVANT_MAX_BYTES);
       const block = hits.length > 0
-        ? formatPossiblyRelevantBlock(hits, recallAttributions(this.store, hits), budget, asOf) : undefined;
+        ? formatPossiblyRelevantBlock(hits, recallAttributions(this.store, hits), budget, asOf, now) : undefined;
       let background: ReturnType<typeof formatMemoryBackground>;
       try {
         const available = this.maxBytes - (block === undefined ? 0 : Buffer.byteLength(block.content, "utf8") + 2);

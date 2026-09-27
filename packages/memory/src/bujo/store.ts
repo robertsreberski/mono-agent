@@ -427,10 +427,12 @@ export class BujoMemoryStore implements MemoryStore {
       }
       recallQuery = trimmed.slice(0, MAX_RECALL_QUERY_CHARS);
     }
+    const observedAt = this.clock();
+    const asOf = `${observedAt.getFullYear()}-${String(observedAt.getMonth() + 1).padStart(2, "0")}-${String(observedAt.getDate()).padStart(2, "0")}`;
     return await this.runAdmittedOperation(async (abortSignal) => await composeRecallBlock(
       this.db,
       recallQuery,
-      { topK: 3, maxBytes: this.maxBytes, trackAccess: !this.readOnly, abortSignal, asOf: this.clock().toISOString().slice(0, 10) },
+      { topK: 3, maxBytes: this.maxBytes, trackAccess: !this.readOnly, abortSignal, asOf, now: observedAt.toISOString() },
     ));
   }
 

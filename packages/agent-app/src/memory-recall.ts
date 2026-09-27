@@ -5,7 +5,7 @@ import type {
   EmbeddingProviderConfig,
 } from "@mono-agent/memory/search";
 import type { MemoryStatus, MemoryType } from "@mono-agent/memory/store";
-import { AUTO_RECALL_MIN_SCORE } from "@mono-agent/memory/bujo";
+import { AUTO_RECALL_MIN_SCORE, recallLineStatus } from "@mono-agent/memory/bujo";
 import { normalizeOptionalString } from "@mono-agent/agent-contracts";
 import * as z from "zod/v4";
 import { readLabelSections, type LabelKind, type LabelSectionRequest, type LabelSections } from "./memory-label-sections.js";
@@ -51,6 +51,8 @@ export interface MemoryRecallHit {
     readonly createdAt?: string;
     readonly validFrom?: string;
     readonly validTo?: string;
+    readonly dueAt?: string;
+    readonly supersededBy?: string;
   };
 }
 
@@ -152,8 +154,10 @@ function formatHitDates(hit: MemoryRecallHit, currentness: RecallHitCurrentness 
     hit.record.createdAt === undefined ? undefined : `recorded ${hit.record.createdAt}`,
     hit.record.validFrom === undefined ? undefined : `valid from ${hit.record.validFrom}`,
     hit.record.validTo === undefined ? undefined : `valid to ${hit.record.validTo}`,
-    // "current" is the default and costs no tokens; only a closed value is marked.
-    currentness === "superseded" ? currentness : undefined,
+    hit.record.dueAt === undefined ? undefined : `due ${hit.record.dueAt}`,
+    // "current" is the default and costs no tokens; only closed values are marked.
+    currentness === "ended" ? `ended ${hit.record.validTo ?? hit.record.dueAt}`
+      : currentness === "superseded" ? currentness : undefined,
   ].filter((part) => part !== undefined);
   return parts.length === 0 ? "" : `[${parts.join("; ")}] `;
 }
@@ -167,7 +171,7 @@ function formatHitDates(hit: MemoryRecallHit, currentness: RecallHitCurrentness 
  * insufficient evidence). The best hit is always kept.
  */
 export const RECALL_TAIL_MARGIN = 0.15;
-export type RecallHitCurrentness = "current" | "superseded";
+export type RecallHitCurrentness = "current" | "superseded" | "ended";
 export type RecallEvidenceNote = "insufficient" | "conflicting";
 
 export function calibrateRecallHits<T extends { readonly score: number }>(hits: readonly T[]): readonly T[] {
@@ -178,11 +182,11 @@ export function calibrateRecallHits<T extends { readonly score: number }>(hits: 
 }
 
 /** Only records that carry lifecycle metadata get a currentness marker. */
-export function recallHitCurrentness(hit: MemoryRecallHit, today: string): RecallHitCurrentness | undefined {
-  const { status, validTo, createdAt } = hit.record;
-  if (status === undefined && validTo === undefined && createdAt === undefined) return undefined;
-  if (status === "invalidated" || status === "dropped") return "superseded";
-  return validTo !== undefined && validTo.slice(0, 10) < today ? "superseded" : "current";
+export function recallHitCurrentness(hit: MemoryRecallHit, today: string, now?: string): RecallHitCurrentness | undefined {
+  const { type, status, validTo, dueAt, createdAt, supersededBy } = hit.record;
+  if (type === undefined && status === undefined && validTo === undefined && dueAt === undefined
+    && createdAt === undefined && supersededBy === undefined) return undefined;
+  return recallLineStatus(hit.record, today, now);
 }
 
 /** Bounded candidate window retained for compatibility with explicit recall consumers. */
@@ -401,8 +405,9 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
         },
       };
     }
-    const today = new Date().toISOString().slice(0, 10);
-    const currentness = hits.map((hit) => calibrated ? recallHitCurrentness(hit, today) : undefined);
+    const observedAt = new Date();
+    const today = `${observedAt.getFullYear()}-${String(observedAt.getMonth() + 1).padStart(2, "0")}-${String(observedAt.getDate()).padStart(2, "0")}`;
+    const currentness = hits.map((hit) => calibrated ? recallHitCurrentness(hit, today, observedAt.toISOString()) : undefined);
     const evidence = calibrated ? recallEvidenceNote(effectiveQuery, hits, sections, candidates) : undefined;
     const hitText = hits
       .map((hit, index) => `${hit.score.toFixed(3)}  ${formatHitDates(hit, currentness[index])}${lifecyclePrefix(hit)}${hit.record.text}`)
@@ -424,6 +429,7 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
           ...(hit.record.createdAt === undefined ? {} : { createdAt: hit.record.createdAt }),
           ...(hit.record.validFrom === undefined ? {} : { validFrom: hit.record.validFrom }),
           ...(hit.record.validTo === undefined ? {} : { validTo: hit.record.validTo }),
+          ...(hit.record.dueAt === undefined ? {} : { dueAt: hit.record.dueAt }),
           ...(currentness[index] === undefined ? {} : { currentness: currentness[index] }),
         })),
         ...(evidence === undefined ? {} : { evidence }),
@@ -483,8 +489,8 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
  *
  * Recall surfaces `done`, `scheduled` and `migrated` records alongside open
  * ones, so text alone lets a completed or deferred item read as a current
- * fact — the same misrepresentation the automatic recall block avoids by
- * rendering a status-bearing bullet marker (`memory/src/bujo/recall.ts`).
+ * fact. The automatic block renders tasks as historical text with explicit
+ * lifecycle notes instead of displaying an open task marker.
  *
  * Only a non-open state is labelled. An ordinary open record renders exactly as
  * before, so the common case costs no extra tokens, and a backend that supplies

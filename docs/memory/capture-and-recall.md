@@ -261,7 +261,7 @@ Recall returns live records, which includes completed, scheduled, and migrated
 items — not only open ones. Terminal `dropped`/`invalidated` records stay
 excluded. So that a finished or deferred item cannot read as a current fact, a
 result whose status is not `open` is prefixed with that status, for example
-`0.800  [recorded 2026-07-06T12:00:00.000Z] [done] Ship the 0.9 release.`; an ordinary open record also includes the recorded timestamp when supplied. Explicit tool hits keep the backend's ranking. Structured results carry optional `type`, `status`, `createdAt`, `validFrom`, and `validTo` alongside `id`, `score`, and `text` whenever the backend supplies them — a remote backend that reports none keeps its previous result shape unchanged. `createdAt` is the recording instant, not necessarily the event date.
+`0.800  [recorded 2026-07-06T12:00:00.000Z] [done] Ship the 0.9 release.`; an ordinary open record also includes the recorded timestamp when supplied. Explicit tool hits keep the backend's ranking. Structured results carry optional `type`, `status`, `createdAt`, `validFrom`, `validTo`, and `dueAt` alongside `id`, `score`, and `text` whenever the backend supplies them — a remote backend that reports none keeps its previous result shape unchanged. `createdAt` is the recording instant, not necessarily the event date.
 
 Questions about the active chat belong to current conversation history, not durable
 memory. The tool description tells the model to use that history rather than
@@ -311,9 +311,11 @@ says when the evidence is weak. Scores are ranking evidence, not probabilities:
   floor are dropped too. The best hit is always kept. Direct hits are cut before
   one-hop graph expansion and the final list once more after it.
 - **Source date and currentness.** Each hit shows its recorded date and any
-  validity interval. A value whose validity has ended, or whose record is
-  invalidated, is marked `superseded`; current values stay unmarked. Structured
-  hits carry `currentness: "current" | "superseded"`.
+  validity interval. Superseded or invalidated records are `superseded`;
+  a past structured `validTo` or event `dueAt` is `ended <date>`; current values
+  stay unmarked. Date-only values close after the host's local calendar day;
+  timestamped values close when their ISO instant passes, preserving its offset.
+  Structured hits carry `currentness: "current" | "superseded" | "ended"`.
 - **Evidence note.** When the fact sheet holds conflicting current values, or
   the top candidates give different values for the same subject, property and
   scope, the result starts with `Conflicting values:`. Conflicts are checked on
@@ -373,8 +375,8 @@ Recall fuses two retrievers and re-ranks the result:
   - the strongest hybrid (embedding-first) hit must reach `0.62`;
   - further lines must score within `0.04` of it;
   - at most three lines are shown, and identical text appears once;
-  - tasks remain historical context, but display as plain text with `task/plan recorded` rather than a live `[ ]` marker; use an actual task tracker for current status;
-  - current lines come before superseded or ended ones (`validTo`, or an event's structured `dueAt`, before the host date); events without a structured date are not inferred from prose;
+  - tasks remain historical context without a live `[ ]` marker; current lines say `task/plan recorded`, while closed lines keep their ended or superseded status, attribution and insight marker. Use a task tracker for current status;
+  - current lines come before superseded or ended ones (date-only `validTo` or event `dueAt` before the host's local day; timestamps before the host instant). Events without a structured date are not inferred from prose;
   - the chosen lines are listed oldest first, so the latest statement reads last.
 
   Each line shows when it was recorded and whether it is `current`, `superseded` or `ended <date>`. When every label on the line agrees, it also shows who said it: `you said`, `assistant noted` or `from a document`.
@@ -383,7 +385,7 @@ Recall fuses two retrievers and re-ranks the result:
 
   Two cases show nothing automatically:
   - Lexical-only (degraded) results. The host warns instead.
-  - Turns that are not host-verified owner turns: group chats, other senders, cron triggers, and peers. Host-owned process-job completion wakes suppress automatic context even when routed through an authenticated web channel, without changing capture attribution. This is a privacy default; these turns can still use `MemoryRecall` deliberately.
+  - Turns that are not host-verified owner turns: group chats, other senders, cron triggers, and peers. Host-owned process-job completion wakes suppress both the possibly-relevant block and the automatic memory background card even when routed through an authenticated web channel, without changing capture attribution. This is a privacy default; these turns can still use `MemoryRecall` deliberately.
 
   The floor, window and line count were measured on three real stores that use `nomic-embed-text:v1.5`, with English, Polish and Spanish questions. They were chosen to keep the answer present as often as possible while negative and near-miss probes average at most two lines.
 

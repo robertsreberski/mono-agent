@@ -256,9 +256,13 @@ async function loadHarnessMemory(
       // questions and owner-report envelopes as about the owner.
       const ownerTurn = request.captureSpeakerKind === "human-turn" && (request.metadata?.source === "web"
         || request.metadata?.source === "tui" || request.metadata?.source === "acp");
+      const observedAt = options.now?.() ?? new Date();
+      const localDate = `${observedAt.getFullYear()}-${String(observedAt.getMonth() + 1).padStart(2, "0")}-${String(observedAt.getDate()).padStart(2, "0")}`;
       block = await options.memory?.load(request.conversationId, request.userMessage, {
         turnId,
-        hostDate: (options.now?.() ?? new Date()).toISOString().slice(0, 10),
+        hostDate: observedAt.toISOString().slice(0, 10),
+        hostLocalDate: localDate,
+        hostInstant: observedAt.toISOString(),
         ...(senderToken === undefined ? {} : { senderToken }),
         ...(ownerTurn ? { ownerTurn: true as const } : {}),
       });
