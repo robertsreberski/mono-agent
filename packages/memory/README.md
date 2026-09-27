@@ -195,7 +195,11 @@ property falls back to the coarse owner fact when the line is also associated
 with, or names, another person entity. A capture plan retained before `source`
 existed keeps its already-validated labels while its text is unchanged. An `assistant`-sourced memory is kept only with a model salience of at least
 0.5, so the assistant's own progress or status reports and generic advice are
-dropped before reconciliation. A preference needs a `user` source on a human turn; unidentified
+dropped before reconciliation. One constrained review call (`capture:review`) then sees only the
+turn's assistant lines and owner user lines without a preference: it may add a host-gated
+preference to the owner's own stated taste and drop assistant lines that are general world
+information or transient process reports, never changing text or dropping user, tool or document
+lines. A preference needs a `user` source on a human turn; unidentified
 speakers' preferences are conversation-scoped. A verified lesson needs the
 model's lesson label and a host-observed successful tool outcome. Optional `capture.focus` (operator guidance) narrows extraction selection;
 `capture.only` filters curated capture to host-accepted label kinds after final

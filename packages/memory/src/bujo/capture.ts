@@ -1,6 +1,7 @@
 import { extractCapturePlanStrict } from "./capture-batch.js";
 import { capturePlanInputHash, recoveredCapturePlan, retainCapturePlan } from "./capture-plan-cache.js";
 import { captureLabels } from "./capture-labels.js";
+import { reviewCapturePlan } from "./capture-review.js";
 import { labelsOf } from "./labels.js";
 import {
   replayCaptureIntent,
@@ -67,13 +68,24 @@ async function captureTurnUnlocked(
   const observedAt = deps.now();
   const key = deps.captureRetentionKey;
   const inputHash = capturePlanInputHash(text);
-  const extraction = (key === undefined ? undefined : recoveredCapturePlan(deps.root, key, inputHash))
-    ?? await extractCapturePlanStrict(text, deps.llm, deps.abortSignal, knownEntities, {
-    observedAt: observedAt.toISOString(),
-    ...(deps.captureSpeakerKind === undefined ? {} : { captureSpeakerKind: deps.captureSpeakerKind }),
-    ...(deps.captureEvidence === undefined ? {} : { captureEvidence: deps.captureEvidence }),
-    ...(deps.conversationId === undefined ? {} : { conversationId: deps.conversationId }),
-  }, deps.captureSettings?.focus);
+  const recovered = key === undefined ? undefined : recoveredCapturePlan(deps.root, key, inputHash);
+  // A retained plan already carries its review decisions; never review it twice.
+  const extraction = recovered ?? await reviewCapturePlan(
+    await extractCapturePlanStrict(text, deps.llm, deps.abortSignal, knownEntities, {
+      observedAt: observedAt.toISOString(),
+      ...(deps.captureSpeakerKind === undefined ? {} : { captureSpeakerKind: deps.captureSpeakerKind }),
+      ...(deps.captureEvidence === undefined ? {} : { captureEvidence: deps.captureEvidence }),
+      ...(deps.conversationId === undefined ? {} : { conversationId: deps.conversationId }),
+    }, deps.captureSettings?.focus),
+    {
+      llm: deps.llm,
+      ...(deps.abortSignal === undefined ? {} : { abortSignal: deps.abortSignal }),
+      ...(deps.captureSpeakerKind === undefined ? {} : { captureSpeakerKind: deps.captureSpeakerKind }),
+      ...(deps.captureEvidence === undefined ? {} : { captureEvidence: deps.captureEvidence }),
+      ...(deps.conversationId === undefined ? {} : { conversationId: deps.conversationId }),
+      isFinalCaptureAttempt: deps.isFinalCaptureAttempt === true,
+    },
+  );
   deps.abortSignal?.throwIfAborted();
   const only = deps.captureSettings?.only;
   // The extractor already host-validates labels; don't let unaccepted candidates

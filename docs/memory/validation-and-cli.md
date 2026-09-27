@@ -478,7 +478,7 @@ Configure these fields in the JSON `memory.llm` block.
 
 ### Host-runtime (SDK) memory LLM
 
-The `agent-host` provider runs memory LLM passes (one batched memory/graph extraction and, only when close existing candidates need classification, one batched reconcile) on their **own dedicated SDK runtime built from `memory.llm.model`** — independent of the channel runtime — so there is no separate local chat model to pull. The `model` is a runtime reference. Do not set `endpoint` — it is Ollama-only and rejected here.
+The `agent-host` provider runs memory LLM passes (one batched memory/graph extraction, one small review only when the turn has review-eligible lines, and, only when close existing candidates need classification, one batched reconcile) on their **own dedicated SDK runtime built from `memory.llm.model`** — independent of the channel runtime — so there is no separate local chat model to pull. The `model` is a runtime reference. Do not set `endpoint` — it is Ollama-only and rejected here.
 
 :::note
 The memory LLM always executes on `memory.llm.model`, and that model is its **sole primary** — the memory turn does **not** inherit `runtime.fallbacks`, so there is no failover chain on memory passes. This is deliberate: reusing the channel fallback router would silently run capture on `runtime.model`.
@@ -510,7 +510,7 @@ The memory LLM always executes on `memory.llm.model`, and that model is its **so
 
 ## The memory-LLM timeout
 
-`memory.llm.timeoutMs` sets the per-call timeout for the **in-app** memory LLM — each per-turn [capture](/memory/capture-and-recall/#capture--per-turn-intelligent-capture-bujo) call (one extraction + at most one reconcile). Its default is **`60000`** and the value is bounded `1000`–`600000` ms. Raise it when a slow local memory model trips the cap on extraction or reconcile.
+`memory.llm.timeoutMs` sets the per-call timeout for the **in-app** memory LLM — each per-turn [capture](/memory/capture-and-recall/#capture--per-turn-intelligent-capture-bujo) call (one extraction + at most one review + at most one reconcile). Its default is **`60000`** and the value is bounded `1000`–`600000` ms. Raise it when a slow local memory model trips the cap on extraction or reconcile.
 
 There used to be a second default: the removed standalone `memory-bujo` binary read the same env var but defaulted to `120000`. That binary and its `migrate` path are [gone](#memory-bujo-cli--removed), so only the in-app `60000` default remains.
 

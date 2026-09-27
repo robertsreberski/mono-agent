@@ -7,6 +7,13 @@
   recall remain available explicitly; `load()` returns no automatic block on an
   embedding outage rather than injecting lexical-only results.
 
+- Memory capture adds one small review call after extraction on turns with
+  assistant lines or the owner's own statements. It labels the owner's stated
+  likes, dislikes and tastes (in any language) as preferences, beside the owner
+  fact, and drops assistant lines that are general world information or
+  transient process reports. It never rewrites a line or drops what the user,
+  a tool or a document said; turns without such lines make no extra call.
+
 - Let explicit `MemoryRecall` search in any language without English query
   suppression or prose-based conflict guesses. Keep automatic possibly-relevant
   selection language-neutral, and restrict owner backfill to existing structured

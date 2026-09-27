@@ -67,8 +67,8 @@ the admitted turn survives restart and its lexical/vector projections retry.
 
 The full tier: hybrid recall plus bounded LLM curation, an entity graph, and lightweight
 consolidation. The host first fsyncs a run-id-keyed completed-turn record, then projects a compact
-immutable observation in `audit/`, outside curated recall. `writeMode: "capture"` then uses one batched memory/graph extraction and at
-most one batched reconcile call to promote durable facts into daily notes, classifying close
+immutable observation in `audit/`, outside curated recall. `writeMode: "capture"` then uses one batched memory/graph extraction, at most
+one small review call over the admitted lines, and at most one batched reconcile call to promote durable facts into daily notes, classifying close
 entries as ADD / UPDATE / SUPERSEDE / NOOP. Each fact retains only its explicitly extracted
 entity associations. The raw audit is never automatically treated as curated truth.
 
@@ -210,7 +210,7 @@ How the **host** persists each completed turn (independent of the tier's recall)
 
 - `disabled` — never write.
 - `append-host-summary` — admit a deterministic observation by stable provider run id. The local backend fsyncs it, then projects it without a chat LLM: Lite/Journal put it in the canonical daily log, Journal queues semantic indexing after the lexical commit, and BuJo puts it in the separate raw audit.
-- `capture` — fsync the summary and full capture text by stable provider run id, then project the raw audit and run serialized BuJo curation in the background. One contract-explicit, strictly validated extraction call plus at most one strict batch-reconcile call writes canonical facts and precise graph evidence. The extraction prompt spells out the exact field, `0..1` salience, identifier, reference, and relation rules. Reconciliation spells out each exact action shape: `ADD` omits target/text, `NOOP` requires a supplied target id and omits text, and `UPDATE`/`SUPERSEDE` require target plus complete replacement text. The provider-neutral strict parser never fills or coerces an invalid result. A normal stop drains for up to 10 seconds; a timed-out active attempt remains pending for restart. Provider/model failures retry with bounded exponential backoff for more than 24 hours, then remain as a durable dead letter rather than claiming success. `capture` requires `mode: "bujo"`.
+- `capture` — fsync the summary and full capture text by stable provider run id, then project the raw audit and run serialized BuJo curation in the background. One contract-explicit, strictly validated extraction call, at most one strict review call (`capture:review`), and at most one strict batch-reconcile call write canonical facts and precise graph evidence. The extraction prompt spells out the exact field, `0..1` salience, identifier, reference, and relation rules. Reconciliation spells out each exact action shape: `ADD` omits target/text, `NOOP` requires a supplied target id and omits text, and `UPDATE`/`SUPERSEDE` require target plus complete replacement text. The provider-neutral strict parser never fills or coerces an invalid result. A normal stop drains for up to 10 seconds; a timed-out active attempt remains pending for restart. Provider/model failures retry with bounded exponential backoff for more than 24 hours, then remain as a durable dead letter rather than claiming success. `capture` requires `mode: "bujo"`.
 
 The strong built-in write returns only after the owner-only `.capture-intake/pending` record and
 directory entry plus its compact content-free admission commitment are durable. Repeating the same
@@ -351,7 +351,7 @@ and [Deprecations](/reference/deprecations/) for the removal record.
 
 `memory.llm.timeoutMs` sets the per-call chat-LLM timeout for the **in-app** memory
 LLM (per-turn capture): it maps to `memory.llm.timeoutMs` and defaults to `60000`. A capture runs
-one extraction call and at most one reconcile call; a timeout is recorded and warned without
+one extraction call, at most one review call and at most one reconcile call; a timeout is recorded and warned without
 failing the user's reply. The raw audit survives, and the admitted turn remains pending for
 durable retry rather than being declared captured or lost. Raise the timeout for slow models. See
 [Validation & CLI](/memory/validation-and-cli/#the-memory-llm-timeout).

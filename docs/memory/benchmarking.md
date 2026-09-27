@@ -44,7 +44,7 @@ independent stores and accounting. The suite never calls a chat model.
 
 The fast gate also runs two fixed, provider-independent calibrations in separate disposable stores. Their counters never mix with the provider retrieval metrics above:
 
-- **Capture efficiency and fidelity:** a checked-in, provenance-pinned legacy baseline must contain at least four LLM calls, four candidates, and two reconcile-required cases. The current pipeline must use at most two calls—exactly one `capture:extract` plus, when required, one `capture:reconcile-batch`—for at least a 50% call reduction while preserving action/entity/relation parity and 100% precision/recall for exact memory/entity associations.
+- **Capture efficiency and fidelity:** a checked-in, provenance-pinned legacy baseline must contain at least four LLM calls, four candidates, and two reconcile-required cases. A production turn can make up to three capture calls (`capture:extract`, an optional `capture:review` when the turn has assistant lines or owner lines without a preference, and an optional `capture:reconcile-batch`). The fixture has no review-eligible lines, so the current pipeline must use at most two calls on it—exactly one `capture:extract` plus, when required, one `capture:reconcile-batch`—for at least a 50% call reduction while preserving action/entity/relation parity and 100% precision/recall for exact memory/entity associations.
 - **One-hop graph retrieval:** at least ten multi-hop and ten direct cases compare the same 50-hit direct retrieval with graph expansion off/on. Multi-hop Recall@5 must improve by at least 10 percentage points; direct Recall@5 must remain at least 90%; direct and overall regression may not exceed 2 points. Adversarial cases require zero leaks, required misses, duplicate additions, and orphan associations. The calibration also proves one embedding request per query and zero chat-LLM calls during recall.
 
 This calibration answers two bounded feasibility questions: whether the richer BuJo capture can reduce model work without losing the fixture's semantics, and whether a deterministic one-hop graph adds measurable retrieval value without degrading ordinary results. It does **not** claim that the synthetic percentages transfer to every personal corpus or provider. Use the opt-in real-provider and external-dataset runs below for broader evidence, and keep production source/accounting checks in `mono-agent memory audit --json`.
@@ -410,7 +410,7 @@ can change actual context. The provider's own context limit remains authoritativ
 reported usage/context events are separate from estimates. A selected profile
 must be checked for its actual model/context capabilities before a real pilot.
 
-Reports separate admission, replay, capture extraction/reconciliation, embeddings,
+Reports separate admission, replay, capture extraction/review/reconciliation, embeddings,
 readiness, automatic/backend recall, explicit tools, answer latency, setup,
 audit and cleanup. Nested durations overlap and must not be summed as wall time.
 Each latency distribution includes nearest-rank p50/p95, sample size and failures;
