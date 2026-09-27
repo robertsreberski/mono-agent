@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentResponder, AgentResponse } from "@mono-agent/agent-contracts";
 import { bindProcessJobWakeContextToResponder, consumeSilentProcessJobWake, runWithProcessJobWakeContext } from "../process-jobs-context.js";
+import { MemoryRetrievalService, type SharedRecallStore } from "../memory-retrieval.js";
 
 const keySymbol = Symbol.for("mono-agent.process-job-wake.delivery-key.v1");
 const stream = { append: async () => {}, finish: async () => {} } as never;
@@ -33,6 +34,35 @@ describe("exact process-job wake silence", () => {
       expect(await responder.respond(request(key), stream)).toEqual(response);
     }, key);
     expect(consumeSilentProcessJobWake(key)).toBe(false);
+  });
+
+  it("suppresses recall only for privately bound host wakes, leaving capture and explicit recall intact", async () => {
+    const hit = { score: 0.95, record: { id: "tea", text: "Morgan likes tea.", type: "note" as const, status: "open" as const } };
+    const memory = new MemoryRetrievalService({ load: async () => undefined, recall: async () => [hit],
+      close: async () => undefined } as SharedRecallStore);
+    const observed: Array<{ capture: string | undefined; automatic: boolean }> = [];
+    let ordinal = 0;
+    const responder = bindProcessJobWakeContextToResponder({ respond: async (input) => {
+      const automatic = await memory.load(input.conversationId, input.text, {
+        ownerTurn: true, turnId: `turn-${++ordinal}`,
+      });
+      observed.push({ capture: input.captureSpeakerKind, automatic: automatic !== undefined });
+      return { text: "Wake received." };
+    } });
+    const key = "process-job:memory";
+    const human = { ...request(), text: "Morgan likes tea", captureSpeakerKind: "human-turn" as const };
+    await responder.respond(human, stream);
+    await runWithProcessJobWakeContext({ jobId: "memory", chainDepth: 1 }, async () => {
+      await responder.respond({ ...human, metadata: request(key).metadata }, stream);
+    }, key);
+    await responder.respond({ ...human, metadata: request("process-job:stale").metadata }, stream);
+    // A client-supplied lookalike key is not proof of host provenance.
+    expect(observed).toEqual([
+      { capture: "human-turn", automatic: true },
+      { capture: "human-turn", automatic: false },
+      { capture: "human-turn", automatic: true },
+    ]);
+    expect(await memory.recallForTurn("turn-2", "Morgan likes tea")).toEqual([hit]);
   });
 
   it("ignores missing, stale, and mismatched delivery keys", async () => {

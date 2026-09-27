@@ -5,6 +5,7 @@ type MemoryLabelHit = ReturnType<MemoryDb["labelsForEntity"]>[number];
 import { ageAt, formatMemoryBackground as formatBlock, type LabelRecallStore } from "../memory-guidance.js";
 const formatMemoryBackground = (...args: Parameters<typeof formatBlock>) => formatBlock(...args)?.content || undefined;
 import { MemoryRetrievalService, type SharedRecallStore } from "../memory-retrieval.js";
+import { readLabelSections } from "../memory-label-sections.js";
 
 const token = "a".repeat(32);
 const lesson = (scope: string, text: string, id: string, verified = true, active = true): MemoryLabelHit => ({
@@ -60,6 +61,18 @@ describe("automatic labelled background", () => {
     expect(formatMemoryBackground(store(rows), "Please make the note concise", "current", {
       hostDate: options.hostDate,
     }, hits)).toBeUndefined();
+  });
+
+  it("uses the host process's local day for both the fact sheet and background near UTC midnight", () => {
+    // 00:30 UTC is still 29 February in a western host process timezone.
+    const dates: Array<string | undefined> = [];
+    const person: LabelRecallStore = { ...store([], []), labelsForEntity: (_id, asOf) => {
+      dates.push(asOf); return [fact("birth", "2000-03-01")];
+    } };
+    const context = { hostDate: "2024-03-01", hostLocalDate: "2024-02-29", hostInstant: "2024-03-01T00:30:00Z" };
+    expect(formatMemoryBackground(person, "Morgan", "current", context, [])).toContain("age 23");
+    expect(readLabelSections(person, { query: "Morgan", kind: "fact" }, context)?.text).toContain("current");
+    expect(dates).toEqual(["2024-02-29", "2024-02-29"]);
   });
 
   it("derives age at birthday and leap-year boundaries and omits conflicting values", () => {

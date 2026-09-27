@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   calibrateRecallHits,
@@ -59,13 +59,47 @@ describe("calibrated explicit MemoryRecall", () => {
     expect(scores([])).toEqual([]);
   });
 
-  it("marks superseded values from lifecycle status or a closed validity interval", () => {
+  it("marks superseded status and ended structured dates consistently with automatic recall", () => {
     const today = "2026-07-12";
     expect(recallHitCurrentness(hit("a", 0.9, "Morgan works in Example City."), today)).toBe("current");
-    expect(recallHitCurrentness(hit("b", 0.9, "Morgan worked in Maple Town.", { validTo: "2026-01-31" }), today)).toBe("superseded");
+    expect(recallHitCurrentness(hit("b", 0.9, "Morgan worked in Maple Town.", { validTo: "2026-01-31" }), today)).toBe("ended");
     expect(recallHitCurrentness(hit("c", 0.9, "Morgan worked in Maple Town.", { status: "invalidated" }), today)).toBe("superseded");
     expect(recallHitCurrentness(hit("d", 0.9, "Morgan works until autumn.", { validTo: "2026-10-01" }), today)).toBe("current");
     expect(recallHitCurrentness({ score: 0.9, record: { id: "e", text: "Remote memory." } }, today)).toBeUndefined();
+    const offset = hit("f", 0.9, "Maple hosted a meeting.", { type: "event", dueAt: "2026-07-11T23:30:00-05:00" });
+    expect(recallHitCurrentness(offset, today, "2026-07-12T03:00:00Z")).toBe("current");
+    expect(recallHitCurrentness(offset, today, "2026-07-12T05:00:00Z")).toBe("ended");
+  });
+
+  it("uses the host process timezone for the explicit fact sheet near UTC midnight", async () => {
+    const previousTz = process.env.TZ;
+    process.env.TZ = "America/Los_Angeles";
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2024-03-01T00:30:00Z"));
+    try {
+      const dates: Array<string | undefined> = [];
+      const store: RecallCapableStore = { ...localStore([hit("one", 0.9, "Morgan likes tea.")]),
+        findMemoryEntitiesByNames: () => [{ id: "person:morgan", name: "Morgan", createdAt: "2024-02-01T00:00:00Z" }],
+        labelsForEntity: (_id, date) => { dates.push(date); return []; },
+        guidanceForScope: () => [],
+      };
+      await callRecall(store, "Morgan");
+      expect(dates).toEqual(["2024-02-29"]);
+    } finally {
+      vi.useRealTimers();
+      if (previousTz === undefined) delete process.env.TZ;
+      else process.env.TZ = previousTz;
+    }
+  });
+
+  it("exposes a past event due date and ended note through explicit recall", async () => {
+    const result = await callRecall(localStore([hit("event", 0.91, "Maple hosted a meeting.", {
+      type: "event", dueAt: "2026-01-01T23:30:00-05:00",
+    })]), "Maple meeting");
+    expect(result.structuredContent?.hits[0]).toMatchObject({
+      id: "event", currentness: "ended", dueAt: "2026-01-01T23:30:00-05:00",
+    });
+    expect(result.content[0]?.text).toContain("ended 2026-01-01T23:30:00-05:00");
   });
 
   it("says insufficient evidence for a weak best hit and conflicting values for disagreeing current facts", () => {
@@ -89,11 +123,11 @@ describe("calibrated explicit MemoryRecall", () => {
       hit("m-2", 0.8, "Morgan's favorite tea was oolong.", { validTo: "2026-01-31" }),
       hit("m-3", 0.6, "Maple Town has a tea shop."),
     ]), "What is Morgan's favorite tea?");
-    expect(strong.structuredContent?.hits.map(({ id, currentness }) => [id, currentness])).toEqual([["m-1", "current"], ["m-2", "superseded"]]);
+    expect(strong.structuredContent?.hits.map(({ id, currentness }) => [id, currentness])).toEqual([["m-1", "current"], ["m-2", "ended"]]);
     expect(strong.structuredContent).not.toHaveProperty("evidence");
     expect(strong.content[0]?.text).toBe([
       "0.900  [recorded 2026-07-12T10:00:00.000Z] Morgan's favorite tea is jasmine.",
-      "0.800  [recorded 2026-07-12T10:00:00.000Z; valid to 2026-01-31; superseded] Morgan's favorite tea was oolong.",
+      "0.800  [recorded 2026-07-12T10:00:00.000Z; valid to 2026-01-31; ended 2026-01-31] Morgan's favorite tea was oolong.",
     ].join("\n"));
 
     const weak = await callRecall(localStore([hit("m-1", 0.58, "Maple Town has a tea shop."), hit("m-2", 0.3, "Morgan bought a kettle.")]),

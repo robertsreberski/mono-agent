@@ -43,7 +43,7 @@ export interface LabelSections {
 /** Deliberate views retain history and conflicts; no extra lookup/model call beyond the label index. */
 export function readLabelSections(store: LabelRecallStore, request: LabelSectionRequest, context: LabelContext = {}): LabelSections | undefined {
   if (store.labelsForEntity === undefined || store.guidanceForScope === undefined) return undefined;
-  const date = context.hostDate ?? new Date().toISOString().slice(0, 10);
+  const date = context.hostLocalDate ?? context.hostDate ?? new Date().toISOString().slice(0, 10);
   const lines: string[] = [];
   const result: Omit<LabelSections, "text"> = {};
   if (request.kind === undefined || request.kind === "fact") {

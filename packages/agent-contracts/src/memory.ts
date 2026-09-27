@@ -65,6 +65,10 @@ export interface MemoryLoadOptions {
   readonly senderToken?: string;
   /** Host observation date (UTC, matching capture's ISO timestamp). */
   readonly hostDate?: string;
+  /** Host calendar date for date-only recall validity, not a UTC-day substitute. */
+  readonly hostLocalDate?: string;
+  /** Host observation instant for timestamped recall validity. */
+  readonly hostInstant?: string;
   /**
    * Host-stamped: a human turn from the operator's own surface (web, TUI, ACP),
    * the same rule capture uses for `ownerTurn`. Never model text.
