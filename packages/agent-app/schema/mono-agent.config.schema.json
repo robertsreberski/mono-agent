@@ -1548,6 +1548,39 @@
           "type": "string",
           "default": ".mono-agent/artifacts"
         },
+        "replyFiles": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "maxStorageBytes": {
+              "description": "Aggregate reply-file and MCP App content budget in bytes (default 2 GiB), or 'unlimited' to disable quota rejection. MCP App audit keeps a separate 1 MiB reserve when enabled; retention still applies.",
+              "examples": [
+                "unlimited"
+              ],
+              "default": 2147483648,
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "const": "unlimited"
+                }
+              ]
+            },
+            "maxFileBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20971520,
+              "default": 20971520,
+              "description": "Maximum bytes per published reply file (default and maximum 20 MiB); larger values cannot be delivered safely by all channels.",
+              "examples": [
+                20971520
+              ]
+            }
+          }
+        },
         "retention": {
           "type": "object",
           "additionalProperties": false,

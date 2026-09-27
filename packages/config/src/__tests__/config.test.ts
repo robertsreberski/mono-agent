@@ -633,6 +633,23 @@ describe("resolveJsonMonoAgentConfig", () => {
     expect(config.artifacts.memoryRetention).toEqual({ maxAgeDays: 7, maxCount: 5000, dryRun: true });
   });
 
+  it("validates and resolves reply-file storage and per-file limits", () => {
+    const base = { runtime: { model: "pi:openai-codex:gpt-5.5" }, context: { identityPath: "IDENTITY.md" } };
+    const load = (replyFiles?: Record<string, unknown>) => resolveJsonMonoAgentConfig({
+      cwd: "/repo", json: { ...base, ...(replyFiles === undefined ? {} : { artifacts: { replyFiles } }) } as never,
+    });
+    expect(load().artifacts.replyFiles).toEqual({ maxStorageBytes: 2_147_483_648, maxFileBytes: 20_971_520 });
+    expect(load({ maxStorageBytes: 1024, maxFileBytes: 10 }).artifacts.replyFiles)
+      .toEqual({ maxStorageBytes: 1024, maxFileBytes: 10 });
+    expect(load({ maxStorageBytes: "unlimited" }).artifacts.replyFiles?.maxStorageBytes).toBe("unlimited");
+    for (const value of [0, -1, 1.5, "infinite", "1024", Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => load({ maxStorageBytes: value })).toThrow(/artifacts\.replyFiles\.maxStorageBytes/);
+    }
+    for (const value of [0, -1, 1.5, "unlimited", 20_971_521]) {
+      expect(() => load({ maxFileBytes: value })).toThrow(/artifacts\.replyFiles\.maxFileBytes/);
+    }
+  });
+
   it("rejects invalid artifact retention values", () => {
     expect(() =>
       resolveJsonMonoAgentConfig({

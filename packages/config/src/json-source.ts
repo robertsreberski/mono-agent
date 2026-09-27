@@ -285,6 +285,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
   };
   readonly artifacts?: {
     readonly dir?: string;
+    readonly replyFiles?: { readonly maxStorageBytes?: number | "unlimited"; readonly maxFileBytes?: number };
     readonly retention?: MonoAgentArtifactRetentionJson;
     readonly memoryRetention?: MonoAgentArtifactRetentionJson;
   };

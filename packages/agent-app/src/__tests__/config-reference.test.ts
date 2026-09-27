@@ -112,6 +112,8 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "sandbox.fallback": "string",
   "sandbox.unsafeAllowHostProcess": "boolean",
   "artifacts.dir": "string",
+  "artifacts.replyFiles.maxStorageBytes": "integer | unlimited",
+  "artifacts.replyFiles.maxFileBytes": "integer",
   "artifacts.retention.maxAgeDays": "integer",
   "artifacts.retention.maxCount": "integer",
   "artifacts.retention.dryRun": "boolean",
@@ -316,9 +318,15 @@ describe("config reference", () => {
       expect(field, `missing config reference field for ${id}`).toBeDefined();
       const expectedType = EXPECTED_CORE_FIELD_TYPES[id];
       expect(field?.type, `${id} inferred ConfigReferenceType`).toBe(expectedType);
-      expect(schemaForField(field!).type, `${id} generated JSON-Schema type`).toEqual(
-        jsonSchemaTypeFor(expectedType),
-      );
+      if (id === "artifacts.replyFiles.maxStorageBytes") {
+        expect(schemaForField(field!).anyOf).toEqual([
+          { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER }, { const: "unlimited" },
+        ]);
+      } else {
+        expect(schemaForField(field!).type, `${id} generated JSON-Schema type`).toEqual(
+          jsonSchemaTypeFor(expectedType),
+        );
+      }
     }
   });
 

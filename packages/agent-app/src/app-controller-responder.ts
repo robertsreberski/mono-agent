@@ -152,9 +152,15 @@ export interface ResponderControllerPort {
 const SELF_BOUNDED_CHANNEL_ID = "tui";
 
 /** @internal deterministic composition contract used by focused tests. */
-export function replyArtifactStorageMaxBytesForMcpApps(mcpAppsEnabled: boolean): number {
-  return DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES
-    - (mcpAppsEnabled ? DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES : 0);
+export function replyArtifactStorageMaxBytesForMcpApps(
+  mcpAppsEnabled: boolean,
+  maxStorageBytes: number | "unlimited" = DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES,
+): number | "unlimited" {
+  if (maxStorageBytes === "unlimited" || !mcpAppsEnabled) return maxStorageBytes;
+  if (maxStorageBytes <= DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES) {
+    throw new RangeError("artifacts.replyFiles.maxStorageBytes must exceed the MCP App audit reserve (1048576 bytes) when MCP Apps are enabled.");
+  }
+  return maxStorageBytes - DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES;
 }
 
 /** The rollover policy this channel's responder runs under. */
@@ -231,7 +237,7 @@ export async function buildResponder(
   const mcpAppsEnabled = runtimeRouteSupportsMcpApps(coreConfig);
   const replyArtifactStorage = replyArtifactStorageBudgetFor(
     coreConfig.artifacts.dir,
-    replyArtifactStorageMaxBytesForMcpApps(mcpAppsEnabled),
+    replyArtifactStorageMaxBytesForMcpApps(mcpAppsEnabled, coreConfig.artifacts.replyFiles?.maxStorageBytes),
   );
   const artifactDerivedRoots = agentArtifactDerivedRoots(coreConfig.artifacts.dir);
   const continuationStateDir = (await loadContinuationSettings({
@@ -260,6 +266,7 @@ export async function buildResponder(
     workspace: coreConfig.runtime.workspace,
     privateRoots: replyArtifactPrivateRoots,
     retentionDays: coreConfig.artifacts.retention.maxAgeDays,
+    ...(coreConfig.artifacts.replyFiles === undefined ? {} : { maxFileBytes: coreConfig.artifacts.replyFiles.maxFileBytes }),
     replyPartBudget,
     storageBudget: replyArtifactStorage,
     ...(controller.logger === undefined ? {} : { logger: controller.logger }),
@@ -270,6 +277,7 @@ export async function buildResponder(
         retentionDays: coreConfig.artifacts.retention.maxAgeDays,
         replyPartBudget,
         storageBudget: replyArtifactStorage,
+        ...(coreConfig.artifacts.replyFiles === undefined ? {} : { aggregateStorageMaxBytes: coreConfig.artifacts.replyFiles.maxStorageBytes }),
       })
     : undefined;
   const mcpAppsBase = mcpApps?.createExtension;

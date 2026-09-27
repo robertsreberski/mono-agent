@@ -573,6 +573,27 @@ describe("MCP Apps registry", () => {
     await service.dispose();
   });
 
+  it("accepts configured aggregate limits and an unlimited shared budget with an independent audit reserve", async () => {
+    const artifactDir = await tempDir();
+    const auditStorageMaxBytes = DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES;
+    const aggregateStorageMaxBytes = auditStorageMaxBytes + 50_000;
+    const finite = createMcpAppService({
+      artifactDir, aggregateStorageMaxBytes, storageBudget: replyArtifactStorageBudgetFor(artifactDir, 50_000),
+    });
+    await finite.dispose();
+    expect(() => createMcpAppService({ artifactDir, aggregateStorageMaxBytes: auditStorageMaxBytes }))
+      .toThrow(/aggregate storage ceiling/);
+    expect(() => createMcpAppService({
+      artifactDir, aggregateStorageMaxBytes,
+      storageBudget: replyArtifactStorageBudgetFor(artifactDir, "unlimited"),
+    })).toThrow(/content and audit storage budgets/);
+    const unlimited = createMcpAppService({
+      artifactDir, aggregateStorageMaxBytes: "unlimited",
+      storageBudget: replyArtifactStorageBudgetFor(artifactDir, "unlimited"),
+    });
+    await unlimited.dispose();
+  });
+
   it("does not expire committed current-run app state before responder finalization", async () => {
     const artifactDir = await tempDir();
     let clock = new Date("2026-08-15T12:00:00.000Z");

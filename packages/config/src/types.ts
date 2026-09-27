@@ -429,6 +429,8 @@ export interface MonoAgentConfig {
   readonly sandbox?: SandboxPolicy;
   readonly artifacts: {
     readonly dir: string;
+    /** Resolved by the JSON loader; optional for existing programmatic host composition. */
+    readonly replyFiles?: { readonly maxStorageBytes: number | "unlimited"; readonly maxFileBytes: number };
     readonly retention: ArtifactRetentionConfig;
     /** Retention policy for memory-run artifacts under the memory namespace. */
     readonly memoryRetention: ArtifactRetentionConfig;

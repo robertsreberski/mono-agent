@@ -128,6 +128,8 @@ export interface McpAppServiceOptions {
   readonly now?: () => Date;
   readonly replyPartBudget?: ReplyPartBudget;
   readonly storageBudget?: ReplyArtifactStorageBudget;
+  /** Aggregate rich-reply ceiling, including the separately reserved audit bytes. */
+  readonly aggregateStorageMaxBytes?: number | "unlimited";
   readonly maxRetainedConnections?: number;
   readonly connectionIdleMs?: number;
   readonly bridgeRateLimit?: number;
@@ -377,13 +379,19 @@ export function createMcpAppService(options: McpAppServiceOptions): McpAppServic
       "MCP App auditStorageMaxBytes must hold the active audit file and every retained rotation.",
     );
   }
-  if (auditStorageMaxBytes >= DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES) {
+  const aggregateStorageMaxBytes = options.aggregateStorageMaxBytes ?? DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES;
+  if (aggregateStorageMaxBytes !== "unlimited" && (
+    !Number.isSafeInteger(aggregateStorageMaxBytes) || aggregateStorageMaxBytes <= auditStorageMaxBytes
+  )) {
     throw new RangeError("MCP App auditStorageMaxBytes must be smaller than the aggregate storage ceiling.");
   }
-  const contentStorageMaxBytes = DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES - auditStorageMaxBytes;
+  const contentStorageMaxBytes = aggregateStorageMaxBytes === "unlimited"
+    ? "unlimited" : aggregateStorageMaxBytes - auditStorageMaxBytes;
   const storage = options.storageBudget
     ?? replyArtifactStorageBudgetFor(options.artifactDir, contentStorageMaxBytes);
-  if (storage.maxBytes > contentStorageMaxBytes) {
+  if (contentStorageMaxBytes !== "unlimited" && (
+    storage.maxBytes === "unlimited" || storage.maxBytes > contentStorageMaxBytes
+  )) {
     throw new RangeError("MCP App content and audit storage budgets must fit the aggregate storage ceiling.");
   }
   const auditStorage = mcpAppAuditStorageFor(root, {
