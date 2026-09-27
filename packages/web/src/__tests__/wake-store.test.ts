@@ -45,6 +45,31 @@ describe("wake schedule ledger", () => {
     store.close();
   });
 
+  it("drains already queued user input before a pending wake and never claims during a turn", async () => {
+    const root = await temporaryRoot(); roots.push(root);
+    let now = Date.parse("2027-01-02T09:59:00Z");
+    const store = await WebStore.open({ stateDir: join(root, "state"), clock: () => new Date(now) });
+    try {
+      store.replaceAgents([agent()]);
+      const thread = store.createThread("fictional-agent");
+      store.createWakeSchedule(thread.id, definition);
+      const first = store.beginTurn({ threadId: thread.id, text: "Existing work", attachmentIds: [] });
+      const queued = store.reserveLiveInput(thread.id, "Queued before the wake");
+      store.queueLiveInput(queued.input.id);
+      now += 60_000;
+      expect(store.reconcileWake(thread.id, true)).toBe(true);
+      store.completeTurn(first.turnId, "Finished");
+      expect(store.claimWake(thread.id, thread.sourceId, () => true, {})).toBeNull();
+      const promoted = store.promoteNextQueuedLiveInput(thread.id)!;
+      expect(promoted.text).toBe("Queued before the wake");
+      expect(store.claimWake(thread.id, thread.sourceId, () => true, {})).toBeNull();
+      store.completeTurn(promoted.turnId, "Finished queued work");
+      const wake = store.claimWake(thread.id, thread.sourceId, () => true, {});
+      expect(wake?.started.turnId).toBeTruthy();
+      expect(store.claimWake(thread.id, thread.sourceId, () => true, {})).toBeNull();
+    } finally { store.close(); }
+  });
+
   it("never replays an admitted occurrence after reopen", async () => {
     const root = await temporaryRoot(); roots.push(root);
     const stateDir = join(root, "state");
@@ -81,6 +106,13 @@ describe("wake schedule ledger", () => {
     expect(() => store.changeWakeSchedule(thread.id, created.revision, { state: "active" })).toThrow(/Schedule changed/u);
     const raw = new DatabaseSync(store.paths.database);
     expect(raw.prepare("SELECT state FROM wake_occurrences WHERE thread_id = ? AND state = 'pending'").get(thread.id)).toBeUndefined();
+    store.patchThread(thread.id, { archived: false });
+    expect(store.wakeSchedule(thread.id)?.state).toBe("paused");
+    expect(() => store.changeWakeSchedule(thread.id, store.wakeSchedule(thread.id)!.revision, { state: "active" }))
+      .toThrow(/Edit this expired one-off/u);
+    const future = store.changeWakeSchedule(thread.id, store.wakeSchedule(thread.id)!.revision,
+      { definition: { ...definition, localAt: "2027-01-03T10:00" } });
+    expect(future?.state).toBe("active");
     store.close(); raw.close();
   });
 
@@ -105,6 +137,85 @@ describe("wake schedule ledger", () => {
       expect(store.wakeSchedule(offline.id)?.lastOutcome).toBe("skipped");
       expect(store.claimWake(busy.id, busy.sourceId, () => true, {})).not.toBeNull();
       expect(store.claimWake(offline.id, offline.sourceId, () => true, {})).toBeNull();
+    } finally { store.close(); }
+  });
+
+  it("admits previously unqueued occurrences through minute 60 but skips at minute 61", async () => {
+    const root = await temporaryRoot(); roots.push(root);
+    let now = Date.parse("2027-01-02T09:59:00Z");
+    const store = await WebStore.open({ stateDir: join(root, "state"), clock: () => new Date(now) });
+    try {
+      store.replaceAgents([agent()]);
+      const threads = [59, 60, 61].map(() => store.createThread("fictional-agent"));
+      threads.forEach((thread) => store.createWakeSchedule(thread.id, definition));
+      for (const [index, lateMinutes] of [59, 60, 61].entries()) {
+        now = Date.parse("2027-01-02T10:00:00Z") + lateMinutes * 60_000;
+        const thread = threads[index]!;
+        expect(store.reconcileWake(thread.id, true)).toBe(lateMinutes <= 60);
+        expect(store.claimWake(thread.id, thread.sourceId, () => true, {}) !== null).toBe(lateMinutes <= 60);
+        if (lateMinutes === 61) {
+          expect(store.wakeSchedule(thread.id)?.state).toBe("completed");
+          expect(store.wakeSchedule(thread.id)?.lastOutcome).toBe("skipped");
+        }
+      }
+    } finally { store.close(); }
+  });
+
+  it("coalesces months of missed weekly slots into one recent occurrence", async () => {
+    const root = await temporaryRoot(); roots.push(root);
+    let now = Date.parse("2027-01-04T08:00:00Z");
+    const store = await WebStore.open({ stateDir: join(root, "state"), clock: () => new Date(now) });
+    try {
+      store.replaceAgents([agent()]);
+      const thread = store.createThread("fictional-agent");
+      store.createWakeSchedule(thread.id, { kind: "weekly", timezone: "UTC", days: [1], times: ["09:00"] });
+      now = Date.parse("2027-04-05T09:59:00Z");
+      expect(store.reconcileWake(thread.id, true)).toBe(true);
+      const raw = new DatabaseSync(store.paths.database);
+      const pending = raw.prepare("SELECT scheduled_at FROM wake_occurrences WHERE thread_id = ? AND state = 'pending'")
+        .all(thread.id) as Array<{ scheduled_at: string }>;
+      expect(pending).toHaveLength(1);
+      expect(pending[0]?.scheduled_at).toBe("2027-04-05T09:00:00.000Z");
+      expect(store.wakeSchedule(thread.id)?.nextFireAt).toBe("2027-04-12T09:00:00.000Z");
+      raw.close();
+    } finally { store.close(); }
+  });
+
+  it("uses wall time for a due date beyond Node timer range and never repeats after a backward jump", async () => {
+    const root = await temporaryRoot(); roots.push(root);
+    let now = Date.parse("2027-01-01T00:00:00Z");
+    const store = await WebStore.open({ stateDir: join(root, "state"), clock: () => new Date(now) });
+    try {
+      store.replaceAgents([agent()]);
+      const thread = store.createThread("fictional-agent");
+      store.createWakeSchedule(thread.id, { ...definition, localAt: "2027-03-30T10:00" });
+      expect(store.wakeDueThreadIds()).not.toContain(thread.id);
+      now = Date.parse("2027-03-30T10:00:00Z");
+      expect(store.wakeDueThreadIds()).toContain(thread.id);
+      store.reconcileWake(thread.id, true);
+      expect(store.claimWake(thread.id, thread.sourceId, () => true, {})).not.toBeNull();
+      now = Date.parse("2027-01-02T00:00:00Z");
+      expect(store.wakeDueThreadIds()).not.toContain(thread.id);
+      expect(store.claimWake(thread.id, thread.sourceId, () => true, {})).toBeNull();
+    } finally { store.close(); }
+  });
+
+  it("rejects a schedule whose retained source differs from its thread on every operation", async () => {
+    const root = await temporaryRoot(); roots.push(root);
+    let now = Date.parse("2027-01-02T09:59:00Z");
+    const store = await WebStore.open({ stateDir: join(root, "state"), clock: () => new Date(now) });
+    try {
+      store.replaceAgents([agent(), { ...agent(), sourceId: "other-agent" }]);
+      const thread = store.createThread("fictional-agent");
+      store.createWakeSchedule(thread.id, definition);
+      const raw = new DatabaseSync(store.paths.database);
+      raw.prepare("UPDATE wake_schedules SET source_id = 'other-agent' WHERE thread_id = ?").run(thread.id);
+      now += 60_000;
+      expect(store.wakeSchedule(thread.id)).toBeNull();
+      expect(() => store.changeWakeSchedule(thread.id, 1, { state: "paused" })).toThrow(/No schedule exists/u);
+      expect(store.reconcileWake(thread.id, true)).toBe(false);
+      expect(store.claimWake(thread.id, thread.sourceId, () => true, {})).toBeNull();
+      raw.close();
     } finally { store.close(); }
   });
 
