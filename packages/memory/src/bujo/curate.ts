@@ -21,7 +21,10 @@ import { unsafeCredentialContext } from "./text-safety.js";
 const MAX_LINES = 8192;
 const BATCH = 12;
 const MAX_TEXT = 1200;
-const ACTIONS = ["keep", "drop", "rewrite", "label", "merge"] as const;
+// Actions a curate model may propose. `retype` (open task → note) is only
+// proposed by the rule-based `--tasks-to-notes` scan, never by a model.
+const MODEL_ACTIONS = ["keep", "drop", "rewrite", "label", "merge"] as const;
+const ACTIONS = [...MODEL_ACTIONS, "retype"] as const;
 const REASONS = ["generic-advice", "invented-doubt", "duplicate", "transient-status", "focus-noise"] as const;
 export type CurateAction = typeof ACTIONS[number];
 export type CurateReason = typeof REASONS[number];
@@ -292,6 +295,48 @@ export function proposeCoarseCurate(root: string, options: CoarseCurateOptions =
   if (readBujoCanonicalSourceFingerprint(root) !== fingerprint) throw new Error("memory-curate: source changed");
   return { proposals, discarded, truncated };
 }
+export interface TasksToNotesOptions {
+  /** Only tasks created before this instant. */
+  readonly before?: Date;
+  /** Only lines minted by automatic capture (`C-` ids). */
+  readonly captureOnly?: boolean;
+  readonly fingerprint?: string;
+}
+export interface TasksToNotesScan {
+  readonly proposals: readonly CurateProposal[];
+  readonly counts: { readonly openTasks: number; readonly proposed: number; readonly outsideWindow: number; readonly notCapture: number };
+}
+/**
+ * Rule-based and model-free: propose each OPEN task line as a history note.
+ * Memory is not a task list. Done, migrated, scheduled, dropped and superseded
+ * tasks are untouched; nothing but the type changes.
+ */
+export function proposeTasksToNotes(root: string, options: TasksToNotesOptions = {}): TasksToNotesScan {
+  const fingerprint = readBujoCanonicalSourceFingerprint(root);
+  if (options.fingerprint !== undefined && options.fingerprint !== fingerprint) throw new Error("memory-curate: source changed");
+  const before = options.before?.getTime();
+  if (before !== undefined && !Number.isFinite(before)) throw new Error("memory-curate: invalid --before date");
+  const proposals: CurateProposal[] = [];
+  let openTasks = 0; let outsideWindow = 0; let notCapture = 0;
+  for (const file of allDailyPaths(root)) {
+    const snapshot = readCanonicalFileSnapshot(root, file);
+    if (snapshot === undefined) continue;
+    for (const entry of parseDailyFile(snapshot.content).lines) {
+      const bullet = entry.bullet;
+      if (bullet === undefined || bullet.type !== "task" || bullet.status !== "open" || isSkippedRawBujoRecord(bullet.id, bullet.text)) continue;
+      openTasks++;
+      if (before !== undefined && !(Date.parse(bullet.createdAt) < before)) { outsideWindow++; continue; }
+      if (options.captureOnly === true && !bullet.id.startsWith("C-")) { notCapture++; continue; }
+      if (proposals.length >= MAX_LINES) throw new Error("memory-curate: open tasks exceed bound; use --before");
+      const proposal: CurateProposal = { action: "retype", accepted: false, source: { id: bullet.id, file, line: entry.lineNumber,
+        text: bullet.text, textHash: hash(bullet.text), createdAt: bullet.createdAt, status: bullet.status, refs: bullet.refs } };
+      validateCurateProposal(proposal);
+      proposals.push(proposal);
+    }
+  }
+  if (readBujoCanonicalSourceFingerprint(root) !== fingerprint) throw new Error("memory-curate: source changed");
+  return { proposals, counts: { openTasks, proposed: proposals.length, outsideWindow, notCapture } };
+}
 const OWNER_LINE = /^(?:the user|the owner|user|owner)\b/iu;
 function curateEntityNames(entities: readonly { readonly id: string; readonly name: string }[]): ReadonlyMap<string, string> {
   return new Map(entities.map((entity) => [entity.id, entity.name]));
@@ -322,7 +367,8 @@ export function validateCurateProposal(proposal: CurateProposal, names?: Readonl
     || (proposal.mergeEntity !== undefined && (action !== "merge" || proposal.mergeEntity === null || typeof proposal.mergeEntity !== "object"
       || Object.keys(proposal.mergeEntity).sort().join(",") !== "from,to" || typeof proposal.mergeEntity.from !== "string"
       || typeof proposal.mergeEntity.to !== "string" || proposal.mergeEntity.from === proposal.mergeEntity.to))
-    || (action === "merge" && proposal.mergeEntity === undefined)) throw new Error("memory-curate: invalid proposal");
+    || (action === "merge" && proposal.mergeEntity === undefined)
+    || (action === "retype" && source.status !== "open")) throw new Error("memory-curate: invalid proposal");
   for (const label of proposal.labels ?? []) {
     const valid = validateMemoryLabel(label);
     if (valid.kind !== "fact" || valid.attribution !== "assistant-inferred") {
@@ -371,7 +417,7 @@ export function curateEstimate(snapshot: CurateSnapshot, options: CuratePromptOp
 function curateOutputSchema(batch: readonly CurateLine[]): Readonly<Record<string, unknown>> {
   return { type: "object", additionalProperties: false, required: ["proposals"], properties: {
     proposals: { type: "array", minItems: batch.length, maxItems: batch.length, items: {
-      oneOf: ACTIONS.map((action) => ({ type: "object", additionalProperties: false,
+      oneOf: MODEL_ACTIONS.map((action) => ({ type: "object", additionalProperties: false,
         required: ["id", "action", ...(action === "drop" ? ["reason"] : action === "rewrite" ? ["text"] : action === "label" ? ["labels"] : action === "merge" ? ["mergeEntity"] : [])],
         properties: { id: { type: "string", enum: batch.map(({ id }) => id) }, action: { const: action },
           ...(action === "drop" ? { reason: { type: "string", enum: REASONS } } : {}),
@@ -388,7 +434,7 @@ function curateOutputSchema(batch: readonly CurateLine[]): Readonly<Record<strin
 }
 
 function proposalFailure(entry: Record<string, unknown>, error?: unknown): CurateDiscardReason {
-  if (!ACTIONS.includes(entry.action as CurateAction)) return "invalid-action";
+  if (!(MODEL_ACTIONS as readonly string[]).includes(entry.action as string)) return "invalid-action";
   if (Object.keys(entry).some((key) => !["id", "action", "reason", "text", "labels", "mergeEntity"].includes(key))) return "invalid-fields";
   if (entry.action === "drop" ? !REASONS.includes(entry.reason as CurateReason) : entry.reason !== undefined) return "invalid-reason";
   if (entry.action === "rewrite" ? !safeText(entry.text as string) : entry.text !== undefined) return "invalid-text";
@@ -476,6 +522,10 @@ export async function proposeCurate(snapshot: CurateSnapshot, llm: LlmComplete, 
       seen.add(entry.id);
       if (Object.keys(entry).some((key) => !["id", "action", "reason", "text", "labels", "mergeEntity"].includes(key))) {
         discarded.push({ id: entry.id, reason: "invalid-fields" });
+        continue;
+      }
+      if (!(MODEL_ACTIONS as readonly string[]).includes(entry.action as string)) {
+        discarded.push({ id: entry.id, reason: "invalid-action" });
         continue;
       }
       const source = byId.get(entry.id)!;
@@ -596,6 +646,9 @@ function previewCurateLinks(root: string, proposals: readonly CurateProposal[], 
     if (!bullet || bullet.id !== source.id || bullet.text !== source.text || bullet.createdAt !== source.createdAt
       || JSON.stringify(bullet.refs) !== JSON.stringify(source.refs)
       || bullet.status !== source.status) throw new Error("memory-curate: stale source line");
+    if (proposal.action === "retype" && (bullet.type !== "task" || bullet.status !== "open")) {
+      throw new Error("memory-curate: retype needs an open task line");
+    }
     if (proposal.action === "label") {
       finals.set(source.id, { text: bullet.text, refs: withMemoryLabels(bullet, [...labelsOf(bullet), ...proposal.labels!]).refs });
     }
@@ -718,6 +771,11 @@ export async function applyCurateMutations(root: string, db: MemoryDb, proposals
   const drops = proposals.filter((item) => item.action === "drop").map(({ source }) => source.id);
   if (drops.length > 0) await forgetExplicitMemories({ root, db, ids: drops, now, expectedSourceFingerprint });
   for (const proposal of proposals) {
+    // Open task → note: id, text, date, salience and labels stay; only the type changes.
+    if (proposal.action === "retype") {
+      if (!rewriteBullet(root, proposal.source.file, proposal.source.id, { type: "note" })) throw new Error("memory-curate: missing source");
+      continue;
+    }
     if (proposal.action !== "rewrite" && proposal.action !== "label") continue;
     const { file, id } = proposal.source;
     const bullet = readBullet(root, file, id);

@@ -661,6 +661,8 @@ RestoreMemoryBundleImportOptions
 SafeMemoryIndexOptions
 SafeMemoryIndexResult
 SafeMemoryRebuildHooks
+TasksToNotesOptions
+TasksToNotesScan
 adoptLegacyReplayProjection
 appendAssociation
 appendBullet
@@ -700,6 +702,7 @@ proposeCoarseCurate
 proposeCurate
 proposeOwnerAssociations
 proposePersonAssociations
+proposeTasksToNotes
 pruneExplicitMemoryForgetBackups
 readBujoCanonicalSourceFingerprint
 readBujoRuntimeSnapshot

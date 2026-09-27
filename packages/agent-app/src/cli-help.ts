@@ -264,6 +264,7 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
       "mono-agent memory lessons --propose [--json]\n" +
       "mono-agent memory entities --duplicates [--limit N] [--json]\n" +
       "mono-agent memory curate prepare --plan <file> [--model provider:model] [--limit N] [--select recent,repeated,risky,oldest] [--owner-backfill] [--link-people] [--dry-run]\n" +
+      "mono-agent memory curate prepare --plan <file> --tasks-to-notes [--before <date>] [--capture-only] [--dry-run]\n" +
       "mono-agent memory curate review --plan <file> [--accept drop:generic-advice,label:*] [--reject id:<id>]\n" +
       "                  curate prepare|review also take [--merge <fromId>=<toId>]... [--merge-file <file>] [--allow-cross-type]\n" +
       "mono-agent memory curate apply --plan <file> | curate restore --backup <dir>\n" +
@@ -295,6 +296,9 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
       "--link-people (with --limit 0) links note/event lines to each person entity",
       "whose full proper name they contain, exactly as written (associate:person-name);",
       "ambiguous names are skipped. Pre-accepted, at most 1024 per pass; prepare again after apply.",
+      "--tasks-to-notes proposes each open task line as a history note (retype:none):",
+      "id, text, date and labels stay; done, dropped and superseded tasks are untouched.",
+      "--before <date> limits it to older tasks (UTC); --capture-only to capture lines. No model call.",
       "apply and restore require the configured agent to be stopped.",
       "export writes a portable canonical bundle and does not require stopping the",
       "agent; import merges one into this store and does require a stopped agent.",

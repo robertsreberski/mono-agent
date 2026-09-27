@@ -85,6 +85,12 @@ mono-agent memory curate review --plan ./people-plan.json --reject associate:per
 mono-agent stop
 mono-agent memory curate apply --plan ./people-plan.json --json
 
+# Tasks to notes: turn open task lines into dated history notes (no model call)
+mono-agent memory curate prepare --plan ./tasks-plan.json --tasks-to-notes --before 2026-09-01 --capture-only --json
+mono-agent memory curate review --plan ./tasks-plan.json --accept retype:* --reject id:<memoryId>
+mono-agent stop
+mono-agent memory curate apply --plan ./tasks-plan.json --json
+
 # Explicit, reversible removal of selected BuJo memories
 mono-agent memory forget prepare --ids-file ./forget-ids.txt --reason noise_cleanup --plan ./forget-plan.json --json
 mono-agent stop
@@ -134,6 +140,16 @@ recovery could not be verified, leave the agent stopped. To undo a successful
 apply, stop the agent and run `mono-agent memory curate restore --backup <dir>`
 using the exact backup path returned by apply, before any intervening store
 write; audit again before starting. Restore refuses a changed store.
+
+#### Open task lines to history notes
+
+Memory is not a task list: task lifecycle belongs to the agent's task tools, and automatic capture no longer writes open tasks. Stores that already hold open task lines (`[ ]`) can convert them with `curate prepare --tasks-to-notes`. The pass is rule-based and calls no model. It proposes one `retype` for every open task line, and apply changes only that line's type to note (`–`). The id, text, date, salience and labels stay, so nothing is re-embedded beyond the usual post-apply rebuild. Done, migrated, scheduled, dropped and superseded tasks are untouched.
+
+- `--before <date>` limits the pass to tasks created before that ISO date (UTC midnight) or instant. An impossible calendar date such as `2026-02-30` is a usage error, not a later day.
+- `--capture-only` limits it to lines minted by automatic capture (`C-` ids), which leaves older or operator-written tasks as they are.
+- `--dry-run` reports the counts (`openTasks`, `proposed`, `outsideWindow`, `notCapture`) without writing a plan.
+
+Proposals start not accepted. Accept them with `review --accept retype:*` and reject single lines with `--reject id:<memoryId>`. The pass is its own plan: it cannot be combined with `--limit`, `--select`, `--owner-backfill`, `--link-people` or merges. A plan holds one proposal per line, so a retype can never meet a drop of the same line. Apply rechecks that each accepted line is still the same open task, and `curate restore` undoes it like any curate apply.
 
 `memory labels --limit N` reads up to 1000 indexed labels per invocation
 (default 200); `truncated` means more remain. It is read-only and safe while
