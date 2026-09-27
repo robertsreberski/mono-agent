@@ -31,6 +31,14 @@ export type ProcessJobWakeContextResolution =
   | { readonly kind: "missed" };
 
 const wakeContext = new AsyncLocalStorage<ProcessJobWakeFlight>();
+// Recall-only provenance. An authenticated web channel is not evidence that a
+// host-created follow-up contains human-authored text. Keep capture unchanged.
+const hostWakeRecallContext = new AsyncLocalStorage<boolean>();
+
+export function isHostProcessJobWakeRecall(): boolean {
+  return hostWakeRecallContext.getStore() === true;
+}
+
 const PROCESS_JOB_WAKE_DELIVERY_METADATA = Symbol.for("mono-agent.process-job-wake.delivery-key.v1");
 // The metadata object is only an identity key. No string field is added to it,
 // and a wire/user-created object cannot forge membership in this owner-private
@@ -146,12 +154,12 @@ export function bindProcessJobWakeContextToResponder(responder: AgentResponder):
         wakeContextByRequestMetadata.set(request.metadata, [...current, installed]);
       }
       try {
-        // The host created this wake, even when it is routed through an owner
-        // web channel. Do not let an adapter's authenticated-channel stamp turn
-        // it into a human-authored message for automatic memory injection.
-        // Preserve the metadata object's identity for the private wake binding.
-        const response = await responder.respond(deliveryKey === undefined && context === undefined
-          ? request : { ...request, captureSpeakerKind: "trigger" }, stream);
+        // The web operator already sends a delivery key, but its JSON field is
+        // client-supplied. Only an exact active private flight can suppress
+        // automatic recall. Keep captureSpeakerKind and delivery unchanged.
+        const response = await (context === undefined
+          ? responder.respond(request, stream)
+          : hostWakeRecallContext.run(true, () => responder.respond(request, stream)));
         const active = context === undefined ? [] : wakeFlightsByDeliveryKey.get(context.deliveryKey) ?? [];
         // A stale/missing/ambiguous key, narration, or any rich part stays visible.
         if (context !== undefined

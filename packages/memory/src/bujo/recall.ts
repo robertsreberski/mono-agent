@@ -38,14 +38,11 @@ export function selectPossiblyRelevantRecallHits<T extends {
   hits: readonly T[],
   options: { readonly maxLines?: number; readonly asOf?: string } = {},
 ): readonly T[] {
-  // Tasks are history, not automatic turn context. Apply the floor to eligible
-  // lines so a strong task does not hide a usable non-task line below it.
-  const eligible = hits.filter((hit) => hit.record.type !== "task");
-  const top = eligible[0]?.score;
+  const top = hits[0]?.score;
   if (top === undefined || !Number.isFinite(top) || top < POSSIBLY_RELEVANT_MIN_SCORE) return [];
   const maxLines = Math.max(1, Math.min(options.maxLines ?? POSSIBLY_RELEVANT_MAX_LINES, POSSIBLY_RELEVANT_MAX_LINES));
   const window: T[] = [];
-  for (const hit of eligible) {
+  for (const hit of hits) {
     if (hit.score < top - POSSIBLY_RELEVANT_WINDOW) break;
     window.push(hit);
   }
@@ -113,10 +110,12 @@ export function formatPossiblyRelevantBlock<T extends { readonly record: Formatt
     const record = hit.record;
     const recorded = /^\d{4}-\d{2}-\d{2}/u.exec(record.createdAt ?? "")?.[0];
     const status = recallLineStatus(record, asOf);
-    const currency = status === "ended" ? `ended ${endedDate(record, asOf)}` : status;
-    const note = [recorded === undefined ? undefined : `recorded ${recorded}`, currency, attributions.get(record.id)]
+    const currency = record.type === "task" ? "task/plan recorded"
+      : status === "ended" ? `ended ${endedDate(record, asOf)}` : status;
+    const note = [recorded === undefined ? undefined : `recorded ${recorded}`, currency,
+      record.type === "task" ? undefined : attributions.get(record.id)]
       .filter((part) => part !== undefined).join("; ");
-    const body = record.type === undefined || record.status === undefined ? record.text
+    const body = record.type === "task" || record.type === undefined || record.status === undefined ? record.text
       : `${MARKER_FOR(record.type, record.status)} ${record.text}${record.isInsight === true ? " *" : ""}`;
     const text = clampLineBytes(body.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").replace(/\s+/gu, " ").trim(), POSSIBLY_RELEVANT_LINE_BYTES);
     const line = `- ${text}${note.length > 0 ? ` (${note})` : ""}`;

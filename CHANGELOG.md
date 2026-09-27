@@ -2,9 +2,10 @@
 
 ## Unreleased
 
-- Keep tasks and host-owned process-job wakes out of automatic memory context
-  while retaining explicit recall; mark dated events ended when their structured
-  event date has passed.
+- Keep host-owned process-job wakes out of automatic memory context while
+  retaining explicit recall and capture attribution; show task lines as recorded
+  history rather than open to-dos, and mark dated events ended when their
+  structured event date has passed.
 
 - Let agents read, set and clear wake-up schedules for their current web
   conversation; tool-set one-offs must be at least five minutes ahead. Fired

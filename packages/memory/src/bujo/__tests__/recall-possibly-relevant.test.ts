@@ -84,14 +84,18 @@ describe("possibly-relevant selection", () => {
     expect(await composeRecallBlock(db, "¿Qué té bebe Morgan?")).toBeUndefined();
   });
 
-  it("keeps tasks out of automatic context without blocking eligible lines below them", () => {
+  it("keeps task history available without implying an open task to the reader", () => {
     const rows = [
-      { score: 0.94, record: { id: "open", text: "Maple should finish a report.", type: "task" as const, status: "open" as const } },
-      { score: 0.92, record: { id: "done", text: "Maple finished a report.", type: "task" as const, status: "done" as const } },
-      { score: 0.88, record: { id: "note", text: "Maple likes concise reports.", type: "note" as const } },
+      { score: 0.94, record: { id: "open", text: "Maple planned a report.", type: "task" as const,
+        status: "open" as const, createdAt: "2026-01-01T00:00:00Z", isInsight: true } },
+      { score: 0.92, record: { id: "done", text: "Maple finished a report.", type: "task" as const,
+        status: "done" as const, createdAt: "2026-02-01T00:00:00Z" } },
     ];
-    expect(selectPossiblyRelevantRecallHits(rows)).toEqual([rows[2]]);
-    expect(selectPossiblyRelevantRecallHits(rows.slice(0, 2))).toEqual([]);
+    expect(selectPossiblyRelevantRecallHits(rows)).toEqual(rows);
+    const block = formatPossiblyRelevantBlock(rows, new Map([["open", "you said"]]), 800);
+    expect(block?.content).toContain("- Maple planned a report. (recorded 2026-01-01; task/plan recorded)");
+    expect(block?.content).toContain("- Maple finished a report. (recorded 2026-02-01; task/plan recorded)");
+    expect(block?.content).not.toMatch(/\[ \]|\[x\]|you said|\*/u);
   });
 
   it("shares note markers, currency, and source with standalone composition", async () => {

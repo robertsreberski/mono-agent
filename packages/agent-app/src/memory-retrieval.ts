@@ -22,6 +22,7 @@ import {
 } from "@mono-agent/memory/bujo";
 
 import { formatMemoryBackground, type LabelRecallStore } from "./memory-guidance.js";
+import { isHostProcessJobWakeRecall } from "./process-jobs-context.js";
 import { readLabelSections, type LabelSectionRequest } from "./memory-label-sections.js";
 import {
   createMemoryRecallServer,
@@ -142,6 +143,9 @@ export class MemoryRetrievalService implements MemoryStore {
     query?: string,
     options: MemoryLoadOptions = {},
   ): Promise<MemoryBlock | undefined> {
+    // Host-issued wake identity is bound to the exact responder invocation,
+    // not inferred from the query or an untrusted client-supplied JSON field.
+    const hostWake = isHostProcessJobWakeRecall();
     const evidenceQuery = normalizeEvidenceQuery(query ?? conversationId);
     const originalQuestion = query === undefined ? "" : normalizeEvidenceQuery(query);
     const ephemeral = options.turnId === undefined;
@@ -189,7 +193,7 @@ export class MemoryRetrievalService implements MemoryStore {
       // Privacy default: automatic memory reaches only host-verified owner
       // turns. Group chats, other senders and triggers get no block; the
       // lookup above still backs the explicit tool's original-query mode.
-      if (options.ownerTurn !== true) return undefined;
+      if (options.ownerTurn !== true || hostWake) return undefined;
       // Language-neutral selection relies on embedding scores; a lexical-only
       // store (e.g. Lite) never feeds the automatic block.
       if (outcome.retrievalMode !== "hybrid") return undefined;
