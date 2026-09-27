@@ -915,7 +915,20 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       const kind = typeof error === "object" && error !== null && "failureKind" in error ? error.failureKind : undefined;
       const busy = kind === "compaction_busy";
       const unsupported = kind === "compaction_unsupported";
-      if (!busy && !unsupported) {
+      if (unsupported) {
+        // Only trusted harness-authored reasons may enter host logs. An arbitrary
+        // responder error can carry provider output or conversation content.
+        const reason = errorToMessage(error);
+        const knownReasons = [
+          "Manual compaction needs a durable Pi session.",
+          "Manual compaction is unavailable for this conversation's model.",
+          "The history store cannot report the session model binding.",
+          "The runtime cannot compact a durable session.",
+        ];
+        options.logger?.warn?.("TUI manual compaction unsupported.", {
+          reason: knownReasons.includes(reason) ? reason : "unknown",
+        });
+      } else if (!busy) {
         // Host-side diagnostics only; the response stays generic.
         options.logger?.error?.("TUI manual compaction failed.", { error: errorToMessage(error).slice(0, 512) });
       }

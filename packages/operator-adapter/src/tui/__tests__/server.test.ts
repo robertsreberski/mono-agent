@@ -132,7 +132,11 @@ describe("startTuiAdapter", () => {
     ] as const) {
       await running.stop();
       const logged: unknown[] = [];
-      running = await startTuiAdapter({ logger: { error: (...args: unknown[]) => { logged.push(args); } },
+      const warnings: unknown[] = [];
+      running = await startTuiAdapter({ logger: {
+        error: (...args: unknown[]) => { logged.push(args); },
+        warn: (...args: unknown[]) => { warnings.push(args); },
+      },
         responder: { respond: async () => ({ text: "unused" }),
         compactConversation: async () => { throw Object.assign(new Error("PRIVATE PROVIDER ERROR"), { failureKind }); } } });
       const failed = await fetch(`${running.baseUrl}/v1/conversations/web%3Aone/compact`, {
@@ -145,7 +149,26 @@ describe("startTuiAdapter", () => {
       expect(body).not.toContain("PRIVATE");
       // Unexpected failures are diagnosable host-side only.
       expect(logged).toHaveLength(status === 500 ? 1 : 0);
+      expect(warnings).toHaveLength(status === 501 ? 1 : 0);
+      if (status === 501) expect(warnings).toEqual([
+        ["TUI manual compaction unsupported.", { reason: "unknown" }],
+      ]);
     }
+  });
+
+  it("logs a trusted unsupported reason without exposing it in the response", async () => {
+    const reason = "The history store cannot report the session model binding.";
+    const warn = vi.fn();
+    running = await startTuiAdapter({ logger: { warn }, responder: {
+      respond: async () => ({ text: "unused" }),
+      compactConversation: async () => { throw Object.assign(new Error(reason), { failureKind: "compaction_unsupported" }); },
+    } });
+    const response = await fetch(`${running.baseUrl}/v1/conversations/web%3Aone/compact`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+    });
+    expect(response.status).toBe(501);
+    expect(JSON.stringify(await response.json())).not.toContain(reason);
+    expect(warn).toHaveBeenCalledWith("TUI manual compaction unsupported.", { reason });
   });
   it("accepts an allowlisted ACP tool environment as host-only request state", async () => {
     let seen: AgentRequestBase | undefined;

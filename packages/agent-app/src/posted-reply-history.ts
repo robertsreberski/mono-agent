@@ -87,6 +87,23 @@ export function createSlackPostedReplyHistory(options: SlackPostedReplyHistoryOp
   };
 }
 
+// Review every history capability when the shared store contract grows: this
+// decorator must preserve durable provider-session operations even for non-Slack turns.
+const forwardedHistoryKeys = {
+  providerSessionRecovery: true,
+  providerSessionModelBinding: true,
+  providerSessionRetirement: true,
+  contextImport: true,
+  load: true,
+  append: true,
+  reset: true,
+  resetLogicalConversation: true,
+  prepareAppend: true,
+  beginProviderSessionTurn: true,
+  readProviderSessionBinding: true,
+} satisfies Record<keyof ConversationHistoryStore, true>;
+void forwardedHistoryKeys;
+
 function wrapHistoryStore(
   store: ConversationHistoryStore,
   scopes: AsyncLocalStorage<PostedReplyScope>,
@@ -159,6 +176,9 @@ function wrapHistoryStore(
       ? {}
       : { beginProviderSessionTurn: (...args: Parameters<NonNullable<ConversationHistoryStore["beginProviderSessionTurn"]>>) =>
           store.beginProviderSessionTurn!(...args) }),
+    ...(store.readProviderSessionBinding === undefined
+      ? {}
+      : { readProviderSessionBinding: store.readProviderSessionBinding.bind(store) }),
   };
 }
 
