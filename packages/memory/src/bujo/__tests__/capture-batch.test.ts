@@ -180,42 +180,25 @@ describe("extractCapturePlanStrict intra-turn precision", () => {
     await expect(extractCapturePlanStrict("Morgan prefers tea.", llm)).rejects.toThrow(/capture-extract/iu);
   });
 
-  it("rejects ambiguous near duplicates without partially retaining distinct facts", async () => {
-    const llm = fakeLlm([["Extract one bounded", JSON.stringify({
-      memories: [
-        { type: "note", text: "Morgan prefers tea", salience: 0.8, isInsight: false, entityIds: ["person:morgan"] },
-        { type: "note", text: "Morgan prefers coffee", salience: 0.8, isInsight: false, entityIds: ["person:morgan", "concept:coffee"] },
-        { type: "note", text: "Morgan lives in Quillmere", salience: 0.8, isInsight: false, entityIds: ["person:morgan", "city:quillmere"] },
-      ],
-      entities: [
-        { id: "person:morgan", name: "Morgan", type: "person" },
-        { id: "concept:coffee", name: "Coffee", type: "concept" },
-        { id: "city:quillmere", name: "Quillmere", type: "concept" },
-      ],
-      relations: [],
-    })]]);
-
-    await expect(extractCapturePlanStrict("Morgan supplied conflicting preference text and a location.", llm))
-      .rejects.toThrow(/capture-extract/iu);
+  it.each([
+    ["en", "Morgan plans to leave for Quillmere on 2026-12-27.", "Morgan plans to leave for Harrowby on 2026-12-30.",
+      "The assistant said that Maple prefers tea for the weekly review.", "The assistant said that Maple prefers coffee for the weekly review."],
+    ["pl", "Morgan planuje wyjechać do Quillmere 2026-12-27.", "Morgan planuje wyjechać do Harrowby 2026-12-30.",
+      "Asystent podał, że Maple woli herbatę na cotygodniowym przeglądzie.", "Asystent podał, że Maple woli kawę na cotygodniowym przeglądzie."],
+    ["es", "Morgan planea viajar a Quillmere el 2026-12-27.", "Morgan planea viajar a Harrowby el 2026-12-30.",
+      "El asistente dijo que Maple prefiere té para la revisión semanal.", "El asistente dijo que Maple prefiere café para la revisión semanal."],
+  ])("keeps differently worded lines that share a long prefix (%s); near-duplicates are the model's judgement", async (_lang, ...texts) => {
+    const plan = await extractCapturePlanStrict("User: Morgan shared travel plans.", fakeLlm([["Extract one bounded", planJson(texts)]]));
+    expect(plan.candidates.map((candidate) => candidate.text)).toEqual(texts);
   });
 
-  it("keeps independent attributed facts and rejects a competing attributed variant as one batch", async () => {
-    const schedule = "The user reports that Project Atlas's production migration is scheduled for 20 November 2026 at 08:30 CET.";
-    const budget = "The user reports that Project Atlas's approved downtime budget is 30 minutes.";
-    const tea = "The user reports that Morgan prefers tea for the weekly review.";
-    const coffee = "The user reports that Morgan prefers coffee for the weekly review.";
-    const priya = "The user reports that Priya reviews every production data migration before the weekly deployment.";
-    const mateo = "The user reports that Mateo reviews every production data migration before the weekly deployment.";
-
-    const independent = [schedule, budget, tea, priya, mateo];
-    const plan = await extractCapturePlanStrict("The user supplied independent project facts.", fakeLlm([
-      ["Extract one bounded", planJson(independent)],
-    ]));
-    expect(plan.candidates.map((candidate) => candidate.text)).toEqual(independent);
-
-    await expect(extractCapturePlanStrict("The user supplied a competing preference.", fakeLlm([
-      ["Extract one bounded", planJson([tea, coffee])],
-    ]))).rejects.toThrow(/capture-extract/iu);
+  it.each([
+    ["en", "Morgan lives in Quillmere.", "morgan lives in Quillmere"],
+    ["pl", "Morgan mieszka w Quillmere.", "MORGAN mieszka w Quillmere"],
+    ["es", "Morgan vive en Quillmere.", "Morgan vive en QUILLMERE"],
+  ])("rejects the same words in the same order authored twice (%s)", async (_lang, first, second) => {
+    await expect(extractCapturePlanStrict("User: Morgan moved.", fakeLlm([["Extract one bounded", planJson([first, second])]])))
+      .rejects.toThrow(/capture-extract/iu);
   });
 
   it("rejects malformed or oversized graph fields without partially accepting valid ones", async () => {

@@ -424,6 +424,32 @@ describe("reconcile", () => {
     expect(seen).toContain("explicit user report or preference may remain useful");
   });
 
+  it.each([
+    ["en", "The user finished Starfall Tactics last year."],
+    ["pl", "Użytkownik ukończył Starfall Tactics w zeszłym roku."],
+    ["es", "El usuario terminó Starfall Tactics el año pasado."],
+  ])("lets a user-sourced correction supersede a recorded assistant inference (%s)", async (_lang, correction) => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "GUESS", "The assistant recommended resuming Starfall Tactics because it was unfinished.");
+    db.findSimilarMany = async () => [[{ record: db.get("GUESS")!, distance: 0.3 }]];
+    let seen = "";
+    const llm = { id: "recording-llm", complete: async (prompt: string) => {
+      seen = prompt;
+      return JSON.stringify([{ index: 0, action: "supersede", targetId: "GUESS", text: correction }]);
+    } };
+
+    const actions = await reconcileBatch([{ type: "event", text: correction, salience: 0.8, isInsight: false, source: "user" }],
+      makeDeps(db, root, llm));
+
+    expect(seen).toContain("The User's own word wins");
+    expect(seen).toContain("the premise it rests on");
+    expect(seen).toContain("other details about the same subject are add");
+    expect(seen).toContain('"source":"user"');
+    expect(actions[0]?.kind).toBe("supersede");
+    expect(db.get("GUESS")?.status).toBe("invalidated");
+  });
+
   it("case 3 — contradicting candidate + LLM says supersede → old invalidated, new added", async () => {
     const root = newRoot();
     const db = openDb(root);

@@ -15,6 +15,18 @@
   and return a JSON usage error for unknown flags.
 - Let `memory --help` and memory subcommand `--help` print relevant usage.
 
+- Memory capture lets the user's own correction supersede an older line. When
+  a user-sourced memory contradicts an existing one, including a recorded
+  assistant inference or recommendation whose premise the user corrects,
+  reconciliation now supersedes the old line instead of storing both. Merely
+  related details stay separate. On a verified owner turn this also replaces
+  the owner's own earlier preference line (never a peer's), which stays as
+  superseded history.
+  The capture near-duplicate guard no longer uses
+  English reporting verbs or word-shape similarity: only identical wording is
+  a duplicate, which stops distinct facts that share a long prefix from
+  failing the whole capture.
+
 - Memory capture drops the assistant's own low-salience lines. A memory the
   extraction model marks as `assistant`-sourced (or a `user` claim the host
   bounds to `assistant`) needs a model salience of at least 0.5; below that it
