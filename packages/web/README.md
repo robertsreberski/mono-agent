@@ -1253,7 +1253,7 @@ pass `-- --host 0.0.0.0` to the `storybook` command; the static build is the
 preferred hosted artifact. Use `pnpm --dir packages/web/webapp build-storybook` for a
 static build in the ignored `storybook-static/` directory. Add fictional,
 network-free fixtures and one `*.stories.tsx` file per visual component under the mirrored
-`webapp/src/stories/<Section>/` directory. Set the CSF `component` to the real
+`webapp/src/stories/<kebab-case-section>/` directory. Set the CSF `component` to the real
 component, use named fictional states as args, and enable autodocs. Organize
 stories by Foundations, Primitives, Chat & Messages, Activity & Jobs,
 Dashboard, Projects & Tags, Dialogs & Settings, and Screens. The toolbar switches the

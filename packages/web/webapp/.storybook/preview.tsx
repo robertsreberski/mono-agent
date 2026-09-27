@@ -28,6 +28,21 @@ const originalFetch = window.fetch.bind(window);
 window.fetch = (input, init) => {
   const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
   const pathname = new URL(url, location.href).pathname;
+  const auth = /^\/api\/v1\/agents\/(atlas-story-auth-(missing|verified))\/provider-auth$/.exec(pathname);
+  if (auth && (!init?.method || init.method === "GET")) {
+    const verified = auth[2] === "verified";
+    return Promise.resolve(new Response(JSON.stringify({
+      schema: "mono-agent.provider-auth.v1", generatedAt: "2026-01-15T10:00:00Z",
+      providers: [{ providerId: "atlas", label: "Atlas Cloud", usages: [{ kind: "primary", model: "atlas/standard", label: "Interactive" }],
+        state: verified ? "present" : "missing", verification: verified ? "verified_by_account_request" : "not_verified",
+        credentialType: verified ? "oauth" : undefined, source: verified ? "stored" : undefined,
+        methods: [{ authType: "oauth", strategy: "device_code", label: "Sign in with Atlas", recommended: true }],
+      }],
+    }), { headers: { "Content-Type": "application/json" } }));
+  }
+  if (/^\/api\/v1\/agents\/atlas-story-auth-(missing|verified)\/restart$/.test(pathname) && (!init?.method || init.method === "GET")) {
+    return Promise.resolve(new Response(JSON.stringify({ operation: null }), { headers: { "Content-Type": "application/json" } }));
+  }
   // This read-only fixture lets schedule editor examples show their actual
   // create/edit/paused controls; no mutation ever contacts a console.
   const match = /^\/api\/v1\/threads\/(garden-planner|garden-active|garden-paused)\/wake-schedule$/.exec(pathname);
@@ -76,7 +91,10 @@ const preview: Preview = {
       delete document.documentElement.dataset.storybookScheme;
     }, []);
     const runtime = useLocalRuntime({ run: async () => ({ content: [{ type: "text", text: "Example only" }] }) });
-    return <AssistantRuntimeProvider runtime={runtime}><NotificationsProvider><div style={{ background: "var(--app-bg)", color: "var(--text)", minHeight: "85vh", padding: 24 }}><Story /></div></NotificationsProvider></AssistantRuntimeProvider>;
+    return <AssistantRuntimeProvider runtime={runtime}><NotificationsProvider>{context.parameters.layout === "fullscreen"
+      ? <Story />
+      : <div style={{ background: "var(--app-bg)", color: "var(--text)", minHeight: "85vh", padding: 24 }}><Story /></div>
+    }</NotificationsProvider></AssistantRuntimeProvider>;
   }],
 };
 
