@@ -56,6 +56,7 @@ import {
   type ThreadPersistence,
 } from "./thread-persistence";
 import { threadPresentation } from "./thread-presentation";
+import { notifyThreadUsageChanged } from "./thread-usage-events";
 import { createUnreadMarker, unreadCountsBySource } from "./unread";
 import { API_VERSION, DEFAULT_UPLOAD_LIMITS } from "./types";
 import type {
@@ -4811,6 +4812,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
 
         case "message.changed": {
           if (threadId === undefined) return;
+          notifyThreadUsageChanged(threadId);
           if (threadId !== selectedThreadRef.current) {
             // Not on screen: remember that its transcript moved, and read it
             // when the operator opens it rather than now.

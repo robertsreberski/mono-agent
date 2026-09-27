@@ -6,6 +6,11 @@
   default to 2 GiB, and select a per-file limit up to the 20 MiB delivery cap.
   Group repeated storage-full reply failures into one card per reply.
 
+- Let the web Context usage sheet show the window, conversation-wide tokens,
+  estimated cost by model and subagent share, compact provider plan meters, and
+  manual Compact. Detached subagent jobs do not report token counts yet, so
+  token totals show a lower bound when they ran.
+
 - Fix manual context compaction for app-hosted conversations with durable Pi
   sessions, including web model selections; log safe unsupported reasons on the
   host while keeping operator responses generic.

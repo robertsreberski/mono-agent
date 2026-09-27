@@ -86,16 +86,16 @@ export function useProviderUsage(agent: AgentSummary, authRevision?: string) {
   };
 }
 
-function countdown(reset: string, now: number): string {
+function countdown(reset: string, now: number, compact = false): string {
   const diffMs = Date.parse(reset) - now;
   if (Math.max(0, Math.ceil(diffMs / 60_000)) === 0) return "Reset due";
-  return `Resets in ${formatProviderUsageLead(diffMs)}`;
+  return `Resets ${compact ? "" : "in "}${formatProviderUsageLead(diffMs)}`;
 }
 // How early the window runs out is the decision, so it rides on the countdown
 // line as one fragment. The absolute instant stays in the title.
 const earlyLine = (leadMs: number): string => `empty ${formatProviderUsageLead(leadMs)} early`;
 /** The plan chip is rendered inline by the provider heading; this shows only the meters. */
-export function ProviderUsageMeters({ usage }: { readonly usage?: ProviderUsage }) {
+export function ProviderUsageMeters({ usage, density = "default" }: { readonly usage?: ProviderUsage; readonly density?: "default" | "compact" }) {
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     if (!usage) return;
@@ -103,8 +103,8 @@ export function ProviderUsageMeters({ usage }: { readonly usage?: ProviderUsage 
     return () => clearInterval(timer);
   }, [usage]);
   if (!usage) return null;
-  return <div className="provider-usage" aria-label={`${usage.label} subscription usage`}>
-    {usage.stale && <div className="provider-usage-meta">
+  return <div className={density === "compact" ? "context-display-plan-windows" : "provider-usage"} aria-label={`${usage.label} subscription usage`}>
+    {usage.stale && density === "default" && <div className="provider-usage-meta">
       <span title={`Fetched ${new Date(usage.fetchedAt).toLocaleString()}`}>Last known usage</span>
     </div>}
     {usage.windows.map((window) => {
@@ -122,6 +122,24 @@ export function ProviderUsageMeters({ usage }: { readonly usage?: ProviderUsage 
       const name = projection === undefined ? `${usage.label} ${window.label} used`
         : `${usage.label} ${window.label} used, ${window.usedPercent} %, ${Math.round(projection.elapsedFraction * 100)} % of the window elapsed, pace ${projection.pace.toFixed(1)}x`
           + (alert === undefined ? "" : `, projected to run out before reset (${alert.severity})`);
+      if (density === "compact") return <div className="context-display-plan-window" key={window.kind}>
+        <span className="context-display-plan-label">{window.label}</span>
+        <span className="context-display-plan-bar">
+          <progress aria-label={name} max={100} value={window.usedPercent} />
+          {expected !== undefined && <span className={`provider-usage-tick${window.usedPercent > expected ? " is-passed" : ""}`}
+            aria-hidden="true" style={{ left: `${expected}%` }} />}
+        </span>
+        <span className="context-display-plan-percent">{window.usedPercent}%</span>
+        {window.resetsAt && <div className="context-display-plan-detail">
+          <time dateTime={window.resetsAt} title={new Date(window.resetsAt).toLocaleString()}>{countdown(window.resetsAt, now, true)}</time>
+          {chip !== undefined && <span className={chip.tier}> · {chip.text}</span>}
+          {alert?.exhaustsAt !== undefined && alert.leadMs !== undefined
+            ? <span className={`is-${alert.severity}`}
+              title={`Projected to run out ${new Date(alert.exhaustsAt).toLocaleString()} at current pace ${alert.pace.toFixed(2)}x`}> · {earlyLine(alert.leadMs)}</span>
+            : unused !== undefined
+              ? <span className="is-unused" title={`At this pace about ${unused} % of the window is left unused at reset`}> · {unused}% unused</span> : null}
+        </div>}
+      </div>;
       return <div className="provider-usage-window" key={window.kind}>
         <div className="provider-usage-label"><span>{window.label}</span><span>{window.usedPercent}%{chip !== undefined && <> <span className={`provider-usage-pace ${chip.tier}`}>{chip.text}</span></>}</span></div>
         <span className="provider-usage-bar">
@@ -140,6 +158,6 @@ export function ProviderUsageMeters({ usage }: { readonly usage?: ProviderUsage 
         </time>}
       </div>;
     })}
-    {usage.error && <p className="provider-usage-error" role="status">Usage unavailable — {usage.error.message}</p>}
+    {usage.error && <p className={density === "compact" ? "context-display-plan-error" : "provider-usage-error"} role="status">Usage unavailable — {usage.error.message}</p>}
   </div>;
 }

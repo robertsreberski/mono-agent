@@ -182,3 +182,30 @@ describe("burn-pace projection lines", () => {
     expect(screen.getByText(/empty/).textContent).toBe(line);
   });
 });
+
+describe("compact plan meters", () => {
+  it("keeps the accessible projection and puts countdown, pace and headroom in one detail row", () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-22T12:00:00Z"));
+    const view = render(<ProviderUsageMeters usage={{ ...codexUsage(25, true), fetchedAt: "2026-09-22T20:10:22.000Z" }} density="compact" />);
+    const detail = view.container.querySelector(".context-display-plan-detail")!;
+    expect(detail).toHaveTextContent("Resets 3d 20h");
+    expect(detail).toHaveTextContent("0.5×");
+    expect(detail).toHaveTextContent("50% unused");
+    expect(screen.queryByText("Last known usage")).not.toBeInTheDocument();
+    expect(screen.getByRole("progressbar").getAttribute("aria-label"))
+      .toBe("Codex Weekly used, 25 %, 50 % of the window elapsed, pace 0.5x");
+    expect(view.container.querySelector(".context-display-plan-bar .provider-usage-tick")).toHaveStyle({ left: "50%" });
+    view.rerender(<ProviderUsageMeters usage={codexUsage(55)} density="compact" />);
+    expect(screen.getByText(/empty/)).toHaveClass("is-ahead");
+    view.rerender(<ProviderUsageMeters usage={codexUsage(96)} density="compact" />);
+    expect(screen.getByText(/empty/)).toHaveClass("is-unsustainable");
+  });
+  it("shows only the reset at low confidence and no row without a reset", () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-19T12:00:00Z"));
+    const view = render(<ProviderUsageMeters density="compact" usage={{ ...codexUsage(50), fetchedAt: "2026-09-19T16:34:22.000Z" }} />);
+    expect(view.container.querySelector(".context-display-plan-detail")).toHaveTextContent("Resets ");
+    expect(view.container.querySelector(".context-display-plan-detail")).not.toHaveTextContent("×");
+    view.rerender(<ProviderUsageMeters density="compact" usage={{ ...codexUsage(50), windows: [{ kind: "weekly", label: "Weekly", usedPercent: 50, periodMs: weekMs }] }} />);
+    expect(view.container.querySelector(".context-display-plan-detail")).toBeNull();
+  });
+});

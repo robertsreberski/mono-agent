@@ -1047,6 +1047,10 @@ export class WebService {
     this.emitProject({ projectId: id, removed: true });
   }
 
+  threadUsage(id: string): Promise<import("./contracts.js").WebThreadUsage> {
+    return this.store.threadUsage(id);
+  }
+
   thread(id: string, options: WebTranscriptShape = {}): WebThreadDetail {
     const detail = this.store.getThreadDetail(id);
     if (detail === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);

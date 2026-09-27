@@ -839,6 +839,31 @@ export interface WebQuote {
   readonly messageId: string;
 }
 
+export interface WebUsageTokens {
+  readonly input: number;
+  readonly cacheRead: number;
+  readonly cacheWrite: number;
+  readonly output: number;
+}
+
+export interface WebUsageSlice {
+  readonly tokens?: WebUsageTokens;
+  readonly costUsd?: number;
+  readonly tokensPartial?: true;
+  readonly costPartial?: true;
+}
+
+export interface WebThreadUsage {
+  readonly total: WebUsageSlice;
+  readonly subagents?: WebUsageSlice & { readonly runs: number };
+  /** Costs are additive. Tokens are main-run and detached tokens only: synchronous
+   * child tokens are folded into their parent's model, not added to child rows. */
+  readonly byModel: readonly (WebUsageSlice & { readonly model?: string })[];
+  readonly computedAt: string;
+  /** Settled provider turns, including ones without usage telemetry; excludes cards/notices. */
+  readonly settledAssistantTurns?: number;
+}
+
 export interface WebThreadDetail {
   readonly thread: WebThread;
   readonly messages: readonly WebMessage[];

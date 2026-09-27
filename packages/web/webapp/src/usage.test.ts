@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { thread } from "./test/fixtures";
 import type { MessagePart, RunStatus, ThreadDetail, WebMessage } from "./types";
-import { conversationConsoleUsage } from "./usage";
+import { contextLevel, conversationConsoleUsage, windowUsage } from "./usage";
 
 const message = (
   id: string,
@@ -108,16 +108,6 @@ describe("conversationConsoleUsage", () => {
         },
         measuredModel: "pi:openai-codex:gpt-5.5",
       },
-      processed: {
-        input: 1200,
-        cachedInput: 800,
-        cacheCreation: 12,
-        cacheHitRatio: 800 / 2012,
-        output: 345,
-        reasoning: 90,
-        model: "pi:openai-codex:gpt-5.5",
-      },
-      cost: 0.0123,
     });
   });
 
@@ -173,7 +163,6 @@ describe("conversationConsoleUsage", () => {
         status: "current",
         usage: { total: 12_500, contextWindow: 128_000 },
       },
-      processed: { input: 900_000, output: 20_000 },
     });
   });
 
@@ -205,7 +194,8 @@ describe("conversationConsoleUsage", () => {
     ]))).toEqual({
       context: {
         status: "awaiting_measurement",
-        reason: "Context changed during compaction; waiting for the next exact provider measurement.",
+        compaction: { running: false },
+        reason: "Compaction changed the context. It's measured again on the next turn.",
       },
     });
   });
@@ -247,6 +237,7 @@ describe("conversationConsoleUsage", () => {
       status: "last_measured",
       usage: { total: 30_000, model: "pi:p:m" },
       measuredModel: "pi:p:m",
+      lastTurnFailed: true,
       reason: "The latest turn did not complete, so this is the last successful provider measurement.",
     });
   });
@@ -258,6 +249,7 @@ describe("conversationConsoleUsage", () => {
       status: "last_measured",
       usage: { total: 30_000, model: "pi:p:old" },
       measuredModel: "pi:p:old",
+      nextModel: "pi:p:new",
       reason: "This measurement belongs to pi:p:old; the next turn is set to pi:p:new.",
     });
   });
@@ -265,80 +257,38 @@ describe("conversationConsoleUsage", () => {
   it("states explicitly when direct Claude cannot provide a measurement", () => {
     expect(conversationConsoleUsage(detail([]), { selectedModel: "claude:sonnet" })?.context).toEqual({
       status: "unavailable",
+      noContextRuntime: "claude",
       reason: "This Claude runtime does not expose exact context measurements.",
     });
   });
 
-  it("shows only the latest turn's processed tokens while summing per-turn cost", () => {
+
+});
+
+describe("redesigned usage projections", () => {
+  it("projects the compaction estimate until a newer exact measurement", () => {
+    const estimate = { type: "telemetry", event: "runtime_telemetry", data: {
+      kind: "context_compaction", data: { status: "succeeded", timestamp: 200,
+        tokensBefore: 90_000, tokensAfter: 20_000, tokenCountsExact: false },
+    } } as MessagePart;
     expect(conversationConsoleUsage(detail([
-      message("first", [{
-        type: "telemetry",
-        event: "usage_update",
-        data: { cumulativeUsd: 0.25, tokens: { input: 50, output: 8 } },
-      }]),
-      message("second", [
-        { type: "telemetry", event: "usage_update", data: { cumulativeUsd: 0.5, tokens: { input: 100 } } },
-        { type: "telemetry", event: "usage_update", data: { cumulativeUsd: 0.75, tokens: { input: 200, output: 12 } } },
-      ]),
-    ]))).toEqual({
-      context: {
-        status: "unavailable",
-        reason: "Exact context usage has not been reported for this conversation.",
-      },
-      processed: { input: 200, output: 12 },
-      cost: 1,
+      message("first", [contextPart(90_000, { timestamp: 100, contextWindow: 100_000 })]),
+      message("second", [estimate]),
+    ]))?.context).toMatchObject({ status: "awaiting_measurement",
+      usage: { total: 20_000, contextWindow: 100_000 },
+      compaction: { tokensBefore: 90_000, tokensAfter: 20_000, tokenCountsExact: false, running: false },
     });
+    expect(conversationConsoleUsage(detail([
+      message("first", [contextPart(90_000, { timestamp: 100, contextWindow: 100_000 })]),
+      message("second", [{ type: "telemetry", event: "runtime_telemetry", data: {
+        kind: "context_compaction", data: { status: "running", timestamp: 200 },
+      } }]),
+    ]))?.context).toMatchObject({ status: "awaiting_measurement", usage: { total: 90_000, contextWindow: 100_000 }, compaction: { running: true } });
   });
-
-  it("keeps legacy aggregate telemetry useful without claiming context occupancy", () => {
-    expect(conversationConsoleUsage(detail([message("legacy", [{
-      type: "telemetry",
-      event: "usage_update",
-      data: {
-        model: "provider/model",
-        cumulativeUsd: 5.104078,
-        tokens: { input: 429_128, output: 15_773, cacheRead: 4_970_496 },
-      },
-    }])]))).toEqual({
-      context: {
-        status: "unavailable",
-        reason: "Exact context usage has not been reported for this conversation.",
-      },
-      processed: {
-        input: 429_128,
-        cachedInput: 4_970_496,
-        output: 15_773,
-        model: "provider/model",
-      },
-      cost: 5.104078,
-    });
-  });
-
-  it("reads snake-case fields and ignores invalid values without inventing totals", () => {
-    expect(conversationConsoleUsage(detail([message("one", [{
-      type: "telemetry",
-      event: "runtime_telemetry",
-      data: {
-        kind: "token_usage",
-        model_id: "fallback/model",
-        data: {
-          cost_usd: 0.2,
-          tokens: {
-            input_tokens: 100,
-            cached_input_tokens: 80,
-            cache_creation_tokens: 4,
-            output_tokens: Number.POSITIVE_INFINITY,
-            reasoning_tokens: 9,
-          },
-        },
-      },
-    }])]))).toEqual({
-      context: {
-        status: "unavailable",
-        reason: "Exact context usage has not been reported for this conversation.",
-      },
-      processed: { input: 100, cachedInput: 80, cacheCreation: 4, cacheHitRatio: 80 / 184, reasoning: 9, model: "fallback/model" },
-      cost: 0.2,
-    });
+  it("keeps unrounded thresholds and marks loaded-window fallbacks partial", () => {
+    expect([79.9, 80, 94.9, 95].map(contextLevel)).toEqual(["normal", "warning", "warning", "danger"]);
+    const sample = { ...detail([message("first", [{ type: "telemetry", event: "usage_update",
+      data: { cumulativeUsd: 0, tokens: { input: 1, output: 2 } } }])]), messagesNextCursor: "older" };
+    expect(windowUsage(sample).total).toMatchObject({ tokensPartial: true, costPartial: true, costUsd: 0 });
   });
 });

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { api, NOT_MODIFIED, uploadContent, type ReplyAccessRefreshHandler } from "./api";
+import { api, NOT_MODIFIED, parseThreadUsage, uploadContent, type ReplyAccessRefreshHandler } from "./api";
 import { dataUsage, resetDataUsage } from "./data-usage";
 import { agent, attachment, processJob } from "./test/fixtures";
 
@@ -1066,5 +1066,22 @@ describe("standalone Copilot projection parser", () => {
       fetchMock.mockResolvedValueOnce(Response.json({ ...snapshot, providers: [{ ...copilot, ...patch }] }));
       await expect(api.providerUsage("agent")).rejects.toThrow("Invalid provider usage projection");
     }
+  });
+});
+
+describe("conversation usage validator", () => {
+  const response = { total: { tokens: { input: 5, cacheRead: 2, cacheWrite: 0, output: 3 }, costUsd: 0 },
+    subagents: { runs: 1, tokensPartial: true, costUsd: 0 },
+    byModel: [{ model: "atlas/standard", costUsd: 0 }], computedAt: "2026-01-01T00:00:00.000Z" };
+  it("accepts a priced zero and optional partials", () => {
+    expect(parseThreadUsage(response)).toEqual(response);
+    expect(parseThreadUsage({ ...response, settledAssistantTurns: 0 }).settledAssistantTurns).toBe(0);
+  });
+  it("rejects invalid figures, dates and shapes", () => {
+    expect(() => parseThreadUsage({ ...response, total: { costUsd: -1 } })).toThrow();
+    expect(() => parseThreadUsage({ ...response, byModel: [{}], computedAt: "unknown" })).toThrow();
+    expect(() => parseThreadUsage({ ...response, subagents: { runs: 0 } })).toThrow();
+    expect(() => parseThreadUsage({ ...response, settledAssistantTurns: -1 })).toThrow();
+    expect(() => parseThreadUsage({ ...response, total: { tokens: { ...response.total.tokens, input: NaN } } })).toThrow();
   });
 });

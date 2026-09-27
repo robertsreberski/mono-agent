@@ -926,12 +926,20 @@ id discovery no longer reports, are left alone.
 | --- | --- |
 | [`server.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/server.ts) | HTTP service, `/api/v1` routes, hostname/display-name/theme bootstrap identity, per-console PWA manifest, uploads, SSE invalidations, host/origin checks, provider-auth no-store proxy routes, and static webapp serving. |
 | [`service.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/service.ts) | Application lifecycle for discovery, threads, turns, agent-authored automatic titles, live-input delivery/fallback, attachments, `AskUser` snapshots/submission, provider-auth connection-generation guarding, cancellation, notifications, and invalidation. |
-| [`store.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/store.ts) | Owner-private SQLite schema and transactional persistence, including race-safe automatic-title updates that never overwrite a user rename. |
+| [`store.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/store.ts) | Owner-private SQLite schema and transactional persistence, including race-safe automatic-title updates that never overwrite a user rename, and a bounded per-message LRU for on-demand full-thread usage accounting. |
+| [`message-cost.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/message-cost.ts) and [`thread-usage.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/thread-usage.ts) | Browser-safe per-message token/cost rollup and conversation-wide sum, with synchronous delegation as a subset and detached spend added once. |
 | [`operator-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/operator-client.ts) | Structured turn streaming, info/capabilities, live-input settlement, pending/submitted `AskUser`, cancellation, durable history append, conditionally bearer-authenticated provider-auth, and owner-authenticated process-job requests over the operator protocol. |
 | [`notification-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-client.ts) and [`notification-ingress.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-ingress.ts) | Bounded, authenticated cron/webhook delivery and source/thread-bound process-job cards. |
 | [`webapp/`](https://github.com/robertsreberski/mono-agent/tree/main/packages/web/webapp) | Isolated assistant-ui PWA, including the loaded conversation-level process-job stack and live tails, atomic `AskUser` forms, tests, and its own dependency lockfile. |
 
 ## Public API
+
+`GET /api/v1/threads/:id/usage` returns `{usage: WebThreadUsage}` for the
+whole conversation, independently of the paginated transcript. It folds
+synchronous delegation cost into the parent run, adds detached job spend once,
+and marks token or cost lower bounds when telemetry is incomplete. Assistant
+parts are scanned on demand and memoized by message id and sequence; no
+additional storage table is required.
 
 ### Start here
 
@@ -943,7 +951,7 @@ id discovery no longer reports, are left alone.
 | `deliverWebNotification` | Deliver one idempotent cron/webhook result or source/thread-bound process-job card update through the private loopback ingress. |
 | `discoverAcpBridgeAgents` | Discover Worklab-importable ACP sources through a credential-free, versioned ownership contract. |
 | `discoverOperatorAgents` | Read trusted operator endpoints from trace-source manifests. |
-| `WebBootstrap`, `WebThreadDetail`, `WebEvent`, and related `Web*` DTOs | Build another client against the versioned browser API. |
+| `WebBootstrap`, `WebThreadDetail`, `WebThreadUsage`, `WebEvent`, and related `Web*` DTOs | Build another client against the versioned browser API. |
 | `WEB_THEMES`, `DEFAULT_WEB_THEME`, `WEB_CONSOLE_NAME_MAX_CHARACTERS`, `WebTheme`, and `WebConsoleIdentity` | Select a curated theme/name and consume the hostname/display-name/theme identity returned to browsers. |
 
 <!-- public-api-inventory:start -->
@@ -1079,6 +1087,9 @@ WebThreadNotificationTriggerKind
 WebThreadSearchHit
 WebThreadSearchPage
 WebThreadTrigger
+WebThreadUsage
+WebUsageSlice
+WebUsageTokens
 WebWakeSchedule
 WebWakeScheduleDefinition
 createWebConsoleToolClient
