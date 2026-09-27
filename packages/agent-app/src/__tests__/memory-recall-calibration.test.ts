@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   calibrateRecallHits,
@@ -69,6 +69,27 @@ describe("calibrated explicit MemoryRecall", () => {
     const offset = hit("f", 0.9, "Maple hosted a meeting.", { type: "event", dueAt: "2026-07-11T23:30:00-05:00" });
     expect(recallHitCurrentness(offset, today, "2026-07-12T03:00:00Z")).toBe("current");
     expect(recallHitCurrentness(offset, today, "2026-07-12T05:00:00Z")).toBe("ended");
+  });
+
+  it("uses the host process timezone for the explicit fact sheet near UTC midnight", async () => {
+    const previousTz = process.env.TZ;
+    process.env.TZ = "America/Los_Angeles";
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2024-03-01T00:30:00Z"));
+    try {
+      const dates: Array<string | undefined> = [];
+      const store: RecallCapableStore = { ...localStore([hit("one", 0.9, "Morgan likes tea.")]),
+        findMemoryEntitiesByNames: () => [{ id: "person:morgan", name: "Morgan", createdAt: "2024-02-01T00:00:00Z" }],
+        labelsForEntity: (_id, date) => { dates.push(date); return []; },
+        guidanceForScope: () => [],
+      };
+      await callRecall(store, "Morgan");
+      expect(dates).toEqual(["2024-02-29"]);
+    } finally {
+      vi.useRealTimers();
+      if (previousTz === undefined) delete process.env.TZ;
+      else process.env.TZ = previousTz;
+    }
   });
 
   it("exposes a past event due date and ended note through explicit recall", async () => {

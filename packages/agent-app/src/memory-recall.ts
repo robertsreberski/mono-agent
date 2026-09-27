@@ -361,6 +361,8 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
         structuredContent: { hits: [], degraded: true, reason, ...originalMetadata },
       };
     }
+    const observedAt = new Date();
+    const today = `${observedAt.getFullYear()}-${String(observedAt.getMonth() + 1).padStart(2, "0")}-${String(observedAt.getDate()).padStart(2, "0")}`;
     let sections: LabelSections | undefined;
     try {
       sections = store.labelSections?.({ query: effectiveQuery,
@@ -368,7 +370,7 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
         ...(args.about === undefined ? {} : { about: args.about }) })
         ?? readLabelSections(store, { query: effectiveQuery,
           ...(args.kind === undefined ? {} : { kind: args.kind }),
-          ...(args.about === undefined ? {} : { about: args.about }) });
+          ...(args.about === undefined ? {} : { about: args.about }) }, { hostLocalDate: today });
     } catch { /* A bad label cannot discard the normal dated hits. */ }
     const sectionPrefix = sections?.text ? `${sections.text}\n\n` : "";
     const sectionFields = sections === undefined ? {} : {
@@ -405,8 +407,6 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
         },
       };
     }
-    const observedAt = new Date();
-    const today = `${observedAt.getFullYear()}-${String(observedAt.getMonth() + 1).padStart(2, "0")}-${String(observedAt.getDate()).padStart(2, "0")}`;
     const currentness = hits.map((hit) => calibrated ? recallHitCurrentness(hit, today, observedAt.toISOString()) : undefined);
     const evidence = calibrated ? recallEvidenceNote(effectiveQuery, hits, sections, candidates) : undefined;
     const hitText = hits

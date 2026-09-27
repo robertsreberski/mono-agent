@@ -315,6 +315,7 @@ says when the evidence is weak. Scores are ranking evidence, not probabilities:
   a past structured `validTo` or event `dueAt` is `ended <date>`; current values
   stay unmarked. Date-only values close after the host's local calendar day;
   timestamped values close when their ISO instant passes, preserving its offset.
+  Local means the host process timezone: a daemon running in UTC uses UTC.
   Structured hits carry `currentness: "current" | "superseded" | "ended"`.
 - **Evidence note.** When the fact sheet holds conflicting current values, or
   the top candidates give different values for the same subject, property and

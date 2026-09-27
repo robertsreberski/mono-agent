@@ -132,7 +132,7 @@ export function formatMemoryBackground(
   shownMemoryIds: ReadonlySet<string> = new Set(),
 ): { readonly content: string; readonly truncated: boolean } | undefined {
   if (store.guidanceForScope === undefined || store.labelsForEntity === undefined) return undefined;
-  const date = options.hostDate;
+  const date = options.hostLocalDate ?? options.hostDate;
   if (date === undefined || !/^\d{4}-\d{2}-\d{2}$/u.test(date)) return undefined;
   const scopes = memoryGuidanceScopes(conversationId, options);
   const scores = new Map(hits.map((hit) => [hit.record.id, hit.score]));
