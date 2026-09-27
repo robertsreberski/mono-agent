@@ -68,8 +68,9 @@ const DEFAULT_RETENTION_DAYS = 30;
 const READ_CHUNK_BYTES = 64 * 1024;
 const STAGING_NAMESPACE = ".staging";
 const DEFAULT_STAGING_GRACE_MS = 10 * 60 * 1000;
-export const DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES = 256 * 1024 * 1024;
+export const DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES = 2 * 1024 * 1024 * 1024;
 const REPLY_ARTIFACT_STORAGE_NAMESPACES = ["reply-files", "mcp-apps"] as const;
+const STORAGE_FULL_FAILURE_MESSAGE = "Reply artifact storage is full; this file was not published.";
 const BIDI_CONTROL = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu;
 const DEFAULT_IGNORABLE = /\p{Default_Ignorable_Code_Point}/gu;
 const SENSITIVE_FILE_EXTENSIONS = [
@@ -195,7 +196,7 @@ export interface ReplyArtifactStorageProtection {
 }
 
 export interface ReplyArtifactStorageBudget {
-  readonly maxBytes: number;
+  readonly maxBytes: number | "unlimited";
   reserve(maximumBytes: number): Promise<ReplyArtifactStorageReservation | undefined>;
   protect(namespace: ReplyArtifactStorageNamespace, id: string): Promise<ReplyArtifactStorageProtection>;
   runExclusive<T>(
@@ -205,7 +206,7 @@ export interface ReplyArtifactStorageBudget {
 
 interface ReplyArtifactStorageState {
   readonly artifactDir: string;
-  readonly maxBytes: number;
+  readonly maxBytes: number | "unlimited";
   readonly protections: Map<string, number>;
   reservedBytes: number;
   gate: Promise<void>;
@@ -220,9 +221,9 @@ const replyArtifactStorageStates = new Map<string, ReplyArtifactStorageState>();
  */
 export function replyArtifactStorageBudgetFor(
   artifactDir: string,
-  maxBytes = DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES,
+  maxBytes: number | "unlimited" = DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES,
 ): ReplyArtifactStorageBudget {
-  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+  if (maxBytes !== "unlimited" && (!Number.isSafeInteger(maxBytes) || maxBytes < 1)) {
     throw new RangeError("reply artifact storage maxBytes must be a positive safe integer.");
   }
   const canonicalArtifactDir = resolve(artifactDir);
@@ -242,12 +243,15 @@ export function replyArtifactStorageBudgetFor(
         throw new RangeError("reply artifact storage reservation must be a non-negative safe integer.");
       }
       return await runStorageExclusive(state, async () => {
-        const storedBytes = await inventoryReplyArtifactBytes(state.artifactDir);
-        if (
-          maximumBytes > state.maxBytes
-          || storedBytes > state.maxBytes - state.reservedBytes - maximumBytes
-        ) return undefined;
-        state.reservedBytes += maximumBytes;
+        if (state.maxBytes !== "unlimited") {
+          const storedBytes = await inventoryReplyArtifactBytes(state.artifactDir);
+          if (
+            maximumBytes > state.maxBytes
+            || state.reservedBytes > state.maxBytes - maximumBytes
+            || storedBytes > state.maxBytes - state.reservedBytes - maximumBytes
+          ) return undefined;
+          state.reservedBytes += maximumBytes;
+        }
         let released = false;
         return {
           release: async () => {
@@ -446,6 +450,16 @@ export function createReplyArtifactService(options: ReplyArtifactServiceOptions)
     }
     if (partsToDrop.size === 0) return [...finalized];
     return finalized.filter((part) => !partsToDrop.has(part));
+  };
+
+  /** Group only surviving quota failures after retry supersession; tool results stay per-call. */
+  const groupStorageFullFailures = (parts: readonly AgentReplyPart[]): AgentReplyPart[] => {
+    const quotaFailures = parts.filter((part) => part.type === "failure"
+      && part.message === STORAGE_FULL_FAILURE_MESSAGE);
+    if (quotaFailures.length < 2) return [...parts];
+    const first = quotaFailures[0]!;
+    return parts.filter((part) => part === first || !quotaFailures.includes(part)).map((part) =>
+      part === first ? { ...first, message: `Reply artifact storage is full; ${quotaFailures.length} files were not published.` } : part);
   };
 
   const publish = async (binding: {
@@ -749,7 +763,7 @@ export function createReplyArtifactService(options: ReplyArtifactServiceOptions)
             return response;
           }
           const finalized = await finalizeDeliveryParts({ runId, conversationId: request.conversationId }, published);
-          const deliverable = suppressSupersededPublishFailures(runId, finalized);
+          const deliverable = groupStorageFullFailures(suppressSupersededPublishFailures(runId, finalized));
           if (deliverable.length === 0 && (response.parts === undefined || response.parts.length === 0)) {
             await retainRun(runId);
             retainedRunId = runId;
@@ -1339,7 +1353,7 @@ function isExpectedPublishFailure(error: unknown): boolean {
  */
 function publishFailureMessage(error: unknown): string {
   if (error instanceof ReplyArtifactStorageFullError) {
-    return "Reply artifact storage is full; this file was not published.";
+    return STORAGE_FULL_FAILURE_MESSAGE;
   }
   if (error instanceof CodedError) return error.message;
   const code = errnoCode(error);

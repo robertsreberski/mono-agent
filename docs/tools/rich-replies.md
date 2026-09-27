@@ -35,7 +35,8 @@ media type, byte count, SHA-256 integrity id, expiry, and an opaque id.
 Host-private roots are refused even when they are located inside the configured
 workspace.
 
-The default per-file limit is 20 MiB. Files and apps share one limit of 20 rich
+The default and maximum per-file limit is 20 MiB; configure a smaller value
+with `artifacts.replyFiles.maxFileBytes`. Files and apps share one limit of 20 rich
 parts per run. A retry with the same integrity identity reuses the first part;
 the twenty-first distinct producer request returns a visible capability failure
 to the model without replacing the first twenty.
@@ -242,8 +243,15 @@ reports `connected: false` and cannot call tools or read resources.
 Bridge requests are limited to 64 KiB, results to 1 MiB, and each connection to
 60 requests per minute. Each app keeps a rotating owner-private audit log with
 a 256 KiB file ceiling and two retained rotations. Durable rich-reply payloads
-and audit files stay within a 256 MiB aggregate ceiling; configured composition
-reserves 1 MiB for independently admitted audit records and uses fair-share,
+use `artifacts.replyFiles.maxStorageBytes` (2 GiB by default;
+`"unlimited"` disables content quota rejection). Configured composition reserves 1 MiB
+for independently admitted audit records when MCP Apps are enabled; finite
+budgets must exceed that reserve. Published files use
+`artifacts.replyFiles.maxFileBytes` (20 MiB by default and at most 20 MiB),
+because web, Slack and Telegram delivery buffer whole files and web reply
+storage enforces its own 20 MiB bound. Values above 20 MiB fail config
+validation rather than producing undownloadable files. Retention pruning still
+applies with unlimited storage. Audit storage uses fair-share,
 oldest-segment reclamation when that reserve fills. One bounded inventory per
 artifact-root lifecycle restores accounting after a restart; later appends
 update exact in-memory ownership under one process-wide gate instead of

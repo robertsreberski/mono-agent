@@ -63,6 +63,8 @@ write, or after a filesystem failure can still lose the unsaved tail.
 | Key | Default | Env var | Coverage |
 | --- | --- | --- | --- |
 | `artifacts.dir` | `./.mono-agent/artifacts` | — | config |
+| `artifacts.replyFiles.maxStorageBytes` | `2147483648` (2 GiB) | — | reply files and MCP App content; `"unlimited"` disables quota rejection, not retention |
+| `artifacts.replyFiles.maxFileBytes` | `20971520` (20 MiB) | — | reply files only; 20 MiB delivery ceiling |
 | `artifacts.retention.maxAgeDays` | `365` | — | config |
 | `artifacts.retention.maxCount` | `50000` | — | config |
 | `artifacts.retention.dryRun` | `false` | — | config |

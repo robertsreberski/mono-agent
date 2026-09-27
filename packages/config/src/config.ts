@@ -296,6 +296,14 @@ function requireJsonString(value: unknown, path: string): string {
   return normalized;
 }
 
+function replyFileByteLimit(value: unknown, path: string, fallback: number, maximum: number): number {
+  if (value === undefined) return fallback;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > maximum) {
+    throw new MonoAgentConfigError("invalid_json", `${path} must be a positive safe integer in bytes (1–${maximum}).`, { path });
+  }
+  return value;
+}
+
 function jsonInteger(
   value: unknown,
   path: string,
@@ -439,6 +447,11 @@ export function resolveJsonMonoAgentConfig(input: ResolveJsonMonoAgentConfigInpu
   const sandbox = readSandboxConfig(json.sandbox, workspace);
   const artifactsJson = jsonContainer(json.artifacts);
   const artifactDir = readPath(jsonString(artifactsJson?.dir, "artifacts.dir"), cwd, resolve(cwd, ".mono-agent", "artifacts"));
+  const replyFilesJson = jsonContainer(artifactsJson?.replyFiles);
+  const maxStorageValue = replyFilesJson?.maxStorageBytes;
+  const maxStorageBytes = maxStorageValue === "unlimited" ? "unlimited" :
+    replyFileByteLimit(maxStorageValue, "artifacts.replyFiles.maxStorageBytes", 2 * 1024 * 1024 * 1024, Number.MAX_SAFE_INTEGER);
+  const maxFileBytes = replyFileByteLimit(replyFilesJson?.maxFileBytes, "artifacts.replyFiles.maxFileBytes", 20 * 1024 * 1024, 20 * 1024 * 1024);
   const artifactRetention = readArtifactRetentionConfig(artifactsJson?.retention);
   const memoryArtifactRetention = readMemoryArtifactRetentionConfig(artifactsJson?.memoryRetention, artifactRetention);
   const traceability = readTraceabilityConfig(json.traceability, cwd, agentName);
@@ -611,6 +624,7 @@ export function resolveJsonMonoAgentConfig(input: ResolveJsonMonoAgentConfigInpu
     ...(sandbox === undefined ? {} : { sandbox }),
     artifacts: {
       dir: artifactDir,
+      replyFiles: { maxStorageBytes, maxFileBytes },
       retention: artifactRetention,
       memoryRetention: memoryArtifactRetention,
     },

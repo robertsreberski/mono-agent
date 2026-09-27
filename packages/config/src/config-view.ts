@@ -139,6 +139,8 @@ export const CORE_CONFIG_FIELD_IDS = {
   "sandbox.fallback": true,
   "sandbox.unsafeAllowHostProcess": true,
   "artifacts.dir": true,
+  "artifacts.replyFiles.maxStorageBytes": true,
+  "artifacts.replyFiles.maxFileBytes": true,
   "artifacts.retention.maxAgeDays": true,
   "artifacts.retention.maxCount": true,
   "artifacts.retention.dryRun": true,
@@ -952,6 +954,18 @@ function buildArtifactsSection(input: BuildMonoAgentConfigViewInput): ConfigView
         label: "Artifact directory",
         value: redacted.artifacts.dir,
         jsonPresent: json.artifacts?.dir !== undefined,
+      }),
+      toField({
+        id: "artifacts.replyFiles.maxStorageBytes",
+        label: "Reply artifact storage budget",
+        value: String(redacted.artifacts.replyFiles?.maxStorageBytes ?? 2_147_483_648),
+        jsonPresent: json.artifacts?.replyFiles?.maxStorageBytes !== undefined,
+      }),
+      toField({
+        id: "artifacts.replyFiles.maxFileBytes",
+        label: "Reply file maximum bytes",
+        value: String(redacted.artifacts.replyFiles?.maxFileBytes ?? 20_971_520),
+        jsonPresent: json.artifacts?.replyFiles?.maxFileBytes !== undefined,
       }),
       toField({
         id: "artifacts.retention.maxAgeDays",

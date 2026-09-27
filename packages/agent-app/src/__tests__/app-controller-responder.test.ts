@@ -78,6 +78,10 @@ describe("reply artifact responder composition", () => {
     expect(replyArtifactStorageMaxBytesForMcpApps(true)).toBe(
       DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES - DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES,
     );
+    expect(replyArtifactStorageMaxBytesForMcpApps(false, 4096)).toBe(4096);
+    expect(replyArtifactStorageMaxBytesForMcpApps(true, 2_097_152)).toBe(1_048_576);
+    expect(replyArtifactStorageMaxBytesForMcpApps(true, "unlimited")).toBe("unlimited");
+    expect(() => replyArtifactStorageMaxBytesForMcpApps(true, 1_048_576)).toThrow(/audit reserve/);
   });
 
   it("refuses every configured host-private root, including relocated durable history", async () => {

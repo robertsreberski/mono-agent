@@ -16,6 +16,8 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `artifacts.memoryRetention.dryRun` | `boolean` | `--` | false | `true` | Configures memoryRetention.dryRun for the artifacts section. |
 | `artifacts.memoryRetention.maxAgeDays` | `integer` | `--` | 7 | `7` | Configures memoryRetention.maxAgeDays for the artifacts section. |
 | `artifacts.memoryRetention.maxCount` | `integer` | `--` | 5000 | `5000` | Configures memoryRetention.maxCount for the artifacts section. |
+| `artifacts.replyFiles.maxFileBytes` | `integer` | `--` | 20971520 | `20971520` | Maximum bytes per published reply file (default and maximum 20 MiB); larger values cannot be delivered safely by all channels. |
+| `artifacts.replyFiles.maxStorageBytes` | `integer | unlimited` | `--` | 2147483648 | `unlimited` | Aggregate reply-file and MCP App content budget in bytes (default 2 GiB), or 'unlimited' to disable quota rejection. MCP App audit keeps a separate 1 MiB reserve when enabled; retention still applies. |
 | `artifacts.retention.dryRun` | `boolean` | `--` | false | `true` | Configures retention.dryRun for the artifacts section. |
 | `artifacts.retention.maxAgeDays` | `integer` | `--` | 365 | `365` | Configures retention.maxAgeDays for the artifacts section. |
 | `artifacts.retention.maxCount` | `integer` | `--` | 50000 | `50000` | Configures retention.maxCount for the artifacts section. |

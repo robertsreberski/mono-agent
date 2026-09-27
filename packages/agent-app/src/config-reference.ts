@@ -425,7 +425,7 @@ export interface ConfigReferenceField {
   readonly nullable?: boolean;
 }
 
-export type ConfigReferenceType = "string" | "number" | "integer" | "boolean" | "string[]" | "string | string[]" | "object" | "array";
+export type ConfigReferenceType = "string" | "number" | "integer" | "boolean" | "string[]" | "string | string[]" | "integer | unlimited" | "object" | "array";
 
 interface JsonSchema {
   readonly [key: string]: unknown;
@@ -1074,6 +1074,16 @@ function isSchemaObject(value: unknown): value is JsonSchema & { properties: Rec
 }
 
 export function schemaForField(field: ConfigReferenceField): JsonSchema {
+  if (field.jsonPath === "artifacts.replyFiles.maxStorageBytes") return {
+    description: field.description,
+    examples: [field.example],
+    default: 2_147_483_648,
+    anyOf: [{ type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER }, { const: "unlimited" }],
+  };
+  if (field.jsonPath === "artifacts.replyFiles.maxFileBytes") return {
+    type: "integer", minimum: 1, maximum: DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
+    default: DEFAULT_AGENT_ATTACHMENT_MAX_BYTES, description: field.description, examples: [field.example],
+  };
   const schema: Record<string, unknown> = {
     description: field.description,
     examples: [field.example],
@@ -1326,6 +1336,7 @@ function typeFromKind(kind: JsonEnvFieldSpec["kind"], id: string): ConfigReferen
 }
 
 function inferType(id: string): ConfigReferenceType {
+  if (id === "artifacts.replyFiles.maxStorageBytes") return "integer | unlimited";
   if (id === "tools.web.search.backend" || id === "tools.web.fetch.provider") return "string | string[]";
   if (id === "runtime.fallbacks") {
     return "array";
@@ -1450,6 +1461,8 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "sandbox.fallback": "fail-closed",
     "sandbox.unsafeAllowHostProcess": false,
     "artifacts.dir": ".mono-agent/artifacts",
+    "artifacts.replyFiles.maxStorageBytes": 2_147_483_648,
+    "artifacts.replyFiles.maxFileBytes": DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
     "artifacts.retention.maxAgeDays": 365,
     "artifacts.retention.maxCount": 50_000,
     "artifacts.retention.dryRun": false,
@@ -1506,6 +1519,7 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
 
 function exampleFor(id: string): SettingsJsonValue {
   const examples: Record<string, SettingsJsonValue> = {
+    "artifacts.replyFiles.maxStorageBytes": "unlimited",
     "providers.piNative.cacheRetention": "long",
     "agent.name": "Research Partner",
     "runtime.model": "openai-codex:gpt-5.6-terra",
@@ -1604,6 +1618,8 @@ function descriptionFor(id: string): string {
   if (id === "memory.capture.only") return "Keep automatic capture memories only when a host-accepted label matches one of these kinds. An empty array drops all automatic captures; unset preserves current behavior. Remember writes are unaffected. Requires mode bujo and writeMode capture.";
   if (id === "memory.capture.reconcileModel") return "Optional validated agent-host runtime model reference for the capture reconciliation classifier only. Unset uses memory.llm for extraction, review and reconciliation. Requires mode bujo and writeMode capture; failures do not fall back to the capture model.";
   if (id === "providers.piNative.cacheRetention") return "Anthropic Messages cache retention (short or long; default long). Short opts out. JSON > long; the resolved value overrides ambient PI_CACHE_RETENTION. Long requires model support: 1h writes cost 2× normal input, reads 0.1×; short writes cost 1.25×. No guaranteed hit.";
+  if (id === "artifacts.replyFiles.maxStorageBytes") return "Aggregate reply-file and MCP App content budget in bytes (default 2 GiB), or 'unlimited' to disable quota rejection. MCP App audit keeps a separate 1 MiB reserve when enabled; retention still applies.";
+  if (id === "artifacts.replyFiles.maxFileBytes") return "Maximum bytes per published reply file (default and maximum 20 MiB); larger values cannot be delivered safely by all channels.";
   if (id === "providers.piNative.promptCacheDiagnostics") return "Emit metadata-only prompt-cache request fingerprints into run artifacts; never prompt text, tool arguments, cache keys, endpoints or credentials.";
   const section = id.split(".")[0] ?? "config";
   const name = id.split(".").slice(1).join(".");
