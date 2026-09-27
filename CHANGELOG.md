@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix manual context compaction for app-hosted conversations with durable Pi
+  sessions, including web model selections; log safe unsupported reasons on the
+  host while keeping operator responses generic.
+
 - Keep host-owned process-job wakes out of automatic memory context while
   retaining explicit recall and capture attribution; show task lines as recorded
   history rather than open to-dos, and mark dated events ended when their
