@@ -7,7 +7,7 @@ export const sampleMessages = [
   { role: "assistant" as const, content: "# Garden planner\n\nHere is a small plan for a **fictional** garden.\n\n- Map three beds\n- Choose low-water plants\n- Check seedlings weekly\n\n| Bed | Plant |\n| --- | --- |\n| North | Sage |\n| South | Thyme |\n\n```ts\nconst beds = [\"north\", \"south\"];\n```" },
   { role: "system" as const, content: "Example project context: Garden planner" },
 ];
-export function StoryRuntime({ children, messages = sampleMessages }: { readonly children: ReactNode; readonly messages?: readonly ThreadMessageLike[] }) {
+export function StoryRuntime({ children, messages = [sampleMessages[2]!, sampleMessages[0]!, sampleMessages[1]!] }: { readonly children: ReactNode; readonly messages?: readonly ThreadMessageLike[] }) {
   const runtime = useLocalRuntime({ run: async () => ({ content: [{ type: "text", text: "The example garden plan is ready." }] }) }, { initialMessages: messages });
   return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>;
 }
