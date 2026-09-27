@@ -1169,11 +1169,14 @@ describe("agent host composition helpers", () => {
     } as MonoAgentConfig);
 
     try {
-      // First load drives an embedding request that fails and trips the breaker.
-      await expect(memory!.load("conv")).rejects.toThrow();
+      // Explicit strict recall still fails on an embedding outage, while the
+      // standalone automatic block stays empty instead of injecting lexical hits.
+      const recall = memory as unknown as { recall(query: string): Promise<unknown> };
+      await expect(recall.recall("conv")).rejects.toThrow();
       expect(requests).toBe(1);
-      // Second load fast-fails on the OPEN breaker without hitting the server again.
-      await expect(memory!.load("conv")).rejects.toThrow();
+      expect(await memory!.load("conv")).toBeUndefined();
+      // Further explicit recall fast-fails on the OPEN breaker.
+      await expect(recall.recall("conv")).rejects.toThrow();
       expect(requests).toBe(1);
     } finally {
       await (memory as unknown as { close(): Promise<void> }).close();

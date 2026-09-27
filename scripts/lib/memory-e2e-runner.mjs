@@ -18,7 +18,9 @@ export async function productionModules() {
 }
 
 export function automaticRecallObservation({ block, outcome, query, selectHits, failure }) {
-  const selected = outcome === null ? null : selectHits(outcome.hits, { query });
+  // Report injected selector lines, not potential candidates on a non-owner turn.
+  const selected = outcome === null ? null : block !== undefined && outcome.retrievalMode === "hybrid" && outcome.degradation === undefined
+    ? selectHits(outcome.hits) : [];
   return {
     content: block?.content ?? null,
     source: block?.source ?? null,
@@ -754,7 +756,7 @@ async function runConversationBatchedBenchmark({ corpus, plan, directory, module
               block,
               outcome: observation.outcome,
               query,
-              selectHits: modules.bujo.selectAutomaticRecallHits,
+              selectHits: modules.bujo.selectPossiblyRelevantRecallHits,
               failure,
             }));
             if (failure !== undefined) throw failure;

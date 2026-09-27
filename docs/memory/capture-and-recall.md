@@ -385,7 +385,7 @@ Recall fuses two retrievers and re-ranks the result:
 
   Retrieval quality still limits other languages. With an English-centred embedding model and English memory text, Polish or Spanish questions often don't retrieve the answer at all. A multilingual embedding model is the lever for that.
 
-  Programmatic `BujoMemoryStore.load()`, used without the app's retrieval service, still uses the earlier direct-fact gate for now.
+  Programmatic `BujoMemoryStore.load()` now uses the same hybrid-only, score-based selector and three-line bound. It lacks the app's verified-owner privacy gate and richer attribution; standalone callers must gate injection by audience themselves. Lite and degraded lexical-only stores return no automatic block; use `recallWithOutcome()` for deliberate retrieval.
 
 Labelled background stays language-neutral too. Preferences and verified lessons in the turn's scopes join when their memory ranks among the top retrieved hits and clearly leads the candidate median. Opposite advice is shown together. A person card appears when the message contains an exact person name or `person:` id, such as `Morgan`, `¿Dónde trabaja Morgan?` or `Gdzie pracuje Morgan?`. The card shows that person's current user-stated or document facts with the recording date, in the form `home town: Maple Harbor (you said, recorded 2026-09-06)`, plus age for a birth date. It does not filter keys by the question's wording. Two or more current distinct values for one key show as `conflicting values — ask`. First-person wording no longer selects the owner's card. Keys drop the `other:` namespace and values render as text, not JSON, in both the automatic card and the explicit `MemoryRecall` fact sheet.
 

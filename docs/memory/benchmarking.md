@@ -12,31 +12,31 @@ pnpm run benchmark:memory
 node scripts/memory-benchmark.mjs --json
 ```
 
-The fast suite covers direct facts, paraphrases, updates/contradictions, temporal questions, recurring noise, alternating queries, exact duplicates, and entity-hop-shaped retrieval. Automatic injection is intentionally limited to canonical direct facts; broad paraphrases, relations, and entity hops remain available to the explicit `MemoryRecall` tool without being synthesized into background context. The legacy BuJo automatic-recall benchmark also exercises abstention for current/last-message questions; the configured app's possibly-relevant block uses score selection instead, leaving relevance to the main model. The unanswerable set separates out-of-domain questions from in-domain **missing-attribute** questions (for example, a person exists in memory but their phone number does not).
+The fast suite measures retrieval over direct facts, paraphrases, updates,
+temporal questions, recurring noise, alternating queries, duplicates and
+entity hops. Automatic context uses the production **possibly-relevant**
+selector (`selectPossiblyRelevantRecallHits`): hybrid scores only, at most three
+lines, no English grammar or assertion that a line proves an answer. The main
+model judges relevance. Synthetic positive and near-miss probes stay separate
+from provider-backed retrieval; both run through the same live selector.
 
-Synthetic selector-policy probes run separately from provider retrieval. Positive probes cover explicit property ownership, direct choice, event date/time, and location. Adversarial probes cover coordinated verbs, ditransitives, reported speech, subordinate wrong objects, inverse relations, and unknown values. Their fixed scores are never mixed into provider Recall/MRR, latency, context, or false-recall measurements.
+The deterministic fixture was calibrated after retiring the old English
+selector: six synthetic positive cases all show their answer (100%); six
+near-miss probes show at most one line each; the fast-suite negatives show at
+most one; provider-backed positives show five of six answers (83.3%); the
+names/dates negative probes show zero lines. These values are enforced as
+separate gates, alongside Recall@5 >= 90%, MRR >= 0.8 and the universal
+three-line selection cap. A regression that drops positive answers or adds
+adjacent lines to near misses fails. These are **context bounds**, not factual
+precision or a guarantee that an answer is correct. Other provider models may
+require recalibration with evidence, not a silent threshold change.
 
-A second, provider-backed calibration proves that the finite automatic-recall contract survives real indexing and retrieval. It uses the configured embedding provider, `upsertMany(..., { batchSize: 32 })`, `db.recall`, and `selectAutomaticRecallHits` in its own disposable store. At least one eligible direct-fact case must be present and 100% of eligible cases must select their relevant record. Unsupported paraphrase and relational cases are reported, but their coverage or abstention is informational and cannot fail the gate. This separation prevents synthetic scores from certifying provider behavior while keeping the broader retrieval suite free to measure cases that belong to the explicit `MemoryRecall` tool. The gate is:
-
-- Recall@5 at least 90%
-- MRR at least 0.8
-- at least six canonical direct-fact probes are present, and at least 90% receive the relevant automatic-recall hit
-- at least six ambiguous-binding probes are present, and 100% abstain from automatic injection
-- at least 90% of unanswerable cases abstain from automatic injection
-- 100% of missing-attribute and out-of-domain cases abstain in the fast suite
-- stale recall at most 5%
-- false recall at most 5%
-- every policy-calibration probe passes
-- at least one provider-backed eligible direct-fact case is present, and 100% receive their relevant automatic-recall hit
-
-The report also includes evaluation-group count, Recall@1/8, nDCG@8, informational overall automatic Recall@5/answer coverage, direct-fact automatic coverage, ambiguous-binding abstention, both unanswerable abstention classes, context bytes, indexing/search latency, storage bytes, embedding calls/texts/input tokens/cost, LLM calls/tokens/cost, duplicate ratio, and vector coverage. Search latency uses the same bounded 50-hit backend superset as the shared app retrieval service, then measures automatic recall from its score-and-direct-fact-gated five-hit slice. Indexing is one `upsertMany` call per group with a batch size of 32; the compatibility field `efficiency.queueDrainMs` now reports aggregate group-local batch-write wall time rather than a serial per-record queue. The dataset's `efficiency` counters exclude the provider-backed and fixed memory-cleanup calibrations, which expose their own accounting under `calibrations`. The direct-fact and ambiguous-binding gates prevent either "inject nothing" or "inject adjacent topic matches" from passing on good raw search ordering alone; overall answer coverage is intentionally not a gate because unsupported or relational answers belong to `MemoryRecall`. Zero LLM cost in the fast suite is literal: the suite never invokes a chat model.
-
-The additive `calibrations.providerAutomaticRecall` JSON object pins the provider-backed contract and its accounting:
-
-- `eligibleDirectFact.cases` and `eligibleDirectFact.coverage` are gated at nonzero and 100%, respectively.
-- `unsupported.cases` and `unsupported.abstentionRate` are informational.
-- `efficiency` contains calibration-only indexing/search latency, storage, embedding, and zero-LLM counters.
-- `store` contains calibration-only record, duplicate, and vector-coverage accounting.
+The report includes informational retrieval quality, automatic answer coverage,
+context bytes, indexing/search latency, storage and embedding counters. Search
+uses a 50-hit backend superset; the selector bounds the resulting score window.
+The provider calibration has its own indexing and search counters under
+`calibrations.providerAutomaticRecall`. The fixed capture/graph calibration has
+independent stores and accounting. The suite never calls a chat model.
 
 ## Memory-cleanup calibration
 

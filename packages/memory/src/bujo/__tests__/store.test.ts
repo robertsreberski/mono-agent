@@ -33,7 +33,7 @@ describe("BujoMemoryStore — tier derivation", () => {
     expect(listRetainedCapturePlanKeys(root)).toEqual([]);
     await reopened.close();
   });
-  it("lite tier: no embeddings → tier() === 'lite'; completed-turn summary and recall work", async () => {
+  it("lite tier: no embeddings → tier() === 'lite'; completed-turn summary stays durable without automatic injection", async () => {
     const root = mkdtempSync(join(tmpdir(), "bujo-tier-lite-"));
     const now = new Date("2026-06-16T09:00:00.000Z");
     // No embeddings — FTS-only store
@@ -43,8 +43,9 @@ describe("BujoMemoryStore — tier derivation", () => {
 
     await projectSummary(store, "s1", "Morgan's memory preference is opt-in.");
     const block = await store.load("What is Morgan's memory preference?");
-    // FTS recall: keyword must appear in the block
-    expect(block?.content).toContain("memory preference is opt-in");
+    // Lexical-only results remain available through explicit recall, not automatic context.
+    expect(block).toBeUndefined();
+    expect((await store.recall("memory preference"))[0]?.record.text).toContain("memory preference is opt-in");
 
     await projectCapture(store, "s1", "some text");
     expect(store.queueSnapshot().intake).toMatchObject({ resolved: 2, pending: 0, dead: 0 });
@@ -464,11 +465,11 @@ describe("BujoMemoryStore", () => {
 
   it("loads a qualifying block from a read-only store without access writes", async () => {
     const root = tmpRoot();
-    const writable = createBujoMemoryStore({ root });
+    const writable = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(64), dim: 64 });
     await projectSummary(writable, "seed", "Morgan's memory preference is opt-in.");
     await writable.close();
 
-    const readOnly = createBujoMemoryStore({ root, readOnly: true });
+    const readOnly = createBujoMemoryStore({ root, readOnly: true, embeddings: fakeEmbeddings(64), dim: 64 });
     await expect(readOnly.load("seed", "What is Morgan's memory preference?")).resolves.toMatchObject({
       kind: "markdown",
       content: expect.stringContaining("Morgan's memory preference is opt-in."),
@@ -632,7 +633,7 @@ describe("BujoMemoryStore", () => {
 
 describe("BujoMemoryStore — recall query (load 2nd arg)", () => {
   it("recalls against the query argument, not the conversation id", async () => {
-    const store = createBujoMemoryStore({ root: mkdtempSync(join(tmpdir(), "bujo-recall-q-")) });
+    const store = createBujoMemoryStore({ root: mkdtempSync(join(tmpdir(), "bujo-recall-q-")), embeddings: fakeEmbeddings(64), dim: 64 });
     await projectSummary(store, "c1", "The launch date is March 3rd.");
     await projectSummary(store, "c1", "Team lunch was pizza on Tuesday.");
 
@@ -652,7 +653,7 @@ describe("BujoMemoryStore — recall query (load 2nd arg)", () => {
   });
 
   it("falls back to the conversation id as a coarse seed when no query is supplied (back-compat)", async () => {
-    const store = createBujoMemoryStore({ root: mkdtempSync(join(tmpdir(), "bujo-recall-seed-")) });
+    const store = createBujoMemoryStore({ root: mkdtempSync(join(tmpdir(), "bujo-recall-seed-")), embeddings: fakeEmbeddings(64), dim: 64 });
     await projectSummary(store, "c1", "The launch date is March 3rd.");
     const block = await store.load("When is the launch date?");
     expect(block?.content).toContain("launch");

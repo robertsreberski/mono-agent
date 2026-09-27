@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { MemorySearchError, type EmbeddingProvider } from "../../search/index.js";
-import { selectAutomaticRecallHits } from "../../bujo/recall.js";
+import { selectPossiblyRelevantRecallHits } from "../../bujo/recall.js";
 import { openMemoryDb } from "../db.js";
 import { fakeEmbeddings } from "./helpers.js";
 import type { MemoryRecord } from "../types.js";
@@ -39,7 +39,7 @@ describe("recall", () => {
       expect(hits[0]?.score).toBeGreaterThanOrEqual(0.65);
       // The calibrated score gate remains eligible; the separate answer-bearing
       // grammar may still abstain from this deliberately overlong question.
-      expect(selectAutomaticRecallHits(hits).some((hit) => hit.record.id === "answer")).toBe(true);
+      expect(selectPossiblyRelevantRecallHits(hits).some((hit) => hit.record.id === "answer")).toBe(true);
     } finally { db.close(); }
   });
   it("ranks the topically-matching memory first via hybrid search", async () => {

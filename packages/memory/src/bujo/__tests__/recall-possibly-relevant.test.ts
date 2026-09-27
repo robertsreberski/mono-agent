@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import type { MemoryDb } from "../../store/index.js";
 
 import {
+  composeRecallBlock,
   POSSIBLY_RELEVANT_MAX_LINES,
   POSSIBLY_RELEVANT_MIN_SCORE,
   POSSIBLY_RELEVANT_WINDOW,
@@ -53,6 +55,29 @@ describe("possibly-relevant selection", () => {
       hit(0.88, "Morgan brews tea at seven.", { createdAt: "2026-02-01T00:00:00Z" }),
     ], { asOf: "2026-09-24", maxLines: 2 });
     expect(selected.map((h) => h.record.text)).toEqual(["Morgan brews tea at seven.", "Morgan drinks green tea."]);
+  });
+
+  it("standalone composition never injects degraded/lexical results and bounds multilingual hybrid context", async () => {
+    const accessed: string[][] = [];
+    let retrievalMode: "hybrid" | "lexical_only" = "hybrid";
+    const rows = [
+      { score: 0.91, record: { id: "a", text: "Morgan prefiere el té verde.", type: "note", status: "open" } },
+      { score: 0.9, record: { id: "b", text: "Morgan woli zieloną herbatę.", type: "note", status: "open" } },
+      { score: 0.89, record: { id: "c", text: "Morgan prefers green tea.", type: "note", status: "open" } },
+      { score: 0.88, record: { id: "d", text: "Maple tea club.", type: "note", status: "open" } },
+    ];
+    const db = {
+      recallWithOutcome: async () => ({ retrievalMode, hits: rows }),
+      recordAccess: (ids: string[]) => { accessed.push(ids); },
+    } as unknown as MemoryDb;
+    const block = await composeRecallBlock(db, "¿Qué té bebe Morgan?", { topK: 50 });
+    expect(block?.content).toContain("possibly relevant");
+    expect(block?.content).toContain("prefiere el té verde");
+    expect(block?.content).toContain("woli zieloną herbatę");
+    expect(block?.content).not.toContain("Maple tea club");
+    expect(accessed).toEqual([["a", "b", "c"]]);
+    retrievalMode = "lexical_only";
+    expect(await composeRecallBlock(db, "¿Qué té bebe Morgan?")).toBeUndefined();
   });
 
   it("reports each line's currency", () => {
