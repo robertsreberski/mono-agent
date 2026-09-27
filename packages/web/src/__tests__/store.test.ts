@@ -6426,6 +6426,10 @@ describe("WebStore console wake tools", () => {
       expect(() => run("SetWakeSchedule", { kind: "once", timezone: "UTC", localAt: new Date(Date.now() + 2 * 60_000).toISOString().slice(0, 16) }))
         .toThrowError(expect.objectContaining({ code: "wake_lead_time" }));
       expect(run("GetWakeSchedule", {}).result).toEqual({ schedule: null });
+      expect(() => run("SetWakeSchedule", { ...weekly, localAt: future }))
+        .toThrowError(expect.objectContaining({ code: "invalid_wake_schedule" }));
+      expect(() => run("SetWakeSchedule", { kind: "once", timezone: "UTC", localAt: future, days: [1] }))
+        .toThrowError(expect.objectContaining({ code: "invalid_wake_schedule" }));
       expect(() => run("SetWakeSchedule", { ...weekly, times: Array(9).fill("09:00") }))
         .toThrowError(expect.objectContaining({ code: "invalid_wake_schedule" }));
       expect(() => run("SetWakeSchedule", { ...weekly, message: "é".repeat(501) }))

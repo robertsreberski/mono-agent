@@ -116,7 +116,9 @@ it("registers strict conversation-only wake tools and gives safe, actionable wak
   expect(schemas.SetWakeSchedule.safeParse(once).success).toBe(true);
   expect(schemas.SetWakeSchedule.safeParse({ ...once, expectedRevision: 1 }).success).toBe(true);
   expect(schemas.SetWakeSchedule.safeParse(weekly).success).toBe(true);
-  for (const bad of [{ ...once, days: [1] }, { ...weekly, localAt: once.localAt }, { ...weekly, times: Array(9).fill("09:00") },
+  // Kind-specific combinations are rejected by the shared web parser, not by
+  // this SDK-compatible, top-level-object transport schema.
+  for (const bad of [{ ...weekly, times: Array(9).fill("09:00") },
     { ...once, message: "é".repeat(501) }, { ...once, expectedRevision: 0 }, { ...once, sourceId: "another" }]) {
     expect(schemas.SetWakeSchedule.safeParse(bad).success).toBe(false);
   }
@@ -128,7 +130,15 @@ it("registers strict conversation-only wake tools and gives safe, actionable wak
   try {
     const spec = (bound.runtimeOptions?.mcpServers as Record<string, { url: string }>)["mono-agent-console-projects"]!;
     await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
-    expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(["GetWakeSchedule", "SetWakeSchedule", "ClearWakeSchedule"]));
+    const listed = (await client.listTools()).tools;
+    expect(listed.map((tool) => tool.name)).toEqual(expect.arrayContaining(["GetWakeSchedule", "SetWakeSchedule", "ClearWakeSchedule"]));
+    const schema = listed.find((tool) => tool.name === "SetWakeSchedule")!.inputSchema;
+    expect(schema).toMatchObject({ type: "object", additionalProperties: false,
+      properties: { kind: { enum: ["once", "weekly"] }, timezone: expect.any(Object), localAt: expect.any(Object),
+        days: expect.any(Object), times: expect.any(Object), message: expect.any(Object), expectedRevision: expect.any(Object) },
+    });
+    expect(schema.required).toEqual(expect.arrayContaining(["kind", "timezone"]));
+    expect(schema.required).toHaveLength(2);
     const refused = await client.callTool({ name: "SetWakeSchedule", arguments: once });
     expect(refused.isError).toBe(true);
     expect(JSON.stringify(refused)).toContain("five minutes");
