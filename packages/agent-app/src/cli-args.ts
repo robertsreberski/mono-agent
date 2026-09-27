@@ -174,6 +174,12 @@ export interface ParsedCliArgs {
   readonly ownerBackfill?: boolean;
   /** memory curate prepare --limit 0: propose reviewed links from lines to the persons they name. */
   readonly linkPeople?: boolean;
+  /** memory curate prepare: propose open task lines as history notes (rule-based). */
+  readonly tasksToNotes?: boolean;
+  /** memory curate prepare --tasks-to-notes: only tasks created before this ISO date or instant. */
+  readonly tasksBefore?: string;
+  /** memory curate prepare --tasks-to-notes: only lines minted by automatic capture. */
+  readonly captureOnly?: boolean;
   /** memory entities: list folded names shared by more than one entity id. */
   readonly duplicates?: boolean;
   /** memory forget restore: owner-private backup directory. */
@@ -227,6 +233,7 @@ const CLI_VALUE_FLAGS = new Set([
   "--stale-after-ms",
   "--limit",
   "--select",
+  "--before",
   "--cursor",
   "--kind",
   "--about",
@@ -282,6 +289,8 @@ const CLI_BOOLEAN_FLAGS = new Set([
   "--allow-cross-type",
   "--owner-backfill",
   "--link-people",
+  "--tasks-to-notes",
+  "--capture-only",
   "--duplicates",
   "--accept-derived-association-drift",
   "--loopback",
@@ -431,6 +440,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let allowCrossType = false;
   let ownerBackfill = false;
   let linkPeople = false;
+  let tasksToNotes = false;
+  let tasksBefore: string | undefined;
+  let captureOnly = false;
   let duplicates = false;
   let backupPath: string | undefined;
   let bundlePath: string | undefined;
@@ -587,6 +599,23 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       case "--link-people":
         linkPeople = true;
         break;
+      case "--tasks-to-notes":
+        tasksToNotes = true;
+        break;
+      case "--capture-only":
+        captureOnly = true;
+        break;
+      case "--before": {
+        const value = requireValue(rest, ++i, flag).trim();
+        if (!/^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2}))?$/u.test(value)
+          || !Number.isFinite(Date.parse(value))
+          // Date.parse normalises an impossible calendar day (2026-02-30 → March); round-trip it instead.
+          || new Date(`${value.slice(0, 10)}T00:00:00.000Z`).toISOString().slice(0, 10) !== value.slice(0, 10)) {
+          throw new Error("--before requires a valid ISO date (YYYY-MM-DD) or instant.");
+        }
+        tasksBefore = value;
+        break;
+      }
       case "--duplicates":
         duplicates = true;
         break;
@@ -959,6 +988,12 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (linkPeople && (cmd !== "memory" || positionals[0] !== "curate" || positionals[1] !== "prepare" || limit !== 0)) {
     throw new Error("--link-people requires `mono-agent memory curate prepare --limit 0`.");
   }
+  if (tasksToNotes && (cmd !== "memory" || positionals[0] !== "curate" || positionals[1] !== "prepare")) {
+    throw new Error("--tasks-to-notes requires `mono-agent memory curate prepare`.");
+  }
+  if ((tasksBefore !== undefined || captureOnly) && !tasksToNotes) {
+    throw new Error("--before and --capture-only require `mono-agent memory curate prepare --tasks-to-notes`.");
+  }
   if (duplicates && (cmd !== "memory" || positionals[0] !== "entities")) {
     throw new Error("--duplicates requires `mono-agent memory entities`.");
   }
@@ -1069,6 +1104,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(allowCrossType ? { allowCrossType } : {}),
     ...(ownerBackfill ? { ownerBackfill } : {}),
     ...(linkPeople ? { linkPeople } : {}),
+    ...(tasksToNotes ? { tasksToNotes } : {}),
+    ...(tasksBefore === undefined ? {} : { tasksBefore }),
+    ...(captureOnly ? { captureOnly } : {}),
     ...(duplicates ? { duplicates } : {}),
     ...(backupPath === undefined ? {} : { backupPath }),
     ...(bundlePath === undefined ? {} : { bundlePath }),

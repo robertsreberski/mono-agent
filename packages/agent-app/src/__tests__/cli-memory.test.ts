@@ -2537,6 +2537,72 @@ describe("memory entity identity CLI", { timeout: 30_000 }, () => {
     expect(JSON.parse(again.stdout)).toMatchObject({ ownerBackfill: { alreadyLinked: 1, proposed: 1 } });
   });
 
+  it("turns open task lines into history notes through a reviewed model-free plan", async () => {
+    expect(parseCliArgs(["memory", "curate", "prepare", "--plan", "p.json", "--tasks-to-notes", "--before", "2026-09-01", "--capture-only"]))
+      .toMatchObject({ tasksToNotes: true, tasksBefore: "2026-09-01", captureOnly: true });
+    expect(() => parseCliArgs(["memory", "curate", "review", "--plan", "p.json", "--tasks-to-notes"])).toThrow(/--tasks-to-notes/u);
+    expect(() => parseCliArgs(["memory", "curate", "prepare", "--plan", "p.json", "--capture-only"])).toThrow(/--tasks-to-notes/u);
+    expect(() => parseCliArgs(["memory", "curate", "prepare", "--plan", "p.json", "--tasks-to-notes", "--before", "soon"])).toThrow(/--before/u);
+    // An impossible calendar day is rejected, not normalised into the next month.
+    for (const value of ["2026-02-30", "2026-02-31T10:00Z", "2026-04-31"]) {
+      expect(() => parseCliArgs(["memory", "curate", "prepare", "--plan", "p.json", "--tasks-to-notes", "--before", value])).toThrow(/--before/u);
+    }
+    expect(parseCliArgs(["memory", "curate", "prepare", "--plan", "p.json", "--tasks-to-notes", "--before", "2028-02-29"]))
+      .toMatchObject({ tasksBefore: "2028-02-29" });
+    const memoryRoot = join(await tempDir(), "memory");
+    await mkdir(memoryRoot, { recursive: true });
+    const at = "2026-07-12T10:00:00.000Z";
+    for (const [id, type, status, text] of [["C-a", "task", "open", "Renew the Maple lease."], ["C-b", "task", "done", "Water the Maple garden."],
+      ["C-c", "note", "open", "Morgan likes Maple tea."], ["OPERATOR-d", "task", "open", "Pay the Maple invoice."]] as const) {
+      bujoMemory.appendBullet(memoryRoot, { id, type, status, text, salience: 0.5, isInsight: false, createdAt: at, refs: [] }, new Date(at));
+    }
+    await safeRebuildMemoryIndex({ root: memoryRoot, tier: "bujo", embeddings: deterministicEmbeddings("ollama:test-embed", 8), dim: 8 });
+    const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
+      embeddings: { provider: "ollama", model: "test-embed", dim: 8 }, llm: { provider: "ollama", model: "test-capture" } } });
+    const invoke = (args: string[]) => captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(args))));
+    const invalidText = await invoke(["memory", "curate", "prepare", "--plan", join(dir, "x.json"), "--tasks-to-notes", "--before", "2026-02-30"]);
+    expect(invalidText.code).toBe(2);
+    expect(invalidText.stderr).toContain("--before requires a valid ISO date");
+    const invalidJson = await invoke(["memory", "curate", "prepare", "--plan", join(dir, "x.json"), "--tasks-to-notes", "--before", "2026-02-30", "--json"]);
+    expect(invalidJson.code).toBe(2);
+    expect(JSON.parse(invalidJson.stdout)).toMatchObject({ status: "failed", code: "memory_usage" });
+    const combined = await invoke(["memory", "curate", "prepare", "--plan", join(dir, "x.json"), "--tasks-to-notes", "--limit", "5", "--json"]);
+    expect(combined.code).not.toBe(0);
+    const dry = await invoke(["memory", "curate", "prepare", "--plan", join(dir, "dry.json"), "--tasks-to-notes", "--capture-only", "--dry-run", "--json"]);
+    expect(dry.code, dry.stderr).toBe(0);
+    expect(JSON.parse(dry.stdout)).toMatchObject({ status: "estimated", model: "none",
+      tasksToNotes: { openTasks: 2, proposed: 1, outsideWindow: 0, notCapture: 1 } });
+    const planPath = join(dir, "tasks-plan.json");
+    const prepared = await invoke(["memory", "curate", "prepare", "--plan", planPath, "--tasks-to-notes", "--json"]);
+    expect(prepared.code, prepared.stderr).toBe(0);
+    expect(JSON.parse(prepared.stdout)).toMatchObject({ status: "prepared", count: 2, discarded: 0,
+      tasksToNotes: { openTasks: 2, proposed: 2 } });
+    expect((await invoke(["memory", "curate", "review", "--plan", planPath, "--accept", "retype:*", "--reject", "id:OPERATOR-d", "--json"])).code).toBe(0);
+    const reviewed = await invoke(["memory", "curate", "review", "--plan", planPath, "--json"]);
+    expect(JSON.parse(reviewed.stdout)).toMatchObject({ counts: { "retype:none": { total: 2, accepted: 1 } } });
+    stubOllamaEmbeddings(8);
+    const applied = await invoke(["memory", "curate", "apply", "--plan", planPath, "--json"]);
+    expect(applied.code, applied.stderr).toBe(0);
+    expect(JSON.parse(applied.stdout)).toMatchObject({ status: "applied", count: 1 });
+    const types = Object.fromEntries(bujoMemory.parseDailyFile(await readFile(join(memoryRoot, "daily", "2026-07-12.md"), "utf8")).bullets
+      .map(({ id, type, status }) => [id, `${type}/${status}`]));
+    expect(types).toEqual({ "C-a": "note/open", "C-b": "task/done", "C-c": "note/open", "OPERATOR-d": "task/open" });
+
+    // Drift: the operator task is completed after a second plan was prepared; apply refuses before any write.
+    const driftPlan = join(dir, "tasks-plan-2.json");
+    expect((await invoke(["memory", "curate", "prepare", "--plan", driftPlan, "--tasks-to-notes", "--json"])).code).toBe(0);
+    expect((await invoke(["memory", "curate", "review", "--plan", driftPlan, "--accept", "retype:*", "--json"])).code).toBe(0);
+    const dailyPath = join(memoryRoot, "daily", "2026-07-12.md");
+    const daily = bujoMemory.parseDailyFile(await readFile(dailyPath, "utf8"));
+    await writeFile(dailyPath, bujoMemory.serializeDailyFile({ lines: daily.lines.map((line) => line.bullet?.id === "OPERATOR-d"
+      ? { ...line, bullet: { ...line.bullet, status: "done" as const } } : line) }));
+    const beforeDriftApply = await readFile(dailyPath, "utf8");
+    const drifted = await invoke(["memory", "curate", "apply", "--plan", driftPlan, "--json"]);
+    expect(drifted.code).not.toBe(0);
+    expect(JSON.parse(drifted.stdout)).toMatchObject({ operation: "curate-apply", status: "failed" });
+    expect(await readFile(dailyPath, "utf8")).toBe(beforeDriftApply);
+  });
+
   it("links lines to the one person they name through a reviewed model-free plan", async () => {
     expect(parseCliArgs(["memory", "curate", "prepare", "--plan", "p.json", "--limit", "0", "--link-people"]))
       .toMatchObject({ limit: 0, linkPeople: true });

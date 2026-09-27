@@ -128,6 +128,10 @@ export interface RunMemoryCommandInput {
   readonly ownerBackfill?: boolean;
   /** `memory curate prepare --limit 0 --link-people`. */
   readonly linkPeople?: boolean;
+  /** `memory curate prepare --tasks-to-notes [--before <date>] [--capture-only]`. */
+  readonly tasksToNotes?: boolean;
+  readonly tasksBefore?: string;
+  readonly captureOnly?: boolean;
   /** `memory entities --duplicates`. */
   readonly duplicates?: boolean;
   readonly model?: string;
@@ -327,6 +331,16 @@ function memoryCommandUsageError(input: RunMemoryCommandInput): string | undefin
   }
   if (input.linkPeople === true && !(subcommand === "curate" && rest[0] === "prepare" && input.limit === 0)) {
     return "--link-people requires `mono-agent memory curate prepare --limit 0`.";
+  }
+  if (input.tasksToNotes === true && !(subcommand === "curate" && rest[0] === "prepare")) {
+    return "--tasks-to-notes requires `mono-agent memory curate prepare`.";
+  }
+  if ((input.tasksBefore !== undefined || input.captureOnly === true) && input.tasksToNotes !== true) {
+    return "--before and --capture-only require `mono-agent memory curate prepare --tasks-to-notes`.";
+  }
+  if (input.tasksToNotes === true && (input.limit !== undefined || input.curateSelect !== undefined || input.ownerBackfill === true
+    || input.linkPeople === true || (input.curateMerges?.length ?? 0) > 0 || input.curateMergeFile !== undefined)) {
+    return "--tasks-to-notes is its own model-free pass; do not combine it with --limit, --select, --owner-backfill, --link-people or merges.";
   }
   if (input.limit === 0 && !(subcommand === "curate" && rest[0] === "prepare")) {
     return "--limit 0 is only supported for `mono-agent memory curate prepare`.";
@@ -3072,6 +3086,10 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       // Deterministic and model-free: lines naming exactly one known person (`--limit 0` only).
       const peopleScan = input.linkPeople === true ? bujo.proposePersonAssociations(root, operatorMerges) : undefined;
       const scannedPeople = peopleScan?.associations ?? [];
+      // Deterministic and model-free: every open task line (in the window) as a history note.
+      const tasksScan = input.tasksToNotes === true ? bujo.proposeTasksToNotes(root, {
+        ...(input.tasksBefore === undefined ? {} : { before: new Date(input.tasksBefore) }),
+        ...(input.captureOnly === true ? { captureOnly: true } : {}) }) : undefined;
       // A line this plan proposes to drop gets no owner or person link proposal.
       const ownersFor = (candidates: readonly CurateProposal[]): readonly CurateOwnerAssociation[] => {
         const dropped = curateDropIds(candidates, false);
@@ -3083,7 +3101,7 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
       };
       // `--limit 0` sends no line to a model: operator merges, owner backfill and
       // a bounded pass of coarse person labels (oldest first, or --select recent).
-      const modelPass = input.limit !== 0;
+      const modelPass = input.limit !== 0 && tasksScan === undefined;
       const inspected = bujo.inspectCurateSource(root, modelPass ? input.limit ?? 120 : 1,
         modelPass ? input.curateSelect : "oldest");
       const snapshot = modelPass ? inspected : { ...inspected, lines: [] };
@@ -3092,14 +3110,15 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
         throw new Error("curate source exceeds private plan bound");
       }
       const estimate = bujo.curateEstimate(snapshot, memory.capture);
-      const model = input.model ?? memory.llm?.model ?? (modelPass ? undefined : "none");
+      const model = tasksScan !== undefined ? "none" : input.model ?? memory.llm?.model ?? (modelPass ? undefined : "none");
       if (model === undefined) throw new Error("memory LLM not configured");
       const estimateText = `Curate estimate: ${estimate.lines} lines, ${estimate.calls} calls, ~${estimate.inputTokens} input / ~${estimate.outputTokens} output tokens; cost unknown. Selected buckets: ${JSON.stringify(modelPass ? snapshot.selected : {})}. Skipped canonical lines: ${JSON.stringify(snapshot.skipped)}.\n`;
       if (input.dryRun) {
         write(input.json, { operation: "curate-prepare", status: "estimated", model, estimate, skipped: snapshot.skipped, selected: modelPass ? snapshot.selected : {},
           ...(ownerScan === undefined ? {} : { ownerBackfill: ownerScan.counts }),
-          ...(peopleScan === undefined ? {} : { linkPeople: peopleScan.counts }) },
-          () => `${estimateText}${ownerScan === undefined ? "" : `Owner backfill: ${JSON.stringify(ownerScan.counts)}.\n`}${peopleScan === undefined ? "" : `Person links: ${JSON.stringify(peopleScan.counts)}.\n`}`);
+          ...(peopleScan === undefined ? {} : { linkPeople: peopleScan.counts }),
+          ...(tasksScan === undefined ? {} : { tasksToNotes: tasksScan.counts }) },
+          () => `${estimateText}${ownerScan === undefined ? "" : `Owner backfill: ${JSON.stringify(ownerScan.counts)}.\n`}${peopleScan === undefined ? "" : `Person links: ${JSON.stringify(peopleScan.counts)}.\n`}${tasksScan === undefined ? "" : `Tasks to notes: ${JSON.stringify(tasksScan.counts)}.\n`}`);
         return 0;
       }
       process.stderr.write(estimateText);
@@ -3121,7 +3140,8 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
         }
       };
       admit(suggested.proposals);
-      const coarse = modelPass ? undefined : bujo.proposeCoarseCurate(root, {
+      if (tasksScan !== undefined) admit(tasksScan.proposals);
+      const coarse = modelPass || tasksScan !== undefined ? undefined : bujo.proposeCoarseCurate(root, {
         select: input.curateSelect === "recent" ? "recent" : "oldest", fingerprint: snapshot.fingerprint });
       if (coarse !== undefined) { discarded.push(...coarse.discarded); admit(coarse.proposals); }
       const ownerAssociations = ownersFor(proposals);
@@ -3160,6 +3180,7 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
         operatorMerges: operatorMerges.length, ...(ownerBackfill === undefined ? {} : { ownerBackfill }),
         ...(linkPeople === undefined ? {} : { linkPeople }),
         ...(coarse === undefined ? {} : { coarseLabels: { more: coarseMore } }),
+        ...(tasksScan === undefined ? {} : { tasksToNotes: tasksScan.counts }),
         discarded: discarded.length, discardedByReason, skipped: snapshot.skipped, selected: modelPass ? snapshot.selected : {} },
         () => `Curate plan prepared: ${proposals.length} proposals, ${operatorMerges.length} operator merges, ${ownerBackfill === undefined ? "" : `${ownerAssociations.length} owner associations (${JSON.stringify(ownerBackfill)}), `}${linkPeople === undefined ? "" : `${personAssociations.length} person links (${JSON.stringify(linkPeople)}), `}${discarded.length} discarded (${JSON.stringify(discardedByReason)}); skipped canonical lines: ${JSON.stringify(snapshot.skipped)} at ${planPath}. Review before applying.${coarseMore ? " More unlabelled person lines remain: apply this plan, then prepare again." : ""}${linkPeople?.more === true ? " More person links remain: apply this plan, then prepare again." : ""}\n`);
       return 0;
@@ -3203,7 +3224,7 @@ async function runMemoryCurate(context: MemoryCommandContext, rest: readonly str
         const accept = input.curateAccept?.split(",") ?? [];
         const reject = input.curateReject?.split(",") ?? [];
         const selectors = [...accept, ...reject];
-        if (selectors.some((selector) => !/^(keep|drop|rewrite|label|merge|associate):(?:\*|[a-z][a-z-]{0,40})$|^id:[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/u.test(selector))
+        if (selectors.some((selector) => !/^(keep|drop|rewrite|label|merge|retype|associate):(?:\*|[a-z][a-z-]{0,40})$|^id:[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/u.test(selector))
           || new Set(selectors).size !== selectors.length) throw new Error("invalid or duplicate review selector");
         const matches = (selector: string, proposal: CurateProposal) => selector === `id:${proposal.source.id}`
           || selector === `${proposal.action}:*` || selector === `${proposal.action}:${proposal.reason ?? "none"}`;
