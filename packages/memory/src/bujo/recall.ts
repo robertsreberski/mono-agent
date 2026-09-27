@@ -75,49 +75,73 @@ export function recallLineStatus(record: PossiblyRelevantRecord, asOf?: string):
   return "current";
 }
 
+/** Shared formatting contract for standalone stores and the app's automatic block. */
+export const POSSIBLY_RELEVANT_HEADING = "## Memory (possibly relevant — may be unrelated; verify before relying)";
+const POSSIBLY_RELEVANT_LINE_BYTES = 360;
+
+export interface FormattedRecallRecord extends PossiblyRelevantRecord {
+  readonly id: string;
+  readonly type?: "task" | "event" | "note";
+  readonly status?: "open" | "done" | "scheduled" | "migrated" | "dropped" | "invalidated";
+  readonly isInsight?: boolean;
+}
+
+/** Never emit a partial line or split a UTF-8 code point at either byte bound. */
+export function formatPossiblyRelevantBlock<T extends { readonly record: FormattedRecallRecord }>(
+  hits: readonly T[],
+  attributions: ReadonlyMap<string, string>,
+  maxBytes: number,
+  asOf?: string,
+): { readonly content: string; readonly truncated: boolean; readonly shown: readonly T[] } | undefined {
+  const lines = [POSSIBLY_RELEVANT_HEADING, ""];
+  const shown: T[] = [];
+  let truncated = false;
+  for (const hit of hits) {
+    const record = hit.record;
+    const recorded = /^\d{4}-\d{2}-\d{2}/u.exec(record.createdAt ?? "")?.[0];
+    const status = recallLineStatus(record, asOf);
+    const currency = status === "ended" ? `ended ${record.validTo!.slice(0, 10)}` : status;
+    const note = [recorded === undefined ? undefined : `recorded ${recorded}`, currency, attributions.get(record.id)]
+      .filter((part) => part !== undefined).join("; ");
+    const body = record.type === undefined || record.status === undefined ? record.text
+      : `${MARKER_FOR(record.type, record.status)} ${record.text}${record.isInsight === true ? " *" : ""}`;
+    const text = clampLineBytes(body.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").replace(/\s+/gu, " ").trim(), POSSIBLY_RELEVANT_LINE_BYTES);
+    const line = `- ${text}${note.length > 0 ? ` (${note})` : ""}`;
+    if (Buffer.byteLength([...lines, line].join("\n"), "utf8") > maxBytes) { truncated = true; continue; }
+    lines.push(line);
+    shown.push(hit);
+  }
+  if (shown.length === 0) return undefined;
+  return { content: lines.join("\n"), truncated, shown };
+}
+
+function clampLineBytes(text: string, maxBytes: number): string {
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) return text;
+  const cut = new TextDecoder("utf-8").decode(Buffer.from(text, "utf8").subarray(0, maxBytes - 3)).replace(/\uFFFD+$/u, "");
+  return `${cut}…`;
+}
+
 export async function composeRecallBlock(
   db: MemoryDb,
   query: string,
-  options: { topK?: number; maxBytes?: number; trackAccess?: boolean; abortSignal?: AbortSignal } = {},
+  options: { topK?: number; maxBytes?: number; trackAccess?: boolean; abortSignal?: AbortSignal; asOf?: string } = {},
 ): Promise<MemoryBlock | undefined> {
   const maxBytes = Math.max(1, Math.min(options.maxBytes ?? POSSIBLY_RELEVANT_MAX_BYTES, POSSIBLY_RELEVANT_MAX_BYTES));
   const topK = Math.max(1, Math.min(options.topK ?? POSSIBLY_RELEVANT_MAX_LINES, POSSIBLY_RELEVANT_MAX_LINES));
   const outcome = await db.recallWithOutcome(query, {
-    topK: Math.max(topK, 8),
+    topK: AUTO_RECALL_BACKEND_HITS,
     trackAccess: false,
     ...(options.abortSignal === undefined ? {} : { abortSignal: options.abortSignal }),
   });
   options.abortSignal?.throwIfAborted();
-  // The standalone store has no host identity signal. Never inject lexical-only
-  // results; semantic scores alone bound a possibly-relevant, not factual, block.
-  const hits = outcome.retrievalMode === "hybrid" && outcome.degradation === undefined
-    ? selectPossiblyRelevantRecallHits(outcome.hits, { maxLines: topK }) : [];
-  // No hits → no block. A header-only block carries no signal and only adds
-  // noise/tokens to whatever surface injects it; returning undefined lets
-  // callers skip injection via their existing `block === undefined` guard.
-  if (hits.length === 0) {
-    return undefined;
-  }
-  if (options.trackAccess !== false) db.recordAccess(hits.map((hit) => hit.record.id));
-  const lines = ["## Memory (possibly relevant; verify before use)", ""];
-  for (const hit of hits) {
-    const star = hit.record.isInsight ? " *" : "";
-    // Marker reflects type *and* status (e.g. a done task renders `- [x]`, not `- [ ]`); recall
-    // surfaces done/scheduled/migrated records, so a type-only marker would misrepresent their state.
-    lines.push(`- ${MARKER_FOR(hit.record.type, hit.record.status)} ${hit.record.text}${star}`);
-  }
-  let content = lines.join("\n");
-  let truncated = false;
-  if (Buffer.byteLength(content, "utf8") > maxBytes) {
-    content = clampToBytes(content, maxBytes);
-    truncated = true;
-  }
-  return { kind: "markdown", content, source: "memory-bujo", truncated };
-}
-
-function clampToBytes(text: string, maxBytes: number): string {
-  const buf = Buffer.from(text, "utf8");
-  if (buf.byteLength <= maxBytes) return text;
-  // Cut on a UTF-8 boundary by decoding a sliced buffer leniently.
-  return new TextDecoder("utf-8").decode(buf.subarray(0, maxBytes)).replace(/�+$/u, "");
+  // Standalone callers enforce audience policy. Lexical-only/degraded results
+  // remain available through explicit recall, never as automatic context.
+  if (outcome.retrievalMode !== "hybrid" || outcome.degradation !== undefined) return undefined;
+  const hits = selectPossiblyRelevantRecallHits(outcome.hits, {
+    maxLines: topK, ...(options.asOf === undefined ? {} : { asOf: options.asOf }),
+  });
+  const block = formatPossiblyRelevantBlock(hits, new Map(), maxBytes, options.asOf);
+  if (block === undefined) return undefined;
+  if (options.trackAccess !== false) db.recordAccess(block.shown.map((hit) => hit.record.id));
+  return { kind: "markdown", content: block.content, source: "memory-bujo", truncated: block.truncated };
 }

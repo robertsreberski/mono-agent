@@ -12,6 +12,8 @@ export {
   AUTO_RECALL_BACKEND_HITS,
   AUTO_RECALL_MAX_BYTES,
   AUTO_RECALL_MIN_SCORE,
+  formatPossiblyRelevantBlock,
+  POSSIBLY_RELEVANT_HEADING,
   POSSIBLY_RELEVANT_MAX_BYTES,
   POSSIBLY_RELEVANT_MAX_LINES,
   POSSIBLY_RELEVANT_MIN_SCORE,
@@ -19,7 +21,7 @@ export {
   recallLineStatus,
   selectPossiblyRelevantRecallHits,
 } from "./recall.js";
-export type { PossiblyRelevantRecord } from "./recall.js";
+export type { FormattedRecallRecord, PossiblyRelevantRecord } from "./recall.js";
 export {
   rebuildFromMarkdown,
   rollbackMemoryIndex,

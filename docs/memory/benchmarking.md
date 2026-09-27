@@ -21,13 +21,15 @@ model judges relevance. Synthetic positive and near-miss probes stay separate
 from provider-backed retrieval; both run through the same live selector.
 
 The deterministic fixture was calibrated after retiring the old English
-selector: six synthetic positive cases all show their answer (100%); six
-near-miss probes show at most one line each; the fast-suite negatives show at
-most one; provider-backed positives show five of six answers (83.3%); the
-names/dates negative probes show zero lines. These values are enforced as
+selector: six synthetic positive cases all show their answer (100%) and
+exactly two lines (top 0.90, adjacent 0.88, out-of-window 0.80); six near-miss
+probes also show exactly two lines from the same three-score shape. A weak
+negative at 0.61 shows none. The fast suite has thirteen negatives; at most
+one may inject, with at most one line. Provider-backed positives show five of
+six answers (83.3%); names/dates negative probes show zero lines. These are
 separate gates, alongside Recall@5 >= 90%, MRR >= 0.8 and the universal
-three-line selection cap. A regression that drops positive answers or adds
-adjacent lines to near misses fails. These are **context bounds**, not factual
+three-line cap. A regression that drops positives, widens the window or lowers
+the score floor fails. These are **context bounds**, not factual
 precision or a guarantee that an answer is correct. Other provider models may
 require recalibration with evidence, not a silent threshold change.
 

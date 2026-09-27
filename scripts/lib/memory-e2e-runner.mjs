@@ -19,8 +19,7 @@ export async function productionModules() {
 
 export function automaticRecallObservation({ block, outcome, query, selectHits, failure }) {
   // Report injected selector lines, not potential candidates on a non-owner turn.
-  const selected = outcome === null ? null : block !== undefined && outcome.retrievalMode === "hybrid" && outcome.degradation === undefined
-    ? selectHits(outcome.hits) : [];
+  const selected = outcome === null ? null : block !== undefined ? selectHits(outcome.hits) : [];
   return {
     content: block?.content ?? null,
     source: block?.source ?? null,

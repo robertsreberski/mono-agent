@@ -28,11 +28,12 @@ describe("memory benchmark", () => {
     expect(report.policyCategories).toContain("high-similarity-adjacent");
     expect(report.policyCategories).toContain("ambiguous-binding");
     expect(report.policyCategories).toContain("direct-fact");
-    expect(report.proximityCalibration).toMatchObject({ positiveCases: 6, positivePresence: 1, nearMissCases: 6, maxNearMissLines: 1 });
+    expect(report.proximityCalibration).toMatchObject({ positiveCases: 6, positivePresence: 1, positiveWindowCases: 6,
+      nearMissCases: 6, nearMissWindowCases: 6, floorNegativeCases: 1, floorNegativeInjectedCases: 0 });
     expect(report.gates.passed).toBe(true);
     expect(report.quality.recallAt5).toBeGreaterThanOrEqual(0.9);
     expect(report.quality.mrr).toBeGreaterThanOrEqual(0.8);
-    expect(report.quality.maxNegativeLines).toBe(1);
+    expect(report.quality).toMatchObject({ negativeCases: 13, negativeInjectedCases: 1, maxNegativeLines: 1 });
     expect(report.gates.checks.providerPositivePresence).toBe(true);
     expect(report.efficiency).toMatchObject({
       contextBytes: expect.any(Object),
@@ -212,18 +213,21 @@ describe("memory benchmark", () => {
   });
 
   it("fails when the live selector drops positives or widens near-miss and negative context", () => {
-    const quality = { recallAt5: 1, mrr: 1, maxNegativeLines: 1 };
-    const proximity = { positiveCases: 6, positivePresence: 1, nearMissCases: 6,
-      maxNearMissLines: 1, maxSelectedLines: 1 };
+    const quality = { recallAt5: 1, mrr: 1, negativeCases: 13, negativeInjectedCases: 1, maxNegativeLines: 1 };
+    const proximity = { positiveCases: 6, positivePresence: 1, positiveWindowCases: 6,
+      nearMissCases: 6, nearMissWindowCases: 6, floorNegativeCases: 1, floorNegativeInjectedCases: 0, maxSelectedLines: 2 };
     const provider = { eligibleDirectFact: { cases: 6, coverage: 5 / 6 }, maxSelectedLines: 1 };
     const names = { maxNegativeLines: 0 };
     expect(memoryBenchmarkGateResults(quality, proximity, provider, names).passed).toBe(true);
     for (const [q, p, r, n, check] of [
       [quality, { ...proximity, positivePresence: 0 }, provider, names, "positivePresence"],
-      [quality, { ...proximity, maxNearMissLines: 2 }, provider, names, "nearMissLines"],
+      [quality, { ...proximity, nearMissWindowCases: 0 }, provider, names, "nearMissWindow"],
+      [quality, { ...proximity, positiveWindowCases: 0 }, provider, names, "positiveWindow"],
+      [quality, { ...proximity, floorNegativeInjectedCases: 1 }, provider, names, "floorNegativeInjected"],
+      [{ ...quality, negativeInjectedCases: 2 }, proximity, provider, names, "negativeInjected"],
       [{ ...quality, maxNegativeLines: 2 }, proximity, provider, names, "negativeLines"],
       [quality, proximity, { ...provider, eligibleDirectFact: { cases: 6, coverage: 0 } }, names, "providerPositivePresence"],
-      [quality, proximity, provider, { maxNegativeLines: 2 }, "namesDatesNegativeLines"],
+      [quality, proximity, provider, { maxNegativeLines: 1 }, "namesDatesNegativeLines"],
       [quality, { ...proximity, maxSelectedLines: 4 }, provider, names, "selectedLines"],
     ]) {
       expect(memoryBenchmarkGateResults(q, p, r, n).checks[check]).toBe(false);

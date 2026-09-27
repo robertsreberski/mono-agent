@@ -13,15 +13,15 @@ import type {
 import {
   AUTO_RECALL_BACKEND_HITS,
   AUTO_RECALL_MAX_BYTES,
-  MARKER_FOR,
+  formatPossiblyRelevantBlock,
+  POSSIBLY_RELEVANT_HEADING,
   POSSIBLY_RELEVANT_MAX_BYTES,
-  recallLineStatus,
   selectPossiblyRelevantRecallHits,
   type JournalBrowseInput,
   type JournalBrowseSnapshot,
 } from "@mono-agent/memory/bujo";
 
-import { formatMemoryBackground, safeLine, type LabelRecallStore } from "./memory-guidance.js";
+import { formatMemoryBackground, type LabelRecallStore } from "./memory-guidance.js";
 import { readLabelSections, type LabelSectionRequest } from "./memory-label-sections.js";
 import {
   createMemoryRecallServer,
@@ -582,10 +582,7 @@ function clampLimit(limit: number | undefined, fallback: number): number {
   return Math.min(AUTO_RECALL_BACKEND_HITS, Math.max(1, Math.trunc(limit)));
 }
 
-/** The block never claims to answer: the main model judges each line. */
-export const POSSIBLY_RELEVANT_HEADING = "## Memory (possibly relevant — may be unrelated; verify before relying)";
-/** One recalled line's text is capped so K lines fit the tiny block budget. */
-const POSSIBLY_RELEVANT_LINE_BYTES = 360;
+export { POSSIBLY_RELEVANT_HEADING };
 
 /** Reader-facing attribution when every label on the line agrees. */
 function recallAttributions(store: SharedRecallStore, hits: readonly SharedRecallHit[]): ReadonlyMap<string, string> {
@@ -611,42 +608,6 @@ function recallAttributions(store: SharedRecallStore, hits: readonly SharedRecal
     if (only !== undefined) out.set(id, only);
   }
   return out;
-}
-
-function formatPossiblyRelevantBlock(
-  hits: readonly SharedRecallHit[],
-  attributions: ReadonlyMap<string, string>,
-  maxBytes: number,
-  asOf?: string,
-): { readonly content: string; readonly truncated: boolean; readonly shown: readonly SharedRecallHit[] } | undefined {
-  const lines = [POSSIBLY_RELEVANT_HEADING, ""];
-  const shown: SharedRecallHit[] = [];
-  let truncated = false;
-  for (const hit of hits) {
-    const recorded = /^\d{4}-\d{2}-\d{2}/u.exec(hit.record.createdAt ?? "")?.[0];
-    const status = recallLineStatus(hit.record, asOf);
-    const currency = status === "ended" ? `ended ${hit.record.validTo!.slice(0, 10)}` : status;
-    const note = [recorded === undefined ? undefined : `recorded ${recorded}`, currency, attributions.get(hit.record.id)]
-      .filter((part) => part !== undefined).join("; ");
-    const text = clampBytes(safeLine(formatRecallRecord(hit.record)), POSSIBLY_RELEVANT_LINE_BYTES);
-    const line = `- ${text}${note.length > 0 ? ` (${note})` : ""}`;
-    if (Buffer.byteLength([...lines, line].join("\n"), "utf8") > maxBytes) { truncated = true; continue; }
-    lines.push(line);
-    shown.push(hit);
-  }
-  if (shown.length === 0) return undefined;
-  return { content: lines.join("\n"), truncated, shown };
-}
-
-function clampBytes(text: string, maxBytes: number): string {
-  if (Buffer.byteLength(text, "utf8") <= maxBytes) return text;
-  const cut = new TextDecoder("utf-8").decode(Buffer.from(text, "utf8").subarray(0, maxBytes - 3)).replace(/\uFFFD+$/u, "");
-  return `${cut}…`;
-}
-
-function formatRecallRecord(record: SharedRecallHit["record"]): string {
-  if (record.type === undefined || record.status === undefined) return record.text;
-  return `${MARKER_FOR(record.type, record.status)} ${record.text}${record.isInsight === true ? " *" : ""}`;
 }
 
 function isLoopbackHost(host: string | undefined): boolean {

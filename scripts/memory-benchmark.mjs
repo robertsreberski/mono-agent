@@ -6,7 +6,8 @@ import { pathToFileURL } from "node:url";
 
 import {
   AUTO_RECALL_BACKEND_HITS,
-  AUTO_RECALL_MAX_BYTES,
+  formatPossiblyRelevantBlock,
+  POSSIBLY_RELEVANT_MAX_BYTES,
   selectPossiblyRelevantRecallHits,
 } from "../packages/memory/dist/bujo/index.js";
 import { openMemoryDb } from "../packages/memory/dist/store/index.js";
@@ -20,10 +21,12 @@ export const MEMORY_BENCHMARK_GATES = Object.freeze({
   mrr: 0.8,
   // Deterministic fast fixture: all six direct-answer probes currently appear.
   positivePresence: 1,
-  // Near-miss single-record probes currently produce one line each, never two.
-  maxNearMissLines: 1,
+  // Synthetic probes have two close hits and one outside the score window.
+  expectedProbeLines: 2,
   // Negative fast-suite probes and names/dates negatives currently show <= 1 line.
   maxNegativeLines: 1,
+  maxNegativeInjectedCases: 1,
+  namesDatesMaxNegativeLines: 0,
   // Provider-backed fixture currently surfaces five of six positive answers.
   providerPositivePresence: 5 / 6,
   maxAutomaticLines: 3,
@@ -152,10 +155,9 @@ const FAST_POLICY_CASES = [{
     "direct-fact",
   ),
   hits: [
-    scoredHit("probe-answer", "Morgan selected cobalt as the deployment color.", 1.005),
-    scoredHit("probe-adjacent", "Morgan's office is in Quillmere.", 0.798),
-    scoredHit("probe-other", "Database rollouts use a blue-green deployment strategy.", 0.751),
-    scoredHit("probe-weak", "Project Atlas is led by Morgan.", 0.708),
+    scoredHit("probe-answer", "Morgan selected cobalt as the deployment color.", 0.9),
+    scoredHit("probe-adjacent", "Morgan's office is in Quillmere.", 0.88),
+    scoredHit("probe-other", "Database rollouts use a blue-green deployment strategy.", 0.80),
   ],
 }, ...[
   {
@@ -185,7 +187,8 @@ const FAST_POLICY_CASES = [{
   },
 ].map(({ query, id, text }) => ({
   item: testCase("direct-fact", query, [id], [], "direct-fact"),
-  hits: [scoredHit(id, text, 0.95)],
+  hits: [scoredHit(id, text, 0.9), scoredHit(`${id}-adjacent`, "Maple team has a nearby note.", 0.88),
+    scoredHit(`${id}-outside`, "A separate topic is outside the window.", 0.80)],
 })), ...[
   {
     query: "What color is Morgans car?",
@@ -219,8 +222,13 @@ const FAST_POLICY_CASES = [{
   },
 ].map(({ query, id, text }) => ({
   item: testCase("ambiguous-binding", query, [], [], "ambiguous-binding"),
-  hits: [scoredHit(id, text, 0.95)],
-}))];
+  hits: [scoredHit(id, text, 0.9), scoredHit(`${id}-adjacent`, "Maple team has a nearby note.", 0.88),
+    scoredHit(`${id}-outside`, "A separate topic is outside the window.", 0.80)],
+})), {
+  item: testCase("floor-negative", "Unsupported weak query", [], [], "floor-negative"),
+  hits: [scoredHit("weak-top", "Weakly ranked nearby record.", 0.61),
+    scoredHit("weak-adjacent", "Another weakly ranked record.", 0.60)],
+}];
 
 export async function runMemoryBenchmark(options = {}) {
   const suite = options.suite ?? "fast";
@@ -410,6 +418,8 @@ function qualityMetrics(results) {
     missingAttributeAbstentionRate: abstentionRateForCategory(results, "missing-attribute"),
     outOfDomainAbstentionRate: abstentionRateForCategory(results, "out-of-domain-abstention"),
     answerableCases: answerable.length,
+    negativeCases: results.filter(({ item }) => item.relevantIds.length === 0).length,
+    negativeInjectedCases: results.filter(({ item, automatic }) => item.relevantIds.length === 0 && automatic.length > 0).length,
     maxNegativeLines: Math.max(0, ...results.filter(({ item }) => item.relevantIds.length === 0)
       .map(({ automatic }) => automatic.length)),
   };
@@ -418,12 +428,17 @@ function qualityMetrics(results) {
 function proximityCalibrationMetrics(results) {
   const positives = results.filter(({ item }) => item.automaticClass === "direct-fact");
   const nearMisses = results.filter(({ item }) => item.automaticClass === "ambiguous-binding");
+  const floorNegatives = results.filter(({ item }) => item.automaticClass === "floor-negative");
+  const exactTwo = ({ automatic }) => automatic.length === MEMORY_BENCHMARK_GATES.expectedProbeLines;
   return {
     positiveCases: positives.length,
     positivePresence: mean(positives.map(({ item, automatic }) =>
       automatic.some((hit) => item.relevantIds.includes(hit.record.id)) ? 1 : 0)),
+    positiveWindowCases: positives.filter(exactTwo).length,
     nearMissCases: nearMisses.length,
-    maxNearMissLines: Math.max(0, ...nearMisses.map(({ automatic }) => automatic.length)),
+    nearMissWindowCases: nearMisses.filter(exactTwo).length,
+    floorNegativeCases: floorNegatives.length,
+    floorNegativeInjectedCases: floorNegatives.filter(({ automatic }) => automatic.length > 0).length,
     maxSelectedLines: Math.max(0, ...results.map(({ automatic }) => automatic.length)),
   };
 }
@@ -436,13 +451,18 @@ export function memoryBenchmarkGateResults(quality, proximity = {}, provider = {
     positiveCases: (proximity.positiveCases ?? 0) >= 6,
     positivePresence: (proximity.positivePresence ?? 0) >= gates.positivePresence,
     nearMissCases: (proximity.nearMissCases ?? 0) >= 6,
-    nearMissLines: (proximity.maxNearMissLines ?? Infinity) <= gates.maxNearMissLines,
+    positiveWindow: proximity.positiveWindowCases === proximity.positiveCases,
+    nearMissWindow: proximity.nearMissWindowCases === proximity.nearMissCases,
+    floorNegativeCases: (proximity.floorNegativeCases ?? 0) >= 1,
+    floorNegativeInjected: proximity.floorNegativeInjectedCases === 0,
+    negativeCases: (quality.negativeCases ?? 0) >= 13,
     negativeLines: (quality.maxNegativeLines ?? Infinity) <= gates.maxNegativeLines,
+    negativeInjected: (quality.negativeInjectedCases ?? Infinity) <= gates.maxNegativeInjectedCases,
     selectedLines: (proximity.maxSelectedLines ?? Infinity) <= gates.maxAutomaticLines,
     providerPositiveCases: (provider.eligibleDirectFact?.cases ?? 0) >= 6,
     providerPositivePresence: (provider.eligibleDirectFact?.coverage ?? 0) >= gates.providerPositivePresence,
     providerSelectedLines: (provider.maxSelectedLines ?? Infinity) <= gates.maxAutomaticLines,
-    namesDatesNegativeLines: namesDates === undefined || namesDates.maxNegativeLines <= gates.maxNegativeLines,
+    namesDatesNegativeLines: namesDates === undefined || namesDates.maxNegativeLines <= gates.namesDatesMaxNegativeLines,
   };
   return { passed: Object.values(checks).every(Boolean), checks, thresholds: gates };
 }
@@ -455,10 +475,8 @@ function abstentionRateForCategory(results, category) {
 }
 
 function contextByteMetrics(results) {
-  const bytes = results.map(({ automatic }) => Math.min(AUTO_RECALL_MAX_BYTES, Buffer.byteLength(
-    automatic.length === 0 ? "" : ["## Memory (recalled)", "", ...automatic.map((hit) => `- ${hit.record.text}`)].join("\n"),
-    "utf8",
-  )));
+  const bytes = results.map(({ automatic }) => Buffer.byteLength(
+    formatPossiblyRelevantBlock(automatic, new Map(), POSSIBLY_RELEVANT_MAX_BYTES)?.content ?? "", "utf8"));
   return { total: sum(bytes), average: mean(bytes), p95: percentile(bytes, 0.95), max: Math.max(0, ...bytes) };
 }
 
@@ -849,7 +867,7 @@ function render(report) {
     `Recall@1/5/8 ${(q.recallAt1 * 100).toFixed(1)}% / ${(q.recallAt5 * 100).toFixed(1)}% / ${(q.recallAt8 * 100).toFixed(1)}%`,
     `MRR ${q.mrr.toFixed(3)}  nDCG@8 ${q.ndcgAt8.toFixed(3)}`,
     `automatic Recall@5 ${(q.automaticRecallAt5 * 100).toFixed(1)}%  overall answer coverage ${(q.automaticAnswerCoverage * 100).toFixed(1)}%`,
-    `score-selector positives ${(report.proximityCalibration.positivePresence * 100).toFixed(1)}% (${report.proximityCalibration.positiveCases} cases)  near-miss max ${report.proximityCalibration.maxNearMissLines} line(s) (${report.proximityCalibration.nearMissCases} cases)`,
+    `score-selector positives ${(report.proximityCalibration.positivePresence * 100).toFixed(1)}% (${report.proximityCalibration.positiveWindowCases}/${report.proximityCalibration.positiveCases} exact-window cases)  near misses ${report.proximityCalibration.nearMissWindowCases}/${report.proximityCalibration.nearMissCases} exact-window`,
     `negative max ${q.maxNegativeLines} line(s)  selected max ${report.proximityCalibration.maxSelectedLines} line(s)`,
     ...(report.calibrations.namesDates === undefined ? [] : [
       `names/dates Recall@1/5 ${(report.calibrations.namesDates.recallAt1 * 100).toFixed(1)}% / ${(report.calibrations.namesDates.recallAt5 * 100).toFixed(1)}%  negative max ${report.calibrations.namesDates.maxNegativeLines} line(s) (${report.calibrations.namesDates.cases} cases)`,

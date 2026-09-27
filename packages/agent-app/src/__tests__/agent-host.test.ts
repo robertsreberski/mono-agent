@@ -13,7 +13,7 @@ import type {
   RunSummary,
 } from "@mono-agent/observability";
 import type { MemoryStore } from "@mono-agent/agent-contracts";
-import { createBujoMemoryStore } from "@mono-agent/memory/bujo";
+import { createBujoMemoryStore, POSSIBLY_RELEVANT_HEADING } from "@mono-agent/memory/bujo";
 import type { EmbeddingProvider } from "@mono-agent/memory/search";
 import type { JournalBrowseSnapshot } from "@mono-agent/memory/store";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
@@ -752,7 +752,7 @@ describe("agent host composition helpers", () => {
       );
       const recalledMessage = String(fake.calls[1]?.options.messages?.[0]?.content);
       expect(recalledMessage).toMatch(/<\/host_turn_context>\n\nLogged answer$/u);
-      expect(fake.calls[1]?.prompt).not.toContain("## Memory (recalled)");
+      expect(fake.calls[1]?.prompt).not.toContain(POSSIBLY_RELEVANT_HEADING);
     } finally {
       await memory.close();
     }

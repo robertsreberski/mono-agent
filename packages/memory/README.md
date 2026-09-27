@@ -579,6 +579,7 @@ ExplicitMemoryForgetRestoreResult
 ExportMemoryBundleOptions
 ExtractedEntity
 ExtractedRelation
+FormattedRecallRecord
 GraphBatchInput
 GraphBatchResult
 JournalBrowseCapableStore
@@ -641,6 +642,7 @@ MemoryRememberResult
 MigrateDeps
 MigrateResult
 OWNER_ENTITY_ID
+POSSIBLY_RELEVANT_HEADING
 POSSIBLY_RELEVANT_MAX_BYTES
 POSSIBLY_RELEVANT_MAX_LINES
 POSSIBLY_RELEVANT_MIN_SCORE
@@ -676,6 +678,7 @@ extractCapturePlanStrict
 findCanonicalMemoryBullet
 findDuplicateEntityNames
 foldEntityName
+formatPossiblyRelevantBlock
 inspectCompletedTurnIntake
 inspectCurateSource
 migrate

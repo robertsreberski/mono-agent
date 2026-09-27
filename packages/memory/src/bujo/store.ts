@@ -430,7 +430,7 @@ export class BujoMemoryStore implements MemoryStore {
     return await this.runAdmittedOperation(async (abortSignal) => await composeRecallBlock(
       this.db,
       recallQuery,
-      { topK: 8, maxBytes: this.maxBytes, trackAccess: !this.readOnly, abortSignal },
+      { topK: 3, maxBytes: this.maxBytes, trackAccess: !this.readOnly, abortSignal, asOf: this.clock().toISOString().slice(0, 10) },
     ));
   }
 
