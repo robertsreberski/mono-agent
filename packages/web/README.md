@@ -1244,6 +1244,20 @@ suite. It copies the canonical contract source and the existing pure web helpers
 not a contracts package install or dist tree. Normal local browser tests still use
 `pnpm --dir packages/web/webapp run test:browser`.
 
+### Console Storybook
+
+From a source checkout, run `pnpm --dir packages/web/webapp install --frozen-lockfile`,
+then `pnpm --dir packages/web/webapp storybook` for the local design-system
+catalog (port 6006). Use `pnpm --dir packages/web/webapp build-storybook` for a
+static build in the ignored `storybook-static/` directory. Add fictional,
+network-free fixtures and `*.stories.tsx` under `webapp/src/stories/`;
+organize them by Foundations, Primitives, Chat & Messages, Activity & Jobs,
+Dashboard, Projects & Tags, and Dialogs & Settings. The toolbar switches the
+four console themes and light/dark appearance without changing product CSS.
+The story-only store and API guard keep preview state separate from a live agent.
+Stories are excluded from the shipped app typecheck/build and from the npm
+package; Storybook's own build is checked in CI.
+
 ```sh
 pnpm --filter @mono-agent/web run typecheck
 pnpm --filter @mono-agent/web run test
