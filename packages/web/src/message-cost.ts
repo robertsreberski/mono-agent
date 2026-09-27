@@ -248,7 +248,7 @@ const tokenObservation = (value: unknown): MessageUsageSlice["tokens"] => {
 
 export function messageUsageRollup(message: {
   readonly parts: readonly CostTelemetryPart[];
-  readonly attribution?: { readonly executed?: { readonly model?: string } };
+  readonly attribution?: { readonly executed?: { readonly model?: string }; readonly attempted?: { readonly model?: string } };
 }): MessageUsageRollup {
   let aggregate: NormalizedUsage | null = null;
   let tokens: MessageUsageSlice["tokens"];
@@ -297,7 +297,9 @@ export function messageUsageRollup(message: {
   const costUsd = reportedCost === undefined
     ? syncObserved ? syncCost : undefined
     : Math.max(reportedCost, syncCost);
-  const model = aggregate?.model ?? message.attribution?.executed?.model;
+  // A failed run may have no executed attribution, but its attempted reference
+  // still names the provider model used by the persisted turn when available.
+  const model = aggregate?.model ?? message.attribution?.executed?.model ?? message.attribution?.attempted?.model;
   return {
     main: {
       ...(model === undefined ? {} : { model }),

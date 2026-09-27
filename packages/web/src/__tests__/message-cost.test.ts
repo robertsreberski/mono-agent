@@ -154,5 +154,10 @@ describe("model-reference attribution", () => {
     const usage = sumThreadUsage([rollup]);
     expect(usage.byModel).toEqual([{ model, costUsd: 3 }]);
     expect(usage.total.costUsd).toBe(3);
+    const failed = messageUsageRollup({
+      parts: [telemetry("usage_update", { cumulativeUsd: 0.5 })],
+      attribution: { attempted: { model } },
+    });
+    expect(sumThreadUsage([failed]).byModel).toEqual([{ model, costUsd: 0.5 }]);
   });
 });
