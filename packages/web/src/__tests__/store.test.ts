@@ -6382,6 +6382,64 @@ describe("WebStore console discovery tools", () => {
   });
 });
 
+describe("WebStore console wake tools", () => {
+  it("gets, creates, replaces and clears only the originating conversation with receipts and revision checks", async () => {
+    const root = await temporaryRoot(); cleanup.push(root);
+    const store = await WebStore.open({ stateDir: join(root, "state") });
+    try {
+      store.replaceAgents([agent(), agent("agent-two")]);
+      const thread = store.createThread("agent-one");
+      const other = store.createThread("agent-one");
+      const turn = store.beginTurn({ threadId: thread.id, text: "Plan a reminder", attachmentIds: [] });
+      const scope = { sourceId: "agent-one", threadId: thread.id, turnId: turn.turnId };
+      let n = 0;
+      const run = (tool: import("../console-tools.js").ConsoleToolName, args: Record<string, unknown>) =>
+        store.consoleToolOperation(scope, { operationId: `wake-tool-operation-${String(n++)}`, tool, args });
+      const count = () => ((store as unknown as { database: DatabaseSync }).database
+        .prepare("SELECT COUNT(*) AS count FROM console_tool_operations").get() as { count: number }).count;
+      expect(run("GetWakeSchedule", {}).result).toEqual({ schedule: null });
+      expect(count()).toBe(0);
+      const future = new Date(Date.now() + 15 * 60_000).toISOString().slice(0, 16);
+      const create = { operationId: "wake-replay-create", tool: "SetWakeSchedule" as const, args: { kind: "once", timezone: "UTC", localAt: future } };
+      const created = store.consoleToolOperation(scope, create);
+      expect(created.threads).toEqual([thread.id]);
+      expect(created.result).toMatchObject({ schedule: { threadId: thread.id, revision: 1, definition: { kind: "once", timezone: "UTC", localAt: future }, nextFireAt: expect.any(String) } });
+      expect(count()).toBe(1);
+      expect(store.consoleToolOperation(scope, create)).toEqual({ ...created, threads: [] });
+      expect(run("GetWakeSchedule", {}).result).toEqual(created.result);
+      expect(count()).toBe(1);
+      expect(store.wakeSchedule(other.id)).toBeNull();
+      const weekly = { kind: "weekly", timezone: "America/New_York", days: [1, 3], times: ["09:00"], message: "Check status" };
+      expect(() => run("SetWakeSchedule", weekly)).toThrowError(expect.objectContaining({ code: "wake_revision_conflict" }));
+      expect(() => run("SetWakeSchedule", { ...weekly, expectedRevision: 2 })).toThrowError(expect.objectContaining({ code: "wake_revision_conflict" }));
+      const replaced = run("SetWakeSchedule", { ...weekly, expectedRevision: 1 });
+      expect(replaced.result).toMatchObject({ schedule: { revision: 2, definition: weekly } });
+      expect(() => run("ClearWakeSchedule", { expectedRevision: 1 })).toThrowError(expect.objectContaining({ code: "wake_revision_conflict" }));
+      expect(run("ClearWakeSchedule", { expectedRevision: 2 })).toMatchObject({ result: { cleared: true }, threads: [thread.id] });
+      expect(run("GetWakeSchedule", {}).result).toEqual({ schedule: null });
+      expect(() => run("ClearWakeSchedule", { expectedRevision: 2 })).toThrowError(expect.objectContaining({ code: "wake_schedule_not_found" }));
+      expect(() => run("SetWakeSchedule", { ...weekly, conversationId: other.id })).toThrowError(expect.objectContaining({ code: "invalid_console_tool" }));
+      expect(() => run("GetWakeSchedule", { conversationId: other.id })).toThrowError(expect.objectContaining({ code: "invalid_console_tool" }));
+      expect(() => run("ClearWakeSchedule", { expectedRevision: 2, conversationId: other.id })).toThrowError(expect.objectContaining({ code: "invalid_console_tool" }));
+      expect(() => store.consoleToolOperation({ ...scope, sourceId: "agent-two" }, { operationId: "wrong-source-wake-operation", tool: "GetWakeSchedule", args: {} }))
+        .toThrowError(expect.objectContaining({ code: "console_tool_revoked" }));
+      expect(() => run("SetWakeSchedule", { kind: "once", timezone: "UTC", localAt: new Date(Date.now() + 2 * 60_000).toISOString().slice(0, 16) }))
+        .toThrowError(expect.objectContaining({ code: "wake_lead_time" }));
+      expect(run("GetWakeSchedule", {}).result).toEqual({ schedule: null });
+      expect(() => run("SetWakeSchedule", { ...weekly, localAt: future }))
+        .toThrowError(expect.objectContaining({ code: "invalid_wake_schedule" }));
+      expect(() => run("SetWakeSchedule", { kind: "once", timezone: "UTC", localAt: future, days: [1] }))
+        .toThrowError(expect.objectContaining({ code: "invalid_wake_schedule" }));
+      expect(() => run("SetWakeSchedule", { ...weekly, times: Array(9).fill("09:00") }))
+        .toThrowError(expect.objectContaining({ code: "invalid_wake_schedule" }));
+      expect(() => run("SetWakeSchedule", { ...weekly, message: "é".repeat(501) }))
+        .toThrowError(expect.objectContaining({ code: "invalid_wake_schedule" }));
+      store.patchThread(thread.id, { archived: true });
+      expect(() => run("SetWakeSchedule", weekly)).toThrowError(expect.objectContaining({ code: "console_tool_revoked" }));
+    } finally { store.close(); }
+  });
+});
+
 describe("WebStore conversation tags", () => {
   async function openTags() {
     const root = await temporaryRoot(); cleanup.push(root);

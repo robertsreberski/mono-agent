@@ -973,6 +973,7 @@ export class WebService {
     for (const tagId of commit.deletedTags) this.emitTag({ tagId, removed: true });
     for (const id of commit.projects) this.refreshProject(id);
     for (const projectId of commit.deletedProjects) this.emitProject({ projectId, removed: true });
+    if (commit.threads.length > 0 && (operation.tool === "SetWakeSchedule" || operation.tool === "ClearWakeSchedule")) this.dispatchWakes();
     return commit.result;
   }
 

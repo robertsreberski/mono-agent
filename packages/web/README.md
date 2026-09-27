@@ -114,6 +114,16 @@ bytes. The conversation row indicates active schedules; the menu shows state and
 next UTC-derived fire time in local display time. Paused schedules stay attached;
 editing a completed one-off replaces its definition with a future time.
 
+During a writable turn, `GetWakeSchedule({})`, `SetWakeSchedule` and
+`ClearWakeSchedule({ expectedRevision })` let the agent manage only this
+conversation's schedule. Set a one-off with `kind: "once"`, `timezone` and
+`localAt` at least five minutes ahead, or a weekly schedule with `kind: "weekly"`,
+`timezone`, 1–7 `days` and at most eight `times`; optional `message` is limited
+to 1,000 UTF-8 bytes. Times are local to the IANA timezone. Creating omits
+`expectedRevision`; replacing requires the current revision. A fired turn
+arrives later in this conversation. The five-minute restriction does not apply
+to browser edits. See [console tools](../../docs/tools/mcp.md#console-project-tools).
+
 `GET /api/v1/threads/:id/wake-schedule` returns `{schedule:null|schedule}`;
 `POST` creates with `{kind,timezone,localAt?,days?,times?,message?}`; `PUT`
 replaces the definition, `PATCH` accepts `{state:"paused"|"active"}`, and

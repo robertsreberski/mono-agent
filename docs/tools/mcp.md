@@ -463,7 +463,8 @@ For the full allow/deny semantics of built-in tools, see [Tool policy](/tools/po
 Writable web turns can use `ListProjects`, `GetProject`,
 `CreateProject`, `UpdateProject`, `DeleteProject`, `ListConversations`,
 `SearchConversations`, `CreateConversation`, `SetConversationProject`,
-`ListTags`, `CreateTag`, `UpdateTag`, `DeleteTag`, `UpdateConversationTags`, and `MarkConversationRead`. They
+`ListTags`, `CreateTag`, `UpdateTag`, `DeleteTag`, `UpdateConversationTags`,
+`MarkConversationRead`, `GetWakeSchedule`, `SetWakeSchedule`, and `ClearWakeSchedule`. They
 require no new config.
 Each tool honors its bare name, `mcp__mono-agent-console-projects__<name>`,
 `mcp__mono-agent-console-projects__*`, and `*` in allow/deny policy; deny wins.
@@ -529,6 +530,18 @@ turn gets fresh tags. Stored user messages stay unprefixed. There is no pending
 tag membership or separate enablement key: the MCP server remains
 `mono-agent-console-projects` so existing policy aliases keep working.
 
+`GetWakeSchedule({})` reads this conversation's schedule or null (definition,
+state, next UTC fire instant, last outcome, revision). `SetWakeSchedule` creates
+without `expectedRevision` or replaces with the current revision. Provide
+`kind: "once"`, an IANA `timezone` and `localAt: "YYYY-MM-DDTHH:mm"` at least
+five minutes in the future, or `kind: "weekly"`, `timezone`, 1–7 distinct `days`
+(0=Sunday) and at most eight distinct `times` (`HH:mm`). Times are local to that
+timezone; `message` is optional, at most 1,000 UTF-8 bytes. A fired turn arrives
+later in this conversation. `ClearWakeSchedule({ expectedRevision })` removes
+it. These tools cannot target another conversation. Reads leave no operation
+receipt; mutations have replayable receipts, update browser summaries and
+conflicting revisions require a fresh read. The five-minute minimum applies
+only to tool-set one-offs, not browser edits.
 
 ## `ProviderUsage`: subscription quota
 

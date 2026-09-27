@@ -784,7 +784,8 @@ than redacted, so a mangled value is never persisted behind a success result.
 Writable web turns, typed or woken by a background host job, can use `ListProjects`, `GetProject`,
 `CreateProject`, `UpdateProject`, `DeleteProject`, `ListConversations`,
 `SearchConversations`, `CreateConversation`, `SetConversationProject`, `ListTags`,
-`CreateTag`, `UpdateTag`, `DeleteTag`, `UpdateConversationTags`, and `MarkConversationRead` under
+`CreateTag`, `UpdateTag`, `DeleteTag`, `UpdateConversationTags`, `MarkConversationRead`,
+`GetWakeSchedule`, `SetWakeSchedule`, and `ClearWakeSchedule` under
 per-tool allow/deny policy. The app authenticates through owner-private console discovery; metadata
 alone never authorizes a callback. Tools return real IDs and applied/pending
 results, restrict all targets to the originating agent, and reject late calls.
@@ -805,6 +806,15 @@ Opening a conversation remains device-local, and later activity can make it
 unread again, including the rest of the calling turn. Replaying an operation
 returns its original receipt rather than marking newer activity read. There is
 no mark-all operation.
+
+Wake tools act on this conversation only: `GetWakeSchedule({})` returns its
+schedule or null; `SetWakeSchedule` creates without `expectedRevision` or replaces
+with the current revision; `ClearWakeSchedule({ expectedRevision })` removes it.
+Choose `kind: "once"` with `localAt` (at least five minutes ahead when set by the
+tool), or `kind: "weekly"` with 1–7 weekdays and at most eight times. Dates and
+times are local to the given IANA `timezone`; optional `message` is at most 1,000
+UTF-8 bytes. A fired turn arrives later in this conversation. Changes update the
+browser summary immediately; conflicts require a fresh read.
 
 ### Web conversation titles
 

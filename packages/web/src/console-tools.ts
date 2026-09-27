@@ -3,16 +3,17 @@ import type { WebStore } from "./store.js";
 import { WebConsoleError } from "./errors.js";
 import { parseTagColor, parseTagName } from "./tag-color.js";
 import { parseProjectColor } from "./project-color.js";
+import { nextWakeOccurrence, parseWakeDefinition } from "./wake-schedule.js";
 
 export interface ConsoleToolScope {
   readonly sourceId: string;
   readonly threadId: string;
   readonly turnId: string;
 }
-export const CONSOLE_TOOL_NAMES = ["ListProjects", "GetProject", "CreateProject", "UpdateProject", "DeleteProject", "ListConversations", "SearchConversations", "CreateConversation", "SetConversationProject", "ListTags", "CreateTag", "UpdateTag", "DeleteTag", "UpdateConversationTags", "MarkConversationRead"] as const;
+export const CONSOLE_TOOL_NAMES = ["ListProjects", "GetProject", "CreateProject", "UpdateProject", "DeleteProject", "ListConversations", "SearchConversations", "CreateConversation", "SetConversationProject", "ListTags", "CreateTag", "UpdateTag", "DeleteTag", "UpdateConversationTags", "MarkConversationRead", "GetWakeSchedule", "SetWakeSchedule", "ClearWakeSchedule"] as const;
 export type ConsoleToolName = typeof CONSOLE_TOOL_NAMES[number];
 /** Tools that never change state: no operation receipt is written for them. */
-export const CONSOLE_READ_TOOL_NAMES: ReadonlySet<ConsoleToolName> = new Set<ConsoleToolName>(["ListTags", "ListProjects", "GetProject", "ListConversations", "SearchConversations"]);
+export const CONSOLE_READ_TOOL_NAMES: ReadonlySet<ConsoleToolName> = new Set<ConsoleToolName>(["ListTags", "ListProjects", "GetProject", "ListConversations", "SearchConversations", "GetWakeSchedule"]);
 /** Rows one listing or search returns unless the caller asks for fewer; the hard cap matches the console's own search. */
 const CONSOLE_TOOL_PAGE_DEFAULT = 20;
 const CONSOLE_TOOL_PAGE_MAX = 50;
@@ -55,6 +56,8 @@ export function executeConsoleTool(store: WebStore, scope: ConsoleToolScope, ope
     ListTags: [], CreateTag: ["name", "color"], UpdateTag: ["tagId", "name", "color"], DeleteTag: ["tagId"],
     UpdateConversationTags: ["conversationId", "add", "remove"],
     MarkConversationRead: ["conversationId"],
+    GetWakeSchedule: [], SetWakeSchedule: ["expectedRevision", "kind", "timezone", "localAt", "days", "times", "message"],
+    ClearWakeSchedule: ["expectedRevision"],
     ListProjects: [], GetProject: ["projectId"], CreateProject: ["name", "context", "color", "attachCurrentConversation"],
     UpdateProject: ["projectId", "name", "context", "color", "archived"], DeleteProject: ["projectId"],
     ListConversations: ["tagId", "projectId", "archived", "limit", "cursor"], SearchConversations: ["query", "limit"], CreateConversation: ["title", "projectId"], SetConversationProject: ["conversationId", "projectId"],
@@ -78,6 +81,11 @@ export function executeConsoleTool(store: WebStore, scope: ConsoleToolScope, ope
     if (item === undefined || item.sourceId !== scope.sourceId || item.trigger?.kind === "cron") throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
     return item;
   };
+  const wakeRevision = (value: unknown): number => {
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) return invalid("expectedRevision must be a positive integer.");
+    return value;
+  };
+  const wakeThread = () => conversation(undefined);
   const membership = (id: string) => {
     const item = store.getThread(id)!;
     return { conversationId: id, projectId: item.projectId, disposition: item.pendingProject === undefined ? "applied" : "pending",
@@ -116,6 +124,28 @@ export function executeConsoleTool(store: WebStore, scope: ConsoleToolScope, ope
         store.patchThread(current.id, { tagIds: next }); threads.push(current.id);
       }
       result = { conversationId: current.id, tagIds: store.getThread(current.id)!.tagIds, disposition: "applied" }; break;
+    }
+    case "GetWakeSchedule": result = { schedule: store.wakeSchedule(wakeThread().id) }; break;
+    case "SetWakeSchedule": {
+      const current = wakeThread();
+      const { expectedRevision, ...fields } = args;
+      const now = new Date();
+      const definition = parseWakeDefinition(fields, now);
+      if (definition.kind === "once" && nextWakeOccurrence(definition, now)!.getTime() - now.getTime() < 5 * 60_000) {
+        throw new WebConsoleError("wake_lead_time", "localAt: Choose a time at least five minutes from now.", 400);
+      }
+      const existing = store.wakeSchedule(current.id);
+      if ((existing === null) !== (expectedRevision === undefined)) {
+        throw new WebConsoleError("wake_revision_conflict", "Schedule changed; get its current revision and retry.", 409);
+      }
+      const schedule = existing === null ? store.createWakeSchedule(current.id, definition)
+        : store.changeWakeSchedule(current.id, wakeRevision(expectedRevision), { definition });
+      threads.push(current.id); result = { schedule }; break;
+    }
+    case "ClearWakeSchedule": {
+      const current = wakeThread();
+      store.changeWakeSchedule(current.id, wakeRevision(args.expectedRevision), { delete: true });
+      threads.push(current.id); result = { cleared: true }; break;
     }
     case "MarkConversationRead": {
       const current = conversation(args.conversationId);
