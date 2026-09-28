@@ -39,7 +39,7 @@ export function AgentSettingsScreen({ section, layout, onSection, onBack, onClos
   if (agent === null) return <div className="settings-screen" data-modal-surface="settings"><p>This agent is no longer available.</p><button type="button" onClick={onClose}>Close</button></div>;
   return <RestartOwner key={agent.sourceId} agent={agent}>{(restart) =>
     <ProvidersOwner key={`${agent.sourceId}:${agent.generation ?? "unknown"}`} agent={agent}>{(provider) =>
-      <SettingsContent agent={agent} section={section} layout={layout} provider={provider} restart={restart} onSection={onSection} onBack={onBack} onClose={onClose} onNotice={onNotice} runningCount={runningCountFor(agent, store.activeThreads)} />
+      <SettingsContent agent={agent} section={section} layout={layout} provider={provider} restart={restart} onSection={onSection} onBack={onBack} onClose={onClose} onNotice={onNotice} runningCount={agent.status === "offline" ? undefined : runningCountFor(agent, store.activeThreads)} />
     }</ProvidersOwner>
   }</RestartOwner>;
 }

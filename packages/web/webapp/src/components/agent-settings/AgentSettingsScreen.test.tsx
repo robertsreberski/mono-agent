@@ -4,7 +4,7 @@ import { agent } from "../../test/fixtures";
 import { discardSettingsDraft, getSettingsDraft, setSettingsDraft } from "../../settings-drafts";
 import type { AgentSummary } from "../../types";
 
-const store = vi.hoisted(() => ({ selectedAgent: null as AgentSummary | null, activeThreads: null, catalogByProvider: {}, ensureProviderCatalog: vi.fn(), setAgentPinned: vi.fn(), setAgentRunDefaults: vi.fn(), clearAgentRunDefaults: vi.fn() }));
+const store = vi.hoisted(() => ({ selectedAgent: null as AgentSummary | null, activeThreads: null as { runningCounts: Record<string, number> } | null, catalogByProvider: {}, ensureProviderCatalog: vi.fn(), setAgentPinned: vi.fn(), setAgentRunDefaults: vi.fn(), clearAgentRunDefaults: vi.fn() }));
 const mockApi = vi.hoisted(() => ({ latestAgentRestart: vi.fn(), providerAuthStatus: vi.fn(), providerUsage: vi.fn(), restartStatus: vi.fn() }));
 vi.mock("../../console-store", () => ({ useConsoleStore: () => store }));
 vi.mock("../../api", async (original) => ({ ...await original<typeof import("../../api")>(), api: mockApi }));
@@ -15,6 +15,7 @@ beforeEach(() => {
   // Base UI emits a pointer event when a switch is activated; jsdom lacks PointerEvent.
   if (!window.PointerEvent) window.PointerEvent = MouseEvent as typeof PointerEvent;
   vi.clearAllMocks();
+  store.activeThreads = null;
   store.selectedAgent = agent("fictional", { label: "Atlas", pinned: false, supportsProviderAuth: true });
   mockApi.latestAgentRestart.mockResolvedValue(null);
   mockApi.providerAuthStatus.mockResolvedValue({ schema: "mono-agent.provider-auth.v1", generatedAt: new Date().toISOString(), providers: [] });
@@ -90,6 +91,14 @@ describe("agent settings screen", () => {
     expect(props.onClose).not.toHaveBeenCalled();
     expect(props.onNotice).toHaveBeenCalledWith(expect.stringContaining("New conversations will start with"));
     expect(getSettingsDraft("fictional")).toBeNull();
+  });
+  it("does not show an offline agent's stale running count as current (A19)", () => {
+    store.selectedAgent = agent("fictional", { label: "Atlas", status: "offline", restart: { supported: true } });
+    store.activeThreads = { runningCounts: { fictional: 3 } };
+    render(<AgentSettingsScreen {...props} section="agent" />);
+    expect(screen.getByText("Running", { selector: ".settings-fact-label" }).parentElement).toHaveTextContent("—");
+    expect(screen.getByText("Running now").closest(".settings-agent-fact-row")).toHaveTextContent("—");
+    expect(screen.queryByText("3 conversations")).toBeNull();
   });
   it("keeps restart read errors distinct from no history and retries the status read", async () => {
     mockApi.latestAgentRestart.mockRejectedValueOnce(new Error("read refused")).mockResolvedValue(null);
