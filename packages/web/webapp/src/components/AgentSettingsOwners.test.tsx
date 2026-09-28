@@ -1,5 +1,4 @@
 import "@testing-library/jest-dom/vitest";
-import { createRef } from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agent } from "../test/fixtures";
@@ -48,14 +47,14 @@ import { AgentSettingsScreen } from "./agent-settings/AgentSettingsScreen";
 import type { SettingsSection } from "../mobile-history";
 
 /** Mount the real screen owners and remove them on close, including in race tests. */
-function SettingsHarness({ open, onClose, section = "providers", onNotice = () => undefined }: {
-  readonly open: boolean; readonly onClose: () => void; readonly dialogRef?: ReturnType<typeof createRef<HTMLElement>>;
-  readonly section?: SettingsSection; readonly onNotice?: (message: string) => void;
+function SettingsHarness({ open, onClose, section = "providers", layout = "split", onNotice = () => undefined }: {
+  readonly open: boolean; readonly onClose: () => void;
+  readonly section?: SettingsSection; readonly layout?: "split" | "stacked"; readonly onNotice?: (message: string) => void;
 }) {
-  return open ? <AgentSettingsScreen layout="split" section={section} onSection={() => undefined} onBack={onClose} onClose={onClose} onNotice={onNotice} /> : null;
+  return open ? <AgentSettingsScreen layout={layout} section={section} onSection={() => undefined} onBack={onClose} onClose={onClose} onNotice={onNotice} /> : null;
 }
 
-const expectDialogTypography = (element: Element, size: "9px" | "10px" | "11px" | "12px" | "12.5px") => {
+const expectSettingsTypography = (element: Element, size: "9px" | "10px" | "11px" | "12px" | "12.5px") => {
   const style = window.getComputedStyle(element);
   // jsdom exposes the authored inheritance keyword; a browser resolves it to
   // the root's existing sans-serif stack.
@@ -145,7 +144,7 @@ describe("SettingsHarness", () => {
     Object.assign(storeMock, { activeThreads: { runningCounts: { alpha: 2 } } });
     apiMock.requestAgentRestart.mockResolvedValue(restartOperation("requesting"));
     apiMock.restartStatus.mockResolvedValue(restartOperation("restarting"));
-    render(<SettingsHarness section="agent" open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness section="agent" open onClose={vi.fn()} />);
     await act(async () => { await Promise.resolve(); });
     fireEvent.click(screen.getByRole("button", { name: "Restart Alpha" }));
     expect(screen.getByText(/Restarting may interrupt active conversations/u)).toHaveTextContent("About 2 running conversations will be interrupted (approximate).");
@@ -158,7 +157,7 @@ describe("SettingsHarness", () => {
 
   it("disables unsupported settings restart with the server's short reason", async () => {
     storeMock.selectedAgent = agent("alpha", { label: "Alpha", restart: { supported: false, reason: "Restart=no" } });
-    render(<SettingsHarness section="agent" open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness section="agent" open onClose={vi.fn()} />);
     await act(async () => { await Promise.resolve(); });
     expect(screen.getByRole("button", { name: "Restart Alpha" })).toBeDisabled();
     expect(screen.getByText("Restart=no")).toBeVisible();
@@ -171,7 +170,7 @@ describe("SettingsHarness", () => {
     apiMock.latestAgentRestart.mockResolvedValue(restartOperation("requesting"));
     apiMock.restartStatus.mockResolvedValueOnce(restartOperation("restarting"))
       .mockResolvedValue(restartOperation("back_online", "success"));
-    const props = { onClose: vi.fn(), dialogRef: createRef<HTMLElement>() };
+    const props = { onClose: vi.fn() };
     const view = render(<SettingsHarness section="agent" open {...props} />);
     await act(async () => { await Promise.resolve(); });
     await act(async () => { await Promise.resolve(); });
@@ -192,7 +191,7 @@ describe("SettingsHarness", () => {
     apiMock.latestAgentRestart.mockResolvedValue(restartOperation("back_online", "success"));
     apiMock.requestAgentRestart.mockResolvedValue(restartOperation("requesting"));
     apiMock.restartStatus.mockResolvedValue(restartOperation("restarting"));
-    render(<SettingsHarness section="agent" open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness section="agent" open onClose={vi.fn()} />);
     await act(async () => { await Promise.resolve(); });
     expect(screen.getByText(/Back online ·/u)).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Restart Alpha" }));
@@ -209,7 +208,7 @@ describe("SettingsHarness", () => {
   it("renders meter-only cards when usage is supported without auth support", async () => {
     storeMock.selectedAgent = agent("alpha", { supportsProviderUsage: true, supportsProviderUsageRefresh: true });
     apiMock.providerUsage.mockResolvedValue(usageSnapshot);
-    render(<SettingsHarness open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness open onClose={vi.fn()} />);
     expect(await screen.findByRole("progressbar", { name: "GitHub Copilot Credits used" })).toHaveAttribute("value", "42");
     expect(screen.getByRole("heading", { name: "Providers" })).toBeInTheDocument();
     expect(screen.getByText("Individual")).toBeInTheDocument();
@@ -225,7 +224,7 @@ describe("SettingsHarness", () => {
     apiMock.providerUsage.mockResolvedValue(usageSnapshot);
     const status = deferred<ReturnType<typeof providerAuthStatusSnapshot>>();
     apiMock.providerAuthStatus.mockReturnValue(status.promise);
-    render(<SettingsHarness open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness open onClose={vi.fn()} />);
     await act(async () => { await Promise.resolve(); });
     expect(apiMock.providerUsage).toHaveBeenCalled();
     expect(screen.getAllByText("Loading provider status…")).toHaveLength(2);
@@ -242,7 +241,7 @@ describe("SettingsHarness", () => {
     storeMock.selectedAgent = agent("alpha", { supportsProviderAuth: true, supportsProviderUsage: true });
     apiMock.providerAuthStatus.mockResolvedValue(providerAuthStatusSnapshot("not_verified"));
     apiMock.providerUsage.mockResolvedValue({ schema: "mono-agent.provider-usage.v1", providers: [] });
-    const props = { open: true, onClose: vi.fn(), dialogRef: createRef<HTMLElement>() };
+    const props = { open: true, onClose: vi.fn() };
     const view = render(<SettingsHarness {...props} />);
     expect(screen.queryByRole("button", { name: "Refresh usage" })).toBeNull();
     storeMock.selectedAgent = { ...storeMock.selectedAgent, supportsProviderUsageRefresh: true };
@@ -260,11 +259,11 @@ describe("SettingsHarness", () => {
     apiMock.providerUsage.mockResolvedValue(initial);
     const pending = deferred<typeof initial>();
     apiMock.refreshProviderUsage.mockReturnValueOnce(pending.promise);
-    render(<SettingsHarness open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness open onClose={vi.fn()} />);
     await findStartButton("Re-authenticate");
     const refresh = screen.getByRole("button", { name: "Refresh usage" });
     expect(refresh).toHaveTextContent("Refresh usage");
-    expectDialogTypography(refresh, "10px");
+    expectSettingsTypography(refresh, "10px");
     const disclosure = document.querySelectorAll("#settings-provider-disclosure");
     expect(disclosure).toHaveLength(1);
     expect(disclosure[0]).toHaveTextContent("Refresh usage reads subscription limits without inference. Check access sends one small model request per configured authentication provider and may use quota or refresh OAuth.");
@@ -284,17 +283,40 @@ describe("SettingsHarness", () => {
     expect(screen.getByRole("button", { name: "Refresh usage" })).toBeEnabled();
   });
 
-  it.each(["auth", "check"] as const)("cancels a late %s admission after its dialog closes without losing the response ID", async (kind) => {
+  it.each(["auth", "check"] as const)("keeps a running %s owner across section and layout switches, then cancels on close", async (kind) => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true, supportsProviderAuthChecks: true });
+    apiMock.providerAuthStatus.mockResolvedValue(providerAuthStatusSnapshot("not_verified"));
+    const snapshot = kind === "auth"
+      ? { ...sessionSnapshot("ongoing", "Waiting for credentials"), providerId: "opencode-go" }
+      : { ...completedProviderAuthCheck(), id: "ongoing", state: "running" };
+    const start = kind === "auth" ? apiMock.beginProviderAuth : apiMock.beginProviderAuthCheck;
+    const cancel = kind === "auth" ? apiMock.cancelProviderAuth : apiMock.cancelProviderAuthCheck;
+    start.mockResolvedValue(snapshot);
+    const props = { onClose: vi.fn(), open: true };
+    const view = render(<SettingsHarness {...props} section="providers" layout="split" />);
+    fireEvent.click(await findStartButton(kind === "auth" ? "Re-authenticate" : "Check access"));
+    await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(kind === "auth" ? screen.getByText("Waiting for credentials") : screen.getByText(/Checking providers:/)).toBeVisible());
+    view.rerender(<SettingsHarness {...props} section="agent" layout="split" />);
+    view.rerender(<SettingsHarness {...props} section="agent" layout="stacked" />);
+    view.rerender(<SettingsHarness {...props} section="providers" layout="stacked" />);
+    expect(cancel).not.toHaveBeenCalled();
+    expect(start).toHaveBeenCalledTimes(1);
+    view.rerender(<SettingsHarness {...props} open={false} />);
+    await waitFor(() => expect(cancel).toHaveBeenCalledExactlyOnceWith("alpha", "ongoing", expect.any(AbortSignal)));
+  });
+
+  it.each(["auth", "check"] as const)("cancels a late %s admission after its screen closes without losing the response ID", async (kind) => {
     storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true, supportsProviderAuthChecks: true });
     apiMock.providerAuthStatus.mockResolvedValue(providerAuthStatusSnapshot("not_verified"));
     const admission = deferred<Record<string, unknown>>();
     const start = kind === "auth" ? apiMock.beginProviderAuth : apiMock.beginProviderAuthCheck;
     const cancel = kind === "auth" ? apiMock.cancelProviderAuth : apiMock.cancelProviderAuthCheck;
     start.mockReturnValueOnce(admission.promise);
-    const props = { onClose: vi.fn(), dialogRef: createRef<HTMLElement>() };
+    const props = { onClose: vi.fn() };
     const view = render(<SettingsHarness open {...props} />);
     fireEvent.click(await findStartButton(kind === "auth" ? "Re-authenticate" : "Check access"));
-    // The admission is genuinely on the wire before the dialog closes. Without
+    // The admission is genuinely on the wire before the screen closes. Without
     // this the test could close over a click that started nothing -- the check
     // button is disabled until the status read lands -- and then read the
     // missing cancellation as a teardown that failed to cancel.
@@ -326,7 +348,7 @@ describe("SettingsHarness", () => {
     get.mockResolvedValue(snapshot("NEW OWNED FLOW"));
     // Model a cancellation transport that ignores abort and never settles.
     cancel.mockReturnValueOnce(new Promise(() => undefined));
-    const props = { onClose: vi.fn(), dialogRef: createRef<HTMLElement>() };
+    const props = { onClose: vi.fn() };
     const view = render(<SettingsHarness open {...props} />);
     const action = kind === "auth" ? "Re-authenticate" : "Check access";
     fireEvent.click(await findStartButton(action));
@@ -360,7 +382,7 @@ describe("SettingsHarness", () => {
     const start = kind === "auth" ? apiMock.beginProviderAuth : apiMock.beginProviderAuthCheck;
     const cancel = kind === "auth" ? apiMock.cancelProviderAuth : apiMock.cancelProviderAuthCheck;
     start.mockReturnValueOnce(late.promise);
-    const view = render(<SettingsHarness open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    const view = render(<SettingsHarness open onClose={vi.fn()} />);
     fireEvent.click(await findStartButton(kind === "auth" ? "Re-authenticate" : "Check access"));
     await vi.waitFor(() => { expect(start).toHaveBeenCalledTimes(1); });
     view.unmount();
@@ -388,7 +410,7 @@ describe("SettingsHarness", () => {
     start.mockResolvedValueOnce(active);
     get.mockReturnValueOnce(poll.promise);
     cancel.mockReturnValueOnce(deletion.promise);
-    render(<SettingsHarness open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness open onClose={vi.fn()} />);
     const startButton = await findStartButton(kind === "auth" ? "Re-authenticate" : "Check access");
     vi.useFakeTimers();
     fireEvent.click(startButton);
@@ -418,7 +440,7 @@ describe("SettingsHarness", () => {
     fireEvent.click(screen.getByRole("button", { name: "Choose other model" }));
     fireEvent.click(screen.getByRole("button", { name: "Choose high effort" }));
     const save = screen.getByRole("button", { name: "Save for new conversations" });
-    expectDialogTypography(save, "11px");
+    expectSettingsTypography(save, "11px");
     fireEvent.click(save);
     await vi.waitFor(() => {
       expect(storeMock.setAgentRunDefaults).toHaveBeenCalledWith("provider/other", "high");
@@ -495,19 +517,19 @@ describe("SettingsHarness", () => {
       expect(screen.getByLabelText("Enter the OpenCode API key")).toHaveValue("");
       return { ...awaiting, state: "succeeded", prompt: undefined, updatedAt: "2026-09-06T12:00:01.000Z" };
     });
-    render(<SettingsHarness open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness open onClose={vi.fn()} />);
 
     expect(await screen.findByText("Needs action")).toBeVisible();
     const providerName = screen.getByText("OpenCode Go");
     const providerState = screen.getByText("Needs action");
     expect(providerName).toBeVisible();
-    expectDialogTypography(providerName, "12.5px");
-    expectDialogTypography(providerState, "10px");
+    expectSettingsTypography(providerName, "12.5px");
+    expectSettingsTypography(providerState, "10px");
     expect(screen.queryByText("opencode-go")).not.toBeInTheDocument();
     expect(screen.queryByText(/Used by/u)).not.toBeInTheDocument();
     expect(screen.queryByText(/No credential detected/u)).not.toBeInTheDocument();
     const authenticate = await screen.findByRole("button", { name: /^Authenticate/u });
-    expectDialogTypography(authenticate, "10px");
+    expectSettingsTypography(authenticate, "10px");
     fireEvent.click(authenticate);
     const key = await screen.findByLabelText("Enter the OpenCode API key");
     expect(key).toHaveAttribute("type", "password");
@@ -523,7 +545,7 @@ describe("SettingsHarness", () => {
     await vi.waitFor(() => expect(apiMock.providerAuthStatus).toHaveBeenCalledTimes(2));
     const notVerified = await screen.findByText("Not verified");
     expect(notVerified).toBeVisible();
-    expectDialogTypography(notVerified, "10px");
+    expectSettingsTypography(notVerified, "10px");
   });
 
   it("polls an unchanged replacement to success and ignores the old poll when it completes late", async () => {
@@ -566,7 +588,7 @@ describe("SettingsHarness", () => {
         ? { ...replacement }
         : { ...replacement, state: "succeeded", updatedAt: "2026-09-06T12:00:05.000Z", progress: "FRESH SESSION SUCCEEDED" };
     });
-    render(<SettingsHarness open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness open onClose={vi.fn()} />);
 
     const authenticate = await screen.findByRole("button", { name: /^Re-authenticate/u });
     vi.useFakeTimers();
@@ -608,7 +630,7 @@ describe("SettingsHarness", () => {
     const newer = deferred<Record<string, unknown>>();
     apiMock.beginProviderAuth.mockImplementation(async (_source: string, providerId: string) =>
       await (providerId === "older" ? older.promise : newer.promise));
-    render(<SettingsHarness open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness open onClose={vi.fn()} />);
     const buttons = await screen.findAllByRole("button", { name: /^Re-authenticate/u });
 
     await act(async () => {
@@ -688,7 +710,7 @@ describe("SettingsHarness", () => {
       .mockImplementationOnce(async () => await secondReplacement.promise);
     apiMock.submitProviderAuth.mockImplementationOnce(async () => await submitted.promise);
     apiMock.cancelProviderAuth.mockImplementationOnce(async () => await cancelled.promise);
-    render(<SettingsHarness open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness open onClose={vi.fn()} />);
 
     fireEvent.click(await screen.findByRole("button", { name: /^Re-authenticate/u }));
     const input = await screen.findByLabelText("Current API key");
@@ -741,7 +763,7 @@ describe("SettingsHarness", () => {
         },
       ],
     });
-    render(<SettingsHarness open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness open onClose={vi.fn()} />);
 
     expect(await screen.findByText("OK")).toBeVisible();
     expect(screen.getByText("Needs action")).toBeVisible();
@@ -759,7 +781,7 @@ describe("SettingsHarness", () => {
     apiMock.providerUsage.mockReturnValue(usage.promise);
     apiMock.providerAuthStatus.mockResolvedValueOnce(providerAuthStatusSnapshot("not_verified"))
       .mockResolvedValue(providerAuthStatusSnapshot("verified_by_account_request"));
-    render(<SettingsHarness open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness open onClose={vi.fn()} />);
     expect(await screen.findByText("Not verified")).toBeVisible();
     usage.resolve({ schema: "mono-agent.provider-usage.v1", providers: [] });
     const badge = await screen.findByText("Credential OK");
@@ -776,7 +798,7 @@ describe("SettingsHarness", () => {
     apiMock.providerAuthStatus.mockResolvedValue({ ...snapshot, providers: [{ ...snapshot.providers[0], lastFailure: {
       kind: "provider_auth", message: "Provider rejected the configured credential.", observedAt: snapshot.generatedAt,
     } }] });
-    render(<SettingsHarness open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness open onClose={vi.fn()} />);
     expect(await screen.findByText("Needs action")).toBeVisible();
     expect(screen.queryByText("Credential OK")).not.toBeInTheDocument();
     expect(screen.queryByText("OK", { exact: true })).not.toBeInTheDocument();
@@ -788,7 +810,7 @@ describe("SettingsHarness", () => {
     apiMock.providerAuthStatus.mockResolvedValue({ ...snapshot, providers: [{ ...snapshot.providers[0], lastFailure: {
       kind: "provider_unavailable", message: "Provider was unavailable.", model: "opencode-go:model", observedAt: snapshot.generatedAt,
     } }] });
-    render(<SettingsHarness open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness open onClose={vi.fn()} />);
     expect(await screen.findByText("Not verified")).toBeVisible();
     expect(screen.queryByText("Credential OK")).not.toBeInTheDocument();
   });
@@ -809,7 +831,7 @@ describe("SettingsHarness", () => {
       }],
     });
 
-    render(<SettingsHarness open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness open onClose={vi.fn()} />);
 
     expect(await screen.findByText("Needs action")).toBeVisible();
     expect(screen.queryByText("Not applicable")).not.toBeInTheDocument();
@@ -859,14 +881,14 @@ describe("SettingsHarness", () => {
         },
       ],
     });
-    render(<SettingsHarness open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness open onClose={vi.fn()} />);
 
     expect((await screen.findAllByText("Not verified"))).toHaveLength(2);
     expect(screen.queryByText("OK")).not.toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: /^Re-authenticate/u })).toHaveLength(2);
     const run = screen.getByRole("button", { name: "Check access" });
     expect(run).toHaveTextContent("Check access");
-    expectDialogTypography(run, "10px");
+    expectSettingsTypography(run, "10px");
     expect(window.getComputedStyle(run).minHeight).toBe("28px");
     expect(run).toHaveClass("settings-button", "is-compact");
     expect(screen.getByText(/may use quota or refresh OAuth/u)).toBeVisible();
@@ -892,7 +914,7 @@ describe("SettingsHarness", () => {
     apiMock.beginProviderAuthCheck.mockResolvedValue(completedProviderAuthCheck());
     apiMock.beginProviderAuth.mockResolvedValue(successfulProviderAuthSession());
 
-    render(<SettingsHarness open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness open onClose={vi.fn()} />);
     expect(await screen.findByText("OK")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Check access" }));
     expect(await screen.findByText("Check passed")).toBeVisible();
@@ -919,7 +941,7 @@ describe("SettingsHarness", () => {
     apiMock.beginProviderAuthCheck.mockResolvedValue(completedProviderAuthCheck());
     apiMock.beginProviderAuth.mockResolvedValue(successfulProviderAuthSession());
 
-    render(<SettingsHarness open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness open onClose={vi.fn()} />);
     expect(await screen.findByText("OK")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Check access" }));
     expect(await screen.findByText("Check passed")).toBeVisible();
@@ -942,7 +964,7 @@ describe("SettingsHarness", () => {
     apiMock.beginProviderAuthCheck.mockResolvedValue(completedProviderAuthCheck());
     apiMock.beginProviderAuth.mockResolvedValue(successfulProviderAuthSession());
 
-    render(<SettingsHarness open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness open onClose={vi.fn()} />);
     expect(await screen.findByText("Not verified")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Check access" }));
     expect(await screen.findByText("Check passed")).toBeVisible();
@@ -981,13 +1003,13 @@ describe("SettingsHarness", () => {
         model: "opencode-go:kimi-k2.6", selectionBasis: "catalog_pricing",
       }],
     });
-    render(<SettingsHarness open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness open onClose={vi.fn()} />);
 
     fireEvent.click(await findStartButton("Check access"));
     const cancel = await screen.findByRole("button", { name: "Cancel live provider checks" });
     expect(cancel).toHaveTextContent("Cancel checks");
     expect(cancel).toHaveClass("settings-button", "is-compact");
-    expectDialogTypography(cancel, "10px");
+    expectSettingsTypography(cancel, "10px");
     expect(window.getComputedStyle(cancel).minHeight).toBe("28px");
     fireEvent.click(cancel);
     await vi.waitFor(() => expect(apiMock.cancelProviderAuthCheck).toHaveBeenCalledWith("alpha", "check-running"));
@@ -1033,7 +1055,7 @@ describe("SettingsHarness", () => {
       .mockResolvedValueOnce({ ...running })
       .mockResolvedValueOnce(completed);
 
-    render(<SettingsHarness open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness open onClose={vi.fn()} />);
     const run = await findStartButton("Check access");
     vi.useFakeTimers();
     fireEvent.click(run);
@@ -1071,7 +1093,7 @@ describe("SettingsHarness", () => {
       status: 404, code: "provider_auth_not_found",
     }));
 
-    render(<SettingsHarness open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness open onClose={vi.fn()} />);
     const run = await findStartButton("Check access");
     vi.useFakeTimers();
     fireEvent.click(run);
@@ -1109,7 +1131,7 @@ describe("SettingsHarness", () => {
       status: 404, code: "provider_auth_not_found",
     }));
 
-    render(<SettingsHarness open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness open onClose={vi.fn()} />);
     fireEvent.click(await findStartButton("Check access"));
     fireEvent.click(await screen.findByRole("button", { name: "Cancel live provider checks" }));
     expect(await screen.findByRole("button", { name: "Check access" })).toBeVisible();
@@ -1141,7 +1163,7 @@ describe("SettingsHarness", () => {
         results: [{ ...running.results[0], state: "passed", checkedAt: "2026-09-06T12:00:02.000Z", code: "passed", message: "Provider request succeeded." }],
       });
 
-    render(<SettingsHarness open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness open onClose={vi.fn()} />);
     const run = await findStartButton("Check access");
     vi.useFakeTimers();
     fireEvent.click(run);
@@ -1180,7 +1202,7 @@ describe("SettingsHarness", () => {
       }],
     });
 
-    render(<SettingsHarness open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness open onClose={vi.fn()} />);
     fireEvent.click(await screen.findByRole("button", { name: /^Re-authenticate/u }));
     expect(screen.getByRole("button", { name: "Anthropic OAuth" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Anthropic API key" })).toBeEnabled();
@@ -1226,7 +1248,7 @@ describe("SettingsHarness", () => {
         model: "openai-codex:gpt-5.6-terra", selectionBasis: "subscription_zero_price",
       }],
     });
-    render(<SettingsHarness open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness open onClose={vi.fn()} />);
 
     fireEvent.click(await screen.findByRole("button", { name: /^Authenticate/u }));
     await vi.waitFor(() => expect(apiMock.beginProviderAuth).toHaveBeenNthCalledWith(
@@ -1271,7 +1293,7 @@ describe("SettingsHarness", () => {
       },
       prompt: { id: "prompt-anthropic", type: "manual_code", message: "Paste the redirect URL" },
     });
-    const rendered = render(<SettingsHarness open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    const rendered = render(<SettingsHarness open onClose={vi.fn()} />);
 
     expect(await screen.findByText("Needs action")).toBeVisible();
     expect(screen.queryByText("expired")).not.toBeInTheDocument();
@@ -1289,7 +1311,7 @@ describe("SettingsHarness", () => {
   });
 
   it("keeps an unsupported provider-auth capability terse", () => {
-    render(<SettingsHarness open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness open onClose={vi.fn()} />);
 
     expect(screen.getByText("Not available on this agent.")).toBeVisible();
     expect(screen.queryByText(/does not expose the protected provider-authentication capability/u)).not.toBeInTheDocument();

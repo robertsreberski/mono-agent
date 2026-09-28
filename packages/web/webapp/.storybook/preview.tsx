@@ -88,20 +88,25 @@ window.fetch = (input, init) => {
   if (/^\/api\/v1\/agents\/atlas-story-auth-(missing|verified)\/restart$/.test(pathname) && (!init?.method || init.method === "GET")) {
     return Promise.resolve(new Response(JSON.stringify({ operation: null }), { headers: { "Content-Type": "application/json" } }));
   }
-  const settings = /^\/api\/v1\/agents\/atlas-story-settings-(base|dense|offline|unsaved|confirm|progress|success)\/(provider-auth|provider-usage|restart(?:\/story-op)?)$/.exec(pathname);
+  const settings = /^\/api\/v1\/agents\/atlas-story-settings-(base|dense|stress|offline|unsaved|confirm|progress|success|override|draft-use|saving|save-error|loading|read-error|failure|not-confirmed|unsupported|unpinned|usage-only|no-usage|needs-action|usage-stale)\/(provider-auth|provider-usage|restart(?:\/story-op)?)$/.exec(pathname);
   if (settings) {
     const operation = { id: "story-op", sourceId: `atlas-story-settings-${settings[1]}`, stage: settings[1] === "progress" ? "restarting" : "back_online", ...(settings[1] === "progress" ? {} : { outcome: "success" }), requestedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
     if (settings[2] === "restart" && init?.method === "POST") return Promise.resolve(Response.json(operation));
     if (settings[2] === "restart/story-op") return Promise.resolve(Response.json(operation));
-    if (settings[2] === "restart") return Promise.resolve(Response.json({ operation: settings[1] === "progress" ? operation : null }));
+    if (settings[2] === "restart") {
+      if (settings[1] === "read-error") return Promise.resolve(Response.json({ error: { message: "Example status unavailable" } }, { status: 503 }));
+      const retained = settings[1] === "failure" ? { ...operation, stage: "back_online", outcome: "failure", reason: "Example process did not restart." }
+        : settings[1] === "not-confirmed" ? { ...operation, stage: "back_online", outcome: "not_confirmed", reason: "No ready process appeared." } : null;
+      return Promise.resolve(Response.json({ operation: settings[1] === "progress" ? operation : retained }));
+    }
     if (init?.method && init.method !== "GET") return Promise.reject(new Error("Mutation disabled in Storybook"));
     if (settings[2] === "provider-auth") return Promise.resolve(Response.json({ schema: "mono-agent.provider-auth.v1", generatedAt: new Date().toISOString(), providers: [
-      { providerId: "anthropic", label: "Claude", state: "present", verification: "verified_by_live_request", source: "stored", methods: [{ authType: "oauth", strategy: "device_code", label: "Sign in", recommended: true }] },
-      { providerId: "openai-codex", label: "Codex", state: "missing", verification: "not_verified", methods: [{ authType: "oauth", strategy: "paste_back", label: "Sign in", recommended: true }] },
-      { providerId: "opencode-go", label: "OpenCode Go", state: "present", verification: "verified_by_account_request", source: "stored", methods: [{ authType: "api_key", strategy: "manual", label: "Sign in", recommended: true }] },
+      { providerId: "anthropic", label: "Claude", state: settings[1] === "needs-action" ? "missing" : "present", verification: settings[1] === "needs-action" ? "not_verified" : "verified_by_live_request", source: "stored", methods: [{ authType: "oauth", strategy: "device_code", label: "Sign in", recommended: true }] },
+      { providerId: "openai-codex", label: settings[1] === "stress" ? "Grove Research Cloud Extended Example Provider" : "Codex", state: "missing", verification: "not_verified", methods: [{ authType: "oauth", strategy: "paste_back", label: "Sign in", recommended: true }] },
+      { providerId: "opencode-go", label: "OpenCode Go", state: settings[1] === "needs-action" ? "missing" : "present", verification: settings[1] === "needs-action" ? "not_verified" : "verified_by_account_request", source: "stored", methods: [{ authType: "api_key", strategy: "manual", label: "Sign in", recommended: true }] },
     ] }));
     const fetchedAt = new Date(Date.now() - 7_200_000).toISOString();
-    return Promise.resolve(Response.json({ schema: "mono-agent.provider-usage.v1", providers: ["anthropic", "openai-codex", "opencode-go"].map((providerId, index) => ({ providerId, label: ["Claude", "Codex", "OpenCode Go"][index], ...(index === 0 ? {} : { plan: ["", "Pro", "Go"][index] }), fetchedAt, stale: index === 1, windows: index === 1
+    return Promise.resolve(Response.json({ schema: "mono-agent.provider-usage.v1", providers: ["anthropic", "openai-codex", "opencode-go"].map((providerId, index) => ({ providerId, label: ["Claude", "Codex", "OpenCode Go"][index], ...(index === 0 ? {} : { plan: index === 1 && settings[1] === "stress" ? "Premium Shared Workspace" : ["", "Pro", "Go"][index] }), fetchedAt, stale: index === 1, ...(index === 1 && settings[1] === "usage-stale" ? { error: { code: "auth_failed", message: "Credential rejected; re-login to this provider." } } : {}), windows: index === 1
       ? [{ kind: "weekly", label: "Weekly", usedPercent: 48, periodMs: 604_800_000, resetsAt: new Date(Date.now() + 300_000_000).toISOString() }]
       : [{ kind: "session", label: "Session", usedPercent: 22 + index * 19, periodMs: 18_000_000, resetsAt: new Date(Date.now() + 2_000_000).toISOString() },
         { kind: "weekly", label: "Weekly", usedPercent: 30 + index * 17, periodMs: 604_800_000, resetsAt: new Date(Date.now() + 300_000_000).toISOString() },
@@ -141,6 +146,9 @@ const preview: Preview = {
       phone: { name: "Phone (360px)", styles: { width: "360px", height: "780px" } },
       mobile: { name: "Mobile (560px)", styles: { width: "560px", height: "800px" } },
       tablet: { name: "Tablet (900px)", styles: { width: "900px", height: "800px" } },
+      tablet901: { name: "Tablet (901px)", styles: { width: "901px", height: "800px" } },
+      tablet1060: { name: "Tablet (1060px)", styles: { width: "1060px", height: "800px" } },
+      tablet1101: { name: "Tablet (1101px)", styles: { width: "1101px", height: "800px" } },
       desktop: { name: "Desktop (1200px)", styles: { width: "1200px", height: "850px" } },
     } },
   },

@@ -81,4 +81,57 @@ describe("agent settings screen", () => {
     await waitFor(() => expect(mockApi.latestAgentRestart).toHaveBeenCalledTimes(2));
     expect(await screen.findByText("No recent restart")).toBeTruthy();
   });
+  it("shows resolved model and effort names while retaining raw config and override ids", () => {
+    store.selectedAgent = agent("fictional", { label: "Atlas", defaultEffort: "medium", modelOptions: { "atlas/standard": { label: "Atlas Standard", reasoning: true, effortLevels: ["medium"] }, "grove/fast": { label: "Grove Fast", reasoning: true, effortLevels: ["low"] } },
+      runSettings: { config: { model: "atlas/standard", effort: "medium" }, override: { model: "grove/fast", effort: "low" }, effective: { model: "grove/fast", effort: "low", modelSource: "override", effortSource: "override" } },
+    });
+    render(<AgentSettingsScreen {...props} section="new-conversations" />);
+    expect(screen.getAllByText("Grove Fast · Low").length).toBeGreaterThan(0);
+    expect(screen.getByText("Atlas Standard · Medium")).toBeTruthy();
+    expect(screen.getByText("atlas/standard · medium")).toBeTruthy();
+    expect(screen.getByText("grove/fast · low")).toBeTruthy();
+    expect(screen.queryByText("provider/model · default")).toBeNull();
+  });
+  it("keeps failed saves editable, retries, then announces success and focuses the picker", async () => {
+    store.selectedAgent = agent("fictional", { label: "Atlas", models: ["provider/model", "grove/fast"], modelOptions: { "grove/fast": { label: "Grove Fast", reasoning: true, effortLevels: ["low"] } } });
+    store.setAgentRunDefaults.mockRejectedValueOnce(new Error("service unavailable")).mockResolvedValueOnce(undefined);
+    setSettingsDraft("fictional", { model: "grove/fast", effort: "low" });
+    render(<AgentSettingsScreen {...props} section="new-conversations" />);
+    const save = screen.getByRole("button", { name: "Save for new conversations" });
+    fireEvent.click(save);
+    expect(await screen.findByText(/Couldn't save: service unavailable/)).toBeTruthy();
+    expect(getSettingsDraft("fictional")).toEqual({ model: "grove/fast", effort: "low" });
+    fireEvent.click(save);
+    await waitFor(() => expect(store.setAgentRunDefaults).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Model and reasoning effort" })));
+    expect(props.onNotice).toHaveBeenCalledWith("New conversations will start with Grove Fast · Low.");
+    expect(props.onClose).not.toHaveBeenCalled();
+    expect(getSettingsDraft("fictional")).toBeNull();
+  });
+  it("clears a draft when a server update catches up to it without losing a newer draft", async () => {
+    setSettingsDraft("fictional", { model: "grove/fast", effort: "low" });
+    const view = render(<AgentSettingsScreen {...props} section="new-conversations" />);
+    store.selectedAgent = agent("fictional", { label: "Atlas", runSettings: { config: { model: "provider/model" }, override: { model: "grove/fast", effort: "low" }, effective: { model: "grove/fast", modelSource: "override", effort: "low", effortSource: "override" } } });
+    view.rerender(<AgentSettingsScreen {...props} section="new-conversations" />);
+    await waitFor(() => expect(getSettingsDraft("fictional")).toBeNull());
+    expect(screen.queryByRole("button", { name: "Save for new conversations" })).toBeNull();
+  });
+  it("summarizes a usage-only agent without waiting forever for unsupported auth", async () => {
+    store.selectedAgent = agent("fictional", { label: "Atlas", supportsProviderUsage: true });
+    mockApi.providerUsage.mockResolvedValue({ schema: "mono-agent.provider-usage.v1", providers: [{ providerId: "anthropic", label: "Claude", fetchedAt: new Date().toISOString(), stale: false, windows: [] }] });
+    render(<AgentSettingsScreen {...props} section="providers" />);
+    await waitFor(() => expect(screen.getByText("Usage available")).toBeVisible());
+    expect(screen.queryByText("Loading provider status…")).toBeNull();
+    expect(screen.queryByText("Check access may use quota")).toBeNull();
+  });
+  it("reverts the pin on failure and never shows a pin control in the header", async () => {
+    store.setAgentPinned.mockRejectedValueOnce(new Error("offline"));
+    render(<AgentSettingsScreen {...props} section="agent" />);
+    const toggle = screen.getByRole("switch", { name: "Pin Atlas first" });
+    fireEvent.click(toggle);
+    await waitFor(() => expect(store.setAgentPinned).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "false"));
+    expect(document.querySelector(".settings-header [role=switch]")).toBeNull();
+  });
+
 });

@@ -30,7 +30,8 @@ export const storyStore = {
   selectAgent: noop, selectThread: noop, selectCronJob: noop, setShowOfflineAgents: noop,
   setShowArchived: noop, setNavigationDestination: noop, openProjectById: noop,
   retryThreadList: noop, loadMoreThreads: asyncNoop, refreshCron: asyncNoop,
-  setAgentPinned: asyncNoop, ensureProviderCatalog: asyncNoop, createThread: asyncNoop, updateProject: asyncNoop,
+  setAgentPinned: asyncNoop, setAgentRunDefaults: asyncNoop, clearAgentRunDefaults: asyncNoop,
+  ensureProviderCatalog: asyncNoop, createThread: asyncNoop, updateProject: asyncNoop,
   createProject: asyncNoop, createTag: asyncNoop, updateTag: asyncNoop,
   loadTags: asyncNoop, setThreadTags: asyncNoop, loadProjects: asyncNoop,
 };

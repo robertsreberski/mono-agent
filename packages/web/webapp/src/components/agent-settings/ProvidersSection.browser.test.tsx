@@ -2,6 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { page } from "@vitest/browser/context";
 import { beforeEach, describe, expect, inject, it, vi } from "vitest";
 import { agent } from "../../test/fixtures";
+import { discardSettingsDraft, setSettingsDraft } from "../../settings-drafts";
 import type { AgentSummary } from "../../types";
 import "../../styles.css";
 
@@ -37,12 +38,41 @@ describe("settings provider density", () => {
       const slot = button.closest(".settings-hit")!;
       expect(slot.getBoundingClientRect().height).toBeGreaterThanOrEqual(touch ? 44 : 28);
     }
+    expect(screen.getByRole("button", { name: "Check access" }).getAttribute("aria-describedby")).toBe("settings-provider-disclosure");
+    expect(document.getElementById("settings-provider-disclosure")!.textContent).toContain("one small model request");
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
     if (touch) {
+      for (const button of buttons) {
+        button.scrollIntoView({ block: "center" });
+        const rect = button.closest(".settings-hit")!.getBoundingClientRect();
+        const cx = (rect.left + rect.right) / 2;
+        const cy = (rect.top + rect.bottom) / 2;
+        for (const dx of [-20, 20]) for (const dy of [-20, 20]) {
+          expect(button.closest(".settings-hit")!.contains(document.elementFromPoint(cx + dx, cy + dy))).toBe(true);
+        }
+      }
       const close = screen.getByRole("button", { name: /Atlas settings/ });
       expect(close.getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
       await page.viewport(320, 720);
-      await waitFor(() => expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(320));
+      document.documentElement.style.fontSize = "125%";
+      try { await waitFor(() => expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(320)); }
+      finally { document.documentElement.style.fontSize = ""; }
     }
+  });  it("keeps save, discard and back controls in 44px coarse-pointer hitboxes", async () => {
+    if (!touch) return;
+    await page.viewport(360, 780);
+    setSettingsDraft("atlas", { model: "grove/fast", effort: "low" });
+    try {
+      render(<AgentSettingsScreen section="new-conversations" layout="stacked" onSection={() => undefined} onBack={() => undefined} onClose={() => undefined} onNotice={() => undefined} />);
+      for (const button of [screen.getByRole("button", { name: "Discard" }), screen.getByRole("button", { name: "Save for new conversations" }), screen.getByRole("button", { name: /Atlas settings/ })]) {
+        const bounds = button.getBoundingClientRect();
+        expect(bounds.height).toBeGreaterThanOrEqual(44);
+        expect(bounds.width).toBeGreaterThanOrEqual(44);
+        for (const dx of [-20, 20]) for (const dy of [-20, 20]) {
+          expect(button.contains(document.elementFromPoint((bounds.left + bounds.right) / 2 + dx, (bounds.top + bounds.bottom) / 2 + dy))).toBe(true);
+        }
+      }
+    } finally { discardSettingsDraft("atlas"); }
   });
+
 });

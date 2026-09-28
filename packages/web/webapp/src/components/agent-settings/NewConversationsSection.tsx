@@ -5,6 +5,7 @@ import { useConsoleStore } from "../../console-store";
 import { clearSettingsDraftIfEqual, discardSettingsDraft, setSettingsDraft, useSettingsDraft } from "../../settings-drafts";
 import { ModelSelector } from "../assistant-ui/ModelSelector";
 import { buildSelectorModels, effectiveModelForAgent, effortLevelsForAgentModel, findCatalogModel, providerOfModel } from "../model-catalog";
+import { settingsEffortName, settingsModelName } from "./settings-labels";
 
 export function NewConversationsSection({ agent, onNotice, footerNode }: { readonly agent: AgentSummary; readonly onNotice: (message: string) => void; readonly footerNode?: HTMLElement | null }) {
   const store = useConsoleStore();
@@ -18,6 +19,8 @@ export function NewConversationsSection({ agent, onNotice, footerNode }: { reado
   const catalogModels = useMemo(() => Object.fromEntries(Object.entries(store.catalogByProvider).map(([provider, state]) => [provider, state.models])), [store.catalogByProvider]);
   const models = useMemo(() => buildSelectorModels({ agent, modelOptions: agent.models ?? [], defaultEffort: agent.runSettings.config.effort ?? agent.defaultEffort ?? "", catalogByProvider: catalogModels, selectedModel: model }), [agent, catalogModels, model]);
   const providerStatus = useMemo(() => Object.fromEntries(Object.entries(store.catalogByProvider).map(([provider, state]) => [provider, state.status])), [store.catalogByProvider]);
+  const startModel = settingsModelName(agent, model || agent.runSettings.config.model || agent.defaultModel, catalogModels);
+  const startEffort = settingsEffortName(effort || agent.runSettings.config.effort || agent.defaultEffort);
   useEffect(() => {
     const providers = new Set((agent.models ?? []).map(providerOfModel));
     for (const provider of agent.providers ?? []) providers.add(provider.id);
@@ -38,12 +41,12 @@ export function NewConversationsSection({ agent, onNotice, footerNode }: { reado
       else await store.setAgentRunDefaults(model || null, effort || null);
       // Do not remove a newer draft made while this request was in flight.
       clearSettingsDraftIfEqual(agent.sourceId, { model, effort });
-      onNotice(`New conversations will start with ${model || agent.runSettings.config.model || "provider default"} · ${effort || agent.runSettings.config.effort || "provider default"}.`);
+      onNotice(`New conversations will start with ${startModel} · ${startEffort}.`);
       window.setTimeout(() => document.querySelector<HTMLElement>(".settings-screen .model-selector__trigger")?.focus(), 0);
     } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
     finally { setSaving(false); }
   };
-  const saveBar = <div className={`settings-savebar${error ? " is-error" : ""}`}><div className="settings-savebar-text">{error ? `Couldn't save: ${error}` : <><span className="settings-dot" /> Unsaved <b>{model || agent.runSettings.config.model || "Agent config"} · {effort || agent.runSettings.config.effort || "default"}</b></>}</div>
+  const saveBar = <div className={`settings-savebar${error ? " is-error" : ""}`}><div className="settings-savebar-text">{error ? `Couldn't save: ${error}` : <><span className="settings-dot" /> Unsaved <b>{startModel} · {startEffort}</b></>}</div>
       <button type="button" className="settings-button is-ghost" disabled={saving} onClick={() => { discardSettingsDraft(agent.sourceId); setError(null); window.setTimeout(() => document.querySelector<HTMLElement>(".settings-screen .model-selector__trigger")?.focus(), 0); }}>Discard</button>
       <button type="button" className="settings-button is-primary" aria-label="Save for new conversations" disabled={saving || agent.status === "offline" && (model !== "" || effort !== "")} onClick={() => void save()}>{saving ? "Saving…" : error ? "Retry" : "Save"}</button>
     </div>;
@@ -54,8 +57,8 @@ export function NewConversationsSection({ agent, onNotice, footerNode }: { reado
       {agent.status === "offline" && <p className="settings-field-note is-warning">Reconnect {agent.label} to pick a model. Using the agent config works offline.</p>}
     </div>
     <div className="settings-group">
-      <div className="settings-kv"><span className="settings-kv-label">Agent config</span><div className="settings-kv-value"><span>{agent.runSettings.config.model ?? "provider default"}</span><code>{agent.runSettings.config.model ?? "provider default"} · {agent.runSettings.config.effort ?? "provider default"}</code></div></div>
-      <div className="settings-kv"><span className="settings-kv-label">Console override</span><div className="settings-kv-value">{agent.runSettings.override ? `${saved.model || "provider default"} · ${saved.effort || "provider default"}` : "None"}{dirty && <small className="is-warning">{model === "" && effort === "" ? "Removed on save" : agent.runSettings.override ? "Replaced on save" : "Set on save"}</small>}</div>
+      <div className="settings-kv"><span className="settings-kv-label">Agent config</span><div className="settings-kv-value"><span>{settingsModelName(agent, agent.runSettings.config.model || agent.defaultModel, catalogModels)} · {settingsEffortName(agent.runSettings.config.effort || agent.defaultEffort)}</span><code>{agent.runSettings.config.model ?? "provider default"} · {agent.runSettings.config.effort ?? "provider default"}</code></div></div>
+      <div className="settings-kv"><span className="settings-kv-label">Console override</span><div className="settings-kv-value">{agent.runSettings.override ? <><span>{settingsModelName(agent, saved.model || undefined, catalogModels)} · {settingsEffortName(saved.effort || undefined)}</span><code>{saved.model || "provider default"} · {saved.effort || "provider default"}</code></> : "None"}{dirty && <small className="is-warning">{model === "" && effort === "" ? "Removed on save" : agent.runSettings.override ? "Replaced on save" : "Set on save"}</small>}</div>
         {(model !== "" || effort !== "" || agent.runSettings.override !== null) && <button className="settings-button is-ghost is-inline" type="button" disabled={saving} onClick={() => update("", "")}>Use agent config</button>}
       </div>
     </div>
