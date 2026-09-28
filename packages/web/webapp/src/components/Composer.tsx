@@ -96,9 +96,8 @@ export function Composer({ runSettings, notice }: {
   const selectionUnavailable = store.selectionLoading || store.selectionError !== null;
   const canUpload = !selectionUnavailable
     && canUploadInConsole(connection, selectedAgent, selectedThread);
-  // A live input into an existing running turn remains queued by the service;
-  // only admission of a new turn is blocked by manual compaction.
-  const compacting = runningManualCompaction(selectedThread) && !isRunning;
+  // Server admission rejects both a new turn and live input during compaction.
+  const compacting = runningManualCompaction(selectedThread);
   const canSend = useAuiState((state) => state.composer.canSend);
   const attachmentCount = useAuiState((state) => state.composer.attachments.length);
   const commands = useMemo(() => buildComposerCommands({

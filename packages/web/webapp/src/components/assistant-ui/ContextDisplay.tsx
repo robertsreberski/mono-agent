@@ -268,7 +268,7 @@ export function ContextDisplay({ threadId, detail, compactThreadId, compactBlock
             key={`${availableProviderUsage.agent.sourceId}:${availableProviderUsage.agent.generation ?? "unknown"}:${availableProviderUsage.providerId}`}
             agent={availableProviderUsage.agent} providerId={availableProviderUsage.providerId} id={`${id}-plan`} />}
           {compactThreadId !== undefined && <CompactFooter id={`${id}-compact`} compact={() => { void compact(); }}
-            compacting={compacting || manualCompacting} blocked={compactBlocked} percent={percent} result={compactResult} error={compactError} measuredModel={context.measuredModel ?? context.usage?.model} />}
+            compacting={busy} blocked={compactBlocked} percent={percent} result={compactResult} error={compactError} measuredModel={context.measuredModel ?? context.usage?.model} />}
         </Popover.Popup>
       </Popover.Positioner>
     </Popover.Portal>

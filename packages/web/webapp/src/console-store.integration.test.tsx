@@ -5183,6 +5183,22 @@ describe("ConsoleStoreProvider integration", () => {
       expect(vi.mocked(api.thread).mock.calls.length).toBe(detailReads);
     });
 
+    it("does not reapply a cleared manual compaction flag from equal-revision SSE after failure", async () => {
+      seedTwoThreads();
+      const store = await openedOnAlpha();
+      const running = { ...selected, compaction: {
+        status: "running" as const, trigger: "manual" as const, startedAt: "2026-09-28T10:00:00Z",
+      } };
+      emit("thread.changed", { threadId: selected.id, payload: { thread: running } });
+      await waitFor(() => expect(store.current.selectedThread?.compaction?.status).toBe("running"));
+      emit("thread.changed", { threadId: selected.id, payload: { thread: selected } });
+      await waitFor(() => expect(store.current.selectedThread?.compaction).toBeUndefined());
+      emit("thread.changed", { threadId: selected.id, payload: { thread: running } });
+      await quiet();
+      expect(store.current.selectedThread?.compaction).toBeUndefined();
+      expect(store.current.detail?.thread.compaction).toBeUndefined();
+    });
+
     it("updates background job status in a closed conversation and rejects stale summaries", async () => {
       seedTwoThreads();
       const store = await openedOnAlpha();

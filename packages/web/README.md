@@ -373,8 +373,8 @@ percentage awaits a fresh provider measurement; this action does not change
 automatic compaction thresholds. An in-memory `WebThread.compaction` hint
 appears in list/detail projections and thread-change events while manual
 compaction runs; it survives closing the dialog or switching conversations,
-but not a web service restart. The composer blocks new turns until it clears;
-live inputs already queued behind compaction still drain afterward. The
+but not a web service restart. The composer blocks sends until it clears; externally queued live inputs
+still drain afterward. The
 transcript shows a transient running divider and then the persisted result.
 Structured reasoning, routine tools, and process-job lifecycle evidence share
 the stream-aware Activity disclosure, which collapses at every terminal

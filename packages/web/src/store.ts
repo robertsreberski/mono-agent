@@ -984,12 +984,13 @@ export class WebStore {
       ORDER BY created_at DESC, id DESC LIMIT 1`).get(threadId) as { id: string; parts_json: string } | undefined;
     if (row === undefined) return undefined;
     const parts = parseParts(row.parts_json);
+    const recordedAt = this.now();
     upsertContextCompaction(parts, {
       type: "runtime_telemetry", kind: "context_compaction",
-      data: { ...result, sdk: "pi", timestamp: Date.now() },
+      data: { ...result, sdk: "pi", timestamp: Date.parse(recordedAt) },
     });
     this.database.prepare("UPDATE messages SET parts_json = ?, updated_at = ?, seq = seq + 1 WHERE id = ?")
-      .run(serializeParts(parts), this.now(), row.id);
+      .run(serializeParts(parts), recordedAt, row.id);
     return row.id;
   }
   private readonly usageMemo = new Map<string, MessageUsageRollup>();

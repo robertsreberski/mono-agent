@@ -256,6 +256,11 @@ export const stripCapabilityUrls = (
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+const withoutTransientCompaction = (thread: ThreadSummary): ThreadSummary => {
+  const { compaction: _transient, ...stored } = thread;
+  return stored;
+};
+
 /**
  * A summary the sidebar and the header can actually draw.
  *
@@ -265,11 +270,6 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
  * console, so this is not a trust boundary; it is what keeps one interrupted
  * write from taking the cold start down.
  */
-const withoutTransientCompaction = (thread: ThreadSummary): ThreadSummary => {
-  const { compaction: _transient, ...stored } = thread;
-  return stored;
-};
-
 const isSummary = (value: unknown): value is ThreadSummary =>
   isRecord(value)
   && typeof value.id === "string"

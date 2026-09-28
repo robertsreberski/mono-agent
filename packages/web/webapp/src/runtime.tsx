@@ -19,6 +19,7 @@ import { clusterToolCalls } from "./activity-clustering";
 import { hasReadableThoughtContent } from "./components/assistant-ui/Reasoning";
 import { useConsoleStore, useUploadLimits } from "./console-store";
 import { noteComposerAttachments } from "./composer-draft";
+import { runningManualCompaction } from "./manual-compaction";
 import {
   isAssistantMessageBoundaryPart,
   isContextCompactionPart,
@@ -734,7 +735,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
     convertMessage,
     isLoading: store.selectionLoading || store.detailLoading,
     isRunning,
-    isSendDisabled: !selectedCanSend || turnStarting,
+    isSendDisabled: !selectedCanSend || turnStarting || runningManualCompaction(store.selectedThread),
     onNew,
     onCancel: () => store.cancelTurn("api"),
     queue: submissionQueue,

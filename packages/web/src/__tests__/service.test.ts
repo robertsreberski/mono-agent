@@ -602,13 +602,20 @@ describe("WebService", () => {
       expect(service.thread(thread.id).thread.compaction).toMatchObject({ status: "running", trigger: "manual" });
       expect(service.threadsPage({ sourceId: thread.sourceId, archived: false }).threads[0]?.compaction?.status).toBe("running");
       expect((await service.bootstrap()).threads[0]?.compaction?.status).toBe("running");
+      const renamed = service.patchThread(thread.id, { title: "Fictional garden" });
+      expect(renamed.compaction?.status).toBe("running");
+      expect(transitions.at(-1)?.payload).toMatchObject({ thread: { title: "Fictional garden",
+        compaction: { status: "running" } } });
+      const notApplied = service.patchThread(thread.id, { model: null, ifRunConfigUnset: true });
+      expect(notApplied.compaction?.status).toBe("running");
       await expect(service.compactThread(thread.id)).rejects.toMatchObject({ code: "compaction_busy" });
       await expect(service.startTurn(thread.id, { text: "wait" })).rejects.toMatchObject({ code: "compaction_busy" });
       release();
       await expect(pending).resolves.toMatchObject({ status: "succeeded", tokensAfter: 200 });
       expect(compacted).toEqual([`web:${thread.id}`]);
       expect(service.thread(thread.id).thread.compaction).toBeUndefined();
-      expect(transitions.map((event) => (event.payload as { thread?: { compaction?: unknown } })?.thread?.compaction === undefined)).toEqual([false, true]);
+      expect((transitions[0]?.payload as { thread?: { compaction?: unknown } })?.thread?.compaction).toBeDefined();
+      expect((transitions.at(-1)?.payload as { thread?: { compaction?: unknown } })?.thread?.compaction).toBeUndefined();
       unsubscribe();
       expect(JSON.stringify(service.store.getThreadDetail(thread.id)?.messages.at(-1)?.parts))
         .toContain('"operationId":"manual-1"');
@@ -637,6 +644,8 @@ describe("WebService", () => {
       await expect(pending).rejects.toThrow();
       expect(service.thread(thread.id).thread.compaction).toBeUndefined();
       expect(events).toHaveLength(2);
+      expect((events[0]?.payload as { thread?: { compaction?: unknown } })?.thread?.compaction).toBeDefined();
+      expect((events[1]?.payload as { thread?: { compaction?: unknown } })?.thread?.compaction).toBeUndefined();
       unsubscribe();
     } finally {
       release();

@@ -239,6 +239,7 @@ describe.each([[1440, 900, "desktop"], [390, 844, "phone"]])("manual compaction 
     expect(input).not.toBeDisabled();
     await userEvent.fill(input, "A fictional follow-up");
     await userEvent.type(input, "{Control>}{Enter}{/Control}");
+    await userEvent.type(input, "{Control>}{Shift>}{Enter}{/Shift}{/Control}");
     expect(send).not.toHaveBeenCalled();
     const shots = import.meta.env.VITE_CONTEXT_FOLLOWUP_SHOTS as string | undefined;
     if (shots) await page.screenshot({ path: `${shots}/composer-compacting-${label}.png` });

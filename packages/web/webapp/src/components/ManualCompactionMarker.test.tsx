@@ -1,5 +1,5 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { act, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { thread } from "../test/fixtures";
 import type { ThreadDetail } from "../types";
 import { ManualCompactionMarker } from "./ManualCompactionMarker";
@@ -14,6 +14,21 @@ const detail: ThreadDetail = { thread: active, messages: [{
 }] };
 
 describe("transient manual compaction marker", () => {
+  afterEach(() => vi.useRealTimers());
+  it("expires without a result and forgets a hold after a thread switch", () => {
+    vi.useFakeTimers();
+    const cleared = { ...active, compaction: undefined };
+    const other = thread("other", "alpha");
+    const { rerender } = render(<ManualCompactionMarker thread={active} detail={detail} />);
+    rerender(<ManualCompactionMarker thread={cleared} detail={detail} />);
+    expect(screen.getByRole("note")).toBeVisible();
+    act(() => vi.advanceTimersByTime(3_001));
+    expect(screen.queryByRole("note")).not.toBeInTheDocument();
+    rerender(<ManualCompactionMarker thread={active} detail={detail} />);
+    rerender(<ManualCompactionMarker thread={other} detail={{ ...detail, thread: other }} />);
+    rerender(<ManualCompactionMarker thread={cleared} detail={detail} />);
+    expect(screen.queryByRole("note")).not.toBeInTheDocument();
+  });
   it("appears until the persisted outcome arrives, without displaying both rows", () => {
     const { rerender } = render(<ManualCompactionMarker thread={active} detail={detail} />);
     expect(screen.getByRole("note", { name: "Compacting context… · manual" })).toBeVisible();

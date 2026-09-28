@@ -831,7 +831,7 @@ export class WebService {
       tags: projectsSourceId === null ? [] : this.store.listTags(projectsSourceId),
       projects,
       projectsSourceId,
-      activeThreads,
+      activeThreads: { ...activeThreads, threads: activeThreads.threads.map((thread) => this.projectThread(thread)) },
       ...(discoveredCurrentThreadId === undefined ? {} : { currentThreadId: discoveredCurrentThreadId }),
       limits: {
         maxFileBytes: DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
@@ -937,7 +937,7 @@ export class WebService {
     const thread = this.store.createThread(sourceId, input);
     this.emitThread("threads.changed", { thread });
     this.refreshMemberProject(thread);
-    return thread;
+    return this.projectThread(thread);
   }
 
   /**
@@ -1080,7 +1080,8 @@ export class WebService {
    * the snapshot it is refreshing.
    */
   activeThreads(): WebActiveThreads {
-    return this.store.listActiveThreads();
+    const active = this.store.listActiveThreads();
+    return { ...active, threads: active.threads.map((thread) => this.projectThread(thread)) };
   }
 
   /**
@@ -1088,7 +1089,8 @@ export class WebService {
    * console tab needs to hear about.
    */
   searchThreads(input: SearchWebThreadsInput): WebThreadSearchPage {
-    return this.store.searchThreads(input);
+    const page = this.store.searchThreads(input);
+    return { ...page, hits: page.hits.map((hit) => ({ ...hit, thread: this.projectThread(hit.thread) })) };
   }
 
   messagePage(
@@ -1407,14 +1409,14 @@ export class WebService {
       // separate database file and does not stop a second connection to the
       // state DB from writing between a bare read and a bare write.
       const result = this.store.patchThreadIfRunConfigUnset(id, patch);
-      if (!result.applied) return result.thread;
+      if (!result.applied) return this.projectThread(result.thread);
       this.emitThread("thread.changed", { thread: result.thread });
       this.emitThread("threads.changed", { thread: result.thread });
-      return result.thread;
+      return this.projectThread(result.thread);
     }
     const before = this.store.getThread(id);
     const thread = this.store.patchThread(id, patch);
-    if (patch.tagIds !== undefined && before?.revision === thread.revision) return thread;
+    if (patch.tagIds !== undefined && before?.revision === thread.revision) return this.projectThread(thread);
     this.emitThread("thread.changed", { thread });
     this.emitThread("threads.changed", { thread });
     if (before?.projectId !== thread.projectId || before?.archivedAt !== thread.archivedAt) {
@@ -1423,7 +1425,7 @@ export class WebService {
       }
       this.refreshMemberProject(thread);
     }
-    return thread;
+    return this.projectThread(thread);
   }
 
   async deleteThread(id: string, options: { readonly emptyOnly?: boolean } = {}): Promise<void> {
@@ -2173,7 +2175,7 @@ export class WebService {
     })();
     this.activeCompactions.set(threadId, operation.catch(() => undefined));
     this.manualCompactionStartedAt.set(threadId, this.currentDate().toISOString());
-    this.emitStoredThread(threadId, ["thread.changed", "threads.changed"]);
+    this.emitStoredThread(threadId, ["thread.changed"]);
     try {
       return await operation;
     } finally {
@@ -2181,7 +2183,7 @@ export class WebService {
       // can finish without a result being recorded, just as before this hint.
       this.activeCompactions.delete(threadId);
       this.manualCompactionStartedAt.delete(threadId);
-      this.emitStoredThread(threadId, ["thread.changed", "threads.changed"]);
+      if (!this.stopped) this.emitStoredThread(threadId, ["thread.changed"]);
       // Live input queued while compacting was held back; drain it now.
       if (!this.stopped) void this.drainQueuedLiveInputs(threadId);
       this.dispatchWake(threadId);
@@ -2227,7 +2229,7 @@ export class WebService {
     this.emit("turn.changed", threadId, { turn: started.thread.runState });
     this.emitThread("threads.changed", { thread: started.thread });
     this.refreshMemberProject(started.thread);
-    return { thread: started.thread, turn: started.thread.runState };
+    return { thread: this.projectThread(started.thread), turn: started.thread.runState };
   }
 
   submit(threadId: string, input: StartWebSubmissionInput): WebSubmissionReceipt {
@@ -2429,7 +2431,7 @@ export class WebService {
     }
     const thread = this.store.getThread(threadId);
     if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
-    return thread;
+    return this.projectThread(thread);
   }
 
   createUpload(input: CreateWebUploadInput): WebAttachment {
