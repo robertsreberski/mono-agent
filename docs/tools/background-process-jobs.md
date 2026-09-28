@@ -604,9 +604,14 @@ problems, a child still busy). Opening it lists current work purpose-first,
 with state, elapsed time, tool, exit facts and a labelled output or step
 preview on each row; a row opens for its output tail, wake state and the
 wake's response, without the host-local artifact paths an operator cannot open
-from a browser. Command jobs use a squared glyph and agent jobs a ringed
-circle, and each row names its tool beside the matching kind icon; the inner
-mark and the row's words give the status. Every terminal
+from a browser. Each row names its tool beside a terminal or agent icon, and a
+circular status glyph with the row's words gives the status: outlined rings for
+current work (empty when queued, half-filled while in progress, a square while
+stopping, a question mark for a pending question) and solid discs for outcomes
+(a check, a cross, a clock or a square). In progress is yellow and done is
+green in every console theme. Only the closed shelf's indicator moves: it spins
+while a job is in progress and holds still as a half-filled ring under reduced
+motion; rows never animate. Every terminal
 outcome remains mounted but hidden behind **History** inside the shelf, except
 a PeerAgent job whose question still awaits the agent's answer, which stays
 with current work (and keeps a question count in the closed shelf, even when
@@ -656,7 +661,7 @@ In the web console, detached launches keep their receipt in the parent's Activit
 which shows `Agent job started` / `Agent job succeeded` (or the actual terminal
 state); `AgentManage` uses the corresponding label. The child no longer streams
 foreground-style subagent rows into the parent response. Its Background jobs
-row uses the circular agent glyph, marks its last recorded tool calls as
+row names the agent beside an agent icon, marks its last recorded tool calls as
 complete, failed or running while it works, and opens to a height-bounded scroll
 region with clustered tool calls, running/complete/failed status, durations, and
 a prose terminal report. State, Wake, and terminal facts remain on the card. Scrolling upward

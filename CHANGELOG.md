@@ -43,6 +43,15 @@
   distinct glyphs, stopping and pending-question states are shown, cancelled
   jobs no longer read as failures, and nothing opens by itself.
 
+- Give the web Background jobs shelf one set of circular status glyphs:
+  outlined rings for current work (empty for queued, half-filled for in
+  progress, a square for stopping, `?` for a question) and solid discs for
+  outcomes (a check for done, a cross for failures, a clock for timeouts, a
+  square for cancelled). In progress is yellow and done is green in every
+  console theme. Only the closed bar's indicator spins, continuously while a
+  job runs and never under reduced motion; open rows stay still, and the bar
+  shows an agent or terminal icon beside a single job's purpose.
+
 - Fix the web Context usage phone sheet's dark overlay and show manual and
   automatic compaction outcomes as visible conversation dividers. Keep a running
   manual compaction visible after closing the sheet, switching chats or reloading,

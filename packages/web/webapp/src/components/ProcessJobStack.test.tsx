@@ -266,9 +266,29 @@ describe("ProcessJobStack", () => {
     render(<StackHarness threadId="thread" jobs={[entry(running), entry(processJob({ jobId: "done" }))]} />);
     const toggle = shelfToggle();
     expect(within(toggle).getByText("Water the north beds")).toBeInTheDocument();
-    // Kind (the glyph's container) and state are spoken with the purpose.
+    // State and kind are spoken with the purpose; on screen the spinner says
+    // the state and a terminal icon the kind.
     expect(toggle).toHaveAccessibleName("Background jobs Running Exec job: Water the north beds");
+    expect(toggle.querySelector(".process-job-stack-single .process-job-glyph")).toHaveClass("is-spinner");
+    expect(toggle.querySelector(".process-job-stack-kind")).toHaveClass("is-command");
     expect(toggle.querySelector(".process-job-chip")).toBeNull();
+  });
+
+  it("marks a lone agent job with the agent icon and a still job with its own glyph", () => {
+    vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+    const agent = activeJob("thread", "running", {
+      jobId: "agent-running", tool: "Agent", kind: "internal", instanceId: "garden-helper", childStillBusy: false,
+      summary: "Draft the spring planting plan",
+    });
+    const view = render(<StackHarness threadId="thread" jobs={[entry(agent)]} />);
+    expect(shelfToggle()).toHaveAccessibleName("Background jobs Running Agent job: Draft the spring planting plan");
+    expect(shelfToggle().querySelector(".process-job-stack-kind")).toHaveClass("is-agent");
+    view.unmount();
+
+    render(<StackHarness threadId="thread" jobs={[entry(activeJob("thread", "queued", { jobId: "waiting" }))]} />);
+    const glyph = shelfToggle().querySelector(".process-job-stack-single .process-job-glyph");
+    expect(glyph).not.toHaveClass("is-spinner");
+    expect(glyph).toHaveClass("is-waiting", "is-empty");
   });
 
   it("counts several current jobs as marked numbers and leaves finished counts out while work is active", () => {
@@ -283,6 +303,21 @@ describe("ProcessJobStack", () => {
     const chips = [...toggle.querySelectorAll(".process-job-chip")].map((chip) => chip.querySelector(".process-job-chip-count")?.textContent);
     expect(chips).toEqual(["2", "1"]);
     expect(toggle).toHaveAccessibleName("Background jobs 2 active 1 issue");
+    // One of them runs, so the active count carries the bar's spinner.
+    expect(toggle.querySelector(".process-job-chip.is-running .process-job-glyph")).toHaveClass("is-spinner");
+  });
+
+  it("holds the active count still when none of its jobs is in progress", () => {
+    vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+    render(<StackHarness threadId="thread" jobs={[
+      entry(activeJob("thread", "queued", { jobId: "one" })),
+      entry(activeJob("thread", "queued", { jobId: "two" })),
+    ]} />);
+    const chip = shelfToggle().querySelector(".process-job-chip")!;
+    expect(chip).toHaveClass("is-waiting");
+    expect(chip.querySelector(".process-job-glyph")).toHaveClass("is-empty");
+    expect(chip.querySelector(".is-spinner")).toBeNull();
+    expect(shelfToggle()).toHaveAccessibleName("Background jobs 2 active");
   });
 
   it("keeps a pending peer question with current work, apart from the active count, until it expires", () => {

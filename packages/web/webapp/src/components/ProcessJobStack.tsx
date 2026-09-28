@@ -5,9 +5,10 @@ import { useProcessJobPresentation } from "../process-job-presentation";
 import type { ProcessJobProjection } from "../types";
 import { Icon } from "./Icon";
 import { ProcessJobCard, mergeProcessJobProjection } from "./ProcessJob";
-import { ProcessJobGlyph, ProcessJobStatusMark } from "./ProcessJobGlyph";
+import { ProcessJobGlyph, ProcessJobSpinner } from "./ProcessJobGlyph";
 import { ProcessJobClockProvider, useProcessJobShelfClock } from "./process-job-clock";
 import {
+  processJobActiveMark,
   processJobCountWords,
   processJobDisplayState,
   processJobDisplayTitle,
@@ -201,8 +202,8 @@ export function ProcessJobStack() {
 
   // The closed bar: marked counts are always paired with a readable number,
   // the words live in the button's accessible name and in the open shelf.
-  const chip = (key: string, tone: string, mark: ReactNode, value: number, words: string, animated = false) => (
-    <span key={key} className={`process-job-chip is-${tone}${animated ? " has-animation" : ""}`} title={words}>
+  const chip = (key: string, tone: string, mark: ReactNode, value: number, words: string) => (
+    <span key={key} className={`process-job-chip is-${tone}`} title={words}>
       <span className="process-job-chip-mark" aria-hidden="true">{mark}</span>
       <span className="process-job-chip-count" aria-hidden="true">{value}</span>
       <span className="sr-only">{words}</span>
@@ -215,10 +216,13 @@ export function ProcessJobStack() {
   const singleSaysQuestion = singleState?.tone === "question";
   const chips: ReactNode[] = [];
   if (single === undefined && counts.active > 0) {
-    chips.push(chip("active", "running", <ProcessJobStatusMark mark="ring" animated />, counts.active, processJobCountWords.active(counts.active)));
+    // The bar's one spinner turns while any of these jobs is in progress.
+    const active = processJobActiveMark(projections, now);
+    chips.push(chip("active", active.tone, active.spinning ? <ProcessJobSpinner /> : <ProcessJobGlyph small tone={active.tone} mark={active.mark} />,
+      counts.active, processJobCountWords.active(counts.active)));
   }
   if (!singleSaysQuestion && counts.questions > 0) {
-    chips.push(chip("questions", "question", <ProcessJobStatusMark mark="question" />, counts.questions, processJobCountWords.questions(counts.questions)));
+    chips.push(chip("questions", "question", <ProcessJobGlyph small tone="question" mark="question" />, counts.questions, processJobCountWords.questions(counts.questions)));
   }
   if (counts.issues > 0) {
     chips.push(chip("issues", "danger", <Icon name="alert" size={12} strokeWidth={2.2} />, counts.issues, processJobCountWords.issues(counts.issues)));
@@ -247,14 +251,16 @@ export function ProcessJobStack() {
           <span id={labelId} className="process-job-stack-title">Background jobs</span>
           {single !== undefined && singleState !== undefined ? (
             <span className="process-job-stack-single">
-              <ProcessJobGlyph
-                small
-                kind={processJobKind(single)}
-                tone={singleState.tone}
-                mark={singleState.mark}
-                animated={singleState.mark === "ring"}
+              {singleState.mark === "half"
+                ? <ProcessJobSpinner />
+                : <ProcessJobGlyph small tone={singleState.tone} mark={singleState.mark} />}
+              {/* Kind at a glance, as on the row's status line: a terminal or an agent. */}
+              <Icon
+                className={`process-job-stack-kind is-${processJobKind(single)}`}
+                name={processJobKind(single) === "agent" ? "agent" : "terminal"}
+                size={14}
               />
-              {/* The glyph's kind and state, in words: "Running Bash job:". */}
+              {/* The glyph's state and the icon's kind, in words: "Running Bash job:". */}
               <span className="sr-only">{`${[singleState.word, ...(singleState.pending === undefined ? [] : [singleState.pending])].join(", ")} ${single.tool} job:`}</span>
               <span className="process-job-stack-purpose" title={single.summary}>{processJobDisplayTitle(single)}</span>
             </span>
