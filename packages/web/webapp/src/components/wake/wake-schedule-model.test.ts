@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ApiError } from "../../api";
 import {
   definitionFromDraft, describeDraft, describeNextFire, describeWakeError, draftFromDefinition, isDraftDirty,
-  newDraft, nextTimeSlot, normalizeTimeZone, onceLooksPast, tomorrowAtNine, utf8Bytes, validateDraft, wakeStatusText,
+  newDraft, nextTimeSlot, normalizeTimeZone, onceHasElapsed, onceLooksPast, tomorrowAtNine, utf8Bytes, validateDraft, wakeStatusText,
   type WakeDraft,
 } from "./wake-schedule-model";
 
@@ -58,6 +58,19 @@ describe("wake schedule draft rules", () => {
     expect(definitionFromDraft(once)).toEqual({ kind: "once", timezone: "UTC", localAt: "2031-05-14T09:00", message: "Hi" });
   });
 
+  it("treats a saved one-off as elapsed on the zone's plain wall clock, with no grace", () => {
+    expect(onceHasElapsed("2031-05-14T09:00", "UTC", new Date("2031-05-14T09:01:00Z"))).toBe(true);
+    expect(onceHasElapsed("2031-05-14T09:00", "UTC", new Date("2031-05-14T09:59:00Z"))).toBe(true);
+    expect(onceHasElapsed("2031-05-14T09:00", "UTC", new Date("2031-05-14T09:00:00Z"))).toBe(true);
+    expect(onceHasElapsed("2031-05-14T09:00", "UTC", new Date("2031-05-14T08:59:00Z"))).toBe(false);
+    expect(onceHasElapsed("2031-05-14T09:00", "Asia/Tokyo", new Date("2031-05-14T00:30:00Z"))).toBe(true);
+    // New York fall-back 2026-11-01: during the first 01:xx pass, 01:30 has plainly elapsed at 01:45.
+    expect(onceHasElapsed("2026-11-01T01:30", "America/New_York", new Date("2026-11-01T05:45:00Z"))).toBe(true);
+    // During the repeated hour (second 01:10) the wall clock reads earlier; the server decides.
+    expect(onceHasElapsed("2026-11-01T01:30", "America/New_York", new Date("2026-11-01T06:10:00Z"))).toBe(false);
+    expect(onceHasElapsed("not-a-time", "UTC", new Date())).toBe(false);
+  });
+
   it("only hints at a past one-off when it is clearly past", () => {
     const now = new Date("2031-05-14T12:00:00Z");
     expect(onceLooksPast({ date: "2031-05-14", time: "09:00", timezone: "UTC" }, now)).toBe(true);
@@ -83,8 +96,13 @@ describe("wake schedule wording", () => {
   it("formats a saved instant in the schedule zone and adds this device's time only when it differs", () => {
     const next = describeNextFire("2031-05-12T12:30:00Z", "America/Chicago", "Europe/Lisbon", "en-GB");
     expect(next.scheduled).toBe("Mon 12 May, 07:30");
-    expect(next.local).toBe("Mon 12 May, 13:30");
+    // Same calendar day in both zones: only the time is repeated.
+    expect(next.local).toBe("13:30");
+    // Different calendar days: the device reading carries its own date.
+    expect(describeNextFire("2031-05-12T23:30:00Z", "America/Chicago", "Asia/Tokyo", "en-GB").local).toBe("Tue 13 May, 08:30");
     expect(describeNextFire("2031-05-12T12:30:00Z", "UTC", "Etc/UTC", "en-GB").local).toBeNull();
+    // Different zones with the same wall time at that instant add nothing.
+    expect(describeNextFire("2031-01-12T12:30:00Z", "Europe/Lisbon", "UTC", "en-GB").local).toBeNull();
   });
 
   it("gives the menu one status line per state", () => {
@@ -95,7 +113,9 @@ describe("wake schedule wording", () => {
   });
 
   it("humanizes conflicts and field-prefixed validation errors only", () => {
-    expect(describeWakeError(new ApiError("Schedule changed; reload and retry.", 409, "wake_revision_conflict"))).toEqual({ message: "This schedule changed since you opened it.", conflict: true });
+    expect(describeWakeError(new ApiError("Schedule changed; reload and retry.", 409, "wake_revision_conflict"))).toMatchObject({ message: "This schedule changed since you opened it.", conflict: true });
+    expect(describeWakeError(new ApiError("No schedule exists for this conversation.", 404, "wake_schedule_not_found"))).toMatchObject({ message: "This schedule was deleted elsewhere.", conflict: true });
+    expect(describeWakeError(new ApiError("This conversation already has a schedule.", 409, "wake_schedule_exists"))).toMatchObject({ conflict: true });
     expect(describeWakeError(new ApiError("localAt: Choose a future local date and time.", 400, "invalid_wake_schedule")).message).toBe("Choose a future local date and time.");
     expect(describeWakeError(new ApiError("thread_archived: nope", 409, "thread_archived")).message).toBe("thread_archived: nope");
     expect(describeWakeError(new Error("Offline.")).message).toBe("Offline.");

@@ -150,6 +150,18 @@ export function onceLooksPast(draft: Pick<WakeDraft, "date" | "time" | "timezone
   return `${draft.date}T${draft.time}` < wallClock(new Date(now.getTime() - 60 * 60 * 1000), zone);
 }
 
+/**
+ * Whether a saved one-off's wall time has plainly elapsed on its zone's clock
+ * right now: no grace period. This decides whether Resume is offered. A time
+ * inside a daylight-saving overlap may still read as ahead here; the server
+ * resolves such instants and rejects an expired resume, and that answer wins.
+ */
+export function onceHasElapsed(localAt: string, timeZone: string, now: Date): boolean {
+  const zone = normalizeTimeZone(timeZone);
+  if (zone === null || !/^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d$/u.test(localAt)) return false;
+  return localAt <= wallClock(now, zone);
+}
+
 /** The next distinct hourly slot after the last time, keeping its minutes. */
 export function nextTimeSlot(times: readonly string[]): string {
   const last = [...times].reverse().find((time) => TIME.test(time)) ?? "08:00";
@@ -226,12 +238,21 @@ export function formatInstant(iso: string, timeZone?: string, locale?: string): 
   }).format(new Date(iso));
 }
 
-/** The saved next wake-up in the schedule's zone, plus this device's reading when it differs. */
+/**
+ * The saved next wake-up in the schedule's zone, plus this device's reading
+ * when it differs. The device reading repeats the date only when the two
+ * zones fall on different calendar days at that instant.
+ */
 export function describeNextFire(iso: string, scheduleZone: string, deviceZone: string, locale?: string): { scheduled: string; local: string | null } {
   const scheduled = formatInstant(iso, scheduleZone, locale);
-  const same = normalizeTimeZone(scheduleZone) === normalizeTimeZone(deviceZone);
-  const local = same ? null : formatInstant(iso, deviceZone, locale);
-  return { scheduled, local: local === scheduled ? null : local };
+  if (normalizeTimeZone(scheduleZone) === normalizeTimeZone(deviceZone)) return { scheduled, local: null };
+  const instant = new Date(iso);
+  const sameDay = wallClock(instant, scheduleZone).slice(0, 10) === wallClock(instant, deviceZone).slice(0, 10);
+  const local = sameDay
+    ? new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit", timeZone: deviceZone }).format(instant)
+    : formatInstant(iso, deviceZone, locale);
+  const scheduledTime = new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit", timeZone: scheduleZone }).format(instant);
+  return { scheduled, local: sameDay && local === scheduledTime ? null : local };
 }
 
 export type WakeOutcome = NonNullable<WebWakeSchedule["lastOutcome"]>;
@@ -256,10 +277,24 @@ export function wakeStatusText(summary: WakeSummary, locale?: string): string {
   return summary.nextFireAt === null ? `${kind} · active` : `${kind} · next ${formatInstant(summary.nextFireAt, undefined, locale)}`;
 }
 
-/** Humanized server failures. Field prefixes (`localAt: …`) are the server's own validator shape. */
-export function describeWakeError(cause: unknown): { readonly message: string; readonly conflict: boolean } {
+/**
+ * Humanized server failures. Field prefixes (`localAt: …`) are the server's
+ * own validator shape. The three stale-baseline answers — a newer revision, a
+ * schedule deleted elsewhere, one created elsewhere — are recoverable by
+ * loading the latest version (`conflict`), with copy that says what reloading does.
+ */
+export function describeWakeError(cause: unknown): { readonly message: string; readonly conflict: boolean; readonly detail?: string } {
   if (cause instanceof ApiError && cause.code === "wake_revision_conflict") {
-    return { message: "This schedule changed since you opened it.", conflict: true };
+    return { message: "This schedule changed since you opened it.", conflict: true,
+      detail: "Load the latest version to continue. This replaces your unsaved changes." };
+  }
+  if (cause instanceof ApiError && cause.code === "wake_schedule_not_found") {
+    return { message: "This schedule was deleted elsewhere.", conflict: true,
+      detail: "Load the latest version to continue. Your edits stay, and Save creates the schedule again." };
+  }
+  if (cause instanceof ApiError && cause.code === "wake_schedule_exists") {
+    return { message: "A schedule was created for this conversation elsewhere.", conflict: true,
+      detail: "Load the latest version to continue. This replaces your unsaved changes." };
   }
   const message = cause instanceof Error ? cause.message : String(cause);
   if (cause instanceof ApiError && cause.code === "invalid_wake_schedule") {

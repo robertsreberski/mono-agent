@@ -1997,10 +1997,14 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .wake-time-add:hover { background: var(--surface-subtle); }
 
 /* Timezone: always visible, editable on demand. */
-.wake-timezone-row { width: 100%; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 0 12px; color: var(--text); background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 12px; cursor: pointer; text-align: left; font-size: 12.5px; }
+.wake-timezone-row { width: 100%; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 7px 12px; color: var(--text); background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 12px; cursor: pointer; text-align: left; font-size: 12.5px; line-height: 1.35; }
 .wake-timezone-label { flex: none; color: var(--text-soft); font-weight: 600; }
-.wake-timezone-value { min-width: 0; flex: 1; overflow: hidden; text-align: right; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
-.wake-timezone-note { color: var(--text-muted); font-weight: 500; }
+/* The zone id wraps (at its slashes if need be) rather than being cut off to
+   make room for the device note, which drops to its own line first. */
+.wake-timezone-value { min-width: 0; flex: 1; display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: baseline; column-gap: 6px; text-align: right; font-weight: 600; }
+.wake-timezone-name { min-width: 0; overflow-wrap: anywhere; }
+.wake-timezone-note { color: var(--text-muted); font-weight: 500; white-space: nowrap; }
+.wake-timezone-note::before { content: "· "; }
 .wake-timezone-row svg { flex: none; color: var(--text-muted); }
 .wake-timezone-row svg.is-open { transform: rotate(180deg); }
 .wake-timezone-panel { display: flex; flex-direction: column; gap: 6px; }

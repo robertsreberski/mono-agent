@@ -16,7 +16,8 @@ export function WakeSummary({ schedule, sentence, dirty, loading, archived, expi
   readonly archived: boolean;
   /** A paused one-off whose wall time has clearly passed: it cannot resume unchanged. */
   readonly expired: boolean;
-  readonly busy: "pause" | "resume" | null;
+  /** Any mutation in flight (save, pause, resume, delete) disables the toggle. */
+  readonly busy: "save" | "pause" | "resume" | "delete" | null;
   readonly noteId: string;
   readonly onToggle: (next: "pause" | "resume") => void;
 }) {
@@ -36,7 +37,7 @@ export function WakeSummary({ schedule, sentence, dirty, loading, archived, expi
     : archived ? "This conversation is archived. Restore it before saving changes."
       : schedule === null ? null
         : dirty ? (schedule.state === "active" ? "Save to apply these changes." : "Save turns this schedule on.")
-          : schedule.state === "active" && schedule.nextFireAt === null ? "Due now. It runs as soon as the conversation is free."
+          : schedule.state === "active" && schedule.nextFireAt === null ? "Waiting to run when the agent and conversation are available."
             : schedule.state === "paused" && expired ? "Paused, and its time has passed. Pick a future date to schedule it again."
               : schedule.state === "paused" ? "No wake-ups until you resume it."
                 : schedule.state === "completed" ? "No further wake-ups. Pick a new date and time to schedule it again." : null;

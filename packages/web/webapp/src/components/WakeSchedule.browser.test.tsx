@@ -127,14 +127,20 @@ describe("scheduled wake UI in Chromium", () => {
     view.unmount(); read.mockRestore(); save.mockRestore();
   });
 
-  it("treats a schedule deleted elsewhere as a new one on the next save", async () => {
+  it("recovers from a real 404 wake_schedule_not_found: Load latest keeps the draft and the next save creates", async () => {
     const { read, close, view } = await loadedEditor();
-    const save = vi.spyOn(api, "saveWakeSchedule").mockRejectedValueOnce(new ApiError("Schedule changed; reload and retry.", 409, "wake_revision_conflict"))
-      .mockResolvedValueOnce({ schedule: { ...schedule, revision: 1 } });
     fireEvent.change(screen.getByLabelText("Message"), { target: { value: "Keep me." } });
+    // A notice about a change elsewhere is already showing when Save fails.
+    read.mockResolvedValueOnce({ schedule: { ...schedule, revision: 3 } });
+    view.rerender(<WakeScheduleEditor thread={{ ...thread, wakeSchedule: { ...thread.wakeSchedule!, revision: 3 } }} onClose={close} />);
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Changed elsewhere"));
+    const save = vi.spyOn(api, "saveWakeSchedule")
+      .mockRejectedValueOnce(new ApiError("No schedule exists for this conversation.", 404, "wake_schedule_not_found"))
+      .mockResolvedValueOnce({ schedule: { ...schedule, revision: 1 } });
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("deleted elsewhere"));
     read.mockResolvedValueOnce({ schedule: null });
-    await userEvent.click(await screen.findByRole("button", { name: "Load latest" }));
+    await userEvent.click(screen.getByRole("button", { name: "Load latest" }));
     await waitFor(() => expect(screen.getByRole("region", { name: "Schedule summary" })).toHaveTextContent("Not scheduled yet"));
     expect(screen.getByLabelText("Message")).toHaveValue("Keep me.");
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -143,19 +149,160 @@ describe("scheduled wake UI in Chromium", () => {
     view.unmount(); read.mockRestore(); save.mockRestore();
   });
 
+  it("recovers from a real 409 wake_schedule_exists: Load latest adopts it and the next save updates its revision", async () => {
+    const { read, close, view } = await loadedEditor(null);
+    const save = vi.spyOn(api, "saveWakeSchedule")
+      .mockRejectedValueOnce(new ApiError("This conversation already has a schedule.", 409, "wake_schedule_exists"))
+      .mockResolvedValueOnce({ schedule: { ...schedule, revision: 8 } });
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(thread.id, expect.objectContaining({ kind: "once" }), undefined));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("created for this conversation elsewhere"));
+    read.mockResolvedValueOnce({ schedule: { ...schedule, revision: 7 } });
+    await userEvent.click(screen.getByRole("button", { name: "Load latest" }));
+    await waitFor(() => expect(screen.getByLabelText("Message")).toHaveValue("Review the sample."));
+    fireEvent.change(screen.getByLabelText("Message"), { target: { value: "Merged by hand." } });
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(save).toHaveBeenLastCalledWith(thread.id, expect.objectContaining({ message: "Merged by hand." }), 7));
+    await waitFor(() => expect(close).toHaveBeenCalled());
+    view.unmount(); read.mockRestore(); save.mockRestore();
+  });
+
+  it("offers Try again after a failed live refresh", async () => {
+    const { read, view } = await loadedEditor();
+    read.mockRejectedValueOnce(new Error("Network unavailable."));
+    view.rerender(<WakeScheduleEditor thread={{ ...thread, wakeSchedule: { ...thread.wakeSchedule!, revision: 3 } }} onClose={() => undefined} />);
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Couldn't load the latest version."));
+    read.mockResolvedValueOnce({ schedule: { ...schedule, revision: 3, definition: { ...schedule.definition, message: "Fresh." } } });
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(screen.getByLabelText("Message")).toHaveValue("Fresh."));
+    expect(screen.queryByRole("alert")).toBeNull();
+    view.unmount(); read.mockRestore();
+  });
+
   it("ignores a read that started before Pause, keeping the paused result", async () => {
     const { read, view } = await loadedEditor();
     let late: (value: { schedule: typeof schedule }) => void = () => undefined;
     read.mockReturnValueOnce(new Promise((done) => { late = done; }));
     view.rerender(<WakeScheduleEditor thread={{ ...thread, wakeSchedule: { ...thread.wakeSchedule!, revision: 3 } }} onClose={() => undefined} />);
     await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
-    const pause = vi.spyOn(api, "setWakeState").mockResolvedValue({ schedule: { ...schedule, revision: 4, state: "paused" as const, nextFireAt: null } as never });
+    const paused = { ...schedule, revision: 4, state: "paused" as const, nextFireAt: null };
+    const pause = vi.spyOn(api, "setWakeState").mockResolvedValue({ schedule: paused });
+    // The server now holds the paused schedule; any follow-up read returns it.
+    read.mockResolvedValue({ schedule: paused });
     await userEvent.click(screen.getByRole("button", { name: "Pause schedule" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Resume schedule" })).toBeEnabled());
     await act(async () => { late({ schedule: { ...schedule, revision: 3 } }); });
     expect(screen.getByRole("button", { name: "Resume schedule" })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Schedule summary" })).toHaveTextContent("Paused");
     view.unmount(); read.mockRestore(); pause.mockRestore();
+  });
+
+  it.each(["resolves", "rejects"] as const)("keeps the paused result when a live read started during Pause %s late", async (outcome) => {
+    const { read, view } = await loadedEditor();
+    let finishPause: (value: { schedule: typeof schedule }) => void = () => undefined;
+    const pause = vi.spyOn(api, "setWakeState").mockReturnValue(new Promise((done) => { finishPause = done as never; }) as never);
+    await userEvent.click(screen.getByRole("button", { name: "Pause schedule" }));
+    await waitFor(() => expect(pause).toHaveBeenCalledTimes(1));
+    let settleRead: { resolve: (value: { schedule: typeof schedule }) => void; reject: (cause: Error) => void } | undefined;
+    read.mockReturnValueOnce(new Promise((resolve, reject) => { settleRead = { resolve, reject }; }));
+    view.rerender(<WakeScheduleEditor thread={{ ...thread, wakeSchedule: { ...thread.wakeSchedule!, revision: 3 } }} onClose={() => undefined} />);
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    const paused = { ...schedule, revision: 3, state: "paused" as const, nextFireAt: null };
+    read.mockResolvedValue({ schedule: paused });
+    await act(async () => { finishPause({ schedule: paused as never }); });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Resume schedule" })).toBeEnabled());
+    await act(async () => {
+      if (outcome === "resolves") settleRead!.resolve({ schedule: { ...schedule, revision: 2 } });
+      else settleRead!.reject(new Error("Stale network failure."));
+    });
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(3));
+    expect(screen.getByRole("region", { name: "Schedule summary" })).toHaveTextContent("Paused");
+    expect(screen.getByRole("button", { name: "Resume schedule" })).toBeEnabled();
+    expect(screen.queryByRole("alert")).toBeNull();
+    view.unmount(); read.mockRestore(); pause.mockRestore();
+  });
+
+  it.each(["save", "delete"] as const)("never lets a %s from a closed editor close a reopened one", async (action) => {
+    const read = vi.spyOn(api, "wakeSchedule").mockResolvedValue({ schedule });
+    let settle: () => void = () => undefined;
+    const pending = new Promise<never>((done) => { settle = () => done(undefined as never); });
+    const save = vi.spyOn(api, "saveWakeSchedule").mockReturnValue(pending);
+    const remove = vi.spyOn(api, "deleteWakeSchedule").mockReturnValue(pending as never);
+    const view = render(<Opener />);
+    await userEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
+    await waitFor(() => expect(screen.getByLabelText("Message")).toBeEnabled());
+    if (action === "save") {
+      fireEvent.change(screen.getByLabelText("Message"), { target: { value: "First draft." } });
+      await userEvent.click(screen.getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    } else {
+      await userEvent.click(screen.getByRole("button", { name: "Delete schedule" }));
+      await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+      await waitFor(() => expect(remove).toHaveBeenCalledTimes(1));
+    }
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await userEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
+    await waitFor(() => expect(screen.getByLabelText("Message")).toBeEnabled());
+    fireEvent.change(screen.getByLabelText("Message"), { target: { value: "Second draft." } });
+    await act(async () => { settle(); await pending.catch(() => undefined); });
+    await new Promise((done) => setTimeout(done, 50));
+    expect(dialog()).toBeInTheDocument();
+    expect(screen.getByLabelText("Message")).toHaveValue("Second draft.");
+    view.unmount(); read.mockRestore(); save.mockRestore(); remove.mockRestore();
+  });
+
+  it("disables Pause while a delete is pending and refocuses the enabled row after a failed delete", async () => {
+    const { read, view } = await loadedEditor();
+    let fail: (cause: Error) => void = () => undefined;
+    const remove = vi.spyOn(api, "deleteWakeSchedule").mockReturnValue(new Promise((_, reject) => { fail = reject; }));
+    await userEvent.click(screen.getByRole("button", { name: "Delete schedule" }));
+    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Pause schedule" })).toBeDisabled());
+    await act(async () => { fail(new Error("The console is offline.")); });
+    const row = screen.getByRole("button", { name: "Delete schedule" });
+    await waitFor(() => expect(row).toBeEnabled());
+    await waitFor(() => expect(row).toHaveFocus());
+    expect(screen.getByRole("alert")).toHaveTextContent("The console is offline.");
+    view.unmount(); read.mockRestore(); remove.mockRestore();
+  });
+
+  it("decides Resume for a paused one-off from the zone's wall clock, without a grace period", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const pausedOnce = { ...schedule, state: "paused" as const, nextFireAt: null,
+      definition: { kind: "once" as const, timezone: "UTC", localAt: "2031-05-14T09:00" } };
+    try {
+      for (const [now, resumable] of [["2031-05-14T09:01:00Z", false], ["2031-05-14T09:59:00Z", false], ["2031-05-14T08:59:00Z", true]] as const) {
+        vi.setSystemTime(new Date(now));
+        const { read, view } = await loadedEditor(pausedOnce);
+        if (resumable) expect(screen.getByRole("button", { name: "Resume schedule" })).toBeEnabled();
+        else {
+          expect(screen.queryByRole("button", { name: "Resume schedule" })).toBeNull();
+          expect(screen.getByRole("region", { name: "Schedule summary" })).toHaveTextContent("its time has passed");
+        }
+        view.unmount(); read.mockRestore();
+      }
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("links inline validation messages to their controls", async () => {
+    const { read, view } = await loadedEditor();
+    await userEvent.click(screen.getByRole("button", { name: "Add time" }));
+    fireEvent.change(screen.getByLabelText("Time 3"), { target: { value: "09:00" } });
+    expect(screen.getByLabelText("Time 3")).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByLabelText("Time 3")).toHaveAccessibleDescription("Each time can be used only once.");
+    fireEvent.click(screen.getByLabelText("Monday"));
+    fireEvent.click(screen.getByLabelText("Wednesday"));
+    expect(screen.getByLabelText("Friday")).toHaveAccessibleDescription("Pick at least one day.");
+    await userEvent.click(screen.getByRole("button", { name: /^Timezone/u }));
+    fireEvent.change(screen.getByLabelText("Timezone"), { target: { value: "Mars/Olympus" } });
+    expect(screen.getByLabelText("Timezone")).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByLabelText("Timezone")).toHaveAccessibleDescription(/valid timezone/u);
+    await userEvent.click(screen.getByRole("radio", { name: "Once" }));
+    fireEvent.change(screen.getByLabelText("Date"), { target: { value: "" } });
+    expect(screen.getByLabelText("Date")).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByLabelText("Date")).toHaveAccessibleDescription("Choose a date and a time.");
+    view.unmount(); read.mockRestore();
   });
 
   it("adds distinct hourly times and gates Save on a real, valid change", async () => {
@@ -209,6 +356,14 @@ describe("scheduled wake UI in Chromium", () => {
     view.unmount(); read.mockRestore();
   });
 
+  it("says an active one-off with no next time is waiting on the agent and conversation", async () => {
+    const due = { ...schedule, nextFireAt: null, definition: { kind: "once" as const, timezone: "UTC", localAt: "2031-05-14T09:00" } };
+    const { read, view } = await loadedEditor(due);
+    expect(screen.getByRole("region", { name: "Schedule summary" }))
+      .toHaveTextContent("Waiting to run when the agent and conversation are available.");
+    view.unmount(); read.mockRestore();
+  });
+
   it("disables Save and Resume for an archived conversation", async () => {
     const paused = { ...schedule, state: "paused" as const, nextFireAt: null };
     const { read, view } = await loadedEditor(paused, { ...thread, archivedAt: "2027-01-02T00:00:00.000Z" });
@@ -235,20 +390,27 @@ describe("scheduled wake UI in Chromium", () => {
       await userEvent.tab({ shift: true });
       expect(dialog().contains(document.activeElement)).toBe(true);
     }
+    // What a pointer at the background button actually hits is the modal's
+    // backdrop; pressing there dismisses the editor and never reaches the button.
     const outside = screen.getByText("Outside");
     const box = outside.getBoundingClientRect();
-    const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+    const x = box.left + box.width / 2;
+    const y = box.top + box.height / 2;
+    const hit = document.elementFromPoint(x, y);
+    expect(hit).not.toBeNull();
+    expect(hit!.closest(".wake-schedule-backdrop")).not.toBeNull();
     expect(outside.contains(hit)).toBe(false);
-    expect(background).not.toHaveBeenCalled();
-    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await userEvent.click(hit!, { position: { x, y } });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(background).not.toHaveBeenCalled();
     await waitFor(() => expect(opener).toHaveFocus());
     view.unmount(); read.mockRestore();
   });
 
-  it.each([[320, 640], [360, 740], [390, 844], [844, 390]] as const)("fits once and weekly controls at %ix%i", async (width, height) => {
+  it.each([[320, 640], [360, 740], [390, 844], [844, 390]] as const)("keeps once and weekly controls (several AM/PM times, remove buttons, long zone) inside the sheet at %ix%i", async (width, height) => {
     await page.viewport(width, height);
     const { read, view } = await loadedEditor(null);
+    // Geometry only: native text rendering itself is checked in the WebKit and Chromium screenshots.
     const within = () => {
       const box = dialog().getBoundingClientRect();
       for (const control of dialog().querySelectorAll<HTMLElement>("input, textarea, button")) {
@@ -257,6 +419,11 @@ describe("scheduled wake UI in Chromium", () => {
         expect(rect.left).toBeGreaterThanOrEqual(box.left - 0.5);
         expect(rect.right).toBeLessThanOrEqual(box.right + 0.5);
       }
+      for (const input of dialog().querySelectorAll<HTMLInputElement>('input[type="date"], input[type="time"]')) {
+        const holder = input.parentElement!.getBoundingClientRect();
+        expect(input.getBoundingClientRect().right).toBeLessThanOrEqual(holder.right + 0.5);
+        expect(input.scrollWidth).toBeLessThanOrEqual(input.clientWidth + 1);
+      }
     };
     within();
     for (const input of [screen.getByLabelText("Date"), screen.getByLabelText("Time")]) {
@@ -264,9 +431,24 @@ describe("scheduled wake UI in Chromium", () => {
       expect((input as HTMLInputElement).value).not.toBe("");
     }
     await userEvent.click(screen.getByRole("radio", { name: "Weekly" }));
+    for (const value of ["07:30", "12:00", "18:15", "23:45"]) {
+      await userEvent.click(screen.getByRole("button", { name: "Add time" }));
+      fireEvent.change(screen.getByLabelText(`Time ${String(screen.getAllByLabelText(/^Time \d$/u).length)}`), { target: { value } });
+    }
+    expect(screen.getAllByRole("button", { name: /^Remove time \d$/u })).toHaveLength(5);
+    await userEvent.click(screen.getByRole("button", { name: /^Timezone/u }));
+    fireEvent.change(screen.getByLabelText("Timezone"), { target: { value: "America/Argentina/ComodRivadavia" } });
     within();
     for (const day of ["Monday", "Sunday"]) expect(screen.getByLabelText(day).getBoundingClientRect().width).toBeGreaterThanOrEqual(40);
-    expect(screen.getByLabelText("Time 1").getBoundingClientRect().width).toBeGreaterThan(70);
+    for (const index of [1, 2, 3, 4, 5]) {
+      const time = screen.getByLabelText(`Time ${String(index)}`);
+      const remove = screen.getByRole("button", { name: `Remove time ${String(index)}` });
+      expect(time.getBoundingClientRect().width).toBeGreaterThan(70);
+      expect(time.getBoundingClientRect().right).toBeLessThanOrEqual(remove.getBoundingClientRect().left + 0.5);
+    }
+    const zoneName = dialog().querySelector<HTMLElement>(".wake-timezone-name")!;
+    expect(zoneName).toHaveTextContent("America/Argentina/ComodRivadavia");
+    expect(zoneName.scrollWidth).toBeLessThanOrEqual(zoneName.clientWidth + 1);
     view.unmount(); read.mockRestore();
     await page.viewport(1440, 1000);
   });

@@ -8,12 +8,12 @@ import { WakeSummary } from "./wake/WakeSummary";
 import { WakeWhenFields } from "./wake/WakeWhenFields";
 import {
   MAX_MESSAGE_BYTES, MESSAGE_COUNTER_FROM, definitionFromDraft, describeDraft, describeWakeError, deviceTimeZone,
-  draftFromDefinition, hasIssues, isDraftDirty, newDraft, onceLooksPast, utf8Bytes, validateDraft, weekOrder,
+  draftFromDefinition, hasIssues, isDraftDirty, newDraft, onceHasElapsed, onceLooksPast, utf8Bytes, validateDraft, weekOrder,
   type WakeDraft,
 } from "./wake/wake-schedule-model";
 
 type Busy = "save" | "pause" | "resume" | "delete" | null;
-type Failure = { readonly message: string; readonly conflict: boolean; readonly reload?: boolean };
+type Failure = { readonly message: string; readonly conflict: boolean; readonly detail?: string; readonly retry?: boolean };
 
 /**
  * The conversation's wake-up schedule, as a modal sheet: a bottom sheet on
@@ -46,10 +46,18 @@ export function WakeScheduleEditor({ thread, onClose, returnFocusRef }: {
   const [reloadCount, setReloadCount] = useState(0);
   // A hairline under the fixed header once the body has scrolled beneath it.
   const [scrolled, setScrolled] = useState(false);
-  // Request ordering: a read only applies if it is the newest read and no
-  // mutation started after it; mutations are serialized by `busy`.
+  const [focusDeleteRow, setFocusDeleteRow] = useState(false);
+  // Lifetime and ordering. A mutation that settles after this editor closed
+  // must not touch a newer editor (closing it, or setting state). A read
+  // applies only if it is the newest read and no mutation was in flight or
+  // started or settled while it ran; an overlapped live read is re-run once
+  // the mutation has settled. Mutations are serialized.
+  const alive = useRef(true);
   const readSeq = useRef(0);
   const mutationSeq = useRef(0);
+  const inFlight = useRef(false);
+  const liveAfterMutation = useRef(false);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const latest = useRef({ draft, schedule, loaded });
   latest.current = { draft, schedule, loaded };
   const baseline = schedule?.definition ?? null;
@@ -63,12 +71,20 @@ export function WakeScheduleEditor({ thread, onClose, returnFocusRef }: {
     setChangedElsewhere(false);
   };
 
-  const read = async (mode: "initial" | "live" | "explicit") => {
+  const read = async (mode: "initial" | "live" | "explicit"): Promise<void> => {
     const seq = ++readSeq.current;
     const mutationAtStart = mutationSeq.current;
+    const overlapped = () => mutationAtStart !== mutationSeq.current || inFlight.current;
+    const superseded = () => !alive.current || seq !== readSeq.current;
+    const deferLive = () => {
+      if (mode !== "live") return;
+      if (inFlight.current) liveAfterMutation.current = true;
+      else void read("live");
+    };
     try {
       const { schedule: current } = await api.wakeSchedule(thread.id);
-      if (seq !== readSeq.current || mutationAtStart !== mutationSeq.current) return;
+      if (superseded()) return;
+      if (overlapped()) { deferLive(); return; }
       const state = latest.current;
       if (mode === "live" && state.loaded && state.schedule !== null && isDraftDirty(state.draft, state.schedule.definition)) {
         // Keep the operator's edits and their base revision; say so instead.
@@ -87,10 +103,12 @@ export function WakeScheduleEditor({ thread, onClose, returnFocusRef }: {
       setLoaded(true);
       setFailure(null);
     } catch (cause) {
-      if (seq !== readSeq.current || mutationAtStart !== mutationSeq.current) return;
+      if (superseded()) return;
+      if (overlapped()) { deferLive(); return; }
       const { message } = describeWakeError(cause);
+      // An explicit reload offers itself again; a failed initial or live read offers a retry.
       setFailure({ message: mode === "initial" ? `Couldn't load this schedule. ${message}` : `Couldn't load the latest version. ${message}`,
-        conflict: mode === "explicit", reload: mode === "initial" });
+        conflict: mode === "explicit", retry: mode !== "explicit" });
     }
   };
 
@@ -101,37 +119,66 @@ export function WakeScheduleEditor({ thread, onClose, returnFocusRef }: {
   }, [thread.id, liveRevision, reloadCount]);
 
   const mutate = async (action: Exclude<Busy, null>) => {
-    if (busy !== null) return;
+    if (inFlight.current) return;
+    if (action === "resume" && schedule?.definition.kind === "once"
+      && onceHasElapsed(schedule.definition.localAt, schedule.definition.timezone, new Date())) {
+      // Checked again at the moment of resuming; the server would reject it.
+      setFailure({ message: "This one-off's time has passed. Pick a future date and time, then save to schedule it again.", conflict: false });
+      return;
+    }
+    inFlight.current = true;
     mutationSeq.current += 1;
     setBusy(action); setFailure(null);
+    let closing = false;
     try {
       if (action === "delete" && schedule !== null) {
         await api.deleteWakeSchedule(thread.id, schedule.revision);
+        // Closing the editor never cancels a request already sent; it only
+        // stops a late answer from reaching whichever editor is open now.
+        if (!alive.current) return;
+        closing = true;
         onClose();
       } else if ((action === "pause" || action === "resume") && schedule !== null) {
         const result = await api.setWakeState(thread.id, schedule.revision, action === "pause" ? "paused" : "active");
-        setSchedule(result.schedule);
+        if (alive.current) setSchedule(result.schedule);
       } else if (action === "save") {
         await api.saveWakeSchedule(thread.id, definitionFromDraft(draft), schedule?.revision);
+        if (!alive.current) return;
+        closing = true;
         onClose();
       }
     } catch (cause) {
+      if (!alive.current) return;
       setFailure(describeWakeError(cause));
-      if (action === "delete") { setConfirmingDelete(false); deleteRowRef.current?.focus(); }
-    } finally { setBusy(null); }
+      if (action === "delete") { setConfirmingDelete(false); setFocusDeleteRow(true); }
+    } finally {
+      inFlight.current = false;
+      mutationSeq.current += 1;
+      if (alive.current && !closing) {
+        setBusy(null);
+        if (liveAfterMutation.current) { liveAfterMutation.current = false; void read("live"); }
+      }
+    }
   };
 
   const issues = validateDraft(draft);
   const now = new Date();
   // An unchanged saved one-off already explains itself in the summary.
   const pastHint = draft.kind === "once" && dirty && onceLooksPast(draft, now);
+  // Resume availability uses the plain wall clock, not the draft hint's grace.
   const expired = schedule?.definition.kind === "once" && schedule.state === "paused"
-    && onceLooksPast(draftFromDefinition(schedule.definition), now);
+    && onceHasElapsed(schedule.definition.localAt, schedule.definition.timezone, now);
   const canSave = loaded && !archived && busy === null && !hasIssues(issues) && dirty;
   const bytes = utf8Bytes(draft.message);
   const edit = (next: Partial<WakeDraft>) => setDraft((current) => ({ ...current, ...next }));
 
   useEffect(() => { if (confirmingDelete) keepRef.current?.focus(); }, [confirmingDelete]);
+  // After a failed delete, focus the row once it is enabled again.
+  useEffect(() => {
+    if (!focusDeleteRow || busy !== null) return;
+    deleteRowRef.current?.focus();
+    setFocusDeleteRow(false);
+  }, [focusDeleteRow, busy]);
 
   return <Dialog.Root open onOpenChange={(open) => { if (!open) onClose(); }}>
     <Dialog.Portal>
@@ -152,10 +199,10 @@ export function WakeScheduleEditor({ thread, onClose, returnFocusRef }: {
             <Icon name="alert" size={15} />
             <div className="wake-alert-copy">
               <p>{failure.message}</p>
-              {failure.conflict && <p className="wake-alert-detail">Load the latest version to continue. This replaces your unsaved changes.</p>}
+              {failure.conflict && <p className="wake-alert-detail">{failure.detail ?? "Load the latest version to continue. This replaces your unsaved changes."}</p>}
             </div>
-            {failure.conflict && <button type="button" className="wake-alert-action" onClick={() => void read("explicit")}>Load latest</button>}
-            {failure.reload === true && <button type="button" className="wake-alert-action" onClick={() => { setFailure(null); setReloadCount((count) => count + 1); }}>Try again</button>}
+            {failure.conflict && <button type="button" className="wake-alert-action" disabled={busy !== null} onClick={() => void read("explicit")}>Load latest</button>}
+            {failure.retry === true && <button type="button" className="wake-alert-action" disabled={busy !== null} onClick={() => { setFailure(null); setReloadCount((count) => count + 1); }}>Try again</button>}
           </div>}
           {changedElsewhere && failure === null && <div className="wake-alert is-notice" role="status">
             <Icon name="refresh" size={15} />
@@ -163,10 +210,10 @@ export function WakeScheduleEditor({ thread, onClose, returnFocusRef }: {
               <p>Changed elsewhere while you were editing.</p>
               <p className="wake-alert-detail">Load the latest version before saving. This replaces your unsaved changes.</p>
             </div>
-            <button type="button" className="wake-alert-action" onClick={() => void read("explicit")}>Load latest</button>
+            <button type="button" className="wake-alert-action" disabled={busy !== null} onClick={() => void read("explicit")}>Load latest</button>
           </div>}
           <WakeSummary schedule={schedule} sentence={describeDraft(draft, { order })} dirty={schedule !== null && dirty}
-            loading={loaded ? false : failure === null ? "loading" : "failed"} archived={archived} expired={expired} busy={busy === "pause" || busy === "resume" ? busy : null}
+            loading={loaded ? false : failure === null ? "loading" : "failed"} archived={archived} expired={expired} busy={busy}
             noteId={noteId} onToggle={(action) => void mutate(action)} />
           <fieldset className="wake-form" disabled={!loaded || busy !== null}>
             <legend className="sr-only">Schedule</legend>
