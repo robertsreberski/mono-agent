@@ -4,6 +4,7 @@ import { Fragment, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agent, project, thread } from "../../test/fixtures";
 import { SEARCH_HIGHLIGHT_CLOSE, SEARCH_HIGHLIGHT_OPEN } from "../../thread-search";
+import { discardSettingsDraft, setSettingsDraft } from "../../settings-drafts";
 import type { ThreadSearchHit, ThreadSummary } from "../../types";
 
 const storeMock = vi.hoisted(() => ({ current: null as Record<string, unknown> | null }));
@@ -117,6 +118,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  discardSettingsDraft("agent-one");
+  discardSettingsDraft("agent-two");
   vi.useRealTimers();
 });
 
@@ -159,6 +162,20 @@ describe("Dashboard header", () => {
     fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
     expect(onNavigate).toHaveBeenCalledTimes(1);
     window.removeEventListener("mono-agent:agent-settings", settings);
+  });
+
+  it("shows the gear's unsaved dot only for the selected agent (A9)", () => {
+    setSettingsDraft("agent-one", { model: "atlas/other", effort: "low" });
+    const view = render(<Dashboard settingsOpen />);
+    const gear = screen.getByRole("button", { name: "Agent settings" });
+    expect(gear).toHaveAttribute("aria-expanded", "true");
+    expect(gear.querySelector(".settings-dot")).not.toBeNull();
+    storeMock.current = { ...createStore(), selectedAgent: agent("agent-two"), selectedAgentId: "agent-two" };
+    view.rerender(<Dashboard settingsOpen />);
+    expect(gear.querySelector(".settings-dot")).toBeNull();
+    setSettingsDraft("agent-two", { model: "grove/fast", effort: "high" });
+    view.rerender(<Dashboard settingsOpen />);
+    expect(gear.querySelector(".settings-dot")).not.toBeNull();
   });
 
   it("has nothing to configure without a settled agent", () => {

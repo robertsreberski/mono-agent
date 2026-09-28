@@ -1,0 +1,25 @@
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import { Preview, waitForButton } from "./AgentSettingsStoryFixture";
+
+export default { title: "Dialogs & Settings/AgentSettingsScreen", component: Preview, tags: ["autodocs"], parameters: { layout: "fullscreen" } } satisfies Meta<typeof Preview>;
+type Story = StoryObj<typeof Preview>;
+const desktop = { args: { variant: "base" as const, section: "new-conversations" as const, layout: "split" as const } };
+const phone = { args: { variant: "base" as const, section: null, layout: "stacked" as const }, globals: { viewport: { value: "phone" } } };
+export const Desktop: Story = desktop;
+export const DesktopProvidersDense: Story = { args: { ...desktop.args, variant: "dense", section: "providers" } };
+export const DesktopAgent: Story = { args: { ...desktop.args, section: "agent" } };
+export const DesktopAgentConfirm: Story = { args: { ...desktop.args, variant: "confirm", section: "agent" }, play: async ({ canvasElement }) => { (await waitForButton(canvasElement, "Restart Atlas")).click(); } };
+export const DesktopUnsaved: Story = { args: { ...desktop.args, variant: "unsaved" } };
+export const DesktopOffline: Story = { args: { ...desktop.args, variant: "offline" } };
+export const Tablet901: Story = { ...desktop, globals: { viewport: { value: "tablet901" } } };
+export const Tablet1060: Story = { ...desktop, globals: { viewport: { value: "tablet1060" } } };
+export const Tablet1101: Story = { ...desktop, globals: { viewport: { value: "tablet1101" } } };
+export const PhoneIndex: Story = phone;
+export const PhoneNewConversationsUnsaved: Story = { args: { ...phone.args, variant: "unsaved", section: "new-conversations" } };
+export const PhoneProvidersDense: Story = { args: { ...phone.args, variant: "dense", section: "providers" } };
+export const PhoneProvidersStress: Story = { args: { ...phone.args, variant: "stress", section: "providers" } };
+export const PhoneAgent: Story = { args: { ...phone.args, section: "agent" } };
+export const PhoneAgentConfirm: Story = { args: { ...phone.args, variant: "confirm", section: "agent" }, play: async ({ canvasElement }) => { (await waitForButton(canvasElement, "Restart Atlas")).click(); } };
+export const PhoneAgentInProgress: Story = { args: { ...phone.args, variant: "progress", section: "agent" } };
+export const PhoneAgentBackOnline: Story = { args: { ...phone.args, variant: "success", section: "agent" }, play: async ({ canvasElement }) => { (await waitForButton(canvasElement, "Restart Atlas")).click(); (await waitForButton(canvasElement, "Confirm restart")).click(); } };
+export const PhoneOffline: Story = { args: { ...phone.args, variant: "offline" } };

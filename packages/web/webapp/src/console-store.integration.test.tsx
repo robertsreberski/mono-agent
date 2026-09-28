@@ -17,6 +17,8 @@ import {
   THREAD_PAGE_LIMIT,
 } from "./api";
 import { writeDataModeSetting } from "./data-mode";
+import { mobileHistoryEntry, ownedSettingsEntry, pushMobileHistoryEntry } from "./mobile-history";
+import { closeSettingsHistory } from "./settings-navigation";
 import {
   readComposerDraft,
   resetComposerDraft,
@@ -1328,6 +1330,42 @@ describe("ConsoleStoreProvider integration", () => {
 
     act(() => store.current.setNavigationDestination("chats"));
     expect(window.location.pathname).toBe("/");
+  });
+
+  it("uses the real agent-switch route writer instead of copying a settings marker (N18/N19)", async () => {
+    const store = await renderStore();
+    window.history.replaceState(null, "", "/agents/alpha/cron/fictional");
+    pushMobileHistoryEntry({ version: 1, surface: "settings", section: "providers", depth: 2 });
+    expect(mobileHistoryEntry(window.history.state)?.surface).toBe("settings");
+    act(() => store.current.selectAgent("beta"));
+    expect(window.location.pathname).toBe("/");
+    expect(mobileHistoryEntry(window.history.state)?.surface).toBe("conversation");
+    closeSettingsHistory(); // Current entry is NOT owned: close is state-only.
+    expect(window.location.pathname).toBe("/");
+    window.history.back();
+    await waitFor(() => expect(mobileHistoryEntry(window.history.state)?.surface).toBe("settings"));
+    expect(ownedSettingsEntry()?.section).toBe("providers");
+    window.history.forward();
+    await waitFor(() => expect(mobileHistoryEntry(window.history.state)?.surface).toBe("conversation"));
+  });
+
+  it("uses the real cron selection writer to leave a conversation marker (N20)", async () => {
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([
+      agent("alpha", { cron: { read: true, actions: false } }),
+    ], [cronThread], cronThread.id));
+    vi.mocked(api.thread).mockResolvedValue(detail(cronThread, "cron-thread"));
+    const store = await renderStore();
+    await waitFor(() => expect(store.current.selectedThreadId).toBe(cronThread.id));
+    window.history.replaceState(null, "", "/");
+    pushMobileHistoryEntry({ version: 1, surface: "settings", section: "agent", depth: 2 });
+    act(() => store.current.selectCronJob("alpha", "daily:report", cronThread.id));
+    expect(window.location.pathname).toBe("/agents/alpha/cron/daily%3Areport");
+    expect(mobileHistoryEntry(window.history.state)?.surface).toBe("conversation");
+    closeSettingsHistory();
+    expect(window.location.pathname).toBe("/agents/alpha/cron/daily%3Areport");
+    window.history.back();
+    await waitFor(() => expect(mobileHistoryEntry(window.history.state)?.surface).toBe("settings"));
+    expect(ownedSettingsEntry()?.section).toBe("agent");
   });
 
   it("reports a truncated cron overview honestly without selecting a bootstrap fallback", async () => {

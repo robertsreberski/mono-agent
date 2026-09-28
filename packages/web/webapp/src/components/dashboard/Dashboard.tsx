@@ -32,10 +32,12 @@ export function Dashboard({
   onNavigate,
   onCloseProject,
   highlightSelected = true,
+  settingsOpen = false,
 }: {
   readonly onNavigate?: () => void;
   readonly onCloseProject?: () => void;
   readonly highlightSelected?: boolean;
+  readonly settingsOpen?: boolean;
 }) {
   const {
     activeThreads,
@@ -148,7 +150,7 @@ export function Dashboard({
 
   return (
     <div className="dashboard">
-      <DashboardHeader onNavigate={onNavigate} />
+      <DashboardHeader onNavigate={onNavigate} settingsOpen={settingsOpen} />
       <AgentStrip runningCounts={runningCounts} />
       <DashboardSearch
         value={query}

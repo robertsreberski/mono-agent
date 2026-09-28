@@ -461,18 +461,17 @@ describe("the dashboard as the mobile entrance screen", () => {
     await capture("conversation-search-mobile");
   });
 
-  it("opens the settings dialog over this screen, and closing it stays here", async () => {
+  it("pushes the settings index over the Dashboard, and closing it stays here", async () => {
     openConsole();
     await loaded();
 
     await userEvent.click(within(panel()).getByRole("button", { name: "Agent settings" }));
-    const dialog = await screen.findByRole("dialog");
-    // The conversation was never pushed, so there is nothing behind the dialog
-    // for the operator to be dropped into.
+    await waitFor(() => expect(document.querySelector(".settings-screen[data-section='index']")).not.toBeNull());
     expect(chatRegion()).toHaveAttribute("inert");
+    expect(panel()).toHaveAttribute("inert");
 
     await userEvent.keyboard("{Escape}");
-    await waitFor(() => expect(dialog).not.toBeInTheDocument());
+    await waitFor(() => expect(document.querySelector(".settings-screen")).toBeNull());
     expect(chatRegion()).toHaveAttribute("inert");
     expect(panel()).not.toHaveAttribute("inert");
   });

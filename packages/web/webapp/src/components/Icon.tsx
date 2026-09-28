@@ -24,6 +24,7 @@ export type IconName =
   | "eye-off"
   | "file"
   | "folder"
+  | "key"
   | "menu"
   | "more"
   | "new"
@@ -45,6 +46,7 @@ const paths: Record<IconName, React.ReactNode> = {
   refresh: <><path d="M20 7v5h-5M4 17v-5h5" /><path d="M6 7a7 7 0 0 1 12-1l2 3M4 15l2 3a7 7 0 0 0 12-1" /></>,
   tag: <><path d="M3 3h7l11 11-7 7L3 10z" /><circle cx="7" cy="7" r="1" /></>,
   activity: <path d="M3 12h4l3-8 4 16 3-8h4" />,
+  key: <><circle cx="8" cy="14" r="4" /><path d="m11 11 9-9m-3 3 3 3m-6 0 3 3" /></>,
   agent: (
     <>
       <rect x="5" y="7" width="14" height="12" rx="4" />
