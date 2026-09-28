@@ -462,8 +462,10 @@ export function App() {
     closeSettingsHistory();
     const invoker = settingsInvokerRef.current;
     window.setTimeout(() => {
-      if (invoker?.isConnected) invoker.focus();
-      else dashboardRef.current?.focus();
+      // Palette commands run on the next frame, after their option has unmounted;
+      // the active element is then body, which is connected but not focusable.
+      if (invoker?.isConnected && invoker !== document.body && invoker !== document.documentElement) invoker.focus();
+      if (document.activeElement !== invoker || invoker === document.body) dashboardRef.current?.focus();
     }, 0);
   }, []);
   const showSettingsSection = useCallback((section: SettingsSection) => {
@@ -975,7 +977,7 @@ export function App() {
       <TagSettingsSheet sheet={tagSettings} onClose={closeTagSettings} dialogRef={tagSettingsRef} />
       <ProjectSettingsSheet sheet={projectSettings} onClose={closeProjectSettings} dialogRef={projectSettingsRef} />
       {(notice || actionError) && (
-        <div className="toast" role="alert">
+        <div className="toast" role={actionError ? "alert" : settingsOpen ? undefined : "status"}>
           <span>{notice ?? actionError}</span>
           <button
             type="button"

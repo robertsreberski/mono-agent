@@ -7,7 +7,7 @@ import { ModelSelector } from "../assistant-ui/ModelSelector";
 import { buildSelectorModels, effectiveModelForAgent, effortLevelsForAgentModel, findCatalogModel, providerOfModel } from "../model-catalog";
 import { settingsEffortName, settingsModelName } from "./settings-labels";
 
-export function NewConversationsSection({ agent, onNotice, footerNode }: { readonly agent: AgentSummary; readonly onNotice: (message: string) => void; readonly footerNode?: HTMLElement | null }) {
+export function NewConversationsSection({ agent, onNotice, onSaveError, footerNode }: { readonly agent: AgentSummary; readonly onNotice: (message: string) => void; readonly onSaveError?: (message: string) => void; readonly footerNode?: HTMLElement | null }) {
   const store = useConsoleStore();
   const draft = useSettingsDraft(agent.sourceId);
   const saved = { model: agent.runSettings.override?.model ?? "", effort: agent.runSettings.override?.effort ?? "" };
@@ -43,7 +43,7 @@ export function NewConversationsSection({ agent, onNotice, footerNode }: { reado
       clearSettingsDraftIfEqual(agent.sourceId, { model, effort });
       onNotice(`New conversations will start with ${startModel} · ${startEffort}.`);
       window.setTimeout(() => document.querySelector<HTMLElement>(".settings-screen .model-selector__trigger")?.focus(), 0);
-    } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
+    } catch (caught) { const detail = caught instanceof Error ? caught.message : String(caught); setError(detail); onSaveError?.(`Saving failed. ${detail}`); }
     finally { setSaving(false); }
   };
   const saveBar = <div className={`settings-savebar${error ? " is-error" : ""}`}><div className="settings-savebar-text">{error ? `Couldn't save: ${error}` : <><span className="settings-dot" /> Unsaved <b>{startModel} · {startEffort}</b></>}</div>

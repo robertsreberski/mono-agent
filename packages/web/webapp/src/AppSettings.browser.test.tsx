@@ -385,6 +385,32 @@ describe("settings screen navigation", () => {
     await waitFor(() => expect(position()).toBe(detail));
     expect(screen.getByRole("heading", { name: "Providers", level: 2 })).toBeVisible();
   });
+  it("restores focus to the Dashboard when a palette invoker unmounts (A18)", async () => {
+    await page.viewport(1200, 800);
+    render(<App />);
+    window.dispatchEvent(new Event("mono-agent:command"));
+    fireEvent.click(await screen.findByRole("option", { name: /Agent settings · Atlas/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Close agent settings" })).toBeVisible());
+    fireEvent.click(screen.getByRole("button", { name: "Close agent settings" }));
+    await waitFor(() => expect(document.activeElement).toBe(document.querySelector(".dashboard-panel")));
+  });
+  it("does not treat a swipe in the model picker as a settings-back gesture (A18)", async () => {
+    await page.viewport(390, 844);
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Agent settings gear" }));
+    fireEvent.click(screen.getByRole("button", { name: /New conversations/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Model and reasoning effort" }));
+    const picker = await waitFor(() => {
+      const element = document.querySelector('[data-slot="model-selector-content"]');
+      expect(element).not.toBeNull();
+      return element!;
+    });
+    const start = position();
+    fireEvent.touchStart(picker, { touches: [new Touch({ identifier: 1, target: picker, clientX: 20, clientY: 250 })] });
+    fireEvent.touchEnd(picker, { touches: [], changedTouches: [new Touch({ identifier: 1, target: picker, clientX: 210, clientY: 251 })] });
+    expect(position()).toBe(start);
+    expect(screen.getByRole("heading", { name: "New conversations", level: 2 })).toBeVisible();
+  });
   it("opens from the palette over a phone conversation and returns to it with Back (N8)", async () => {
     await page.viewport(390, 844);
     render(<App />);

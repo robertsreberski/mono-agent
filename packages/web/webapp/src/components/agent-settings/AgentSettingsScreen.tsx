@@ -9,7 +9,7 @@ import { relativeTime } from "../time";
 import { AgentSection } from "./AgentSection";
 import { NewConversationsSection } from "./NewConversationsSection";
 import { ProvidersSection } from "./ProvidersSection";
-import { providersSummary } from "./provider-auth-presentation";
+import { checkTerminal, providersSummary } from "./provider-auth-presentation";
 import { RestartOwner } from "./RestartOwner";
 import { settingsEffortName, settingsModelName } from "./settings-labels";
 import { useProviderAuth } from "./use-provider-auth";
@@ -68,6 +68,23 @@ function SettingsContent({ agent, section, layout, provider, restart, onSection,
   const titleRef = useRef<HTMLHeadingElement>(null);
   const [footerNode, setFooterNode] = useState<HTMLDivElement | null>(null);
   const previousSection = useRef<SettingsSection | null | undefined>(undefined);
+  const [announcement, setAnnouncement] = useState("");
+  const eventState = { usageRefreshing: provider.usageRefreshing, usageFeedback: provider.usageFeedback,
+    check: provider.check, session: provider.session, restartStage: restart.progressStage,
+    restartOutcome: restart.outcome, restartUnknown: restart.requestUnknown };
+  const previousEvents = useRef<typeof eventState | null>(null);
+  useEffect(() => {
+    const previous = previousEvents.current;
+    previousEvents.current = eventState;
+    if (previous === null) return; // Initial server state is not a user-triggered event.
+    if (eventState.restartOutcome && previous.restartOutcome !== eventState.restartOutcome) setAnnouncement(`Restart ${eventState.restartOutcome}.`);
+    else if (eventState.restartUnknown && previous.restartUnknown !== eventState.restartUnknown) setAnnouncement(eventState.restartUnknown);
+    else if (eventState.restartStage && previous.restartStage !== eventState.restartStage) setAnnouncement(`Restart: ${eventState.restartStage.replace("_", " ")}.`);
+    else if (eventState.check && (eventState.check.id !== previous.check?.id || eventState.check.state !== previous.check?.state)) setAnnouncement(checkTerminal(eventState.check.state) ? "Provider access checks finished." : "Provider access checks started.");
+    else if (eventState.session && (eventState.session.id !== previous.session?.id || eventState.session.state !== previous.session?.state)) setAnnouncement(`Sign-in ${eventState.session.state.replaceAll("_", " ")}.`);
+    else if (eventState.usageFeedback && eventState.usageFeedback !== previous.usageFeedback) setAnnouncement(`Usage: ${eventState.usageFeedback}`);
+    else if (eventState.usageRefreshing && !previous.usageRefreshing) setAnnouncement("Usage refresh started.");
+  }, [provider.usageRefreshing, provider.usageFeedback, provider.check, provider.session, restart.progressStage, restart.outcome, restart.requestUnknown]);
   useEffect(() => {
     if (previousSection.current === undefined) titleRef.current?.focus();
     else if (previousSection.current !== section) {
@@ -99,6 +116,7 @@ function SettingsContent({ agent, section, layout, provider, restart, onSection,
     </button>,
   )}</nav>;
   return <div className="settings-screen" data-modal-surface="settings" data-section={section ?? "index"}>
+    <div className="sr-only" role="status" aria-atomic="true">{announcement}</div>
     {layout === "stacked" && section !== null ? <header className="settings-header"><button type="button" className="project-back" onClick={onBack}><Icon name="chevron-left" size={16} /> {agent.label} settings</button></header>
       : layout === "stacked" ? <header className="settings-header settings-phone-index-header">
         <button type="button" className="project-back" aria-label="Close settings" onClick={onClose}><Icon name="chevron-left" size={18} /></button>
@@ -113,7 +131,7 @@ function SettingsContent({ agent, section, layout, provider, restart, onSection,
       <main className={layout === "split" ? "settings-content" : "settings-content settings-phone-content"}><div className="settings-pane">
         <div className="settings-section-head"><div><h2 className="settings-section-title" tabIndex={-1} ref={layout === "stacked" ? titleRef : undefined}>{active.label}</h2><p className="settings-section-summary">{active.description}</p></div></div>
         {agent.status === "offline" && <div className="settings-notice">{agent.label} is offline. Changes that need the agent are paused. Using the agent config still works.</div>}
-        {active.id === "new-conversations" && <NewConversationsSection agent={agent} onNotice={onNotice} {...(layout === "stacked" ? { footerNode } : {})} />}
+        {active.id === "new-conversations" && <NewConversationsSection agent={agent} onNotice={(message) => { setAnnouncement(message); onNotice(message); }} onSaveError={setAnnouncement} {...(layout === "stacked" ? { footerNode } : {})} />}
         {active.id === "providers" && <ProvidersSection agent={agent} controller={provider} compact={layout === "stacked"} />}
         {active.id === "agent" && <AgentSection agent={agent} restart={restart} runningCount={runningCount} />}
       </div></main>

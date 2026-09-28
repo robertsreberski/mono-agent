@@ -28,6 +28,8 @@ describe("agent settings screen", () => {
   it("has a single settings main and a navigation-only rail with three sections", async () => {
     render(<AgentSettingsScreen {...props} section="new-conversations" />);
     expect(screen.getAllByRole("main")).toHaveLength(1);
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    expect(document.querySelectorAll('.settings-screen [aria-live], .settings-screen [role="status"]')).toHaveLength(1);
     expect(screen.getByRole("navigation", { name: "Agent settings sections" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /Providers/ }));
     expect(props.onSection).toHaveBeenCalledWith("providers");
@@ -115,6 +117,7 @@ describe("agent settings screen", () => {
     const save = screen.getByRole("button", { name: "Save for new conversations" });
     fireEvent.click(save);
     expect(await screen.findByText(/Couldn't save: service unavailable/)).toBeTruthy();
+    expect(screen.getByRole("status")).toHaveTextContent("Saving failed. service unavailable");
     expect(getSettingsDraft("fictional")).toEqual({ model: "grove/fast", effort: "low" });
     fireEvent.click(save);
     await waitFor(() => expect(store.setAgentRunDefaults).toHaveBeenCalledTimes(2));

@@ -32,13 +32,13 @@ export function AgentSection({ agent, runningCount, restart }: { readonly agent:
     </label></div>
     <div className="dashboard-section-label">RESTART</div>
     <div className="settings-group">
-      {restart.readState === "loading" && <div className="settings-row" role="status">Checking restart status…</div>}
+      {restart.readState === "loading" && <div className="settings-row">Checking restart status…</div>}
       {restart.readState === "error" && <div className="settings-row"><span className="settings-row-copy"><b className="settings-row-title">Couldn't read restart status</b></span><button className="settings-button" type="button" onClick={restart.retry}>Retry</button></div>}
       {restart.readState === "ready" && <div className="settings-row">
         <span className="settings-row-copy"><b className="settings-row-title">{restart.confirming ? `Restart ${agent.label} now?` : inProgress ? `Restarting ${agent.label}` : successfulNow ? `${agent.label} is back online` : `Restart ${agent.label}`}</b>
           {restart.confirming ? <span className="settings-row-note">Restarting may interrupt active conversations, jobs and monitors.{runningCount !== undefined && runningCount > 0 && <> About {runningCount} running conversation{runningCount === 1 ? "" : "s"} will be interrupted (approximate).</>}</span> : successfulNow ? <span className="settings-row-note">Restarted just now.</span> : <span className="settings-row-note">Relaunches the agent process. Running conversations, jobs and monitors are interrupted.</span>}
           {inProgress && <ol className="settings-stepper" aria-label="Restart progress">{(["requesting", "restarting", "back_online"] as const).map((step) => <li key={step} aria-current={stage === step ? "step" : undefined} className={step === stage ? "" : "is-done"}><i />{step === "back_online" ? "Back online" : step === "requesting" ? "Requesting" : "Restarting"}</li>)}</ol>}
-          {restart.requestUnknown && <span className="settings-row-note is-warning" role="status">{restart.requestUnknown}</span>}
+          {restart.requestUnknown && <span className="settings-row-note is-warning">{restart.requestUnknown}</span>}
           {restart.outcome === "not_confirmed" && <span className="settings-row-note is-warning">Restart not confirmed — check the agent{restart.outcomeReason ? `. ${restart.outcomeReason}` : "."}</span>}
         </span>
         {!inProgress && <span className="settings-row-actions">{restart.confirming ? <><button type="button" className="settings-button" onClick={() => restart.setConfirming(false)}>Cancel</button><button type="button" className="settings-button is-danger" disabled={restart.requesting} onClick={() => void restart.submit()}>Confirm restart</button></> : <button className="settings-button" type="button" aria-label={`Restart ${agent.label}`} disabled={restart.disabled !== undefined} onClick={() => { restart.restartAgain(); }}>{"Restart…"}</button>}</span>}

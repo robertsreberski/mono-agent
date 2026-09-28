@@ -631,7 +631,8 @@ describe("SettingsHarness", () => {
     expect(restart).toBeEnabled();
     fireEvent.click(restart);
     expect(screen.getByLabelText("Old API key prompt")).toBeVisible();
-    expect(screen.getByText("Restarting authentication…")).toHaveAttribute("aria-live", "polite");
+    expect(screen.getByText("Restarting authentication…")).not.toHaveAttribute("aria-live");
+    expect(screen.getAllByRole("status")).toHaveLength(1);
 
     await act(async () => replacementRequest.resolve(replacement));
     expect(screen.getByText("Fresh authentication started")).toBeVisible();
@@ -927,7 +928,8 @@ describe("SettingsHarness", () => {
     await vi.waitFor(() => expect(apiMock.beginProviderAuthCheck).toHaveBeenCalledWith("alpha", expect.any(String)));
     expect(await screen.findByText("Check passed")).toBeVisible();
     expect(screen.getByText("Auth failed")).toBeVisible();
-    expect(screen.getByText("Checks complete: 1 of 2 passed.")).toHaveAttribute("aria-live", "polite");
+    expect(screen.getByText("Checks complete: 1 of 2 passed.")).not.toHaveAttribute("aria-live");
+    expect(screen.getByRole("status")).toHaveTextContent("Provider access checks finished.");
   });
 
   it("keeps the post-auth status when an older completed-check refresh resolves late", async () => {
@@ -1333,7 +1335,8 @@ describe("SettingsHarness", () => {
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noopener noreferrer");
     expect(screen.getByText(/copy the complete final URL/u)).toBeVisible();
-    expect(link.closest(".settings-provider-flow")).toHaveAttribute("aria-live", "polite");
+    expect(link.closest(".settings-provider-flow")).not.toHaveAttribute("aria-live");
+    expect(screen.getAllByRole("status")).toHaveLength(1);
     rendered.unmount();
     await vi.waitFor(() => expect(apiMock.cancelProviderAuth).toHaveBeenCalledWith(
       "alpha", "session-anthropic", expect.any(AbortSignal),

@@ -17,15 +17,15 @@ export function ProvidersSection({ agent, controller, compact = false }: { reado
       {agent.supportsProviderUsageRefresh === true && agent.supportsProviderUsage === true && <span className="settings-hit"><button className="settings-button is-compact" type="button" aria-label="Refresh usage" title="Refresh usage" aria-describedby="settings-provider-disclosure" aria-busy={state.usageRefreshing} disabled={state.usageRefreshing || state.busy || state.checkActive || state.session !== null && !terminal(state.session.state)} onClick={() => void state.refreshUsage()}><Icon name="refresh" size={12} className={state.usageRefreshing ? "provider-usage-refreshing" : undefined} />Refresh usage</button></span>}
       {agent.supportsProviderAuthChecks === true && <span className="settings-hit"><button className="settings-button is-compact" type="button" aria-label={state.checkActive ? "Cancel live provider checks" : "Check access"} title={actionDisclosure} aria-describedby="settings-provider-disclosure" disabled={state.busy || state.usageRefreshing || !state.checkActive && (state.status === null || state.session !== null && !terminal(state.session.state))} onClick={() => { void (state.checkActive ? state.cancelCheck() : state.startCheck()); }}>{state.checkActive ? "Cancel checks" : "Check access"}</button></span>}
     </div>{agent.supportsProviderAuthChecks === true && <span className="settings-disclosure">Check access may use quota</span>}<span className="sr-only" id="settings-provider-disclosure">{actionDisclosure}</span></div>
-    {state.usageFeedback && <p role="status">{state.usageFeedback}</p>}
+    {state.usageFeedback && <p>{state.usageFeedback}</p>}
     {state.status === null && agent.supportsProviderAuth === true && state.authError === null && <p>Loading provider status…</p>}
     <div className="settings-group">
       {agent.supportsProviderAuth === true && state.status?.providers.map((provider) => <ProviderRow key={provider.providerId} agent={agent} provider={provider} state={state} compact={compact} />)}
       {agent.supportsProviderAuth !== true && !state.usage?.providers.length && <p className="settings-row-note">No subscription usage available.</p>}
       {agent.supportsProviderAuth !== true && state.usage?.providers.map((usage) => <article className="settings-provider" key={usage.providerId}><div className="settings-provider-head"><b className="settings-provider-name">{usage.label}</b>{usage.plan && <span className="provider-usage-plan">{usage.plan}</span>}</div>{usage.stale && <span className="settings-freshness is-stale" title={usage.fetchedAt}>Last known · {relativeTime(usage.fetchedAt)} ago</span>}<ProviderUsageMeters usage={usage} density={compact ? "compact" : "default"} /></article>)}
     </div>
-    {state.restarting && <p aria-live="polite">Restarting authentication…</p>}
-    {state.check && <p className="provider-auth-check-summary" aria-live="polite">{providerAuthCheckSummary(state.check)}</p>}
+    {state.restarting && <p>Restarting authentication…</p>}
+    {state.check && <p className="provider-auth-check-summary">{providerAuthCheckSummary(state.check)}</p>}
     {state.authError && <p className="settings-row-note is-danger" role="alert">{state.authError}</p>}
   </>;
 }
@@ -54,7 +54,7 @@ function ProviderRow({ agent, provider, state, compact }: { readonly agent: Agen
 function ProviderAuthFlow({ provider, state }: { readonly provider: ProviderAuthProviderStatus; readonly state: State }) {
   const session = state.sessionProvider?.providerId === provider.providerId ? state.session : null;
   const methodProvider = state.methodProvider?.providerId === provider.providerId ? state.methodProvider : null;
-  return <div className="settings-provider-flow" aria-live="polite">
+  return <div className="settings-provider-flow">
     {methodProvider !== null && methodProvider.methods.length > 1 && !state.checkActive && <div className="settings-provider-flow-row">{methodProvider.methods.map((method) => <button key={`${method.authType}:${method.strategy}`} type="button" className="settings-button" disabled={state.busy} onClick={() => void state.start(methodProvider, method)}>{method.label}</button>)}</div>}
     {session?.authUrl && <><p>{session.authUrl.instructions}</p><a href={session.authUrl.url} target="_blank" rel="noopener noreferrer">Open authentication page</a></>}
     {session?.deviceCode && <div className="provider-device-code-row"><a href={session.deviceCode.verificationUri} target="_blank" rel="noopener noreferrer">Open device page</a><code className="provider-device-code">{session.deviceCode.userCode}</code></div>}
