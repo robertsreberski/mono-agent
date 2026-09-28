@@ -84,7 +84,7 @@ describe("scheduled wake UI in Chromium", () => {
     await waitFor(() => expect(screen.getByLabelText("Message")).toBeEnabled());
     const summary = screen.getByRole("region", { name: "Schedule summary" });
     expect(summary).toHaveTextContent("Every Mon and Wed at");
-    const inZone = new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit", timeZone: "America/Chicago" }).format(new Date(schedule.nextFireAt));
+    const inZone = new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "America/Chicago" }).format(new Date(schedule.nextFireAt));
     expect(summary).toHaveTextContent(`Next: ${inZone}`);
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
     view.unmount(); read.mockRestore();

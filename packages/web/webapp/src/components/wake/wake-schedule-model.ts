@@ -183,7 +183,7 @@ const list = (items: readonly string[]): string => items.length <= 1
 export function formatWallTime(time: string, locale?: string): string {
   const match = TIME.exec(time);
   if (!match) return time;
-  return new Intl.DateTimeFormat(locale, { hour: "numeric", minute: "2-digit", timeZone: "UTC" })
+  return new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit", timeZone: "UTC" })
     .format(Date.UTC(2000, 0, 1, Number(match[1]), Number(match[2])));
 }
 
@@ -221,7 +221,7 @@ export function describeDraft(draft: WakeDraft, options: { locale?: string; orde
 /** A server instant, spelled out unambiguously; `timeZone` omitted means this device. */
 export function formatInstant(iso: string, timeZone?: string, locale?: string): string {
   return new Intl.DateTimeFormat(locale, {
-    weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit",
+    weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
     ...(timeZone === undefined ? {} : { timeZone }),
   }).format(new Date(iso));
 }

@@ -10,6 +10,13 @@
   conversation markers for the transcript and the next turn. Keep automatic
   compaction dividers between the activities on either side of the event.
 
+- Redesign the web wake-up schedule editor as a focus-contained sheet with a
+  plain-language summary, the saved next wake-up in the schedule's timezone
+  (plus your own when it differs), weekday chips, distinct time pills,
+  iOS-safe date and time fields, a UTF-8 message counter, Load latest after a
+  conflicting change and an inline delete confirmation. Fix next wake-up times
+  that were labelled with the schedule's timezone but shown in the device's.
+
 - Fix the web Context usage phone sheet's dark overlay and show manual and
   automatic compaction outcomes as visible conversation dividers. Keep a running
   manual compaction visible after closing the sheet, switching chats or reloading,
