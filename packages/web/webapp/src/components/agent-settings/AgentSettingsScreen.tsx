@@ -99,11 +99,15 @@ function SettingsContent({ agent, section, layout, provider, restart, onSection,
     </button>,
   )}</nav>;
   return <div className="settings-screen" data-modal-surface="settings" data-section={section ?? "index"}>
-    {layout === "stacked" && section !== null ? <header className="settings-header"><button type="button" className="project-back" onClick={onBack}><Icon name="chevron-left" size={16} /> {agent.label} settings</button></header> : <header className="settings-header">
-      {layout === "stacked" && <button type="button" className="project-back" aria-label="Close settings" onClick={onClose}><Icon name="chevron-left" size={18} /></button>}
-      <div className="settings-identity"><span className="settings-agent-tile" aria-hidden="true">{agent.label.slice(0, 2).toUpperCase()}</span><div className="settings-title-block"><span className="eyebrow">Agent settings</span><div className="settings-title-row"><h1 className="settings-agent-name" ref={titleRef} tabIndex={-1}>{agent.label}</h1><span className={`chat-status is-${agent.status === "online" ? "ready" : agent.status}`}><i aria-hidden="true" />{agent.status}</span></div></div></div>
-      {layout === "split" && <>{facts}<span className="settings-header-actions"><button type="button" className="icon-button" aria-label="Close agent settings" onClick={onClose}><Icon name="close" size={16} /></button></span></>}
-    </header>}
+    {layout === "stacked" && section !== null ? <header className="settings-header"><button type="button" className="project-back" onClick={onBack}><Icon name="chevron-left" size={16} /> {agent.label} settings</button></header>
+      : layout === "stacked" ? <header className="settings-header settings-phone-index-header">
+        <button type="button" className="project-back" aria-label="Close settings" onClick={onClose}><Icon name="chevron-left" size={18} /></button>
+        <div className="settings-phone-index-title"><span className="eyebrow"><Icon name="settings" size={12} /> Agent settings</span><h1 className="settings-agent-name" ref={titleRef} tabIndex={-1}>{agent.label}</h1></div>
+      </header>
+      : <header className="settings-header">
+        <div className="settings-identity"><span className="settings-agent-tile" aria-hidden="true">{agent.label.slice(0, 2).toUpperCase()}</span><div className="settings-title-block"><span className="eyebrow">Agent settings</span><div className="settings-title-row"><h1 className="settings-agent-name" ref={titleRef} tabIndex={-1}>{agent.label}</h1><span className={`chat-status is-${agent.status === "online" ? "ready" : agent.status}`}><i aria-hidden="true" />{agent.status}</span></div></div></div>
+        {facts}<span className="settings-header-actions"><button type="button" className="icon-button" aria-label="Close agent settings" onClick={onClose}><Icon name="close" size={16} /></button></span>
+      </header>}
     {layout === "stacked" && section === null ? <main className="settings-scroll">{facts}{nav}</main> : <div className={layout === "split" ? "settings-layout" : "settings-scroll"}>
       {layout === "split" && nav}
       <main className={layout === "split" ? "settings-content" : "settings-content settings-phone-content"}><div className="settings-pane">

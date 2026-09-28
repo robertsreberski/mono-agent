@@ -74,5 +74,21 @@ describe("settings provider density", () => {
       }
     } finally { discardSettingsDraft("atlas"); }
   });
+  it("stacks phone Agent fact labels above left-aligned values without changing desktop rows", async () => {
+    await page.viewport(touch ? 360 : 1200, 780);
+    store.selectedAgent = agent("atlas", { label: "Atlas", restart: { supported: true } });
+    render(<AgentSettingsScreen section="agent" layout={touch ? "stacked" : "split"} onSection={() => undefined} onBack={() => undefined} onClose={() => undefined} onNotice={() => undefined} />);
+    await screen.findByText("No recent restart");
+    const rows = [...document.querySelectorAll(".settings-agent-fact-row")];
+    expect(rows).toHaveLength(3);
+    for (const row of rows) {
+      const label = row.querySelector(".settings-row-title")!.getBoundingClientRect();
+      const value = row.querySelector(".settings-row-value")!.getBoundingClientRect();
+      if (touch) {
+        expect(label.bottom).toBeLessThanOrEqual(value.top);
+        expect(Math.abs(label.left - value.left)).toBeLessThanOrEqual(1);
+      } else expect(Math.abs((label.top + label.bottom) / 2 - (value.top + value.bottom) / 2)).toBeLessThanOrEqual(2);
+    }
+  });
 
 });

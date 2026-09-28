@@ -91,6 +91,28 @@ beforeEach(() => {
   latestRestart.mockClear();
 });
 describe("settings screen navigation", () => {
+  it("covers the entire 360px viewport after the entrance animation and keeps the shell inert", async () => {
+    await page.viewport(360, 780);
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Agent settings gear" }));
+    const surface = document.querySelector<HTMLElement>(".settings-region")!;
+    await waitFor(() => expect(surface.getBoundingClientRect().left).toBeCloseTo(0, 0));
+    expect(surface.getBoundingClientRect().width).toBe(360);
+    expect(surface.getBoundingClientRect().right).toBe(360);
+    expect(getComputedStyle(surface).position).toBe("fixed");
+    expect(document.querySelector(".dashboard-panel")!.hasAttribute("inert")).toBe(true);
+    expect(document.querySelector(".chat-region")!.hasAttribute("inert")).toBe(true);
+    expect(surface.contains(document.elementFromPoint(8, 400))).toBe(true);
+    const back = screen.getByRole("button", { name: "Close settings" }).getBoundingClientRect();
+    const eyebrow = document.querySelector(".settings-phone-index-title .eyebrow")!.getBoundingClientRect();
+    const title = screen.getByRole("heading", { name: "Atlas", level: 1 }).getBoundingClientRect();
+    const facts = document.querySelector(".settings-facts-card")!.getBoundingClientRect();
+    expect(back.bottom).toBeLessThan(eyebrow.top);
+    expect(eyebrow.bottom).toBeLessThanOrEqual(title.top);
+    expect(title.bottom).toBeLessThan(facts.top);
+    expect(title.left).toBeLessThan(30);
+    expect(document.querySelector(".settings-phone-index-header .settings-agent-tile")).toBeNull();
+  });
   it("opens on desktop without writing history, closes on Escape and gates read marking", async () => {
     await page.viewport(1200, 800);
     const start = position();

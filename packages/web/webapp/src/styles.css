@@ -2364,12 +2364,22 @@ textarea.wake-text { min-height: calc(3lh + 24px); max-height: calc(12lh + 24px)
   .settings-region { grid-area: auto; position: fixed; inset: 0; width: 100%; height: 100dvh; z-index: 45; }
   .settings-screen { --gutter-left: max(17px, env(safe-area-inset-left)); --gutter-right: max(17px, env(safe-area-inset-right)); }
   .settings-header { min-height: 58px; padding-block: max(7px, calc(var(--status-bar-inset) + var(--top-edge-clearance))) 7px; border-bottom: 0; }
+  .settings-phone-index-header { min-height: 0; align-items: flex-start; flex-direction: column; gap: 13px; padding-bottom: 0; }
+  .settings-phone-index-header .project-back { flex: none; width: 44px; height: 44px; margin-left: 0; padding-left: 10px; }
+  .settings-phone-index-title { display: flex; flex-direction: column; gap: 3px; }
+  .settings-phone-index-title .eyebrow { display: flex; align-items: center; gap: 5px; margin: 0; }
+  .settings-phone-index-title .settings-agent-name { font-size: 21px; line-height: 1.2; }
   .settings-pane { max-width: none; gap: 16px; }
   .settings-section-title { font-size: 18px; }
   .settings-section-summary { font-size: 12px; }
   .settings-section-head { flex-direction: column; gap: 10px; }
   .settings-section-actions { align-items: flex-start; }
   .settings-row-title { font-size: 13px; }
+  .settings-agent-fact-row { align-items: flex-start; flex-direction: column; gap: 3px; }
+  .settings-agent-fact-row .settings-row-copy { flex: none; }
+  .settings-agent-fact-row .settings-row-title { color: var(--text-muted); font-size: 10.5px; font-weight: 600; }
+  .settings-agent-fact-row .settings-row-value { text-align: left; font-size: 12px; font-weight: 600; }
+  .settings-agent-fact-row code.settings-row-value { font-size: 10px; }
   .settings-row-note, .settings-provider-empty, .settings-field-note { font-size: 11.5px; }
   .settings-provider-name { font-size: 13px; }
   /* Phone head: name + action on one line, facts underneath. */
