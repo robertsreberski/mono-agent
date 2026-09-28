@@ -749,3 +749,28 @@ describe("self-hosted Bot API server config", () => {
     expect(redacted.attachments).toEqual({ maxBytes: 1_048_576 });
   });
 });
+
+describe("forum topics as projects config", () => {
+  const base = { enabled: true, botToken: "123456:json-token", allowedChatIds: ["-1001"] };
+  const load = (telegram: Record<string, unknown>) =>
+    loadTelegramAdapterConfig({ env: {}, json: { telegram: { ...base, ...telegram } } });
+
+  it("leaves the feature absent for existing configs", async () => {
+    const config = await load({});
+    expect(config).not.toHaveProperty("projects");
+    expect(redactTelegramAdapterConfig(config)).not.toHaveProperty("projects");
+  });
+
+  it("reads an explicit opt-in and an explicit opt-out", async () => {
+    await expect(load({ projects: { enabled: true } })).resolves.toMatchObject({ projects: { enabled: true } });
+    await expect(load({ projects: { enabled: false } })).resolves.toMatchObject({ projects: { enabled: false } });
+    await expect(load({ projects: {} })).resolves.toMatchObject({ projects: { enabled: false } });
+    expect(redactTelegramAdapterConfig(await load({ projects: { enabled: true } }))).toMatchObject({ projects: { enabled: true } });
+  });
+
+  it("rejects wrong types and unknown fields", async () => {
+    await expect(load({ projects: true })).rejects.toThrow(/telegram\.projects/u);
+    await expect(load({ projects: { enabled: "yes" } })).rejects.toThrow(/telegram\.projects\.enabled/u);
+    await expect(load({ projects: { enabled: true, createTopics: true } })).rejects.toThrow(/unknown fields/u);
+  });
+});
