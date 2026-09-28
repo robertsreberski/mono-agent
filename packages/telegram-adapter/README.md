@@ -74,7 +74,8 @@ explicit rename wins over the original name that every later message quotes
 from the topic root (`mergeTelegramTopicName`). A host can persist what the bot
 learns: `onChatObserved` receives a `TelegramChatObservation` for every message
 from an allowlisted chat (after the allowlist gate, before trigger filtering;
-topic ids are reported even without a visible name), and `knownTopicNames`
+topic ids are reported even without a visible name; the hook is never awaited
+and a thrown error or rejected promise is logged and ignored), and `knownTopicNames`
 restores persisted names at startup. The package itself stores nothing;
 agent-app's opt-in `telegram.topicDirectory` and `telegram.schedules` config
 blocks are parsed here and implemented by the host.
@@ -84,8 +85,9 @@ turn as `precedingMessages`. Proactive `notify`,
 `presentAsk`, `postStatus`, and `updateProcessJob` accept either a bare chat id
 (the main conversation) or `{ chatId, messageThreadId }`. `notify` also takes
 `finalAnswerOnly` (no live stream; an empty or `NOTHING_TO_REPORT` answer posts
-nothing), host-owned `requestMetadata`, and an `abortSignal` for host
-cancellation.
+nothing and returns `code: "nothing_to_report"`), host-owned `requestMetadata`,
+and an `abortSignal` for host cancellation that is unlinked when the
+notification settles.
 
 ### Programmatic use
 

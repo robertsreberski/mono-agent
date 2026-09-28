@@ -73,8 +73,11 @@ export interface TelegramAdapterStartOptions {
   readonly startNewSession?: (conversationId: string) => Promise<void>;
   /** Topic names persisted by the host, restored before polling starts. */
   readonly knownTopicNames?: readonly TelegramKnownTopicName[];
-  /** Observes every allowlisted message (after the allowlist gate, before trigger filtering). */
-  readonly onChatObserved?: (observation: TelegramChatObservation) => void;
+  /**
+   * Observes every allowlisted message (after the allowlist gate, before
+   * trigger filtering). Never awaited; throws and rejections are logged.
+   */
+  readonly onChatObserved?: (observation: TelegramChatObservation) => void | Promise<void>;
   /** Base URL of a self-hosted Bot API server (API calls + file downloads). Omit for api.telegram.org. */
   readonly apiRoot?: string;
   /** Delete any configured webhook before polling. Defaults to true. */

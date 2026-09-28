@@ -349,9 +349,14 @@ function mergeName(
 
 // --- Name resolution (pure) -------------------------------------------------
 
-/** Exact-match key: Unicode NFC, trimmed, collapsed whitespace, case-insensitive. */
+/**
+ * Exact-match key, derived from the same sanitized label `TelegramListTopics`
+ * shows (NFC, control/format characters removed, collapsed whitespace,
+ * bounded), then case-folded. A name the model copies from the listing always
+ * resolves; raw names that sanitize to the same label are ambiguous.
+ */
 export function normalizeTopicName(name: string): string {
-  return name.normalize("NFC").replace(/\s+/gu, " ").trim().toLowerCase();
+  return sanitizeTelegramLabel(name).toLowerCase();
 }
 
 /**

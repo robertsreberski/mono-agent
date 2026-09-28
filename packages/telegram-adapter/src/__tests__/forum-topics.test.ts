@@ -718,7 +718,9 @@ describe("forum topic discovery", () => {
     const { bot } = harness({
       groupMode: "mention",
       responder: recordingResponder(requests),
-      onChatObserved: (observation) => observations.push(observation),
+      onChatObserved: (observation) => {
+        observations.push(observation);
+      },
     });
 
     // Unaddressed in mention mode: no turn, but the topic is still learned.
@@ -744,7 +746,9 @@ describe("forum topic discovery", () => {
     const observations: TelegramChatObservation[] = [];
     const { bot } = harness({
       responder: recordingResponder([]),
-      onChatObserved: (observation) => observations.push(observation),
+      onChatObserved: (observation) => {
+        observations.push(observation);
+      },
     });
 
     await bot.handleUpdate(topicMessage("hello", { chat: { id: -2002, type: "supergroup", title: "Other", is_forum: true } }));
@@ -768,6 +772,25 @@ describe("forum topic discovery", () => {
     await bot.handleUpdate(topicMessage("hi", { topicName: "Budapest" }));
 
     expect(requests[0]?.surface?.name).toBe("Trips › Flights");
+  });
+
+  it("logs an async observation hook rejection instead of leaking it", async () => {
+    const requests: AgentRequest[] = [];
+    const warn = vi.fn();
+    const { bot } = harness({
+      groupMode: "any",
+      responder: recordingResponder(requests),
+      logger: { warn },
+      onChatObserved: async () => {
+        throw new Error("disk full");
+      },
+    });
+
+    await bot.handleUpdate(topicMessage("still answered"));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(requests).toHaveLength(1);
+    expect(warn).toHaveBeenCalledWith("Telegram chat observation hook failed.", { error: "disk full" });
   });
 
   it("keeps an observation hook failure from blocking the turn", async () => {

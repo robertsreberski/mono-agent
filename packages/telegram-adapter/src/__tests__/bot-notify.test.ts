@@ -622,3 +622,40 @@ describe("createTelegramBot notify final-answer-only turns", () => {
     expect(calls.filter((call) => call.method === "sendMessage")).toHaveLength(0);
   });
 });
+
+describe("createTelegramBot notify round-1 regressions", () => {
+  it("classifies an empty final-answer-only turn as nothing_to_report and keeps the old outcome otherwise", async () => {
+    const responder: AgentResponder = { async respond() { return { text: "   " }; } };
+    const { controller, calls } = buildNotifiableBot(responder);
+
+    await expect(controller.notify(42, "Check fares.", { finalAnswerOnly: true })).resolves.toEqual({
+      delivered: false,
+      code: "nothing_to_report",
+      reason: "agent produced no answer",
+    });
+    await expect(controller.notify(42, "Check fares.")).resolves.toEqual({
+      delivered: false,
+      reason: "agent produced no answer",
+    });
+    expect(calls.filter((call) => call.method === "sendMessage")).toHaveLength(0);
+  });
+
+  it("unlinks a reused host abort signal after every notification settles", async () => {
+    const responder: AgentResponder = { async respond() { return { text: "done" }; } };
+    const { controller } = buildNotifiableBot(responder);
+    const host = new AbortController();
+    const added = vi.spyOn(host.signal, "addEventListener");
+    const removed = vi.spyOn(host.signal, "removeEventListener");
+
+    for (let index = 0; index < 3; index += 1) {
+      await expect(controller.notify(42, "Check fares.", { finalAnswerOnly: true, abortSignal: host.signal }))
+        .resolves.toMatchObject({ delivered: true });
+    }
+
+    const abortListeners = (spy: typeof added) => spy.mock.calls.filter(([type]) => type === "abort").map(([, listener]) => listener);
+    expect(abortListeners(added)).toHaveLength(3);
+    expect(abortListeners(removed)).toEqual(abortListeners(added));
+    // A late abort of the long-lived signal has nothing left to cancel.
+    expect(() => host.abort()).not.toThrow();
+  });
+});

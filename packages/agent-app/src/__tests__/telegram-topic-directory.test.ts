@@ -167,3 +167,35 @@ describe("topic name resolution", () => {
     expect(() => telegramBotIdFromToken("test-token")).toThrow();
   });
 });
+
+describe("listed names resolve", () => {
+  let dir: string;
+  let store: TelegramTopicDirectoryStore;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "tg-topics-list-resolve-"));
+    store = await openTelegramTopicDirectory({ cwd: dir, botId: "111" });
+  });
+  afterEach(async () => {
+    store.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("resolves every name exactly as TelegramListTopics shows it", () => {
+    store.observe(named(77, "Fli‮ghts​", "created", 77));
+    store.observe(named(78, "Hotels\u0007  in\tMay", "created", 78));
+    const snapshot = store.chatSnapshot(String(CHAT));
+    const listed = (telegramTopicListing(snapshot).topics as Array<{ name: string }>).map((topic) => topic.name);
+
+    expect(listed.sort()).toEqual(["Fli ghts", "Hotels in May"]);
+    for (const name of listed) {
+      expect(resolveTopicByName(snapshot, name).kind, name).toBe("found");
+    }
+  });
+
+  it("treats raw names that sanitize to the same label as ambiguous", () => {
+    store.observe(named(77, "A\u0000B", "created", 77));
+    store.observe(named(78, "A B", "created", 78));
+    expect(resolveTopicByName(store.chatSnapshot(String(CHAT)), "A B")).toEqual({ kind: "ambiguous", count: 2 });
+  });
+});

@@ -239,7 +239,11 @@ export interface TelegramScheduleStore {
   }): void;
   /** Adjust the failure streak; pauses the schedule with `pauseReason` when set. */
   recordDeliveryStreak(scheduleId: string, revision: number, failed: boolean, pauseReason?: string): void;
-  /** Mark runs left `running` by a previous process as interrupted with unknown delivery. */
+  /**
+   * Startup reconciliation: mark runs left `running` by a previous process as
+   * interrupted with unknown delivery, then drop run rows whose schedule no
+   * longer exists and any run past the retention window.
+   */
   reconcileInterrupted(): number;
   close(): void;
 }
@@ -516,6 +520,13 @@ function createStoreOnHandle(state: OwnedStateHandle, now: () => Date): Telegram
           finished_at = ?, detail = 'The agent stopped while this run was in flight; it is not replayed.'
         WHERE execution = 'running'
       `).run(now().toISOString());
+      // A schedule deleted while its run was in flight leaves an orphan that no
+      // per-schedule prune would ever reach again; no run is live at startup.
+      database.prepare(
+        "DELETE FROM runs WHERE NOT EXISTS (SELECT 1 FROM schedules WHERE schedules.id = runs.schedule_id)",
+      ).run();
+      database.prepare("DELETE FROM runs WHERE claimed_at < ?")
+        .run(new Date(now().getTime() - RUN_RETENTION_MS).toISOString());
       return Number(result.changes);
     },
     close() {

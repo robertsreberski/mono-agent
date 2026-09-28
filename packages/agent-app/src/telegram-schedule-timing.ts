@@ -21,7 +21,38 @@ export class TelegramScheduleTimingError extends Error {
 /** A one-off must be at least this far ahead when created or updated. */
 export const TELEGRAM_SCHEDULE_ONCE_MIN_LEAD_MS = 60_000;
 const RFC3339_WITH_OFFSET =
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})$/u;
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(\.\d{1,9})?)?(Z|([+-])(\d{2}):(\d{2}))$/u;
+
+/**
+ * Strictly parse an RFC 3339 timestamp with an explicit offset. `Date` would
+ * silently roll calendar overflow forward (Feb 30 becomes Mar 2), so every
+ * component is range-checked against the calendar before conversion.
+ */
+function parseStrictRfc3339(raw: string): Date | undefined {
+  const match = RFC3339_WITH_OFFSET.exec(raw);
+  if (match === null) return undefined;
+  const [, year, month, day, hour, minute, second = "0", fraction = "", zone, sign, offsetHour, offsetMinute] = match;
+  const y = Number(year);
+  const mo = Number(month);
+  const d = Number(day);
+  const h = Number(hour);
+  const mi = Number(minute);
+  const s = Number(second);
+  if (mo < 1 || mo > 12 || d < 1 || d > daysInMonth(y, mo) || h > 23 || mi > 59 || s > 59) return undefined;
+  let offsetMinutes = 0;
+  if (zone !== "Z") {
+    const oh = Number(offsetHour);
+    const om = Number(offsetMinute);
+    if (oh > 23 || om > 59) return undefined;
+    offsetMinutes = (sign === "-" ? -1 : 1) * (oh * 60 + om);
+  }
+  const millis = fraction.length === 0 ? 0 : Math.floor(Number(`0${fraction}`) * 1_000);
+  return new Date(Date.UTC(y, mo - 1, d, h, mi, s, millis) - offsetMinutes * 60_000);
+}
+
+function daysInMonth(year: number, month: number): number {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
 
 /**
  * Validate a model-supplied timing and return its normalized form. Throws
@@ -38,9 +69,9 @@ export function validateTelegramScheduleTiming(
         "schedule.at must be an RFC 3339 timestamp with an explicit offset, e.g. 2026-10-01T08:00:00+02:00.",
       );
     }
-    const at = new Date(raw);
-    if (Number.isNaN(at.getTime())) {
-      throw new TelegramScheduleTimingError("schedule.at is not a valid date.");
+    const at = parseStrictRfc3339(raw);
+    if (at === undefined || Number.isNaN(at.getTime())) {
+      throw new TelegramScheduleTimingError("schedule.at is not a real calendar date and time.");
     }
     if (at.getTime() - options.now.getTime() < TELEGRAM_SCHEDULE_ONCE_MIN_LEAD_MS) {
       throw new TelegramScheduleTimingError("schedule.at must be at least one minute in the future.");

@@ -65,3 +65,29 @@ describe("Telegram schedule timing", () => {
     expect(nextTelegramScheduleOccurrence({ kind: "once", at: "2026-09-28T09:00:00.000Z" }, NOW)).toBeUndefined();
   });
 });
+
+describe("strict one-off timestamps", () => {
+  const once = (at: string) => validateTelegramScheduleTiming({ kind: "once", at }, options);
+
+  it("rejects calendar overflow instead of rolling it forward", () => {
+    for (const at of [
+      "2026-02-30T10:00:00Z",
+      "2026-09-31T10:00:00+02:00",
+      "2027-02-29T10:00:00Z",
+      "2026-13-01T10:00:00Z",
+      "2026-10-01T24:00:00Z",
+      "2026-10-01T10:60:00Z",
+      "2026-10-01T10:00:60Z",
+      "2026-10-01T10:00:00+24:00",
+      "2026-10-01T10:00:00+02:60",
+    ]) {
+      expect(() => once(at), at).toThrow(/not a real calendar date/u);
+    }
+  });
+
+  it("still accepts real dates, leap days, fractions and offsets", () => {
+    expect(once("2028-02-29T10:00:00Z")).toEqual({ kind: "once", at: "2028-02-29T10:00:00.000Z" });
+    expect(once("2026-10-01T08:00:00.250-03:30")).toEqual({ kind: "once", at: "2026-10-01T11:30:00.250Z" });
+    expect(once("2026-12-31T23:59:59+14:00")).toEqual({ kind: "once", at: "2026-12-31T09:59:59.000Z" });
+  });
+});

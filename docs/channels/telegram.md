@@ -266,7 +266,9 @@ message starts a turn in an allowlisted chat may list, create, change or delete
 any of the agent's schedules; the chat allowlist is the only boundary and is
 re-checked when a schedule is saved, before it runs and before delivery.
 Scheduled, cron, webhook and background turns can list schedules but never
-change them, so a schedule cannot create more schedules.
+change them, so a schedule cannot create more schedules. Reply-button taps and
+custom command-menu prompts also run without an inbound message, so they can
+list schedules but not change them; ask in a normal message instead.
 
 Timing is never late. A recurring occurrence missed while the agent was stopped
 is skipped, an overdue one-off becomes `missed`, and a run that was in progress

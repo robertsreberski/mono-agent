@@ -378,3 +378,55 @@ describe("Telegram schedule listing bounds", () => {
     }
   });
 });
+
+describe("Telegram schedule run retention", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "tg-schedules-orphans-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("drops runs orphaned by a delete during an in-flight run once the agent restarts", async () => {
+    const { DatabaseSync } = await import("node:sqlite");
+    const store = await openTelegramScheduleStore({ cwd: dir });
+    const schedule = store.create({
+      botId: "111",
+      name: "Daily",
+      prompt: "p",
+      timing: DAILY_8,
+      destination: { chatId: CHAT, label: "Trips › main conversation" },
+      producerConversationId: `telegram:${CHAT}`,
+      nextRunAt: "2026-09-29T06:00:00.000Z",
+    }, 20, "test");
+    store.claim({
+      scheduleId: schedule.id,
+      revision: 1,
+      scheduledAt: "2026-09-29T06:00:00.000Z",
+      nextRunAt: "2026-09-30T06:00:00.000Z",
+      execution: "running",
+      delivery: "pending",
+      fired: true,
+    });
+    // Deleted while running, then the process dies before finishRun.
+    store.delete(schedule.id, undefined, "test");
+    store.close();
+
+    const countRuns = (): number => {
+      const database = new DatabaseSync(join(dir, ".mono-agent", "telegram-schedules-v1", "state.sqlite"), { readOnly: true });
+      try {
+        return (database.prepare("SELECT COUNT(*) AS n FROM runs").get() as { n: number }).n;
+      } finally {
+        database.close();
+      }
+    };
+    expect(countRuns()).toBe(1);
+
+    const restarted = await openTelegramScheduleStore({ cwd: dir });
+    restarted.reconcileInterrupted();
+    restarted.close();
+    expect(countRuns()).toBe(0);
+  });
+});

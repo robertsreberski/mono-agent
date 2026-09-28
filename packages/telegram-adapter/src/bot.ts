@@ -546,9 +546,10 @@ export interface CreateTelegramBotOptions {
   /**
    * Called for every message from an allowlisted chat, after the allowlist
    * gate and before trigger filtering, with what it reveals about the chat and
-   * its forum topic. Must not throw; failures are logged and ignored.
+   * its forum topic. Never awaited: a thrown error or a rejected promise is
+   * logged and ignored, and the update proceeds.
    */
-  readonly onChatObserved?: (observation: TelegramChatObservation) => void;
+  readonly onChatObserved?: (observation: TelegramChatObservation) => void | Promise<void>;
   /**
    * Base URL of a self-hosted Bot API server (e.g. `http://127.0.0.1:8081`).
    * Applied to every API call and to file downloads; a `--local` server's
@@ -940,10 +941,16 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       );
     }
     if (options.onChatObserved === undefined) return;
-    try {
-      options.onChatObserved(observation);
-    } catch (error) {
+    const onFailure = (error: unknown): void => {
       logger?.warn?.("Telegram chat observation hook failed.", { error: errorMessage(error) });
+    };
+    try {
+      // Never awaited: observation must not delay the update. An async hook's
+      // rejection is logged instead of becoming an unhandled rejection.
+      const pending = options.onChatObserved(observation);
+      if (pending !== undefined) void Promise.resolve(pending).catch(onFailure);
+    } catch (error) {
+      onFailure(error);
     }
   }
 
@@ -2360,7 +2367,11 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         (answer === undefined || answer.trim().length === 0)
         && (response.parts?.length ?? 0) === 0
       ) {
-        return { delivered: false, reason: "agent produced no answer" };
+        // A final-answer-only turn with nothing to say is a deliberate
+        // suppression; ordinary proactive turns keep their original outcome.
+        return turnOptions.finalAnswerOnly === true
+          ? { delivered: false, code: "nothing_to_report", reason: "agent produced no answer" }
+          : { delivered: false, reason: "agent produced no answer" };
       }
       if (turnOptions.finalAnswerOnly === true && suppressesNotification(answer) && (response.parts?.length ?? 0) === 0) {
         return { delivered: false, code: "nothing_to_report", reason: "agent reported nothing to deliver" };
@@ -2671,18 +2682,32 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     if (stopped) {
       return { delivered: false, reason: "adapter stopped" };
     }
-    const conversationId = telegramConversationId(target);
     const controller = registerController(target);
+    // Link the host signal for this notification only, and always unlink it
+    // when the notification settles, so a reused long-lived host signal never
+    // accumulates listeners (or keeps finished controllers reachable).
     const hostSignal = notifyOptions?.abortSignal;
-    if (hostSignal !== undefined) {
-      if (hostSignal.aborted) {
-        controller.abort(hostSignal.reason);
-      } else {
-        const onHostAbort = (): void => controller.abort(hostSignal.reason);
-        hostSignal.addEventListener("abort", onHostAbort, { once: true });
-        controller.signal.addEventListener("abort", () => hostSignal.removeEventListener("abort", onHostAbort), { once: true });
-      }
+    const onHostAbort = (): void => controller.abort(hostSignal?.reason);
+    if (hostSignal?.aborted === true) {
+      controller.abort(hostSignal.reason);
+    } else {
+      hostSignal?.addEventListener("abort", onHostAbort, { once: true });
     }
+    try {
+      return await runNotification(target, text, controller, notifyOptions, includeRuntimeSelection);
+    } finally {
+      hostSignal?.removeEventListener("abort", onHostAbort);
+    }
+  }
+
+  async function runNotification(
+    target: TelegramConversationTarget,
+    text: string,
+    controller: AbortController,
+    notifyOptions: TelegramNotifyOptions | undefined,
+    includeRuntimeSelection: boolean,
+  ): Promise<TelegramNotifyResult> {
+    const conversationId = telegramConversationId(target);
     const silent = notifyOptions?.silent === true;
     // Interactive turns (custom command prompts, reply-button taps) are asked
     // by a person in the conversation, so they see what was said before them;
