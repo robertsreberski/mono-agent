@@ -109,16 +109,21 @@ function ProjectRow({ project, onOpen }: {
           <span className="project-title">{project.name}</span>
           <span className="project-preview">
             <span className="project-preview-text">
+              {project.external === undefined ? "" : "Telegram · "}
               {chatCountLabel(project.conversationCount)} · updated{" "}
               <time dateTime={project.updatedAt}>{relativeTime(project.updatedAt)}</time>
             </span>
           </span>
         </span>
-        {project.runningCount > 0 && (
+        {project.runningCount > 0 ? (
           <span className="project-status">
             {String(project.runningCount)} running
           </span>
-        )}
+        ) : project.external?.state === "gone" ? (
+          <span className="project-status is-muted">Topic gone</span>
+        ) : project.external?.state === "closed" ? (
+          <span className="project-status is-muted">Closed</span>
+        ) : null}
         <span className="project-chevron" aria-hidden="true">
           <Icon name="chevron" size={14} />
         </span>

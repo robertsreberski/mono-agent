@@ -52,6 +52,18 @@ describe("ProjectsSection", () => {
     expect(screen.queryByRole("button", { name: /Open project/u })).toBeNull();
   });
 
+  it("marks Telegram-bound projects and a gone topic in the listing", () => {
+    const external = { id: "ext", channel: "telegram" as const, label: "Trips › Flights", state: "gone" as const, projectId: "flights", lastSeenAt: "2026-09-28T09:00:00.000Z" };
+    storeMock.current = {
+      ...storeMock.current,
+      projectsByAgent: { "agent-one": [project("flights", "agent-one", { name: "Trips › Flights", conversationCount: 0, external })] },
+    };
+    render(<ProjectsSection />);
+    const row = screen.getByRole("button", { name: "Open project Trips › Flights" });
+    expect(row).toHaveTextContent("Telegram · 0 chats · updated");
+    expect(row).toHaveTextContent("Topic gone");
+  });
+
   it("lists active projects with their conversation counts", () => {
     twoProjects();
     render(<ProjectsSection />);
