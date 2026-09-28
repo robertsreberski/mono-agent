@@ -14,7 +14,7 @@ import {
   ProcessJobPresentationProvider,
   projectProcessJobPresentation,
 } from "../process-job-presentation";
-import { compactionMarkerIdsForMessages, convertWebMessage } from "../runtime";
+import { compactionMarkerIdsForMessages, convertWebMessage, visibleCompactionMessages } from "../runtime";
 import type { WebMessage } from "../types";
 import { processJob } from "../test/fixtures";
 import { AssistantMessage, SystemMessage, UserMessage } from "./Messages";
@@ -57,7 +57,7 @@ function MessagesHarness({
   readonly onRuntime?: (runtime: AssistantRuntime) => void;
 }) {
   const presentation = projectProcessJobPresentation(
-    messages,
+    visibleCompactionMessages(messages),
     { threadId: messages[0]?.threadId ?? null },
   );
   const convertMessage = useCallback(
@@ -168,16 +168,37 @@ const userMessage: WebMessage = {
   parts: [{ type: "text", text: "Inspect this workspace." }],
 };
 
-describe("compaction system row", () => {
-  it("renders the persisted marker without duplicating its assistant telemetry divider", () => {
-    const assistant = assistantMessage("complete");
-    const marker: WebMessage = { ...assistant, id: "compaction-marker", role: "system", parts: [{
-      type: "conversation-marker", kind: "compaction", operationId: "compact-1",
-      at: "2026-07-17T10:00:13.000Z", trigger: "automatic", status: "succeeded",
-      tokensBefore: 80_000, tokensAfter: 20_000,
-    }] };
-    render(<MessagesHarness messages={[assistant, marker]} />);
+describe("compaction marker row and inline divider", () => {
+  const automatic = { type: "conversation-marker" as const, kind: "compaction" as const,
+    operationId: "compact-1", at: "2026-07-17T10:00:13.000Z", trigger: "automatic" as const,
+    status: "succeeded" as const, tokensBefore: 80_000, tokensAfter: 20_000 };
+  const marker = (part: Extract<WebMessage["parts"][number], { type: "conversation-marker" }> = automatic): WebMessage => ({ ...assistantMessage("complete"), id: "compaction-marker", role: "system", parts: [part] });
+  const tool = (id: string) => ({ type: "tool-call" as const, toolCallId: id, toolName: "Read", status: "complete" as const });
+  const compaction = assistantMessage("complete").parts.find((part) => part.type === "telemetry" && part.event === "runtime_telemetry")!;
+
+  it("renders Activity, divider, Activity, answer without a duplicate marker row", () => {
+    const assistant = { ...assistantMessage("complete"), parts: [tool("before"), compaction, tool("after"),
+      { type: "text" as const, text: "The fictional answer is ready." }] };
+    const { container } = render(<MessagesHarness messages={[assistant, marker()]} />);
+    const activities = container.querySelectorAll(".activity-root");
+    expect(activities).toHaveLength(2);
+    expect(activities[0]?.querySelector(".activity-meta")).toHaveTextContent("1 step");
+    expect(activities[1]?.querySelector(".activity-meta")).toHaveTextContent("1 step");
+    const divider = screen.getByRole("note", { name: /Context compacted.*automatic/u });
     expect(screen.getAllByRole("note", { name: /Context compacted/u })).toHaveLength(1);
+    expect(divider.closest(".activity-root")).toBeNull();
+    expect(activities[0]!.compareDocumentPosition(divider) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(divider.compareDocumentPosition(activities[1]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(activities[1]!.compareDocumentPosition(screen.getByText("The fictional answer is ready.")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("keeps manual markers and falls back to an automatic row without loaded telemetry", () => {
+    const assistant = assistantMessage("complete");
+    const manual = marker({ ...automatic, trigger: "manual" });
+    const { rerender } = render(<MessagesHarness messages={[assistant, manual]} />);
+    expect(screen.getAllByRole("note", { name: /Context compacted/u })).toHaveLength(1);
+    expect(screen.getByRole("note", { name: /Context compacted.*manual/u })).toBeVisible();
+    rerender(<MessagesHarness key="paged-fallback" messages={[{ ...assistant, id: "fallback-assistant", parts: [{ type: "text", text: "Older page without telemetry." }] }, { ...marker(), id: "fallback-marker" }]} />);
     expect(screen.getByRole("note", { name: /Context compacted.*automatic/u })).toBeVisible();
   });
 });
@@ -997,7 +1018,7 @@ describe("AssistantMessage grouped parts", () => {
     expect(await screen.findByRole("note", { name: "Context compaction interrupted · automatic" })).toBeVisible();
   });
 
-  it("renders manual results after the answer and all automatic states inline, without opening Activity", () => {
+  it("renders manual results after the answer and automatic results at their original positions outside Activity", () => {
     const telemetry = (status: string, trigger: string, reason?: string) => ({
       type: "telemetry" as const, event: "runtime_telemetry",
       data: { kind: "context_compaction", data: {
@@ -1019,8 +1040,8 @@ describe("AssistantMessage grouped parts", () => {
     expect(rows[0]).toHaveTextContent("Context compacted · 183.4k → ≈41.3k tokens · manual");
     expect(screen.getByText("The answer is ready.").compareDocumentPosition(rows[0]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(rows[1]).toHaveTextContent("Context compaction skipped · automatic");
-    expect(screen.getByText("After.").compareDocumentPosition(rows[1]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    // Settled turns put compaction after the answer; running turns retain part order.
+    expect(rows[1]!.compareDocumentPosition(screen.getByText("After.")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Automatic compaction before the final answer stays in place; manual stays after.
     expect(rows[2]).toHaveTextContent("Context compaction failed · automatic");
     expect(rows[2]).not.toHaveTextContent("tokens");
     expect(rows[2]).not.toHaveTextContent("synthetic-provider-detail");

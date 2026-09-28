@@ -7,6 +7,7 @@ import { convertWebMessage } from "../runtime";
 import type { WebMessage } from "../types";
 import { AssistantMessage, CompactionMarkerRow, UserMessage } from "./Messages";
 import { ModelMarkers } from "./ModelMarkers";
+import { autoMidTurnMessage } from "../test/auto-midturn";
 import { ContextDisplay } from "./assistant-ui/ContextDisplay";
 import { ManualCompactionMarker } from "./ManualCompactionMarker";
 import { thread } from "../test/fixtures";
@@ -26,8 +27,11 @@ const answer: WebMessage = {
   createdAt: "2026-01-15T10:00:00Z", updatedAt: "2026-01-15T10:00:01Z",
   parts: [{ type: "text", text: "The fictional garden plan is ready." }],
 };
-function CompactConversation({ slow = false, onRelease }: { readonly slow?: boolean; readonly onRelease?: (release: () => void) => void }) {
-  const [message, setMessage] = useState(answer);
+function CompactConversation({ slow = false, onRelease, initialMessage = answer, showContext = true }: {
+  readonly slow?: boolean; readonly onRelease?: (release: () => void) => void;
+  readonly initialMessage?: WebMessage; readonly showContext?: boolean;
+}) {
+  const [message, setMessage] = useState(initialMessage);
   const [compacting, setCompacting] = useState(false);
   const activeThread = thread("thread", "alpha", compacting ? { compaction: {
     status: "running", trigger: "manual", startedAt: "2026-01-15T10:00:00Z",
@@ -63,10 +67,10 @@ function CompactConversation({ slow = false, onRelease }: { readonly slow?: bool
         <ManualCompactionMarker thread={activeThread} detail={{ thread: activeThread, messages: [message] }} />
       </div>
     </ThreadPrimitive.Viewport></ThreadPrimitive.Root>
-    <div style={{ position: "fixed", bottom: 70, right: 16 }}><ContextDisplay
+    {showContext && <div style={{ position: "fixed", bottom: 70, right: 16 }}><ContextDisplay
       context={{ status: "current", usage: { total: 183_400, contextWindow: 200_000 } }}
       totals={{ total: {}, byModel: [], computedAt: "2026-01-15T10:00:00Z" }} compactThreadId="thread" manualCompacting={compacting}
-    /></div>
+    /></div>}
   </AssistantRuntimeProvider>;
 }
 afterEach(async () => { vi.clearAllMocks(); await commands.emulateReducedMotion(null); await page.viewport(1440, 1000); });
@@ -143,6 +147,19 @@ describe("Compaction marker and unknown context visual states", () => {
     document.body.append(reference);
     expect(getComputedStyle(percent).color).toBe(getComputedStyle(reference).color);
     reference.remove();
+  });
+  it("shows the automatic divider between two readable Activity bands", async () => {
+    await page.viewport(1440, 900);
+    render(<CompactConversation initialMessage={autoMidTurnMessage} showContext={false} />);
+    const activityButtons = await screen.findAllByRole("button", { name: "Activity" });
+    expect(activityButtons).toHaveLength(2);
+    const divider = screen.getByRole("note", { name: /Context compacted.*automatic/u });
+    expect(divider.closest(".activity-root")).toBeNull();
+    fireEvent.click(activityButtons[0]!);
+    fireEvent.click(activityButtons[1]!);
+    expect(screen.getByText("Read")).toBeVisible();
+    expect(screen.getByText("Search")).toBeVisible();
+    if (shotDirectory) await page.screenshot({ path: `${shotDirectory}/auto-midturn.png` });
   });
   it("shows compaction next to a model change in a transcript", async () => {
     await page.viewport(1440, 900);

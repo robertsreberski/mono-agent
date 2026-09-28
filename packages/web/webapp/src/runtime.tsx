@@ -284,11 +284,12 @@ const isSteerPart = (part: ConvertedPart): boolean => part.type === "data-steer"
  * the band splits at exactly the point the run consumed the follow-up. The
  * answer still closes the turn.
  *
- * A compaction is also neither: in settled turns it follows the final answer
- * (including a manual result attached later); in running turns it retains its
- * original part position. It never hides in Activity. An error part likewise
- * stays behind the answer, as does any newer unplaced data part. A turn that
- * produced no prose at all is all activity.
+ * A compaction before the final answer is an ordering barrier, like a steer:
+ * it separates adjacent Activity bands at the instant it happened. A manual
+ * result attached after the answer stays after it. Running turns already keep
+ * this source order. Neither divider hides inside Activity. An error part likewise
+ * stays behind the answer, as does any newer unplaced data part. A turn with
+ * no answer text keeps its original stream order.
  */
 const foldSettledActivity = (parts: readonly ConvertedPart[]): ConvertedPart[] => {
   const visible = parts.filter((part) => !isBlankText(part));
@@ -307,7 +308,8 @@ const foldSettledActivity = (parts: readonly ConvertedPart[]): ConvertedPart[] =
   };
   visible.forEach((part, index) => {
     if (index === answerIndex) return;
-    if (isSteerPart(part) || part.type === "data-scheduled-wake") {
+    if (isSteerPart(part) || part.type === "data-scheduled-wake"
+      || (part.type === "data-context-compaction" && index < answerIndex)) {
       flush();
       folded.push(part);
       return;
@@ -353,9 +355,30 @@ const withLaunchArgs = (
   };
 };
 
+/** Manual results use the after-answer marker; automatic results keep their inline telemetry. */
 export const compactionMarkerIdsForMessages = (messages: readonly WebMessage[]): ReadonlySet<string> =>
   new Set(messages.flatMap((message) => message.parts.flatMap((part) =>
-    part.type === "conversation-marker" && part.kind === "compaction" ? [part.operationId] : [])));
+    part.type === "conversation-marker" && part.kind === "compaction" && part.trigger === "manual"
+      ? [part.operationId] : [])));
+
+const inlineCompactionId = (part: WebMessage["parts"][number]): string | undefined => {
+  if (part.type !== "telemetry" || !isContextCompactionPart(part)) return undefined;
+  const outer = part.data as { data?: unknown; operationId?: unknown; status?: unknown; trigger?: unknown } | undefined;
+  const payload = outer?.data !== null && typeof outer?.data === "object"
+    ? outer.data as { operationId?: unknown; status?: unknown; trigger?: unknown } : outer;
+  return typeof payload?.operationId === "string" && payload.trigger !== "manual"
+    && ["succeeded", "skipped", "failed"].includes(String(payload.status)) ? payload.operationId : undefined;
+};
+
+/** Drop only automatic rows whose terminal event is visible in a loaded assistant. */
+export const visibleCompactionMessages = (messages: readonly WebMessage[]): readonly WebMessage[] => {
+  const inline = new Set(messages.flatMap((message) => message.role === "assistant"
+    ? message.parts.flatMap((part) => inlineCompactionId(part) ?? []) : []));
+  if (inline.size === 0) return messages;
+  return messages.filter((message) => !message.parts.some((part) =>
+    part.type === "conversation-marker" && part.kind === "compaction"
+    && part.trigger === "automatic" && inline.has(part.operationId)));
+};
 
 export const convertWebMessage = (
   message: WebMessage,
@@ -715,7 +738,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
 
   const presentation = useMemo(
     () => projectProcessJobPresentation(
-        (store.detail?.messages ?? []).filter((message) =>
+        visibleCompactionMessages(store.detail?.messages ?? []).filter((message) =>
           !isLegacySilentCronMessage(message)
           && !(message.role === "assistant" && message.status === "complete"
             && message.attachments.length === 0
@@ -729,7 +752,8 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
     ],
   );
   const compactionMarkerIds = useMemo(() => compactionMarkerIdsForMessages(store.detail?.messages ?? []), [store.detail?.messages]);
-  // The loaded page determines whether legacy telemetry needs its fallback divider.
+  // Manual markers hide their telemetry; automatic markers with inline telemetry
+  // are removed from presentation while their stored rows still reach the agent.
   const convertMessage = useCallback(
     (message: WebMessage) => convertWebMessage(message, {
       compactionMarkerIds,

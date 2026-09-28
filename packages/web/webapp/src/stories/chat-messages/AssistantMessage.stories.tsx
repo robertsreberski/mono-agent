@@ -4,6 +4,8 @@ import { AssistantMessage } from "../../components/Messages";
 import { ManualCompactionMarker } from "../../components/ManualCompactionMarker";
 import { gardenThread } from "../fixtures";
 import { sampleMessages } from "../runtime";
+import { convertWebMessage } from "../../runtime";
+import { autoMidTurnMessage } from "../../test/auto-midturn";
 import { Transcript } from "../transcript";
 export default { title: "Chat & Messages/AssistantMessage", component: AssistantMessage, tags: ["autodocs"] } satisfies Meta<typeof AssistantMessage>;
 type Story = StoryObj<typeof AssistantMessage>;
@@ -35,3 +37,11 @@ export const ManualCompactionPending: Story = { render: () => <>
   <Transcript messages={compactionMessages(compaction("succeeded", "automatic"))} />
   <ManualCompactionMarker thread={{ ...gardenThread, compaction: { status: "running", trigger: "manual", startedAt: "2026-09-28T10:00:00Z" } }} detail={null} />
 </> };
+
+// Stored in one assistant turn: the inline divider splits its two Activity bands.
+export function AutoMidTurnTranscript() {
+  return <Transcript messages={[{ role: "user", content: "Can you outline the fictional garden?" },
+    convertWebMessage(autoMidTurnMessage)]} />;
+}
+export const AutomaticMidTurn: Story = { render: () => <AutoMidTurnTranscript /> };
+export const AutomaticMidTurnPhone: Story = { ...AutomaticMidTurn, globals: { viewport: { value: "phone" } } };

@@ -7,7 +7,8 @@
   software keyboard.
 
 - Fix the unknown Context usage dash color and retain compaction outcomes as
-  conversation markers for the transcript and the next turn.
+  conversation markers for the transcript and the next turn. Keep automatic
+  compaction dividers between the activities on either side of the event.
 
 - Fix the web Context usage phone sheet's dark overlay and show manual and
   automatic compaction outcomes as visible conversation dividers. Keep a running
