@@ -91,8 +91,9 @@ export function ProjectPage({
     () => new Map(projectMembers.map((thread) => [thread.id, thread])),
     [projectMembers],
   );
+  // A mirrored Telegram topic is one of the project's conversations.
   const meta = [
-    conversationCountLabel(project.conversationCount),
+    conversationCountLabel(project.conversationCount + (project.external === undefined ? 0 : 1)),
     `${String(project.runningCount)} running`,
     ...(project.monthUsd === undefined ? [] : [`${formatUsd(project.monthUsd)} this month`]),
   ].join(" · ");
@@ -193,7 +194,7 @@ export function ProjectPage({
               );
             }}
           </ThreadListPrimitive.Items>
-          {projectMembers.length === 0 && (
+          {projectMembers.length === 0 && (project.external === undefined || projectMembersError !== null || projectMembersLoading) && (
             <div className="thread-list-empty">
               <Icon name="threads" size={19} />
               <span>

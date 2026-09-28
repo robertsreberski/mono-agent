@@ -60,7 +60,7 @@ describe("ProjectsSection", () => {
     };
     render(<ProjectsSection />);
     const row = screen.getByRole("button", { name: "Open project Trips › Flights" });
-    expect(row).toHaveTextContent("Telegram · 0 chats · updated");
+    expect(row).toHaveTextContent("Telegram · 1 chat · updated");
     expect(row).toHaveTextContent("Topic gone");
   });
 

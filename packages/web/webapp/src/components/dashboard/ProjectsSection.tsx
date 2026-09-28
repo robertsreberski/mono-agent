@@ -110,7 +110,7 @@ function ProjectRow({ project, onOpen }: {
           <span className="project-preview">
             <span className="project-preview-text">
               {project.external === undefined ? "" : "Telegram · "}
-              {chatCountLabel(project.conversationCount)} · updated{" "}
+              {chatCountLabel(project.conversationCount + (project.external === undefined ? 0 : 1))} · updated{" "}
               <time dateTime={project.updatedAt}>{relativeTime(project.updatedAt)}</time>
             </span>
           </span>

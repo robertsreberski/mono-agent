@@ -149,6 +149,15 @@ describe("ProjectPage", () => {
     expect(screen.getByText("Closed in Telegram")).toBeVisible();
   });
 
+  it("counts the Telegram topic as a conversation and never claims the project is empty", () => {
+    storeMock.current = createStore({ projectMembers: [] });
+    const external = { id: "ext-1", channel: "telegram" as const, label: "Trips › Flights", state: "open" as const, projectId: "web", lastSeenAt: "2026-09-28T09:00:00.000Z" };
+    render(<ProjectPage project={{ ...web, conversationCount: 0, runningCount: 0, monthUsd: undefined, external }} />);
+    expect(screen.getByText("1 conversation · 0 running")).toBeVisible();
+    expect(screen.queryByText("No conversations yet")).toBeNull();
+    expect(screen.getByRole("group", { name: "Telegram topic Trips › Flights" })).toBeVisible();
+  });
+
   it("renders no Telegram row for an ordinary project", () => {
     render(<ProjectPage project={web} />);
     expect(screen.queryByRole("group", { name: /Telegram topic/u })).toBeNull();
