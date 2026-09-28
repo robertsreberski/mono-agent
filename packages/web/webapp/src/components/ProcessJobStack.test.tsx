@@ -89,6 +89,31 @@ const peerJob = (expiresAt: string, overrides: NonNullable<Parameters<typeof pro
 } as Parameters<typeof processJob>[0]);
 
 describe("ProcessJobStack", () => {
+  it("never lets one thread's live projection stand in for another thread's job with the same id", () => {
+    // The shelf can outlive a thread switch for a moment: Chat remounts its
+    // viewport only once the runtime follows the selection. Render without a
+    // thread key so the same stack instance sees both threads.
+    const running = activeJob("thread-a", "running", { jobId: "same-job" });
+    const settled = processJob({
+      jobId: "same-job",
+      origin: { ...processJob().origin, conversationId: "web:thread-b", historyBoundary: "web:thread-b" },
+    });
+    const tree = (threadId: string, job: ProcessJobProjection) => (
+      <ProcessJobPresentationProvider threadId={threadId} messages={[]} jobs={[entry(job)]} historyIsBounded={false}>
+        <ProcessJobStack />
+      </ProcessJobPresentationProvider>
+    );
+    const view = render(tree("thread-a", running));
+    expect(shelfToggle()).toHaveAccessibleName(/Running/u);
+
+    view.rerender(tree("thread-b", settled));
+    expect(shelfToggle()).not.toHaveAccessibleName(/Running/u);
+    openShelf();
+    expect(historyToggle()).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(historyToggle());
+    expect(screen.getByRole("group", { name: "Exec background job succeeded" })).toHaveClass("is-complete");
+  });
+
   it("keeps every card mounted behind a closed shelf and lists current work once it opens", () => {
     const running = activeJob("thread", "running", { jobId: "running-job" });
     const succeeded = processJob({ jobId: "succeeded-job" });

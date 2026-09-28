@@ -19,6 +19,14 @@ import {
   processJobStackSummaryParts,
 } from "./process-job-display";
 
+/**
+ * Live projections are keyed by thread AND job: the shelf can outlive a thread
+ * switch for a moment (its viewport remounts once the runtime follows the
+ * selection), and two conversations may carry the same job id. A projection
+ * from one thread must never stand in for another's.
+ */
+const liveKey = (thread: string | null, jobId: string): string => `${thread ?? ""}\u0000${jobId}`;
+
 /** Hidden by an ancestor's `hidden` attribute, detached, or laid out as nothing. */
 const isHidden = (element: HTMLElement): boolean =>
   !element.isConnected || element.closest("[hidden]") !== null;
@@ -50,37 +58,36 @@ export function ProcessJobStack() {
   const historyRef = useRef<HTMLButtonElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const [liveByJobId, setLiveByJobId] = useState<ReadonlyMap<string, ProcessJobProjection>>(
-    () => new Map(jobs.map(({ part }) => [part.job.jobId, part.job])),
+    () => new Map(jobs.map(({ part }) => [liveKey(threadId, part.job.jobId), part.job])),
   );
 
   useEffect(() => {
     setLiveByJobId((current) => {
       const next = new Map<string, ProcessJobProjection>();
       for (const { part } of jobs) {
-        const live = current.get(part.job.jobId);
-        next.set(
-          part.job.jobId,
-          live === undefined ? part.job : mergeProcessJobProjection(live, part.job),
-        );
+        const key = liveKey(threadId, part.job.jobId);
+        const live = current.get(key);
+        next.set(key, live === undefined ? part.job : mergeProcessJobProjection(live, part.job));
       }
       return next;
     });
-  }, [jobs]);
+  }, [jobs, threadId]);
 
   const onProjectionChange = useCallback((projection: ProcessJobProjection) => {
+    const key = liveKey(threadId, projection.jobId);
     setLiveByJobId((current) => {
-      const previous = current.get(projection.jobId);
+      const previous = current.get(key);
       const merged = previous === undefined ? projection : mergeProcessJobProjection(previous, projection);
       if (merged === previous) return current;
       const next = new Map(current);
-      next.set(projection.jobId, merged);
+      next.set(key, merged);
       return next;
     });
-  }, []);
+  }, [threadId]);
 
   const projections = useMemo(
-    () => jobs.map(({ part }) => liveByJobId.get(part.job.jobId) ?? part.job),
-    [jobs, liveByJobId],
+    () => jobs.map(({ part }) => liveByJobId.get(liveKey(threadId, part.job.jobId)) ?? part.job),
+    [jobs, liveByJobId, threadId],
   );
   const now = useProcessJobShelfClock(projections, visible);
 
