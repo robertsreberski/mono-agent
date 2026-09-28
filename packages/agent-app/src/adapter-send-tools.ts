@@ -1131,7 +1131,7 @@ function registerTelegramSendTool(
             "TelegramSendMessage",
             args.reply_to_message_id === undefined,
           );
-      const result: TelegramSentMessage = await withTopicGoneReport(adapter, deliveryHistory, fetchImpl,
+      const result: TelegramSentMessage = await withTopicGoneReport(settings, adapter, deliveryHistory, fetchImpl,
         telegramConversationIdFor({ chatId, ...(messageThreadId === undefined ? {} : { messageThreadId }) }),
         "TelegramSendMessage", () => client.sendMessage(
         {
@@ -1263,7 +1263,7 @@ function registerTelegramSendFileTool(
         : project.target;
       const chatId = destination.chatId;
       const landing = telegramConversationIdFor(destination);
-      const reportGone = <T>(send: () => Promise<T>) => withTopicGoneReport(adapter, deliveryHistory, fetchImpl, landing, "TelegramSendFile", send);
+      const reportGone = <T>(send: () => Promise<T>) => withTopicGoneReport(settings, adapter, deliveryHistory, fetchImpl, landing, "TelegramSendFile", send);
       const threadParams = destination.messageThreadId === undefined
         ? {}
         : { message_thread_id: destination.messageThreadId };
@@ -1487,11 +1487,12 @@ async function resolveTelegramProjectTarget(
 }
 
 /**
- * Run one send; when Telegram answers that the forum topic no longer exists,
+ * Run one send; with `telegram.projects` enabled, when Telegram answers that the forum topic no longer exists,
  * tell the parent (which marks its project "Telegram topic gone") and fail
  * with an honest message. Other failures pass through unchanged.
  */
 async function withTopicGoneReport<T>(
+  settings: TelegramSendToolSettings,
   adapter: TelegramAdapterModule,
   bridge: AdapterSendToolsDeliveryHistory | undefined,
   fetchImpl: typeof fetch,
@@ -1499,6 +1500,8 @@ async function withTopicGoneReport<T>(
   toolName: TelegramSendToolName,
   send: () => Promise<T>,
 ): Promise<T> {
+  // Without `telegram.projects` the send path and its errors stay exactly as before.
+  if (settings.projects !== true) return await send();
   try {
     return await send();
   } catch (error) {

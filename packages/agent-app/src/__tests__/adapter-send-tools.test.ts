@@ -2786,6 +2786,31 @@ describe("Telegram sends by projectId", () => {
     } finally { await orphan.stop(); }
   });
 
+  it("leaves a thread-not-found failure untouched and unreported when the feature is off", async () => {
+    const reportGone = vi.fn(async () => {});
+    const { bridge, deliveryHistory } = await bridgeWith({ resolveDestination: vi.fn(), reportGone });
+    const { TelegramApiError } = await import("@mono-agent/telegram-adapter");
+    const gone = new TelegramApiError("Bad Request: message thread not found", { kind: "telegram", method: "sendMessage", telegramDescription: "Bad Request: message thread not found" });
+    try {
+      const server = await createAdapterSendToolsServer(projectSettings(false), {
+        telegram: {
+          sendMessage: vi.fn(async () => { throw gone; }),
+          sendDocument: vi.fn(async () => { throw gone; }),
+        },
+      }, undefined, { deliveryHistory });
+      await withMcpClient(server, async (client) => {
+        const message = await client.callTool({ name: "TelegramSendMessage", arguments: { chat_id: -1001, message_thread_id: 77, text: "x" } });
+        const file = await client.callTool({ name: "TelegramSendFile", arguments: { kind: "document", chat_id: -1001, message_thread_id: 77, data: Buffer.from("hi").toString("base64"), filename: "a.txt" } });
+        for (const result of [message, file]) {
+          expect(result.isError).toBe(true);
+          expect(JSON.stringify(result)).toContain("Bad Request: message thread not found");
+          expect(JSON.stringify(result)).not.toContain("no longer exists");
+        }
+      });
+      expect(reportGone).not.toHaveBeenCalled();
+    } finally { await bridge.stop(); }
+  });
+
   it("reports a topic Telegram says is gone and fails honestly", async () => {
     const reportGone = vi.fn(async () => {});
     const { bridge, deliveryHistory } = await bridgeWith({
