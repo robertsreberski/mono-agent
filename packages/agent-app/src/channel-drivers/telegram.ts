@@ -1,4 +1,4 @@
-import type { ChannelInteractionSink, NotifyDeliveryResult } from "@mono-agent/agent-contracts";
+import type { AgentResponder, ChannelInteractionSink, NotifyDeliveryResult } from "@mono-agent/agent-contracts";
 import { describeRunFailureKind } from "@mono-agent/observability";
 import type {
   TelegramAdapterConfig,
@@ -17,6 +17,13 @@ import { isChannelConfigured } from "../channel-gate.js";
 import type { ChannelGateSpec } from "../channel-gate.js";
 import type { ChannelDriver, ChannelStartInput } from "../channels.js";
 import { telegramTargetFromConversation, type TelegramDestinationTarget } from "../telegram-destination.js";
+import {
+  bindTelegramProjectTurn,
+  createTelegramProjectsService,
+  type TelegramProjectsService,
+} from "../telegram-projects.js";
+import { openTelegramTopicDirectory, telegramBotIdFromToken } from "../telegram-topic-directory.js";
+import type { TelegramProjectsBridgePort } from "../interaction-bridge.js";
 import { unconfiguredChannelView } from "./shared.js";
 
 type TelegramAdapterModule = typeof import("@mono-agent/telegram-adapter");
@@ -39,6 +46,8 @@ export interface TelegramChannelOverrides {
   readonly botFactory?: TelegramAdapterStartOptions["botFactory"];
   readonly runnerFactory?: TelegramAdapterStartOptions["runnerFactory"];
   readonly startAdapter?: (options: TelegramAdapterStartOptions) => Promise<TelegramAdapterStartResult>;
+  /** Test seam: where `telegram.projects` reaches the web console. */
+  readonly projectsWeb?: import("@mono-agent/web").DeliverWebNotificationOptions;
 }
 
 export function createTelegramChannelDriver(
@@ -71,7 +80,19 @@ export function createTelegramChannelDriver(
     async start(input) {
       const adapter = await loadTelegramModule();
       const startAdapter = overrides.startAdapter ?? adapter.startTelegramAdapter;
-      const result = await startAdapter(telegramStartOptions(input, overrides));
+      const projects = await startTelegramProjects(input, overrides);
+      let result: TelegramAdapterStartResult;
+      try {
+        result = await startAdapter(telegramStartOptions(input, overrides, projects));
+      } catch (error) {
+        await projects?.close();
+        throw error;
+      }
+      // A post Telegram answered with "thread not found" proves the topic gone.
+      const noteGone = (conversationId: string, outcome: NotifyDeliveryResult): NotifyDeliveryResult => {
+        if (!outcome.delivered && outcome.code === "telegram_topic_gone") void projects?.reportGone(conversationId);
+        return outcome;
+      };
       const interactionSink: ChannelInteractionSink = {
         presentAsk: async (conversationId, snapshot) => {
           await result.presentAsk(requireAllowedTelegramTarget(conversationId, input), snapshot);
@@ -84,9 +105,24 @@ export function createTelegramChannelDriver(
         },
       };
       input.interaction?.registerSink("telegram", interactionSink);
+      // The app-owned bridge lets the adapter-send child resolve `projectId`.
+      const projectsBridge = input.interaction as { registerTelegramProjects?: (port: TelegramProjectsBridgePort | undefined) => void } | undefined;
+      if (projects !== undefined) {
+        projectsBridge?.registerTelegramProjects?.({
+          resolveDestination: (projectId) => projects.resolveDestination(projectId),
+          reportGone: (conversationId) => projects.reportGone(conversationId),
+        });
+      }
       return {
         summary: {},
-        stop: () => result.stop(),
+        stop: async () => {
+          try {
+            await result.stop();
+          } finally {
+            if (projects !== undefined) projectsBridge?.registerTelegramProjects?.(undefined);
+            await projects?.close();
+          }
+        },
         processJobs: {
           update: async ({ conversationId, processJob, retirementOnly }) => {
             if (processJob.origin.channel !== "telegram"
@@ -145,7 +181,7 @@ export function createTelegramChannelDriver(
               steerActive: true,
               ...(silent ? { silent: true } : {}),
             });
-            return settleProcessJobWake(outcome);
+            return settleProcessJobWake(noteGone(conversationId, outcome));
           },
         },
         notify: async (request) => {
@@ -199,7 +235,7 @@ export function createTelegramChannelDriver(
                 ...(deliveryKey === undefined ? {} : { deliveryKey }),
                 ...(silent ? { silent: true } : {}),
               };
-          const outcome = await result.notify(destination, text, notifyOptions);
+          const outcome = noteGone(conversationId, await result.notify(destination, text, notifyOptions));
           return processJob === undefined ? outcome : settleProcessJobWake(outcome);
         },
         recordContinuationHistory: async (historyInput: {
@@ -320,9 +356,81 @@ export function telegramChatIdFromConversation(conversationId: string): Telegram
   return telegramTargetFromConversation(conversationId)?.chatId;
 }
 
+/**
+ * Open the `telegram.projects` ledger and its console mirror, or nothing when
+ * the feature is off. A ledger that cannot open (another live process owns it,
+ * insecure permissions) disables the feature for this run and is logged; the
+ * channel itself still starts.
+ */
+async function startTelegramProjects(
+  input: ChannelStartInput<TelegramAdapterConfig>,
+  overrides: TelegramChannelOverrides,
+): Promise<TelegramProjectsService | undefined> {
+  if (input.config.projects?.enabled !== true) return undefined;
+  if (input.sourceId === undefined) {
+    input.logger?.warn?.("Telegram projects are enabled but this agent has no web-console source id; topics are not mirrored.");
+    return undefined;
+  }
+  let directory: Awaited<ReturnType<typeof openTelegramTopicDirectory>>;
+  let botId: string;
+  try {
+    botId = telegramBotIdFromToken(input.config.botToken);
+    directory = await openTelegramTopicDirectory({
+      cwd: input.cwd,
+      botId,
+      ...(input.logger === undefined ? {} : { logger: input.logger }),
+    });
+  } catch (error) {
+    input.logger?.warn?.("Telegram projects are unavailable: the topic ledger could not be opened.", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
+  const service = createTelegramProjectsService({
+    directory,
+    botId,
+    sourceId: input.sourceId,
+    isAllowedChat: (chatId) => input.config.allowAllChats || input.config.allowedChatIds.includes(chatId),
+    ...(input.logger === undefined ? {} : { logger: input.logger }),
+    ...(overrides.projectsWeb === undefined ? {} : { web: overrides.projectsWeb }),
+  });
+  return {
+    ...service,
+    async close() {
+      try {
+        await service.close();
+      } finally {
+        directory.close();
+      }
+    },
+  };
+}
+
+/**
+ * Bind each Telegram request to the projects service by its metadata identity,
+ * which the console-project extension reads host-side. Only a message a person
+ * sent (`captureSpeakerKind: "human-turn"`) may use project tools; every turn
+ * in a project-bound topic carries its context.
+ */
+function withTelegramProjectTurns(responder: AgentResponder, service: TelegramProjectsService): AgentResponder {
+  return {
+    ...responder,
+    respond: async (request, stream) => {
+      const metadata = { ...request.metadata };
+      bindTelegramProjectTurn(metadata, {
+        service,
+        conversationId: request.conversationId,
+        human: request.captureSpeakerKind === "human-turn",
+      });
+      return await responder.respond({ ...request, metadata }, stream);
+    },
+  } as AgentResponder;
+}
+
 function telegramStartOptions(
   input: ChannelStartInput<TelegramAdapterConfig>,
   overrides: TelegramChannelOverrides,
+  projects?: TelegramProjectsService,
 ): TelegramAdapterStartOptions {
   const runtimeControls: TelegramRuntimeControls = buildChannelRuntimeControls(input.coreConfig);
   const resetter = input.responder as typeof input.responder & {
@@ -336,7 +444,13 @@ function telegramStartOptions(
     groupMode: input.config.groupMode ?? "any",
     stripMentionText: input.config.stripMentionText ?? true,
     ...(input.config.topics === undefined ? {} : { topics: input.config.topics }),
-    responder: input.responder,
+    responder: projects === undefined ? input.responder : withTelegramProjectTurns(input.responder, projects),
+    ...(projects === undefined
+      ? {}
+      : {
+          knownTopicNames: projects.knownTopicNames,
+          onChatObserved: (observation) => projects.observe(observation),
+        }),
     allowedUpdates: ["message", "callback_query"],
     runtimeControls,
     deleteWebhookOnStart: true,

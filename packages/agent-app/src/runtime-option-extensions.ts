@@ -132,9 +132,13 @@ export function composeRuntimeOptionExtensions(
             }),
       };
     }
+    const decorators = results.flatMap((result) => result.decorateUserMessage === undefined ? [] : [result.decorateUserMessage]);
     return {
       runtimeOptions,
       ...(toolPolicyOverride === undefined ? {} : { toolPolicyOverride }),
+      ...(decorators.length === 0 ? {} : {
+        decorateUserMessage: (message: string) => decorators.reduce((current, decorate) => decorate(current), message),
+      }),
       cleanup: async () => {
         await Promise.all(results.map(async (result) => result.cleanup?.()));
       },

@@ -1,5 +1,5 @@
 import { createProviderUsageRuntimeExtension } from "./provider-usage-tool.js";
-import type { ProviderUsageOperator } from "@mono-agent/agent-contracts";
+import { readJsonSection, readSettingsJson, type ProviderUsageOperator } from "@mono-agent/agent-contracts";
 import { createConsoleProjectsRuntimeExtension } from "./console-projects.js";
 import { resolve } from "node:path";
 
@@ -171,6 +171,16 @@ export function sessionRolloverForChannel(
   return channelId === SELF_BOUNDED_CHANNEL_ID ? "none" : configured;
 }
 
+/** Whether `telegram.projects.enabled` is set; an unreadable config reads as off. */
+async function telegramProjectsConfigured(configPath: string): Promise<boolean> {
+  try {
+    const projects = readJsonSection((await readSettingsJson(configPath)).json, "telegram").projects;
+    return typeof projects === "object" && projects !== null && (projects as Record<string, unknown>).enabled === true;
+  } catch {
+    return false;
+  }
+}
+
 export async function buildResponder(
   controller: ResponderControllerPort,
   coreConfig: MonoAgentConfig,
@@ -324,6 +334,7 @@ export async function buildResponder(
   const observabilityContext = await controller.observabilityContext();
   const consoleProjectsExtension = observabilityContext.sourceId === undefined ? undefined : createConsoleProjectsRuntimeExtension({
     sourceId: observabilityContext.sourceId, policy: coreConfig.tools,
+    channelProjects: await telegramProjectsConfigured(controller.configReadPath),
     onUnavailable: () => { controller.logger?.warn?.("Console project tools could not authenticate the active turn; tools are unavailable."); },
   });
   const conversationTitleExtension = conversationTitleBase;
@@ -572,6 +583,7 @@ export async function adapterSendToolsRuntimeOptions(controller: ResponderContro
       effectiveInteraction,
       runOutputRoot,
       controller.interactionBridge,
+      settings.telegram?.projects === true,
     )(requestInput);
   };
   return { createExtension, blockingToolNames };

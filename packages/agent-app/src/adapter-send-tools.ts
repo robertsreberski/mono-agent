@@ -94,6 +94,8 @@ export interface TelegramSendToolSettings {
   readonly runOutputDir?: string;
   /** Identity of the app-created directory object; prevents root path swaps. */
   readonly runOutputIdentity?: FileIdentity;
+  /** `telegram.projects` is enabled: sends may address a project's forum topic by `projectId`. */
+  readonly projects?: boolean;
 }
 
 /**
@@ -418,6 +420,8 @@ export function createAdapterSendToolsRuntimeExtension(
   interaction?: AdapterSendToolsInteractionEnv,
   runOutputRoot?: string,
   deliveryHistoryCapabilityIssuer?: AdapterSendToolsDeliveryHistoryCapabilityIssuer,
+  /** `telegram.projects`: the file tool also needs the bridge to resolve `projectId`. */
+  telegramProjects = false,
 ): (input: AdapterSendToolsRequestInput) => Promise<AdapterSendToolsRuntimeExtension> {
   return async (input) => {
     const conversationId = input?.request?.conversationId;
@@ -430,7 +434,8 @@ export function createAdapterSendToolsRuntimeExtension(
       : await ensureAdapterRunOutputDir(runOutputRoot, runId);
     const deliveryHistoryChannels = [
       ...(allowedTools.includes("SlackSendMessage") ? ["slack" as const] : []),
-      ...(allowedTools.includes("TelegramSendMessage") ? ["telegram" as const] : []),
+      ...(allowedTools.includes("TelegramSendMessage")
+        || (telegramProjects && allowedTools.includes("TelegramSendFile")) ? ["telegram" as const] : []),
     ];
     const deliveryHistory = !hasRunId
       || !hasConversation
@@ -568,6 +573,8 @@ export async function createAdapterSendToolsServer(
         settings.telegram,
         clients.telegram,
         adapter,
+        options.deliveryHistory,
+        options.fetchImpl ?? globalThis.fetch,
       );
     }
   }
@@ -1072,14 +1079,20 @@ function registerTelegramSendTool(
   deliveryHistory?: AdapterSendToolsDeliveryHistory,
   fetchImpl: typeof fetch = globalThis.fetch,
 ): void {
+  // Project targets need the app-owned bridge; producing-conversation scope binds the destination already.
+  const projectTargets = settings.projects === true && settings.sendTools?.scope !== "producing-conversation";
   server.registerTool(
     "TelegramSendMessage",
     {
       title: "Send Telegram message",
-      description:
-        "Send a message to an allowed Telegram chat. Optionally add 2–8 non-blocking reply buttons; a tap arrives later as a new user turn.",
+      description: projectTargets
+        ? "Send a message to an allowed Telegram chat, or with projectId into the forum topic of a Telegram-linked project. Optionally add 2–8 non-blocking reply buttons; a tap arrives later as a new user turn."
+        : "Send a message to an allowed Telegram chat. Optionally add 2–8 non-blocking reply buttons; a tap arrives later as a new user turn.",
       inputSchema: {
-        chat_id: z.union([z.string().min(1), z.number().int()]).describe("Telegram chat id from the adapter allowlist."),
+        chat_id: projectTargets
+          ? z.union([z.string().min(1), z.number().int()]).optional().describe("Telegram chat id from the adapter allowlist. Omit when sending by projectId.")
+          : z.union([z.string().min(1), z.number().int()]).describe("Telegram chat id from the adapter allowlist."),
+        ...(projectTargets ? { projectId: TELEGRAM_PROJECT_ID_SCHEMA } : {}),
         text: z.string().min(1).describe("Message text to send."),
         parse_mode: z.string().min(1).optional().describe("Optional Telegram parse mode, e.g. MarkdownV2 or HTML."),
         message_thread_id: z
@@ -1099,19 +1112,30 @@ function registerTelegramSendTool(
       },
     },
     async (args, extra) => {
-      assertTelegramChatAllowed(settings, args.chat_id, "TelegramSendMessage");
+      const projectId = "projectId" in args ? args.projectId as string | undefined : undefined;
+      const project = projectId === undefined
+        ? undefined
+        : await resolveTelegramProjectTarget(settings, deliveryHistory, fetchImpl, projectId, "TelegramSendMessage",
+          args.chat_id !== undefined || args.message_thread_id !== undefined);
+      if (project === undefined && args.chat_id === undefined) throw new Error("TelegramSendMessage: chat_id or projectId is required.");
+      const chatId = project?.target.chatId ?? args.chat_id!;
+      assertTelegramChatAllowed(settings, chatId, "TelegramSendMessage");
       // A reply lands in the replied message's topic, so only a fresh post
-      // inherits the current topic by default.
-      const messageThreadId = resolveTelegramThreadId(
-        settings,
-        args.chat_id,
-        args.message_thread_id,
-        "TelegramSendMessage",
-        args.reply_to_message_id === undefined,
-      );
-      const result: TelegramSentMessage = await client.sendMessage(
+      // inherits the current topic by default. A project names its own topic.
+      const messageThreadId = project !== undefined
+        ? project.target.messageThreadId
+        : resolveTelegramThreadId(
+            settings,
+            chatId,
+            args.message_thread_id,
+            "TelegramSendMessage",
+            args.reply_to_message_id === undefined,
+          );
+      const result: TelegramSentMessage = await withTopicGoneReport(adapter, deliveryHistory, fetchImpl,
+        telegramConversationIdFor({ chatId, ...(messageThreadId === undefined ? {} : { messageThreadId }) }),
+        "TelegramSendMessage", () => client.sendMessage(
         {
-          chat_id: args.chat_id,
+          chat_id: chatId,
           ...(messageThreadId === undefined ? {} : { message_thread_id: messageThreadId }),
           text: args.text,
           ...(args.parse_mode === undefined ? {} : { parse_mode: args.parse_mode }),
@@ -1129,7 +1153,7 @@ function registerTelegramSendTool(
               }),
         },
         { signal: extra.signal },
-      );
+      ));
       // Record against the conversation the message actually landed in: a forum
       // topic keeps its own history, everything else the chat's main one. A
       // result without thread fields (a minimal custom client) trusts the request.
@@ -1145,13 +1169,17 @@ function registerTelegramSendTool(
         text: args.text,
         idempotencyKey: `adapter-send:telegram:${String(result.chat.id)}:${String(result.message_id)}`,
       });
-      const message = `Sent Telegram message ${result.message_id} to ${String(result.chat.id)}.`;
+      // A project send reports the project, never the chat or topic ids behind it.
+      const message = project === undefined
+        ? `Sent Telegram message ${result.message_id} to ${String(result.chat.id)}.`
+        : `Sent Telegram message ${result.message_id} to project ${JSON.stringify(project.label)}.`;
       return {
         content: [{ type: "text", text: withDeliveryHistoryWarning(message, history) }],
         structuredContent: {
           ok: true,
-          chat_id: result.chat.id,
-          ...(landedTopic === undefined ? {} : { message_thread_id: landedTopic }),
+          ...(project === undefined
+            ? { chat_id: result.chat.id, ...(landedTopic === undefined ? {} : { message_thread_id: landedTopic }) }
+            : { projectId, destination: project.label }),
           message_id: result.message_id,
           ...(args.reply_options === undefined ? {} : { reply_options: args.reply_options }),
           ...(history === undefined ? {} : { history }),
@@ -1175,16 +1203,25 @@ function registerTelegramSendFileTool(
   settings: TelegramSendToolSettings,
   client: Partial<Pick<TelegramMessageSender, "sendDocument" | "sendPhoto">>,
   adapter: TelegramAdapterModule,
+  deliveryHistory?: AdapterSendToolsDeliveryHistory,
+  fetchImpl: typeof fetch = globalThis.fetch,
 ): void {
   const producingConversationScope = settings.sendTools?.scope === "producing-conversation";
+  const projectTargets = settings.projects === true && !producingConversationScope;
   const inputSchema = {
     kind: z.enum(["document", "photo"]).describe("`document` for any file (downloadable), `photo` for an image shown inline."),
     ...(producingConversationScope
       ? {}
       : {
-          chat_id: z
-            .union([z.string().min(1), z.number().int()])
-            .describe("Telegram chat id from the adapter allowlist."),
+          chat_id: projectTargets
+            ? z
+              .union([z.string().min(1), z.number().int()])
+              .optional()
+              .describe("Telegram chat id from the adapter allowlist. Omit when sending by projectId.")
+            : z
+              .union([z.string().min(1), z.number().int()])
+              .describe("Telegram chat id from the adapter allowlist."),
+          ...(projectTargets ? { projectId: TELEGRAM_PROJECT_ID_SCHEMA } : {}),
           message_thread_id: z
             .number()
             .int()
@@ -1214,10 +1251,19 @@ function registerTelegramSendFileTool(
       if ((kind === "document" && sendDocument === undefined) || (kind === "photo" && sendPhoto === undefined)) {
         throw new Error(`TelegramSendFile: the ${kind} sender is unavailable.`);
       }
-      const requestedChatId = "chat_id" in args ? args.chat_id : undefined;
-      const requestedThreadId = "message_thread_id" in args ? args.message_thread_id : undefined;
-      const destination = resolveTelegramSendFileDestination(settings, requestedChatId, requestedThreadId);
+      const requestedChatId = "chat_id" in args ? args.chat_id as TelegramChatId | undefined : undefined;
+      const requestedThreadId = "message_thread_id" in args ? args.message_thread_id as number | undefined : undefined;
+      const projectId = "projectId" in args ? args.projectId as string | undefined : undefined;
+      const project = projectId === undefined
+        ? undefined
+        : await resolveTelegramProjectTarget(settings, deliveryHistory, fetchImpl, projectId, "TelegramSendFile",
+          requestedChatId !== undefined || requestedThreadId !== undefined);
+      const destination = project === undefined
+        ? resolveTelegramSendFileDestination(settings, requestedChatId, requestedThreadId)
+        : project.target;
       const chatId = destination.chatId;
+      const landing = telegramConversationIdFor(destination);
+      const reportGone = <T>(send: () => Promise<T>) => withTopicGoneReport(adapter, deliveryHistory, fetchImpl, landing, "TelegramSendFile", send);
       const threadParams = destination.messageThreadId === undefined
         ? {}
         : { message_thread_id: destination.messageThreadId };
@@ -1245,7 +1291,7 @@ function registerTelegramSendFileTool(
           throw new Error(`file exceeds the ${String(maxUploadBytes)}-byte upload cap.`);
         }
         try {
-          const sent: TelegramSentMessage = await sendDocument!(
+          const sent: TelegramSentMessage = await reportGone(() => sendDocument!(
             {
               chat_id: chatId,
               ...threadParams,
@@ -1253,9 +1299,9 @@ function registerTelegramSendFileTool(
               ...(args.caption === undefined ? {} : { caption: args.caption }),
             },
             { signal: extra.signal },
-          );
+          ));
           const name = basename(uploadPath);
-          return telegramSendFileResult(producingConversationScope, kind, sent, name);
+          return telegramSendFileResult(producingConversationScope, kind, sent, name, project === undefined ? undefined : { projectId: projectId!, label: project.label });
         } catch (error) {
           // Retry buffered exactly once; rethrow anything that isn't a server-side rejection.
           if ((error as { kind?: string }).kind !== "telegram") {
@@ -1272,9 +1318,9 @@ function registerTelegramSendFileTool(
           maxBytes: maxUploadBytes,
           signal: extra.signal,
       });
-      const result: TelegramSentMessage =
+      const result: TelegramSentMessage = await reportGone(() =>
         kind === "document"
-          ? await sendDocument!(
+          ? sendDocument!(
               {
                 chat_id: chatId,
                 ...threadParams,
@@ -1284,7 +1330,7 @@ function registerTelegramSendFileTool(
               },
               { signal: extra.signal },
             )
-          : await sendPhoto!(
+          : sendPhoto!(
               {
                 chat_id: chatId,
                 ...threadParams,
@@ -1293,8 +1339,8 @@ function registerTelegramSendFileTool(
                 ...(args.caption === undefined ? {} : { caption: args.caption }),
               },
               { signal: extra.signal },
-            );
-      return telegramSendFileResult(producingConversationScope, kind, result, filename);
+            ));
+      return telegramSendFileResult(producingConversationScope, kind, result, filename, project === undefined ? undefined : { projectId: projectId!, label: project.label });
     },
   );
 }
@@ -1368,22 +1414,106 @@ function telegramSendFileResult(
   kind: "document" | "photo",
   sent: TelegramSentMessage,
   filename: string,
+  project?: { readonly projectId: string; readonly label: string },
 ): {
   content: Array<{ type: "text"; text: string }>;
   structuredContent: Record<string, unknown>;
 } {
-  const destination = producingConversationScope
-    ? "the producing Telegram conversation"
-    : String(sent.chat.id);
+  const destination = project !== undefined
+    ? `project ${JSON.stringify(project.label)}`
+    : producingConversationScope
+      ? "the producing Telegram conversation"
+      : String(sent.chat.id);
   return {
     content: [{ type: "text", text: `Sent ${kind} ${sent.message_id} (${filename}) to ${destination}.` }],
     structuredContent: {
       ok: true,
-      ...(producingConversationScope ? {} : { chat_id: sent.chat.id }),
+      ...(project !== undefined
+        ? { projectId: project.projectId, destination: project.label }
+        : producingConversationScope ? {} : { chat_id: sent.chat.id }),
       message_id: sent.message_id,
       filename,
     },
   };
+}
+
+const TELEGRAM_PROJECT_ID_SCHEMA = z
+  .string()
+  .min(1)
+  .max(128)
+  .optional()
+  .describe("Send into the forum topic of this Telegram-linked project (an id from ListProjects or GetProject whose external.channel is telegram). Exclusive with chat_id and message_thread_id. Refused when the topic is closed or gone; never redirected to General. Names are not unique: ask the user when several projects match.");
+
+const PROJECT_BRIDGE_TIMEOUT_MS = 5_000;
+
+/**
+ * Resolve `projectId` through the app-owned bridge to its forum topic. The
+ * topic's chat and thread ids stay inside this app-owned child; the model only
+ * ever sees the project id and its label. The allowlist is rechecked here and
+ * by the parent.
+ */
+async function resolveTelegramProjectTarget(
+  settings: TelegramSendToolSettings,
+  bridge: AdapterSendToolsDeliveryHistory | undefined,
+  fetchImpl: typeof fetch,
+  projectId: string,
+  toolName: TelegramSendToolName,
+  conflictingTarget: boolean,
+): Promise<{ readonly target: TelegramDestinationTarget; readonly label: string }> {
+  if (conflictingTarget) throw new Error(`${toolName}: projectId cannot be combined with chat_id or message_thread_id.`);
+  if (bridge === undefined) throw new Error(`${toolName}: project destinations are unavailable in this run; nothing was sent.`);
+  let response: Response;
+  try {
+    response = await fetchImpl(new URL("/v1/telegram/project-destination", bridge.bridgeUrl), {
+      method: "POST",
+      headers: { authorization: `Bearer ${bridge.bridgeToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ projectId }),
+      signal: AbortSignal.timeout(PROJECT_BRIDGE_TIMEOUT_MS),
+    });
+  } catch {
+    throw new Error(`${toolName}: the project's Telegram topic could not be resolved; nothing was sent.`);
+  }
+  const body = await response.json().catch(() => undefined) as Record<string, unknown> | undefined;
+  if (!response.ok) {
+    const message = typeof body?.message === "string" && body.message.length <= 300 ? body.message : "the project's Telegram topic could not be resolved";
+    throw new Error(`${toolName}: ${message} Nothing was sent.`);
+  }
+  const target = telegramTargetFromConversation(typeof body?.conversationId === "string" ? body.conversationId : undefined);
+  if (target === undefined || typeof body?.label !== "string") {
+    throw new Error(`${toolName}: the project's Telegram topic could not be resolved; nothing was sent.`);
+  }
+  assertTelegramChatAllowed(settings, target.chatId, toolName);
+  return { target, label: body.label };
+}
+
+/**
+ * Run one send; when Telegram answers that the forum topic no longer exists,
+ * tell the parent (which marks its project "Telegram topic gone") and fail
+ * with an honest message. Other failures pass through unchanged.
+ */
+async function withTopicGoneReport<T>(
+  adapter: TelegramAdapterModule,
+  bridge: AdapterSendToolsDeliveryHistory | undefined,
+  fetchImpl: typeof fetch,
+  conversationId: string,
+  toolName: TelegramSendToolName,
+  send: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await send();
+  } catch (error) {
+    if (telegramTargetFromConversation(conversationId)?.messageThreadId === undefined
+      || typeof adapter.isTelegramTopicGoneError !== "function" || !adapter.isTelegramTopicGoneError(error)) throw error;
+    if (bridge !== undefined) {
+      await fetchImpl(new URL("/v1/telegram/topic-gone", bridge.bridgeUrl), {
+        method: "POST",
+        headers: { authorization: `Bearer ${bridge.bridgeToken}`, "content-type": "application/json" },
+        body: JSON.stringify({ conversationId }),
+        signal: AbortSignal.timeout(PROJECT_BRIDGE_TIMEOUT_MS),
+      }).then((response) => response.body?.cancel()).catch(() => undefined);
+    }
+    throw new Error(`${toolName}: that Telegram forum topic no longer exists; nothing was sent.`, { cause: error });
+  }
 }
 
 /** Resolve the upload bytes + filename from exactly one of base64 `data` or a `path`. */
@@ -1601,6 +1731,7 @@ async function resolveTelegramSendToolSettings(
       ...(producingConversationId === undefined ? {} : { producingConversationId }),
       ...(runOutputDir === undefined ? {} : { runOutputDir }),
       ...(runOutputIdentity === undefined ? {} : { runOutputIdentity }),
+      ...(config.projects?.enabled === true ? { projects: true } : {}),
     };
   } catch (error) {
     options.logger?.warn?.("Telegram send tool skipped because Telegram adapter config is unavailable.", {

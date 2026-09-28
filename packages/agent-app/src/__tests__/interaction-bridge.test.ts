@@ -323,3 +323,36 @@ describe("structured AskUser interaction bridge", () => {
     expect(handle.getAsk(interactionId)).toBeUndefined();
   });
 });
+
+describe("Telegram project destinations on the bridge", () => {
+  it("serves only a Telegram-scoped delivery capability and validates gone reports", async () => {
+    const bridge = await startInteractionBridge({ host: "127.0.0.1", port: 0 });
+    const gone: string[] = [];
+    bridge.registerTelegramProjects({
+      resolveDestination: async () => ({ ok: true, conversationId: "telegram:-1001:77", label: "Trips › Flights" }),
+      reportGone: async (conversationId) => { gone.push(conversationId); },
+    });
+    const post = (path: string, token: string | undefined, body: unknown) => fetch(`${bridge.url}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...(token === undefined ? {} : { authorization: `Bearer ${token}` }) },
+      body: JSON.stringify(body),
+    });
+    const telegram = bridge.issueDeliveryHistoryCapability({ runId: "run-a", producerConversationId: "telegram:-1001", allowedChannels: ["telegram"] });
+    const slack = bridge.issueDeliveryHistoryCapability({ runId: "run-b", producerConversationId: "slack:C1", allowedChannels: ["slack"] });
+    try {
+      expect((await post("/v1/telegram/project-destination", undefined, { projectId: "p1" })).status).toBe(401);
+      expect((await post("/v1/telegram/project-destination", bridge.token, { projectId: "p1" })).status).toBe(401);
+      expect((await post("/v1/telegram/project-destination", slack.token, { projectId: "p1" })).status).toBe(403);
+      const resolved = await post("/v1/telegram/project-destination", telegram.token, { projectId: "p1" });
+      expect(await resolved.json()).toEqual({ conversationId: "telegram:-1001:77", label: "Trips › Flights" });
+      expect((await post("/v1/telegram/topic-gone", telegram.token, { conversationId: "slack:C1" })).status).toBe(400);
+      expect((await post("/v1/telegram/topic-gone", telegram.token, { conversationId: "telegram:-1001:77" })).status).toBe(202);
+      expect(gone).toEqual(["telegram:-1001:77"]);
+      telegram.release();
+      expect((await post("/v1/telegram/project-destination", telegram.token, { projectId: "p1" })).status).toBe(401);
+    } finally {
+      slack.release();
+      await bridge.stop();
+    }
+  });
+});

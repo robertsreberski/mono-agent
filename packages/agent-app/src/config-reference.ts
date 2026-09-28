@@ -420,6 +420,15 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
     example: "run-output",
     description: "Confine Telegram path uploads to the current run output directory.",
   },
+  {
+    jsonPath: "telegram.projects.enabled",
+    env: "--",
+    type: "boolean",
+    defaultLabel: "false",
+    defaultValue: false,
+    example: true,
+    description: "Mirror each forum topic the bot sees (and a forum's General conversation) one way into a web-console project, record observations under `.mono-agent/telegram-topics-v1/`, inject the project's shared context into every turn there, and add `projectId` to the Telegram send tools. Needs a running web console (`mono-agent web run`); project tools on Telegram turns stay gated by `tools.allowedTools`.",
+  },
 ];
 
 export interface ConfigReferenceField {
