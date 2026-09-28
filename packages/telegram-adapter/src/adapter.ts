@@ -34,6 +34,7 @@ import type {
   TelegramVideoNote,
   TelegramVoice,
 } from "./types.js";
+import { telegramConversationId, telegramMessageTarget } from "./conversation.js";
 import { redactTelegramErrorMessage } from "./log-redaction.js";
 
 export type TelegramAttachmentKind =
@@ -160,6 +161,11 @@ export interface TelegramRequestMetadata {
     id: number;
     date?: number;
   };
+  /**
+   * Forum topic (`message_thread_id`) this turn belongs to. Absent for private
+   * chats, non-forum groups and a forum's General topic.
+   */
+  messageThreadId?: number;
   /** Host-only provenance for the native Telegram message targeted by this reply. */
   replyToMessage?: {
     id: number;
@@ -282,7 +288,11 @@ export function buildAgentRequest(
   if (replyToMessage !== undefined) {
     telegramMetadata.replyToMessage = replyToMessage;
   }
-  const conversationId = `telegram:${String(message.chat.id)}`;
+  const target = telegramMessageTarget(message);
+  if (target.messageThreadId !== undefined) {
+    telegramMetadata.messageThreadId = target.messageThreadId;
+  }
+  const conversationId = telegramConversationId(target);
   const request: AgentRequest = {
     conversationId,
     replyTo: { conversationId },

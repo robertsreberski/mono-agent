@@ -32,6 +32,7 @@ Add a `telegram` block to your `mono-agent.config.json`. The channel is opt-in: 
 | `allowAllChats` | boolean | `false` | When `true`, accept any chat; a simultaneous allowlist is retained but no longer restrictive. |
 | `groupMode` | `any` \| `mention` | `any` | Group trigger boundary. `mention` admits native @mentions of this bot and replies to its messages; direct chats and commands are unaffected. |
 | `stripMentionText` | boolean | `true` | In `mention` mode, remove the matching native @mention before sending text to the agent. |
+| `topics` | object[] | `[]` | JSON-only per-forum-topic trigger overrides for allowlisted chats. See [Forum topics](#forum-topics). |
 | `apiRoot` | HTTP(S) URL | Telegram hosted API | Self-hosted Bot API root used for Bot API calls and downloads. |
 | `attachments.maxBytes` | number | `20971520` | Inbound decoded-byte cap. |
 | `attachments.downloadTimeoutMs` | number | `30000` | Per-file download timeout on the URL path. |
@@ -109,6 +110,46 @@ messages starts a turn. Built-in and configured slash commands remain active.
 
 `groupMode: "any"` is the backward-compatible default and runs every message in
 an allowed group. Keep `allowedChatIds` narrow whichever trigger mode you use.
+
+### Forum topics
+
+In a supergroup with topics enabled, each topic is its own conversation. A
+message in a topic runs as `telegram:<chat>:<topic>`, with its own history,
+queue, `/cancel`, `/new`, and `/model`/`/effort` selection. Replies, the typing
+indicator, activity messages, AskUser questions, status lines, generated files,
+and background-job cards go back to that topic. The General topic, private
+chats, and groups without topics keep the chat's single `telegram:<chat>`
+conversation, so their existing history and behaviour are unchanged.
+
+The chat allowlist remains the only access boundary: every topic of an
+allowlisted chat is reachable and no topic of another chat is. By default every
+topic follows `groupMode`. To let one topic run on every message while the rest
+of the group stays mention-only (or the reverse), add a JSON-only override:
+
+```json
+{
+  "telegram": {
+    "allowedChatIds": ["-1001234567890"],
+    "groupMode": "mention",
+    "topics": [
+      { "chatId": "-1001234567890", "topicId": 12, "groupMode": "any" }
+    ]
+  }
+}
+```
+
+`groupMode` is `inherit` (the default), `any`, or `mention`. `chatId` must be in
+`allowedChatIds` unless `allowAllChats` is set, and each chat topic may appear
+once. The General topic always follows the chat-wide `groupMode`. An override
+only changes which delivered messages start a turn; Telegram still needs the
+bot to be an administrator (or have privacy mode off) to deliver unaddressed
+messages at all. The topic ID is the number after the chat in a topic link
+(`https://t.me/c/<chat>/<topic>`), or the `<topic>` part of a conversation ID the
+agent has already handled.
+
+Telegram attaches an implicit reply to the topic's opening message to every
+message typed in a topic. The adapter ignores that implicit reply, so it is not
+quoted into the turn and does not count as a reply to the bot in `mention` mode.
 
 ### Smoke test
 
@@ -208,7 +249,8 @@ model's supported effort choices. The equivalent direct forms are:
 Choosing an entry edits the menu into a concise confirmation. Both menus include
 **Cancel**, which deletes the menu and leaves the current selection unchanged.
 
-Selections are in-memory and scoped to one Telegram chat. They remain active
+Selections are in-memory and scoped to one Telegram conversation (a chat, or
+one forum topic of it). They remain active
 until reset with the matching `default` command or until the process restarts.
 Changing model preserves the explicit effort when compatible and clears it when
 the new model does not support it. A model with no adjustable reasoning reports
@@ -231,8 +273,8 @@ catalog. Programmatic `startTelegramAdapter` callers can opt in by passing
 Use `/new` to cancel current work and start a fresh session for this Telegram
 conversation. Mono-agent retires the chat's warm provider session, atomically
 clears only its canonical conversation history, and clears the skill cache so
-skills and startup context are rebuilt on the next message. Other chats and
-durable memory are untouched. The chat's process-local `/model` and `/effort`
+skills and startup context are rebuilt on the next message. Other chats, other
+forum topics of the same chat, and durable memory are untouched. The chat's process-local `/model` and `/effort`
 selection is retained.
 
 This does not restart the agent process. The built-in app supplies the
@@ -344,9 +386,10 @@ request that produced the run and restrict path delivery to its output directory
 ```
 
 This is opt-in. In strict mode `TelegramSendFile` has no model-facing `chat_id`:
-the host derives the destination from the Telegram conversation that produced
-the run, rechecks it against the adapter allowlist, and omits the raw chat id
-from the tool result. Unexpected destination input cannot redirect the upload;
+the host derives the destination (chat and forum topic) from the Telegram
+conversation that produced the run, rechecks it against the adapter allowlist,
+and omits the raw chat id from the tool result. `TelegramSendMessage` posts into
+the producing topic and rejects a different `message_thread_id`. Unexpected destination input cannot redirect the upload;
 missing or non-Telegram request context fails closed. A file path must realpath
 beneath the current run output directory; traversal, other-run paths, and
 symlink escapes fail closed.
@@ -464,7 +507,7 @@ When the Telegram adapter is enabled the agent can send Telegram messages on its
 }
 ```
 
-The existing `telegram.*` adapter config (token + chat allowlist) remains the destination boundary — the tool can only send where the adapter is already permitted. This powers proactive/async delivery; see [Delivery and Send Tools](/channels/delivery-and-send-tools/) and [Tool Policy](/tools/policy/).
+The existing `telegram.*` adapter config (token + chat allowlist) remains the destination boundary — the tool can only send where the adapter is already permitted. Pass `message_thread_id` to post into a forum topic; omit it for the chat's main conversation (a forum's General topic). This powers proactive/async delivery; see [Delivery and Send Tools](/channels/delivery-and-send-tools/) and [Tool Policy](/tools/policy/).
 
 ## Related
 

@@ -380,6 +380,15 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
     description: "Telegram command definitions handled by the Telegram adapter.",
   },
   {
+    jsonPath: "telegram.topics",
+    env: "--",
+    type: "array",
+    defaultLabel: "[]",
+    defaultValue: [],
+    example: [{ chatId: "-1001234567890", topicId: 12, groupMode: "any" }],
+    description: "Per-forum-topic trigger overrides for allowlisted chats: `groupMode` is `inherit` (default), `any`, or `mention`. The General topic follows `telegram.groupMode`; entries never widen the chat allowlist.",
+  },
+  {
     jsonPath: "telegram.reactions",
     env: "MONO_AGENT_TELEGRAM_REACTIONS",
     type: "object",
@@ -401,7 +410,7 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
     type: "string",
     defaultLabel: "unset",
     example: "producing-conversation",
-    description: "Bind Telegram send tools to the chat that produced the current run.",
+    description: "Bind Telegram send tools to the chat, or forum topic, that produced the current run.",
   },
   {
     jsonPath: "telegram.sendTools.pathScope",
@@ -588,6 +597,19 @@ function setStructuredAppSchemas(root: Record<string, JsonSchema>): void {
         command: { type: "string", pattern: "^[a-z0-9_]{1,32}$" },
         description: { type: "string", minLength: 1, maxLength: 256 },
         prompt: { type: "string", minLength: 1 },
+      },
+    },
+  });
+  setSchemaPath(root, ["telegram", "topics"], {
+    type: "array",
+    items: {
+      type: "object",
+      additionalProperties: false,
+      required: ["chatId", "topicId"],
+      properties: {
+        chatId: { oneOf: [{ type: "string", minLength: 1 }, { type: "integer" }] },
+        topicId: { type: "integer", minimum: 1 },
+        groupMode: { enum: ["inherit", "any", "mention"] },
       },
     },
   });

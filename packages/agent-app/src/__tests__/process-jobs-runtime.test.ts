@@ -207,6 +207,14 @@ describe("process-job request availability", () => {
       request: { conversationId: "telegram:42", text: "hello" } as never,
     }, "telegram")).toMatchObject({ channel: "telegram", replyToConversationId: "telegram:42" });
     expect(processJobOriginForRequest({
+      runId: "run-tg-topic",
+      request: { conversationId: "telegram:-1001:7#2026-09-28", text: "hello" } as never,
+    }, "telegram")).toMatchObject({
+      channel: "telegram",
+      baseConversationId: "telegram:-1001:7",
+      replyToConversationId: "telegram:-1001:7",
+    });
+    expect(processJobOriginForRequest({
       runId: "run-web",
       request: { conversationId: "web:thread-1", text: "hello", metadata: { source: "web" } } as never,
     }, "tui")).toMatchObject({ channel: "web", replyToConversationId: "web:thread-1" });
@@ -240,6 +248,9 @@ describe("process-job request availability", () => {
       ["slack", { conversationId: "telegram:42", replyTo: { conversationId: "slack:C1:1.1" } }],
       ["slack", { conversationId: "slack:c1:1.1", replyTo: { conversationId: "slack:c1:1.1" } }],
       ["telegram", { conversationId: "telegram:042", replyTo: { conversationId: "telegram:042" } }],
+      ["telegram", { conversationId: "telegram:-1001:0", replyTo: { conversationId: "telegram:-1001:0" } }],
+      ["telegram", { conversationId: "telegram:-1001:07", replyTo: { conversationId: "telegram:-1001:07" } }],
+      ["telegram", { conversationId: "telegram:-1001:7:8", replyTo: { conversationId: "telegram:-1001:7:8" } }],
       ["tui", { conversationId: "web:thread-1", replyTo: { conversationId: "web:thread-2" }, metadata: { source: "web" } }],
     ] as const;
     for (const [channelId, request] of cases) {

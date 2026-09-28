@@ -38,6 +38,13 @@ export interface TelegramTextQuote {
 
 export interface TelegramMessage {
   message_id: number;
+  /**
+   * Reply-thread or forum-topic id. Only a topic when {@link is_topic_message}
+   * is true; non-forum supergroups also set it for ordinary reply threads.
+   */
+  message_thread_id?: number;
+  /** True when the message was sent to a forum topic (never the General topic). */
+  is_topic_message?: boolean;
   date?: number;
   chat: TelegramChat;
   from?: TelegramUser;
@@ -47,6 +54,8 @@ export interface TelegramMessage {
   caption_entities?: TelegramMessageEntity[];
   reply_to_message?: TelegramMessage;
   quote?: TelegramTextQuote;
+  /** Present on the service message that opens a forum topic. */
+  forum_topic_created?: { name?: string; [key: string]: unknown };
   /** Set on each message of a multi-photo/video album; shared across the group. */
   media_group_id?: string;
   animation?: unknown;
@@ -132,6 +141,8 @@ export interface TelegramInlineKeyboardMarkup {
 
 export interface TelegramSendMessageParams {
   chat_id: TelegramChatId;
+  /** Forum topic to post into; omit for private chats, non-forum groups and the General topic. */
+  message_thread_id?: number;
   text: string;
   parse_mode?: string;
   reply_to_message_id?: number;
@@ -146,12 +157,16 @@ export interface TelegramSendMessageParams {
 
 export interface TelegramSendChatActionParams {
   chat_id: TelegramChatId;
+  /** Forum topic to post into; omit for private chats, non-forum groups and the General topic. */
+  message_thread_id?: number;
   /** Telegram chat action, e.g. "typing". */
   action: string;
 }
 
 export interface TelegramSendDocumentParams {
   chat_id: TelegramChatId;
+  /** Forum topic to post into; omit for private chats, non-forum groups and the General topic. */
+  message_thread_id?: number;
   /**
    * Raw file bytes to upload, OR a string passed through to the server
    * untouched: a file_id, an HTTP URL, or a `file://` URI (accepted by a
@@ -168,6 +183,8 @@ export interface TelegramSendDocumentParams {
 
 export interface TelegramSendPhotoParams {
   chat_id: TelegramChatId;
+  /** Forum topic to post into; omit for private chats, non-forum groups and the General topic. */
+  message_thread_id?: number;
   /** Raw image bytes to upload. */
   photo: Uint8Array;
   filename?: string;

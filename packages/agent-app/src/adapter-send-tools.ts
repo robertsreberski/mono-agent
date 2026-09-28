@@ -21,6 +21,12 @@ import * as z from "zod/v4";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import { LEGACY_TOOL_ALIASES } from "./modules/known-tools.js";
 import { appendPostedMessage } from "./posted-message-index.js";
+import {
+  telegramConversationIdFor,
+  telegramTargetFromConversation,
+  telegramTopicOfMessage,
+  type TelegramDestinationTarget,
+} from "./telegram-destination.js";
 
 // Lazy per module (mirrors channels.ts): a config without slack/telegram
 // send-tool policy never pulls either SDK in.
@@ -1076,6 +1082,12 @@ function registerTelegramSendTool(
         chat_id: z.union([z.string().min(1), z.number().int()]).describe("Telegram chat id from the adapter allowlist."),
         text: z.string().min(1).describe("Message text to send."),
         parse_mode: z.string().min(1).optional().describe("Optional Telegram parse mode, e.g. MarkdownV2 or HTML."),
+        message_thread_id: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("Optional forum topic id to post into. Omit for the chat's main conversation (a forum's General topic)."),
         reply_to_message_id: z.number().int().optional().describe("Optional message id to reply to."),
         disable_web_page_preview: z.boolean().optional().describe("Disable Telegram link previews."),
         reply_options: z
@@ -1088,9 +1100,11 @@ function registerTelegramSendTool(
     },
     async (args, extra) => {
       assertTelegramChatAllowed(settings, args.chat_id, "TelegramSendMessage");
+      const messageThreadId = resolveTelegramThreadId(settings, args.message_thread_id, "TelegramSendMessage");
       const result: TelegramSentMessage = await client.sendMessage(
         {
           chat_id: args.chat_id,
+          ...(messageThreadId === undefined ? {} : { message_thread_id: messageThreadId }),
           text: args.text,
           ...(args.parse_mode === undefined ? {} : { parse_mode: args.parse_mode }),
           ...(args.reply_to_message_id === undefined ? {} : { reply_to_message_id: args.reply_to_message_id }),
@@ -1108,10 +1122,18 @@ function registerTelegramSendTool(
         },
         { signal: extra.signal },
       );
+      // Record against the conversation the message actually landed in: a forum
+      // topic keeps its own history, everything else the chat's main one. A
+      // result without thread fields (a minimal custom client) trusts the request.
+      const landedTopic = telegramTopicOfMessage(result)
+        ?? (result.message_thread_id === undefined ? messageThreadId : undefined);
       const history = await recordAdapterDeliveryHistory({
         settings: deliveryHistory,
         fetchImpl,
-        conversationId: `telegram:${String(result.chat.id)}`,
+        conversationId: telegramConversationIdFor({
+          chatId: result.chat.id,
+          ...(landedTopic === undefined ? {} : { messageThreadId: landedTopic }),
+        }),
         text: args.text,
         idempotencyKey: `adapter-send:telegram:${String(result.chat.id)}:${String(result.message_id)}`,
       });
@@ -1121,6 +1143,7 @@ function registerTelegramSendTool(
         structuredContent: {
           ok: true,
           chat_id: result.chat.id,
+          ...(landedTopic === undefined ? {} : { message_thread_id: landedTopic }),
           message_id: result.message_id,
           ...(args.reply_options === undefined ? {} : { reply_options: args.reply_options }),
           ...(history === undefined ? {} : { history }),
@@ -1154,6 +1177,12 @@ function registerTelegramSendFileTool(
           chat_id: z
             .union([z.string().min(1), z.number().int()])
             .describe("Telegram chat id from the adapter allowlist."),
+          message_thread_id: z
+            .number()
+            .int()
+            .positive()
+            .optional()
+            .describe("Optional forum topic id to post into. Omit for the chat's main conversation (a forum's General topic)."),
         }),
     data: z.string().min(1).optional().describe("Base64-encoded file bytes. Provide this or `path`."),
     path: z.string().min(1).optional().describe("Path to a file to upload (resolved against the agent working dir). Provide this or `data`."),
@@ -1178,7 +1207,12 @@ function registerTelegramSendFileTool(
         throw new Error(`TelegramSendFile: the ${kind} sender is unavailable.`);
       }
       const requestedChatId = "chat_id" in args ? args.chat_id : undefined;
-      const chatId = resolveTelegramSendFileChatId(settings, requestedChatId);
+      const requestedThreadId = "message_thread_id" in args ? args.message_thread_id : undefined;
+      const destination = resolveTelegramSendFileDestination(settings, requestedChatId, requestedThreadId);
+      const chatId = destination.chatId;
+      const threadParams = destination.messageThreadId === undefined
+        ? {}
+        : { message_thread_id: destination.messageThreadId };
       if ((args.data !== undefined) === (args.path !== undefined)) {
         throw new Error("provide exactly one of `data` (base64) or `path`.");
       }
@@ -1206,6 +1240,7 @@ function registerTelegramSendFileTool(
           const sent: TelegramSentMessage = await sendDocument!(
             {
               chat_id: chatId,
+              ...threadParams,
               document: pathToFileURL(uploadPath).href,
               ...(args.caption === undefined ? {} : { caption: args.caption }),
             },
@@ -1234,6 +1269,7 @@ function registerTelegramSendFileTool(
           ? await sendDocument!(
               {
                 chat_id: chatId,
+                ...threadParams,
                 document: bytes,
                 filename,
                 ...(args.caption === undefined ? {} : { caption: args.caption }),
@@ -1243,6 +1279,7 @@ function registerTelegramSendFileTool(
           : await sendPhoto!(
               {
                 chat_id: chatId,
+                ...threadParams,
                 photo: bytes,
                 filename,
                 ...(args.caption === undefined ? {} : { caption: args.caption }),
@@ -1254,23 +1291,56 @@ function registerTelegramSendFileTool(
   );
 }
 
-function resolveTelegramSendFileChatId(
+function resolveTelegramSendFileDestination(
   settings: TelegramSendToolSettings,
   requestedChatId: TelegramChatId | undefined,
-): TelegramChatId {
+  requestedThreadId: number | undefined,
+): { readonly chatId: TelegramChatId; readonly messageThreadId?: number } {
   if (settings.sendTools?.scope === "producing-conversation") {
-    const producingChatId = telegramChatIdFromConversation(settings.producingConversationId);
-    if (producingChatId === undefined) {
+    const producing = producingTelegramTarget(settings);
+    if (producing === undefined) {
       throw new Error("TelegramSendFile: producing Telegram conversation context is unavailable.");
     }
+    const producingChatId = String(producing.chatId);
     assertTelegramChatAllowed(settings, producingChatId, "TelegramSendFile");
-    return producingChatId;
+    return producing.messageThreadId === undefined
+      ? { chatId: producingChatId }
+      : { chatId: producingChatId, messageThreadId: producing.messageThreadId };
   }
   if (requestedChatId === undefined) {
     throw new Error("TelegramSendFile: chat_id is required outside producing-conversation scope.");
   }
   assertTelegramChatAllowed(settings, requestedChatId, "TelegramSendFile");
-  return requestedChatId;
+  return requestedThreadId === undefined
+    ? { chatId: requestedChatId }
+    : { chatId: requestedChatId, messageThreadId: requestedThreadId };
+}
+
+/**
+ * The forum topic a Telegram send targets. In producing-conversation scope the
+ * send stays in the producing conversation: its topic is applied automatically
+ * and a different explicit topic is rejected.
+ */
+function resolveTelegramThreadId(
+  settings: TelegramSendToolSettings,
+  requestedThreadId: number | undefined,
+  toolName: TelegramSendToolName,
+): number | undefined {
+  if (settings.sendTools?.scope !== "producing-conversation") {
+    return requestedThreadId;
+  }
+  const producing = producingTelegramTarget(settings);
+  if (producing === undefined) {
+    throw new Error(`${toolName}: producing Telegram conversation context is unavailable.`);
+  }
+  if (requestedThreadId !== undefined && requestedThreadId !== producing.messageThreadId) {
+    throw new Error(`${toolName}: message_thread_id must match the producing Telegram conversation.`);
+  }
+  return producing.messageThreadId;
+}
+
+function producingTelegramTarget(settings: TelegramSendToolSettings): TelegramDestinationTarget | undefined {
+  return telegramTargetFromConversation(settings.producingConversationId);
 }
 
 function telegramSendFileResult(
@@ -1534,7 +1604,8 @@ function assertTelegramChatAllowed(
 ): void {
   const normalized = String(chatId);
   if (settings.sendTools?.scope === "producing-conversation") {
-    const producingChatId = telegramChatIdFromConversation(settings.producingConversationId);
+    const producing = producingTelegramTarget(settings);
+    const producingChatId = producing === undefined ? undefined : String(producing.chatId);
     if (producingChatId === undefined) {
       throw new Error(`${toolName}: producing Telegram conversation context is unavailable.`);
     }
@@ -1546,14 +1617,6 @@ function assertTelegramChatAllowed(
     return;
   }
   throw new Error(`${toolName}: chat_id is not allowed by Telegram adapter config.`);
-}
-
-function telegramChatIdFromConversation(conversationId: string | undefined): string | undefined {
-  if (conversationId === undefined) return undefined;
-  const base = conversationId.split("#", 1)[0] ?? conversationId;
-  if (!base.startsWith("telegram:")) return undefined;
-  const chatId = base.slice("telegram:".length);
-  return chatId.length === 0 ? undefined : chatId;
 }
 
 const SAFE_ADAPTER_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/u;

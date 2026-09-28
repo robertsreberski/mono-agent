@@ -193,8 +193,9 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `telegram.quietHours` | `object` | `--` | unset | `{"timezone":"UTC","start":"22:00","end":"07:00"}` | Quiet-hours rules for Telegram notifications. |
 | `telegram.reactions` | `object` | `MONO_AGENT_TELEGRAM_REACTIONS` | unset | `{"working":true,"done":true,"error":true}` | Telegram lifecycle reactions. The env override is boolean and toggles all states. |
 | `telegram.sendTools.pathScope` | `string` | `--` | unset | `run-output` | Confine Telegram path uploads to the current run output directory. |
-| `telegram.sendTools.scope` | `string` | `--` | unset | `producing-conversation` | Bind Telegram send tools to the chat that produced the current run. |
+| `telegram.sendTools.scope` | `string` | `--` | unset | `producing-conversation` | Bind Telegram send tools to the chat, or forum topic, that produced the current run. |
 | `telegram.stripMentionText` | `boolean` | `MONO_AGENT_TELEGRAM_STRIP_MENTION_TEXT` | true | `true` | Removes matching native @mentions from responder text in `mention` mode; replies without a mention are unchanged. |
+| `telegram.topics` | `array` | `--` | [] | `[{"chatId":"-1001234567890","topicId":12,"groupMode":"any"}]` | Per-forum-topic trigger overrides for allowlisted chats: `groupMode` is `inherit` (default), `any`, or `mention`. The General topic follows `telegram.groupMode`; entries never widen the chat allowlist. |
 | `telegram.transcription.endpoint` | `string` | `MONO_AGENT_TELEGRAM_TRANSCRIPTION_ENDPOINT` | unset | `example` | Configures transcription.endpoint for the telegram section. |
 | `telegram.transcription.language` | `string` | `MONO_AGENT_TELEGRAM_TRANSCRIPTION_LANGUAGE` | unset | `example` | Configures transcription.language for the telegram section. |
 | `telegram.transcription.model` | `string` | `MONO_AGENT_TELEGRAM_TRANSCRIPTION_MODEL` | unset | `example` | Configures transcription.model for the telegram section. |

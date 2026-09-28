@@ -3018,6 +3018,41 @@
             }
           }
         },
+        "topics": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "chatId",
+              "topicId"
+            ],
+            "properties": {
+              "chatId": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ]
+              },
+              "topicId": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "groupMode": {
+                "enum": [
+                  "inherit",
+                  "any",
+                  "mention"
+                ]
+              }
+            }
+          }
+        },
         "reactions": {
           "oneOf": [
             {
@@ -3068,7 +3103,7 @@
           "additionalProperties": false,
           "properties": {
             "scope": {
-              "description": "Bind Telegram send tools to the chat that produced the current run.",
+              "description": "Bind Telegram send tools to the chat, or forum topic, that produced the current run.",
               "examples": [
                 "producing-conversation"
               ],

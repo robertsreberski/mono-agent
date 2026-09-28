@@ -6,6 +6,7 @@ import type {
   TelegramAdapterStartOptions,
   TelegramAdapterStartResult,
   TelegramChatId,
+  TelegramDestination,
   TelegramTranscriptionConfig,
   TelegramRuntimeControls,
 } from "@mono-agent/telegram-adapter";
@@ -15,6 +16,7 @@ import { buildChannelConfigView } from "../channel-config-view.js";
 import { isChannelConfigured } from "../channel-gate.js";
 import type { ChannelGateSpec } from "../channel-gate.js";
 import type { ChannelDriver, ChannelStartInput } from "../channels.js";
+import { telegramTargetFromConversation, type TelegramDestinationTarget } from "../telegram-destination.js";
 import { unconfiguredChannelView } from "./shared.js";
 
 type TelegramAdapterModule = typeof import("@mono-agent/telegram-adapter");
@@ -72,13 +74,13 @@ export function createTelegramChannelDriver(
       const result = await startAdapter(telegramStartOptions(input, overrides));
       const interactionSink: ChannelInteractionSink = {
         presentAsk: async (conversationId, snapshot) => {
-          await result.presentAsk(requireAllowedTelegramChat(conversationId, input), snapshot);
+          await result.presentAsk(requireAllowedTelegramTarget(conversationId, input), snapshot);
         },
         updateAsk: async (conversationId, snapshot) => {
-          await result.updateAsk(requireAllowedTelegramChat(conversationId, input), snapshot);
+          await result.updateAsk(requireAllowedTelegramTarget(conversationId, input), snapshot);
         },
         postStatus: async (conversationId, text, statusOptions) => {
-          await result.postStatus(requireAllowedTelegramChat(conversationId, input), text, statusOptions);
+          await result.postStatus(requireAllowedTelegramTarget(conversationId, input), text, statusOptions);
         },
       };
       input.interaction?.registerSink("telegram", interactionSink);
@@ -96,11 +98,11 @@ export function createTelegramChannelDriver(
                 retryable: false,
               };
             }
-            const chatId = telegramChatIdFromConversation(conversationId);
-            if (chatId === undefined
-              || (!input.config.allowAllChats && !input.config.allowedChatIds.includes(String(chatId)))) {
+            const target = telegramTargetFromConversation(conversationId);
+            if (target === undefined || !isAllowedTelegramChat(target, input)) {
               return { delivered: false, reason: "telegram chat is not in the adapter allowlist" };
             }
+            const destination = adapterDestination(target);
             const silent = input.config.quietHours !== undefined
               && adapter.isWithinQuietHours(new Date(), input.config.quietHours);
             if (result.updateProcessJob === undefined) {
@@ -116,7 +118,7 @@ export function createTelegramChannelDriver(
               ...(retirementOnly === true ? { retirementOnly: true } : {}),
             };
             return await result.updateProcessJob(
-              chatId,
+              destination,
               processJob,
               Object.keys(updateOptions).length === 0 ? undefined : updateOptions,
             );
@@ -131,14 +133,14 @@ export function createTelegramChannelDriver(
                 retryable: false,
               };
             }
-            const chatId = telegramChatIdFromConversation(conversationId);
-            if (chatId === undefined
-              || (!input.config.allowAllChats && !input.config.allowedChatIds.includes(String(chatId)))) {
+            const target = telegramTargetFromConversation(conversationId);
+            if (target === undefined || !isAllowedTelegramChat(target, input)) {
               return { delivered: false, reason: "telegram chat is not in the adapter allowlist" };
             }
+            const destination = adapterDestination(target);
             const silent = input.config.quietHours !== undefined
               && adapter.isWithinQuietHours(new Date(), input.config.quietHours);
-            const outcome = await result.notify(chatId, text, {
+            const outcome = await result.notify(destination, text, {
               deliveryKey,
               steerActive: true,
               ...(silent ? { silent: true } : {}),
@@ -158,15 +160,16 @@ export function createTelegramChannelDriver(
               retryable: false,
             };
           }
-          const chatId = telegramChatIdFromConversation(conversationId);
-          if (chatId === undefined) {
+          const target = telegramTargetFromConversation(conversationId);
+          if (target === undefined) {
             input.logger?.warn?.("Telegram proactive notify skipped: unparseable destination.", { conversationId });
             return { delivered: false, reason: "unparseable telegram destination" };
           }
-          if (!input.config.allowAllChats && !input.config.allowedChatIds.includes(String(chatId))) {
+          if (!isAllowedTelegramChat(target, input)) {
             input.logger?.warn?.("Telegram proactive notify skipped: destination not in allowlist.", { conversationId });
             return { delivered: false, reason: "telegram chat is not in the adapter allowlist" };
           }
+          const destination = adapterDestination(target);
           const silent = input.config.quietHours !== undefined
             && adapter.isWithinQuietHours(new Date(), input.config.quietHours);
           if (processJob !== undefined) {
@@ -181,7 +184,7 @@ export function createTelegramChannelDriver(
             }
             const surfaceOutcome = await updater.call(
               result,
-              chatId,
+              destination,
               processJob,
               silent ? { silent: true } : undefined,
             );
@@ -196,7 +199,7 @@ export function createTelegramChannelDriver(
                 ...(deliveryKey === undefined ? {} : { deliveryKey }),
                 ...(silent ? { silent: true } : {}),
               };
-          const outcome = await result.notify(chatId, text, notifyOptions);
+          const outcome = await result.notify(destination, text, notifyOptions);
           return processJob === undefined ? outcome : settleProcessJobWake(outcome);
         },
         recordContinuationHistory: async (historyInput: {
@@ -205,7 +208,7 @@ export function createTelegramChannelDriver(
           readonly deliveryKey: string;
         }) => {
           try {
-            requireAllowedTelegramChat(historyInput.conversationId, input);
+            requireAllowedTelegramTarget(historyInput.conversationId, input);
           } catch {
             return { recorded: false as const, code: "telegram_destination_not_allowlisted" };
           }
@@ -272,31 +275,49 @@ function telegramAttachmentOptions(
   };
 }
 
-function requireAllowedTelegramChat(
-  conversationId: string,
+/**
+ * The chat allowlist is the only authorization boundary: a forum topic is
+ * reachable exactly when its chat is allowlisted, and a topic id never
+ * authorizes anything on its own.
+ */
+function isAllowedTelegramChat(
+  target: TelegramDestinationTarget,
   input: ChannelStartInput<TelegramAdapterConfig>,
-): TelegramChatId {
-  const chatId = telegramChatIdFromConversation(conversationId);
-  if (chatId === undefined) {
-    throw new Error(`unparseable telegram destination: ${conversationId}`);
-  }
-  if (!input.config.allowAllChats && !input.config.allowedChatIds.includes(String(chatId))) {
-    throw new Error("telegram chat is not in the adapter allowlist.");
-  }
-  return chatId;
+): boolean {
+  return input.config.allowAllChats || input.config.allowedChatIds.includes(String(target.chatId));
 }
 
-/** Extract a Telegram chat id from a `telegram:<chat>` conversation id. */
+/**
+ * The adapter-facing destination: a bare chat id for the chat's main
+ * conversation (so custom starters typed for chat ids keep working) and an
+ * explicit chat + topic target for a forum topic.
+ */
+function adapterDestination(target: TelegramDestinationTarget): TelegramDestination {
+  return target.messageThreadId === undefined
+    ? target.chatId
+    : { chatId: target.chatId, messageThreadId: target.messageThreadId };
+}
+
+function requireAllowedTelegramTarget(
+  conversationId: string,
+  input: ChannelStartInput<TelegramAdapterConfig>,
+): TelegramDestination {
+  const target = telegramTargetFromConversation(conversationId);
+  if (target === undefined) {
+    throw new Error(`unparseable telegram destination: ${conversationId}`);
+  }
+  if (!isAllowedTelegramChat(target, input)) {
+    throw new Error("telegram chat is not in the adapter allowlist.");
+  }
+  return adapterDestination(target);
+}
+
+/**
+ * Extract the Telegram chat id from a `telegram:<chat>` or forum-topic
+ * `telegram:<chat>:<topic>` conversation id. Malformed ids return undefined.
+ */
 export function telegramChatIdFromConversation(conversationId: string): TelegramChatId | undefined {
-  const prefix = "telegram:";
-  if (!conversationId.startsWith(prefix)) {
-    return undefined;
-  }
-  const raw = conversationId.slice(prefix.length).split("#", 1)[0]?.trim();
-  if (raw === undefined || raw.length === 0) {
-    return undefined;
-  }
-  return /^-?\d+$/u.test(raw) ? Number(raw) : raw;
+  return telegramTargetFromConversation(conversationId)?.chatId;
 }
 
 function telegramStartOptions(
@@ -314,6 +335,7 @@ function telegramStartOptions(
     allowAllChats: input.config.allowAllChats,
     groupMode: input.config.groupMode ?? "any",
     stripMentionText: input.config.stripMentionText ?? true,
+    ...(input.config.topics === undefined ? {} : { topics: input.config.topics }),
     responder: input.responder,
     allowedUpdates: ["message", "callback_query"],
     runtimeControls,
@@ -327,7 +349,7 @@ function telegramStartOptions(
     },
     messages: {
       welcomeText: "Agent is online. Send a message to run the configured runtime.",
-      helpText: "Send a message to talk to the agent. Use /new for a fresh conversation, /model and /effort for this chat, or /cancel to stop an in-flight response.",
+      helpText: "Send a message to talk to the agent. Use /new for a fresh conversation, /model and /effort for this chat or topic, or /cancel to stop an in-flight response.",
       unauthorizedText: "This chat is not allowlisted for this agent.",
       errorText: telegramErrorText,
     },

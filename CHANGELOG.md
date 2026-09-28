@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Give each Telegram forum topic its own conversation, history, queue,
+  `/cancel`, `/new`, and `/model`/`/effort` selection, and send replies,
+  activity, questions, status lines, files, and background-job cards back to
+  the originating topic. The General topic, private chats, and non-forum groups
+  keep their existing `telegram:<chat>` conversation. Automations can target a
+  topic with `notifyConversationId: "telegram:<chat>:<topic>"`, send tools
+  accept `message_thread_id`, and the JSON-only `telegram.topics` list sets a
+  per-topic `groupMode` (`inherit`, `any`, `mention`) without widening the chat
+  allowlist.
+
 - Keep the web composer's input focused and its caret after inserting a skill
   from the browser, including on touch devices where focus must retain the
   software keyboard.

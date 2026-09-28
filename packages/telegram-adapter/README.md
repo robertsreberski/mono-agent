@@ -57,6 +57,20 @@ admission. Direct chats and slash commands are unchanged. The bot must receive
 group updates (for example, by being a group administrator); the adapter owns
 the local trigger filter. `telegram.stripMentionText` defaults to `true`.
 
+Forum topics are separate conversations. A message in a topic runs as
+`telegram:<chat>:<topic>`, and every reply, typing action, activity message,
+AskUser question, status line, generated file, and process-job card goes back to
+that topic (`message_thread_id`). The General topic, private chats, and
+non-forum groups keep `telegram:<chat>`. Only `is_topic_message` marks a topic,
+so ordinary reply threads in non-forum supergroups stay in the chat
+conversation, and the implicit reply Telegram attaches to a topic's opening
+message is dropped before reply-context rendering and mention matching. The
+JSON-only `telegram.topics` list overrides the trigger rule per topic
+(`{ chatId, topicId, groupMode: "inherit" | "any" | "mention" }`); entries must
+name allowlisted chats and never widen the allowlist. Proactive `notify`,
+`presentAsk`, `postStatus`, and `updateProcessJob` accept either a bare chat id
+(the main conversation) or `{ chatId, messageThreadId }`.
+
 ### Programmatic use
 
 Install the package directly only when composing a custom host:
@@ -296,6 +310,7 @@ The request lifecycle is:
 | [`config.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/telegram-adapter/src/config.ts) | Config/env loading, validation, redaction, quiet hours, and feature settings. |
 | [`start.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/telegram-adapter/src/start.ts) | Recommended programmatic composition root. |
 | [`bot.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/telegram-adapter/src/bot.ts) | Polling lifecycle, authorization, commands, callbacks, queues, and notification. |
+| [`conversation.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/telegram-adapter/src/conversation.ts) | Chat and forum-topic conversation ids, topic detection, and implicit topic-reply removal. |
 | [`adapter.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/telegram-adapter/src/adapter.ts) | Request normalization, attachment metadata, download limits, and responder types. |
 | [`grammy-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/telegram-adapter/src/grammy-client.ts) | grammY-backed Bot API and file-transfer boundary. |
 | [`message-stream.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/telegram-adapter/src/message-stream.ts) | Telegram delivery, retry classification, transient activity, and finalization. |
@@ -374,9 +389,11 @@ TelegramBotController
 TelegramChat
 TelegramChatId
 TelegramCommandConfig
+TelegramConversationTarget
 TelegramDeleteMessageParams
 TelegramDeleteWebhookParams
 TelegramDeliveryError
+TelegramDestination
 TelegramDocument
 TelegramDocumentAttachment
 TelegramEditMessageTextParams
@@ -407,6 +424,8 @@ TelegramSendPhotoParams
 TelegramSendToolsConfig
 TelegramSentMessage
 TelegramTextQuote
+TelegramTopicConfig
+TelegramTopicTriggerMode
 TelegramTranscriber
 TelegramTranscriptionConfig
 TelegramUpdate
@@ -429,10 +448,13 @@ isTelegramReplyCallbackData
 isWithinQuietHours
 loadTelegramAdapterConfig
 parseTelegramAskUserCallbackData
+parseTelegramConversationId
 redactTelegramAdapterConfig
 renderTelegramMarkdown
 startTelegramAdapter
 telegramAskUserCallbackData
+telegramConversationId
+telegramMessageThreadId
 telegramReplyCallbackData
 ```
 
