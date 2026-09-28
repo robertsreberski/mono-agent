@@ -18,8 +18,20 @@ export {
 } from "./state-paths.js";
 export type { WebStatePathOptions, WebStatePaths } from "./state-paths.js";
 
-export { deliverWebNotification, createWebConsoleToolClient } from "./notification-client.js";
+export {
+  beginWebExternalTurn,
+  createWebConsoleToolClient,
+  deliverWebNotification,
+  markWebExternalConversationGone,
+  resolveWebExternalProjectDestination,
+  syncWebExternalConversations,
+} from "./notification-client.js";
+export { withProjectContext } from "./project-context.js";
+export type { ProjectContextSource } from "./project-context.js";
 export type {
+  BeginWebExternalTurnInput,
+  WebExternalObservationInput,
+  WebExternalTurn,
   DeliverWebNotificationInput,
   DeliverWebNotificationOptions,
   DeliverWebNotificationResult,
@@ -117,6 +129,9 @@ export type {
   CreateWebTagInput,
   PatchWebTagInput,
   WebTagChangedPayload,
+  WebExternalConversation,
+  WebExternalConversationChannel,
+  WebExternalConversationState,
   WebProject,
   WebProjectColor,
   WebConversationMarkerPart,
@@ -165,4 +180,4 @@ export {
 
 export { WebConsoleError } from "./errors.js";
 
-export type { ConsoleToolScope, ConsoleToolOperation, ConsoleToolName } from "./console-tools.js";
+export type { ConsoleToolScope, ConsoleToolOperation, ConsoleToolName, ExternalConsoleToolScope, WebConsoleToolScope } from "./console-tools.js";

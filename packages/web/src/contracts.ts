@@ -510,6 +510,31 @@ export interface WebProjectIdentity {
   readonly color: WebProjectColor;
 }
 
+/** Channels whose conversations can be mirrored into a project. */
+export type WebExternalConversationChannel = "telegram";
+
+/**
+ * `open`/`closed` follow the channel's own lifecycle messages; `gone` means a
+ * send proved the conversation no longer exists (Telegram sends no deletion
+ * update). A gone conversation keeps its project, context and web chats.
+ */
+export type WebExternalConversationState = "open" | "closed" | "gone";
+
+/**
+ * A conversation that lives on another channel, such as a Telegram forum
+ * topic, mirrored one way into a project. The id is opaque; channel routing
+ * identities never leave the host. Its history is not viewable in the console.
+ */
+export interface WebExternalConversation {
+  readonly id: string;
+  readonly channel: WebExternalConversationChannel;
+  /** Sanitized `Chat › Topic` label. */
+  readonly label: string;
+  readonly state: WebExternalConversationState;
+  readonly projectId: string | null;
+  readonly lastSeenAt: string;
+}
+
 export interface WebProject {
   readonly color?: WebProjectColor;
   readonly id: string;
@@ -525,6 +550,8 @@ export interface WebProject {
   /** Members with a foreground turn running. */
   readonly runningCount: number;
   readonly monthUsd?: number;
+  /** The channel conversation this project mirrors, when it is bound to one. */
+  readonly external?: WebExternalConversation;
 }
 
 export interface CreateWebProjectInput {

@@ -294,6 +294,46 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
   { version: 37, name: "conversation-wake-schedules", up: ({ database }) => {
     assertWakeScheduleShape(database);
   } },
+  { version: 38, name: "external-conversation-projects", up: ({ database }) => {
+    // Additive only: channel conversations (Telegram forum topics) mirrored one
+    // way into projects, and receipts for console tools called from their
+    // turns. Nothing existing is rewritten, so an older database opens with
+    // its projects, threads and receipts unchanged.
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS external_conversations (
+        id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL REFERENCES agents(source_id) ON DELETE CASCADE,
+        channel TEXT NOT NULL CHECK (channel IN ('telegram')),
+        external_key TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('topic', 'main')),
+        chat_label TEXT,
+        topic_label TEXT,
+        state TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open', 'closed', 'gone')),
+        state_at TEXT NOT NULL,
+        project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+        project_auto_named INTEGER NOT NULL DEFAULT 1 CHECK (project_auto_named IN (0, 1)),
+        detached_at TEXT,
+        first_seen_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(source_id, channel, external_key)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS external_conversations_one_per_project
+        ON external_conversations(project_id) WHERE project_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS external_conversations_by_source
+        ON external_conversations(source_id, last_seen_at);
+      CREATE TABLE IF NOT EXISTS external_tool_operations (
+        operation_id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL REFERENCES agents(source_id) ON DELETE CASCADE,
+        scope_key TEXT NOT NULL,
+        turn_key TEXT NOT NULL,
+        payload_sha256 TEXT NOT NULL,
+        result_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS external_tool_operations_by_age ON external_tool_operations(created_at);
+    `);
+  } },
 ] satisfies WebStorageMigration[]).map((step) => Object.freeze(step)));
 
 export const WEB_STORAGE_SCHEMA_VERSION = WEB_STORAGE_MIGRATIONS.at(-1)!.version;
@@ -343,6 +383,11 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       threads: ["trigger_kind", "run_model", "run_effort", "project_id", "read_revision"],
       console_tool_operations: ["operation_id", "thread_id", "turn_id", "payload_sha256", "result_json"],
       pending_project_memberships: ["thread_id", "project_id", "turn_id"],
+      external_conversations: [
+        "id", "source_id", "channel", "external_key", "kind", "chat_label", "topic_label", "state", "state_at",
+        "project_id", "project_auto_named", "detached_at", "first_seen_at", "last_seen_at", "updated_at",
+      ],
+      external_tool_operations: ["operation_id", "source_id", "scope_key", "turn_key", "payload_sha256", "result_json", "created_at"],
       tags: ["id", "source_id", "name", "color", "created_at", "updated_at", "revision"],
       thread_tags: ["thread_id", "tag_id", "created_at"],
       projects: ["color", "source_id", "name", "context", "created_at", "updated_at", "archived_at", "revision"],
@@ -431,7 +476,14 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       ["restart_proposal_bindings_by_source", ["source_id", "generation"]],
       ["projects_by_source", ["source_id", "archived_at", "updated_at", "id"]],
       ["threads_by_project", ["project_id", "archived_at", "updated_at", "id"]],
+      ["external_conversations_one_per_project", ["project_id"]],
+      ["external_conversations_by_source", ["source_id", "last_seen_at"]],
     ] as const) assertIndex(database, index, expected);
+    const bindingIndex = database.prepare("SELECT sql FROM sqlite_master WHERE name = 'external_conversations_one_per_project'")
+      .get() as { sql: string } | undefined;
+    if (!/\bUNIQUE\s+INDEX\b/iu.test(bindingIndex?.sql ?? "") || !/\bWHERE\s+project_id\s+IS\s+NOT\s+NULL\b/iu.test(bindingIndex?.sql ?? "")) {
+      throw new Error("Invalid external conversation binding fence.");
+    }
     const restartIndex = database.prepare("SELECT sql FROM sqlite_master WHERE name = 'restart_operations_one_active_source'")
       .get() as { sql: string } | undefined;
     if (!/\bUNIQUE\s+INDEX\b/iu.test(restartIndex?.sql ?? "")
@@ -454,6 +506,9 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       ["restart_proposal_bindings", "message_id", "messages", "CASCADE"],
       ["restart_proposal_bindings", "thread_id", "threads", "CASCADE"],
       ["restart_proposal_bindings", "source_id", "agents", "CASCADE"],
+      ["external_conversations", "source_id", "agents", "CASCADE"],
+      ["external_conversations", "project_id", "projects", "SET NULL"],
+      ["external_tool_operations", "source_id", "agents", "CASCADE"],
     ] as const) {
       const keys = database.prepare(`PRAGMA foreign_key_list(${table})`).all() as Array<{
         from: string; table: string; to: string; on_delete: string;

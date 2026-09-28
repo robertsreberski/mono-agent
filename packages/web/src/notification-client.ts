@@ -257,12 +257,23 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 /** App-owned callback client. Discovery and credentials stay inside this closure. */
 export async function createWebConsoleToolClient(
-  scope: import("./console-tools.js").ConsoleToolScope,
+  scope: import("./console-tools.js").WebConsoleToolScope,
   options: DeliverWebNotificationOptions = {},
 ): Promise<(operation: import("./console-tools.js").ConsoleToolOperation) => Promise<Record<string, unknown>>> {
   const ingress = await readIngressRecord(resolveWebStatePaths(options).notificationIngress);
+  const request = consoleToolRequester(ingress, options);
+  const issued = await request(ingress.token, scope);
+  if (typeof issued.capability !== "string" || !/^[a-zA-Z0-9_-]{40,128}$/u.test(issued.capability)) {
+    throw new WebConsoleError("console_tool_unavailable", "Console capability unavailable.", 503);
+  }
+  return consoleToolCaller(request, issued.capability);
+}
+
+type ConsoleToolRequester = (token: string, body: unknown) => Promise<Record<string, unknown>>;
+
+function consoleToolRequester(ingress: NotificationIngressRecord, options: DeliverWebNotificationOptions): ConsoleToolRequester {
   const endpoint = new URL("/internal/v1/console-tools", ingress.url).href;
-  const request = async (token: string, body: unknown): Promise<Record<string, unknown>> => {
+  return async (token, body) => {
     let response: Response;
     try {
       response = await (options.fetchImpl ?? fetch)(endpoint, {
@@ -277,23 +288,150 @@ export async function createWebConsoleToolClient(
       throw new WebConsoleError("console_tool_delivery_unknown", "Console response is unavailable. Do not automatically retry this operation.", 502);
     }
     if (!response.ok) {
-      const error = asRecord(parsed?.error);
-      const code = typeof error?.code === "string" && /^[a-z_]{1,64}$/u.test(error.code) ? error.code : "console_tool_failed";
+      const code = errorCode(parsed, "console_tool_failed");
       // The callback emits controlled validation messages only; never reflect an arbitrary server body.
       throw new WebConsoleError(code, code === "project_busy" ? "Wait for current conversation turns before deleting or archiving this project." : "The console refused this operation.", response.status);
     }
     if (parsed === undefined) throw new WebConsoleError("console_tool_delivery_unknown", "Invalid console response; do not retry automatically.", 502);
     return parsed;
   };
-  const issued = await request(ingress.token, scope);
-  if (typeof issued.capability !== "string" || !/^[a-zA-Z0-9_-]{40,128}$/u.test(issued.capability)) {
-    throw new WebConsoleError("console_tool_unavailable", "Console capability unavailable.", 503);
-  }
-  const capability = issued.capability;
+}
+
+function consoleToolCaller(
+  request: ConsoleToolRequester,
+  capability: string,
+): (operation: import("./console-tools.js").ConsoleToolOperation) => Promise<Record<string, unknown>> {
   return async (operation) => {
     const response = await request(capability, operation);
     const result = asRecord(response.result);
     if (result === undefined) throw new WebConsoleError("console_tool_delivery_unknown", "Invalid console result; do not retry automatically.", 502);
     return result;
   };
+}
+
+function errorCode(body: Record<string, unknown> | undefined, fallback: string): string {
+  const error = asRecord(body?.error);
+  return typeof error?.code === "string" && /^[a-z_]{1,64}$/u.test(error.code) ? error.code : fallback;
+}
+
+/** One owner-authenticated call to a channel-conversation endpoint; failures carry a code only. */
+async function ownerPost(path: string, body: unknown, options: DeliverWebNotificationOptions): Promise<Record<string, unknown>> {
+  const ingress = await readIngressRecord(resolveWebStatePaths(options).notificationIngress);
+  let response: Response;
+  try {
+    response = await (options.fetchImpl ?? fetch)(new URL(path, ingress.url).href, {
+      method: "POST", redirect: "error", signal: AbortSignal.timeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+      headers: { authorization: `Bearer ${ingress.token}`, "content-type": "application/json" }, body: JSON.stringify(body),
+    });
+  } catch {
+    throw new WebConsoleError("web_console_unavailable", "The web console did not answer.", 503);
+  }
+  let parsed: Record<string, unknown> | undefined;
+  try { parsed = asRecord(JSON.parse(await readBoundedResponse(response))); } catch {
+    throw new WebConsoleError("web_console_unavailable", "The web console returned an invalid response.", 502);
+  }
+  if (!response.ok) throw new WebConsoleError(errorCode(parsed, "web_console_refused"), "The web console refused this request.", response.status);
+  if (parsed === undefined) throw new WebConsoleError("web_console_unavailable", "The web console returned an invalid response.", 502);
+  return parsed;
+}
+
+/** What an owning process observed about one channel conversation. */
+export interface WebExternalObservationInput {
+  /** Host-owned routing key, `telegram:<bot>:<chat>:<topic|main>`. */
+  readonly key: string;
+  readonly kind: "topic" | "main";
+  readonly chatLabel?: string;
+  readonly topicLabel?: string;
+  readonly state?: "open" | "closed";
+  readonly stateAt?: string;
+  readonly seenAt: string;
+}
+
+/** Mirror a batch of channel observations into projects. No retry: the caller replays. */
+export async function syncWebExternalConversations(
+  input: { readonly sourceId: string; readonly channel: "telegram"; readonly observations: readonly WebExternalObservationInput[] },
+  options: DeliverWebNotificationOptions = {},
+): Promise<{ readonly truncated: boolean }> {
+  const result = await ownerPost("/internal/v1/external-conversations", input, options);
+  return { truncated: result.truncated === true };
+}
+
+export interface BeginWebExternalTurnInput {
+  readonly sourceId: string;
+  readonly channel: "telegram";
+  /** This process's pid: the scope is bound to the discovered process generation. */
+  readonly pid: number;
+  /** The owning process's own identity for this turn. */
+  readonly turnKey: string;
+  /** Present only for a conversation that can be a project. */
+  readonly key?: string;
+  readonly observation?: WebExternalObservationInput;
+  /** Ask for a console-tool capability as well as the context. */
+  readonly tools: boolean;
+}
+
+/** One channel turn's view of the web console. */
+export interface WebExternalTurn {
+  readonly project?: { readonly id: string; readonly name: string; readonly context: string };
+  readonly conversation?: { readonly id: string; readonly label: string; readonly state: "open" | "closed" | "gone" };
+  /** Present when a capability was issued. Each call is one operation; no retry. */
+  readonly call?: (operation: import("./console-tools.js").ConsoleToolOperation) => Promise<Record<string, unknown>>;
+  readonly capabilityError?: string;
+  /** Revoke the capability, best effort. Idempotent. */
+  revoke(): Promise<void>;
+}
+
+/**
+ * Read a channel turn's project context and, when asked, a console-tool
+ * capability bound to this process and revoked at settlement.
+ */
+export async function beginWebExternalTurn(
+  input: BeginWebExternalTurnInput,
+  options: DeliverWebNotificationOptions = {},
+): Promise<WebExternalTurn> {
+  const ingress = await readIngressRecord(resolveWebStatePaths(options).notificationIngress);
+  const result = await ownerPost("/internal/v1/external-turns", input, options);
+  const project = asRecord(result.project);
+  const conversation = asRecord(result.conversation);
+  if ((result.project !== null && (project === undefined || typeof project.id !== "string" || typeof project.name !== "string" || typeof project.context !== "string"))
+    || (result.conversation !== null && (conversation === undefined || typeof conversation.id !== "string" || typeof conversation.label !== "string"
+      || !["open", "closed", "gone"].includes(conversation.state as string)))) {
+    throw new WebConsoleError("web_console_unavailable", "The web console returned an invalid channel turn.", 502);
+  }
+  const capability = typeof result.capability === "string" && /^[a-zA-Z0-9_-]{40,128}$/u.test(result.capability) ? result.capability : undefined;
+  let revoked = false;
+  return {
+    ...(project === undefined ? {} : { project: { id: project.id as string, name: project.name as string, context: project.context as string } }),
+    ...(conversation === undefined ? {} : { conversation: { id: conversation.id as string, label: conversation.label as string, state: conversation.state as "open" | "closed" | "gone" } }),
+    ...(capability === undefined ? {} : { call: consoleToolCaller(consoleToolRequester(ingress, options), capability) }),
+    ...(typeof result.capabilityError === "string" && /^[a-z_]{1,64}$/u.test(result.capabilityError) ? { capabilityError: result.capabilityError } : {}),
+    async revoke() {
+      if (capability === undefined || revoked) return;
+      revoked = true;
+      await (options.fetchImpl ?? fetch)(new URL("/internal/v1/console-tools/revoke", ingress.url).href, {
+        method: "POST", redirect: "error", signal: AbortSignal.timeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+        headers: { authorization: `Bearer ${capability}`, "content-type": "application/json" }, body: "{}",
+      }).then((response) => response.body?.cancel()).catch(() => undefined);
+    },
+  };
+}
+
+/** Resolve a project to its bound channel conversation's host-owned key, for a send. */
+export async function resolveWebExternalProjectDestination(
+  input: { readonly sourceId: string; readonly channel: "telegram"; readonly projectId: string },
+  options: DeliverWebNotificationOptions = {},
+): Promise<{ readonly key: string; readonly label: string }> {
+  const result = await ownerPost("/internal/v1/external-destinations", input, options);
+  if (typeof result.key !== "string" || typeof result.label !== "string") {
+    throw new WebConsoleError("web_console_unavailable", "The web console returned an invalid destination.", 502);
+  }
+  return { key: result.key, label: result.label };
+}
+
+/** Record that a send proved a channel conversation gone. */
+export async function markWebExternalConversationGone(
+  input: { readonly sourceId: string; readonly channel: "telegram"; readonly key: string },
+  options: DeliverWebNotificationOptions = {},
+): Promise<void> {
+  await ownerPost("/internal/v1/external-conversations/gone", input, options);
 }

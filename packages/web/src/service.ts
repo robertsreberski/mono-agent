@@ -1,6 +1,8 @@
 import type { ProviderUsageId, ProviderUsageSnapshot } from "@mono-agent/agent-contracts";
-import type { WebCancelOrigin } from "./contracts.js";
-import type { ConsoleToolScope, ConsoleToolOperation } from "./console-tools.js";
+import type { WebCancelOrigin, WebExternalConversationChannel } from "./contracts.js";
+import type { ConsoleToolScope, ConsoleToolOperation, ExternalConsoleToolScope } from "./console-tools.js";
+import type { ExternalConversationObservation } from "./external-conversations.js";
+import type { ExternalTurnContext } from "./store.js";
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 
@@ -948,6 +950,10 @@ export class WebService {
   private readonly consoleToolTurns = new Set<string>();
 
   assertConsoleToolTurn(scope: ConsoleToolScope): void {
+    if (scope.kind === "external") {
+      this.assertExternalToolScope(scope);
+      return;
+    }
     const thread = this.store.getThread(scope.threadId);
     const active = this.activeTurns.get(scope.threadId);
     if (this.stopped || !this.consoleToolTurns.has(scope.turnId) || active?.turnId !== scope.turnId
@@ -955,6 +961,43 @@ export class WebService {
       || thread.trigger !== undefined || this.store.activeTurn(scope.threadId)?.id !== scope.turnId) {
       throw new WebConsoleError("console_tool_revoked", "The originating turn is no longer writable.", 403);
     }
+  }
+
+  /**
+   * A channel-turn scope stays bound to the discovered process generation that
+   * asked for it: a restarted or vanished agent process revokes it, as does
+   * this service stopping. The owning process revokes it when its turn settles.
+   */
+  assertExternalToolScope(scope: ExternalConsoleToolScope): void {
+    const connection = this.connections.get(scope.sourceId);
+    if (this.stopped || connection === undefined || connection.pid !== scope.pid
+      || this.store.getAgent(scope.sourceId) === undefined) {
+      throw new WebConsoleError("console_tool_revoked", "The originating turn is no longer writable.", 403);
+    }
+  }
+
+  /** Mirror a channel's observations into projects and announce what changed. */
+  observeExternalConversations(
+    sourceId: string,
+    channel: WebExternalConversationChannel,
+    observations: readonly ExternalConversationObservation[],
+  ): { readonly truncated: boolean } {
+    const commit = this.store.observeExternalConversations(sourceId, channel, observations);
+    for (const id of commit.projects) this.refreshProject(id);
+    return { truncated: commit.truncated };
+  }
+
+  externalTurnContext(sourceId: string, channel: WebExternalConversationChannel, key: string): ExternalTurnContext {
+    return this.store.externalTurnContext(sourceId, channel, key);
+  }
+
+  markExternalConversationGone(sourceId: string, channel: WebExternalConversationChannel, key: string): void {
+    const { projectId } = this.store.markExternalConversationGone(sourceId, channel, key);
+    if (projectId !== undefined) this.refreshProject(projectId);
+  }
+
+  resolveExternalProjectDestination(sourceId: string, channel: WebExternalConversationChannel, projectId: string): { readonly key: string; readonly label: string } {
+    return this.store.resolveExternalProjectDestination(sourceId, channel, projectId);
   }
 
   consoleToolOperation(scope: ConsoleToolScope, operation: ConsoleToolOperation): Record<string, unknown> {
