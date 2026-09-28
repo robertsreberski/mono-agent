@@ -2141,21 +2141,29 @@ describe("WebStore", () => {
     store.close();
   });
 
-  it("persists only terminal manual compaction on this thread's settled assistant row", async () => {
+  it("persists manual markers and keeps usage telemetry on the last settled answer", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const store = await WebStore.open({ stateDir: join(base, "state") });
     store.replaceAgents([agent()]);
     const thread = store.createThread("agent-one");
     const other = store.createThread("agent-one");
-    expect(store.recordManualCompaction(thread.id, { status: "skipped", trigger: "manual", operationId: "no-answer" })).toBeUndefined();
+    expect(store.recordManualCompaction(thread.id, { status: "skipped", trigger: "manual", operationId: "no-answer", reason: "nothing_to_compact" })).toBeUndefined();
     const turn = store.beginTurn({ threadId: thread.id, text: "hello", attachmentIds: [] });
     store.completeTurn(turn.turnId, "answer");
     const id = store.recordManualCompaction(thread.id, {
       status: "succeeded", trigger: "manual", operationId: "c1", tokensBefore: 50_000, tokensAfter: 10_000,
     });
-    expect(id).toBe(store.getThreadDetail(thread.id)?.messages.at(-1)?.id);
-    expect(JSON.stringify(store.getThreadDetail(thread.id)?.messages.at(-1)?.parts)).toContain('"status":"succeeded"');
+    expect(id).toBe(turn.assistantMessageId);
+    expect(store.getThreadDetail(thread.id)?.messages.find((m) => m.parts[0]?.type === "conversation-marker" && m.parts[0].kind === "compaction" && m.parts[0].operationId === "no-answer")?.parts[0]).toMatchObject({ reason: "nothing_to_compact" });
+    store.recordManualCompaction(thread.id, { status: "succeeded", trigger: "manual", operationId: "c1", tokensBefore: 50_000, tokensAfter: 10_000 });
+    store.recordManualCompaction(thread.id, { status: "failed", trigger: "manual", operationId: "unknown-reason", reason: "synthetic-provider-detail" });
+    const markers = store.getThreadDetail(thread.id)?.messages.filter((m) => m.role === "system" && m.parts[0]?.type === "conversation-marker" && m.parts[0].kind === "compaction");
+    expect(markers).toHaveLength(3);
+    expect(markers?.find((m) => m.parts[0]?.type === "conversation-marker" && m.parts[0].kind === "compaction" && m.parts[0].operationId === "unknown-reason")?.parts[0]).not.toHaveProperty("reason");
+    const next = store.beginTurn({ threadId: thread.id, text: "follow up", attachmentIds: [] });
+    expect(store.conversationMarkersForTurn(next.turnId)).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "compaction", operationId: "c1" })]));
+    expect(JSON.stringify(store.getThreadDetail(thread.id)?.messages.find((m) => m.id === id)?.parts)).toContain('"status":"succeeded"');
     expect(store.getThreadDetail(other.id)?.messages).toEqual([]);
     store.close();
   });
@@ -2167,20 +2175,17 @@ describe("WebStore", () => {
     store.replaceAgents([agent()]);
     const thread = store.createThread("agent-one");
     const turn = store.beginTurn({ threadId: thread.id, text: "compact", attachmentIds: [] });
+    store.applyStreamFrames(turn.turnId, [{ kind: "event", event: {
+      type: "runtime_telemetry", kind: "context_compaction",
+      data: { operationId: "compact-1", status: "running", sdk: "pi", trigger: "proactive" },
+    } }]);
+    expect(store.getThreadDetail(thread.id)?.messages.filter((m) => m.role === "system")).toHaveLength(0);
     store.applyStreamFrames(turn.turnId, [
       {
         kind: "event",
         event: {
           type: "runtime_telemetry",
           kind: "context_compaction",
-          data: { operationId: "compact-1", status: "running", sdk: "pi", trigger: "proactive" },
-        },
-      },
-      {
-        kind: "event",
-        event: {
-          type: "runtime_telemetry",
-          kind: "context_compaction",
           data: {
             operationId: "compact-1",
             status: "succeeded",
@@ -2197,13 +2202,23 @@ describe("WebStore", () => {
         event: {
           type: "runtime_telemetry",
           kind: "context_compaction",
-          data: { operationId: "compact-2", status: "skipped", sdk: "pi", trigger: "manual" },
+          data: { operationId: "compact-2", status: "skipped", sdk: "pi", trigger: "manual", reason: "model_changed" },
         },
       },
     ]);
 
-    const assistant = store.getThreadDetail(thread.id)?.messages.at(-1);
-    expect(assistant?.parts).toEqual([
+    const markers = () => store.getThreadDetail(thread.id)?.messages.filter((m) => m.role === "system" && m.parts[0]?.type === "conversation-marker" && m.parts[0].kind === "compaction");
+    expect(markers()).toHaveLength(2);
+    store.applyStreamFrames(turn.turnId, [{ kind: "event", event: { type: "runtime_telemetry", kind: "context_compaction", data: { operationId: "compact-1", status: "succeeded", sdk: "pi", trigger: "proactive", tokensBefore: 80_000, tokensAfter: 20_000, tokenCountsExact: false } } }]);
+    expect(markers()).toHaveLength(2);
+    store.completeTurn(turn.turnId, "done");
+    const next = store.beginTurn({ threadId: thread.id, text: "next", attachmentIds: [] });
+    expect(store.conversationMarkersForTurn(next.turnId)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "compaction", operationId: "compact-1", trigger: "automatic" }),
+      expect.objectContaining({ kind: "compaction", operationId: "compact-2", status: "skipped", reason: "model_changed" }),
+    ]));
+    const assistant = store.getThreadDetail(thread.id)?.messages.find((m) => m.id === turn.assistantMessageId);
+    expect(assistant?.parts).toEqual(expect.arrayContaining([
       {
         type: "telemetry",
         event: "runtime_telemetry",
@@ -2227,11 +2242,35 @@ describe("WebStore", () => {
         data: {
           type: "runtime_telemetry",
           kind: "context_compaction",
-          data: { operationId: "compact-2", status: "skipped", sdk: "pi", trigger: "manual" },
+          data: { operationId: "compact-2", status: "skipped", sdk: "pi", trigger: "manual", reason: "model_changed" },
         },
       },
-    ]);
+    ]));
     store.close();
+  });
+
+  it("hides unknown future marker kinds from persisted messages and snapshots", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "hello", attachmentIds: [] });
+    store.completeTurn(turn.turnId, "answer");
+    const next = store.beginTurn({ threadId: thread.id, text: "next", attachmentIds: [] });
+    const databasePath = store.paths.database;
+    store.close();
+    const raw = new DatabaseSync(databasePath);
+    const future = { type: "conversation-marker", kind: "future", at: "2026-01-15T10:00:00Z" };
+    raw.prepare(`INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
+      VALUES (?, ?, NULL, 'system', ?, ?, ?, 'complete')`).run("fictional-future-marker", thread.id, JSON.stringify([future]), "2026-01-15T10:00:00Z", "2026-01-15T10:00:00Z");
+    raw.prepare("UPDATE turns SET conversation_markers_json = ? WHERE id = ?").run(JSON.stringify([future]), next.turnId);
+    raw.close();
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.getThreadDetail(thread.id)?.messages.find((message) => message.id === "fictional-future-marker")?.parts).toEqual([]);
+    expect(reopened.conversationMarkersForTurn(next.turnId)).toEqual([]);
+    reopened.close();
   });
 
   it("reconciles a divergent replace frame across interleaved text without dropping tools", async () => {
@@ -2310,7 +2349,7 @@ describe("WebStore", () => {
       { kind: "append", delta: "Anything else?" },
     ]);
     const detail = store.completeTurn(turn.turnId, "");
-    const assistant = detail.messages.at(-1);
+    const assistant = detail.messages.find((message) => message.id === turn.assistantMessageId);
 
     expect(assistant?.parts.map((part) => part.type)).toEqual([
       "text",

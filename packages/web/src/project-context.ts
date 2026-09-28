@@ -72,6 +72,14 @@ export function composeConversationMarkers(markers: readonly WebConversationMark
   const lines = markers.map((marker) => {
     if (marker.kind === "model") return `model changed: ${route(marker.before)} → ${route(marker.after)}`;
     if (marker.kind === "project") return `project changed: ${marker.before === null ? "none" : JSON.stringify(marker.before.name)} → ${marker.after === null ? "none" : JSON.stringify(marker.after.name)}`;
+    if (marker.kind === "compaction") {
+      const counts = marker.status === "succeeded" && marker.tokensBefore !== undefined && marker.tokensAfter !== undefined
+        ? `: ${marker.tokensBefore.toLocaleString("en-US")} → ${marker.tokenCountsExact ? "" : "about "}${marker.tokensAfter.toLocaleString("en-US")} tokens` : "";
+      const outcome = marker.status === "succeeded" ? "context compacted" : `context compaction ${marker.status}`;
+      const reason = marker.status === "succeeded" ? "" : marker.reason === "model_changed" ? ": model changed"
+        : marker.reason === "nothing_to_compact" ? ": nothing to compact" : "";
+      return `${outcome} (${marker.trigger}) at ${markerLocalTime(marker.at)}${counts}${reason}`;
+    }
     const minutes = Math.floor(marker.idleMs / 60_000);
     return `conversation resumed ${markerLocalTime(marker.at)} after ${Math.floor(minutes / 60)}h ${minutes % 60}m idle`;
   });

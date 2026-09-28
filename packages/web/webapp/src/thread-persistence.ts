@@ -282,6 +282,10 @@ const isSummary = (value: unknown): value is ThreadSummary =>
 const stringsOf = (value: unknown): readonly string[] =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 
+const isUnknownStoredMarker = (part: unknown): boolean => isRecord(part)
+  && part.type === "conversation-marker" && typeof part.kind === "string"
+  && !["model", "project", "resumed", "compaction"].includes(part.kind);
+
 const isStoredMessage = (value: unknown): value is WebMessage =>
   isRecord(value)
   && typeof value.id === "string"
@@ -304,8 +308,13 @@ const isStoredMessage = (value: unknown): value is WebMessage =>
 const readThreadRow = (value: unknown): PersistedThread | undefined => {
   if (!isRecord(value)) return undefined;
   if (typeof value.id !== "string" || !isSummary(value.thread)) return undefined;
-  if (!Array.isArray(value.messages) || !value.messages.every(isStoredMessage)) return undefined;
-  const sanitized = sanitizeCronTranscript(value.thread, value.messages as readonly WebMessage[]);
+  if (!Array.isArray(value.messages)) return undefined;
+  const hasUnknownMarkers = value.messages.some((message: unknown) => isRecord(message)
+    && Array.isArray(message.parts) && message.parts.some(isUnknownStoredMarker));
+  const messages = value.messages.map((message: unknown) => isRecord(message) && Array.isArray(message.parts)
+    ? { ...message, parts: message.parts.filter((part: unknown) => !isUnknownStoredMarker(part)) } : message);
+  if (!messages.every(isStoredMessage)) return undefined;
+  const sanitized = sanitizeCronTranscript(value.thread, messages as readonly WebMessage[]);
   return {
     id: value.id,
     thread: withoutTransientCompaction(sanitized.thread),
@@ -313,7 +322,7 @@ const readThreadRow = (value: unknown): PersistedThread | undefined => {
     ...(typeof value.messagesNextCursor === "string"
       ? { messagesNextCursor: value.messagesNextCursor }
       : {}),
-    ...(typeof value.etag === "string" && !sanitized.changed && !("modelTransitions" in value) && !("projectTransitions" in value) ? { etag: value.etag } : {}),
+    ...(typeof value.etag === "string" && !sanitized.changed && !hasUnknownMarkers && !("modelTransitions" in value) && !("projectTransitions" in value) ? { etag: value.etag } : {}),
     repairedToolCallIds: stringsOf(value.repairedToolCallIds),
     pagedInIds: stringsOf(value.pagedInIds).filter((id) => sanitized.messages.some((message) => message.id === id)),
     savedAt: typeof value.savedAt === "number" ? value.savedAt : 0,

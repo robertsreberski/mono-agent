@@ -5,7 +5,9 @@ import { useCallback, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { convertWebMessage } from "../runtime";
 import type { WebMessage } from "../types";
-import { AssistantMessage, UserMessage } from "./Messages";
+import { AssistantMessage, CompactionMarkerRow, UserMessage } from "./Messages";
+import { ModelMarkers } from "./ModelMarkers";
+import { autoMidTurnMessage } from "../test/auto-midturn";
 import { ContextDisplay } from "./assistant-ui/ContextDisplay";
 import { ManualCompactionMarker } from "./ManualCompactionMarker";
 import { thread } from "../test/fixtures";
@@ -14,6 +16,7 @@ import "../styles.css";
 declare module "@vitest/browser/context" {
   interface BrowserCommands {
     emulateReducedMotion(reducedMotion: "reduce" | "no-preference" | null): Promise<void>;
+    emulateColorScheme(colorScheme: "light" | "dark" | null): Promise<void>;
   }
 }
 
@@ -24,8 +27,11 @@ const answer: WebMessage = {
   createdAt: "2026-01-15T10:00:00Z", updatedAt: "2026-01-15T10:00:01Z",
   parts: [{ type: "text", text: "The fictional garden plan is ready." }],
 };
-function CompactConversation({ slow = false, onRelease }: { readonly slow?: boolean; readonly onRelease?: (release: () => void) => void }) {
-  const [message, setMessage] = useState(answer);
+function CompactConversation({ slow = false, onRelease, initialMessage = answer, showContext = true }: {
+  readonly slow?: boolean; readonly onRelease?: (release: () => void) => void;
+  readonly initialMessage?: WebMessage; readonly showContext?: boolean;
+}) {
+  const [message, setMessage] = useState(initialMessage);
   const [compacting, setCompacting] = useState(false);
   const activeThread = thread("thread", "alpha", compacting ? { compaction: {
     status: "running", trigger: "manual", startedAt: "2026-01-15T10:00:00Z",
@@ -61,10 +67,10 @@ function CompactConversation({ slow = false, onRelease }: { readonly slow?: bool
         <ManualCompactionMarker thread={activeThread} detail={{ thread: activeThread, messages: [message] }} />
       </div>
     </ThreadPrimitive.Viewport></ThreadPrimitive.Root>
-    <div style={{ position: "fixed", bottom: 70, right: 16 }}><ContextDisplay
+    {showContext && <div style={{ position: "fixed", bottom: 70, right: 16 }}><ContextDisplay
       context={{ status: "current", usage: { total: 183_400, contextWindow: 200_000 } }}
       totals={{ total: {}, byModel: [], computedAt: "2026-01-15T10:00:00Z" }} compactThreadId="thread" manualCompacting={compacting}
-    /></div>
+    /></div>}
   </AssistantRuntimeProvider>;
 }
 afterEach(async () => { vi.clearAllMocks(); await commands.emulateReducedMotion(null); await page.viewport(1440, 1000); });
@@ -102,5 +108,69 @@ describe("Transcript compaction", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Context usage" })).not.toBeInTheDocument());
     const shots = import.meta.env.VITE_CONTEXT_FOLLOWUP_SHOTS as string | undefined;
     if (shots) await page.screenshot({ path: `${shots}/compaction-row-${label}.png` });
+  });
+});
+
+const shotDirectory = import.meta.env.VITE_COMPACTION_MARKER_SHOTS as string | undefined;
+describe("Compaction marker and unknown context visual states", () => {
+  afterEach(async () => { document.documentElement.removeAttribute("data-console-theme"); await commands.emulateColorScheme(null); });
+  it.each(["light", "dark"] as const)("colors the pre-turn dash muted in every %s palette", async (scheme) => {
+    await page.viewport(800, 360);
+    await commands.emulateColorScheme(scheme);
+    render(<div style={{ padding: 36, zoom: 4 }}><ContextDisplay context={{ status: "unavailable" }}
+      totals={{ total: {}, byModel: [], settledAssistantTurns: 0, computedAt: "2026-01-15T10:00:00Z" }} /></div>);
+    const trigger = screen.getByRole("button", { name: /Context usage:/u });
+    const percent = trigger.querySelector<HTMLElement>(".context-display-trigger-percent")!;
+    expect(percent.textContent).toBe("—");
+    expect(trigger).toHaveAttribute("data-unknown");
+    for (const palette of ["default", "ocean", "plum", "terracotta"]) {
+      if (palette === "default") document.documentElement.removeAttribute("data-console-theme");
+      else document.documentElement.setAttribute("data-console-theme", palette);
+      const reference = document.createElement("span");
+      reference.style.color = "var(--text-muted)";
+      document.body.append(reference);
+      expect(getComputedStyle(percent).color).toBe(getComputedStyle(reference).color);
+      reference.remove();
+    }
+    document.documentElement.removeAttribute("data-console-theme");
+    if (shotDirectory) await page.screenshot({ path: `${shotDirectory}/dash-${scheme}.png` });
+  });
+  it("mutes even a stale percent while context is loading", () => {
+    render(<ContextDisplay contextLoading context={{ status: "current", usage: { total: 10_000, contextWindow: 20_000 } }}
+      totals={{ total: {}, byModel: [], computedAt: "2026-01-15T10:00:00Z" }} />);
+    const trigger = screen.getByRole("button", { name: /Context usage: loading/u });
+    expect(trigger).toHaveAttribute("data-unknown");
+    const percent = trigger.querySelector<HTMLElement>(".context-display-trigger-percent")!;
+    expect(percent.textContent).not.toBe("—");
+    const reference = document.createElement("span");
+    reference.style.color = "var(--text-muted)";
+    document.body.append(reference);
+    expect(getComputedStyle(percent).color).toBe(getComputedStyle(reference).color);
+    reference.remove();
+  });
+  it("shows the automatic divider between two readable Activity bands", async () => {
+    await page.viewport(1440, 900);
+    render(<CompactConversation initialMessage={autoMidTurnMessage} showContext={false} />);
+    const activityButtons = await screen.findAllByRole("button", { name: "Activity" });
+    expect(activityButtons).toHaveLength(2);
+    const divider = screen.getByRole("note", { name: /Context compacted.*automatic/u });
+    expect(divider.closest(".activity-root")).toBeNull();
+    fireEvent.click(activityButtons[0]!);
+    fireEvent.click(activityButtons[1]!);
+    expect(screen.getByText("Read")).toBeVisible();
+    expect(screen.getByText("Search")).toBeVisible();
+    if (shotDirectory) await page.screenshot({ path: `${shotDirectory}/auto-midturn.png` });
+  });
+  it("shows compaction next to a model change in a transcript", async () => {
+    await page.viewport(1440, 900);
+    render(<div className="thread-root"><div className="thread-viewport"><div className="message-column">
+      <ModelMarkers transitions={[{ type: "conversation-marker", kind: "model", at: "2026-01-15T09:00:00Z",
+        before: { model: "atlas/standard", effort: "high" }, after: { model: "grove/fast", effort: "medium" } }]} />
+      <div className="message message-assistant">A fictional garden plan is ready.</div>
+      <CompactionMarkerRow marker={{ type: "conversation-marker", kind: "compaction", at: "2026-01-15T10:00:00Z",
+        operationId: "fictional-compact", trigger: "manual", status: "succeeded", tokensBefore: 183_400, tokensAfter: 41_300 }} />
+    </div></div></div>);
+    expect(screen.getByRole("note", { name: /Context compacted/u })).toBeVisible();
+    if (shotDirectory) await page.screenshot({ path: `${shotDirectory}/markers-desktop.png` });
   });
 });
