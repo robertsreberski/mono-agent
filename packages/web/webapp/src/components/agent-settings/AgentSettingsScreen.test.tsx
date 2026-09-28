@@ -142,6 +142,26 @@ describe("agent settings screen", () => {
     expect(screen.queryByText("Loading provider status…")).toBeNull();
     expect(screen.queryByText("Check access may use quota")).toBeNull();
   });
+  it.each([
+    { outcome: "failure", summary: /Last restart failed ·/, warning: true },
+    { outcome: "success", summary: /Pinned · restarted/, warning: false },
+  ])("prioritizes the retained $outcome outcome in the Agent summary (A17b)", async ({ outcome, summary, warning }) => {
+    store.selectedAgent = agent("fictional", { label: "Atlas", pinned: true, restart: { supported: true }, supportsAttachments: true });
+    mockApi.latestAgentRestart.mockResolvedValue({ id: "example-op", sourceId: "fictional", stage: "back_online", outcome, requestedAt: new Date(Date.now() - 120_000).toISOString() });
+    render(<AgentSettingsScreen {...props} section="agent" />);
+    const nav = screen.getByRole("navigation", { name: "Agent settings sections" });
+    await waitFor(() => expect(nav.querySelector('[data-settings-section="agent"] .settings-rail-summary')).toHaveTextContent(summary));
+    expect(nav.querySelector('[data-settings-section="agent"] .settings-rail-summary')?.classList.contains("is-warning")).toBe(warning);
+    expect(screen.getByText("fictional", { selector: "code" })).toBeTruthy();
+    expect(screen.getByText("Attachments", { selector: ".settings-chip" })).toBeTruthy();
+    expect(screen.queryByText("Manual compaction", { selector: ".settings-chip" })).toBeNull();
+  });
+  it("shows read failure in the Agent summary instead of claiming no recent restart (A17b)", async () => {
+    mockApi.latestAgentRestart.mockRejectedValue(new Error("Example read unavailable"));
+    render(<AgentSettingsScreen {...props} section="agent" />);
+    await waitFor(() => expect(screen.getByRole("navigation", { name: "Agent settings sections" }).querySelector('[data-settings-section="agent"] .settings-rail-summary')).toHaveTextContent("Restart status unavailable"));
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+  });
   it("reverts the pin on failure and never shows a pin control in the header", async () => {
     store.setAgentPinned.mockRejectedValueOnce(new Error("offline"));
     render(<AgentSettingsScreen {...props} section="agent" />);

@@ -8,7 +8,7 @@ const storeMock = vi.hoisted(() => ({
   loading: false,
   bootstrap: { console: { hostName: "console-host", displayName: "console-host", theme: "ocean" as const } },
   error: null,
-  actionError: null,
+  actionError: null as string | null,
   clearActionError: vi.fn(),
   agents: [],
   visibleAgents: [],
@@ -90,6 +90,8 @@ beforeEach(() => {
   window.history.replaceState(null, "", "/");
   storeMock.selectedAgent = agent("atlas", { label: "Atlas", restart: { supported: true } }) as never;
   storeMock.openProjectId = null;
+  storeMock.actionError = null;
+  storeMock.setAgentPinned.mockReset();
   storeMock.setConversationVisible.mockClear();
   latestRestart.mockClear();
 });
@@ -385,6 +387,20 @@ describe("settings screen navigation", () => {
     await waitFor(() => expect(position()).toBe(detail));
     expect(screen.getByRole("heading", { name: "Providers", level: 2 })).toBeVisible();
   });
+  it("shows one store-owned error toast when pinning fails and reverts the switch (A17a)", async () => {
+    await page.viewport(1200, 800);
+    storeMock.setAgentPinned.mockImplementationOnce(async () => { storeMock.actionError = "Example pin unavailable"; throw new Error("Example pin unavailable"); });
+    const view = render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Agent settings gear" }));
+    fireEvent.click(screen.getByRole("button", { name: /Agent Not pinned/ }));
+    const pin = screen.getByRole("switch", { name: "Pin Atlas first" });
+    fireEvent.click(pin);
+    await waitFor(() => expect(storeMock.setAgentPinned).toHaveBeenCalledExactlyOnceWith("atlas", true));
+    view.rerender(<App />); // The real store subscription re-renders when actionError changes.
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Example pin unavailable"));
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(pin).toHaveAttribute("aria-checked", "false");
+  });
   it("restores focus to the Dashboard when a palette invoker unmounts (A18)", async () => {
     await page.viewport(1200, 800);
     render(<App />);
@@ -424,6 +440,9 @@ describe("settings screen navigation", () => {
     await waitFor(() => expect(position()).toBe(conversation));
     expect(screen.queryByRole("navigation", { name: "Agent settings sections" })).toBeNull();
     expect(window.history.state.monoAgentMobileNavigation.surface).toBe("conversation");
+    window.history.back();
+    await waitFor(() => expect(position()).toBe(conversation - 1));
+    expect(window.history.state.monoAgentMobileNavigation.surface).toBe("dashboard");
   });
   it("closes desktop settings on a store route pop (N12)", async () => {
     await page.viewport(1200, 800);

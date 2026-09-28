@@ -15,3 +15,9 @@ export const NotConfirmed: Story = { args: { ...base, variant: "not-confirmed" }
 export const Unsupported: Story = { args: { ...base, variant: "unsupported" } };
 export const Offline: Story = { args: { ...base, variant: "offline" } };
 export const ReadError: Story = { args: { ...base, variant: "read-error" } };
+export const PinPending: Story = { args: { ...base, variant: "pin-pending" }, play: async ({ canvasElement }) => { canvasElement.querySelector<HTMLElement>('[role="switch"]')?.click(); } };
+export const PinFailed: Story = { args: { ...base, variant: "pin-failed" }, play: async ({ canvasElement }) => { canvasElement.querySelector<HTMLElement>('[role="switch"]')?.click(); } };
+export const NoRecent: Story = { args: { ...base, variant: "no-recent" } };
+export const Loading: Story = { args: { ...base, variant: "restart-loading" } };
+export const ConfirmNoRunning: Story = { args: { ...base, variant: "confirm-no-running" }, play: async ({ canvasElement }) => { (await waitForButton(canvasElement, "Restart Atlas")).click(); } };
+export const Idle: Story = { args: { ...base, variant: "idle" } };

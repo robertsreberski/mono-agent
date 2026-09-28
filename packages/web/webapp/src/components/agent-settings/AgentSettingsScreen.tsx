@@ -59,9 +59,13 @@ function SettingsContent({ agent, section, layout, provider, restart, onSection,
   useEffect(() => { clearSettingsDraftIfEqual(agent.sourceId, { model: saved?.model ?? "", effort: saved?.effort ?? "" }); }, [agent.sourceId, saved?.model, saved?.effort]);
   const dirty = draft !== null && (draft.model !== (saved?.model ?? "") || draft.effort !== (saved?.effort ?? ""));
   const restartProgress = restart.operationId !== undefined && restart.outcome === undefined;
-  const restartSummary = restartProgress ? "Restarting…" : restart.readState === "error" ? "Restart status unavailable"
-    : restart.initialOperation?.outcome === "failure" ? `Last restart failed · ${relativeTime(restart.initialOperation.requestedAt)} ago`
-    : `${agent.pinned ? "Pinned" : "Not pinned"} · ${agent.status === "offline" ? "restart needs a live connection" : restart.initialOperation?.outcome === "success" ? `restarted ${relativeTime(restart.initialOperation.requestedAt)} ago` : agent.restart?.supported === true ? "restart available" : "restart not available"}`;
+  const lastRestartTime = restart.initialOperation ? relativeTime(restart.initialOperation.requestedAt) : null;
+  const lastRestartAgo = lastRestartTime === "now" ? "just now" : `${lastRestartTime} ago`;
+  const restartWarning = restart.initialOperation?.outcome === "failure" || restart.readState === "error";
+  const restartSummary = restartProgress ? "Restarting…"
+    : restart.initialOperation?.outcome === "failure" ? `Last restart failed · ${lastRestartAgo}`
+    : restart.readState === "error" ? "Restart status unavailable"
+    : `${agent.pinned ? "Pinned" : "Not pinned"} · ${agent.status === "offline" ? "restart needs a live connection" : restart.initialOperation?.outcome === "success" ? `restarted ${lastRestartAgo}` : agent.restart?.supported === true ? "restart available" : "restart not available"}`;
   const providerSummary = agent.status === "offline" ? "Needs a live connection" : agent.supportsProviderAuth !== true && agent.supportsProviderUsage !== true ? "Not available" : agent.supportsProviderAuth !== true ? provider.usage?.providers.length ? "Usage available" : "No subscription usage available" : provider.checkActive ? "Checking access…" : providersSummary(provider.status);
   const summaries: Record<SettingsSection, string> = { "new-conversations": dirty ? "Unsaved change" : saved ? "Custom override" : "Agent config", providers: providerSummary, agent: restartSummary };
   const active = sections.find((item) => item.id === section) ?? sections[0]!;
@@ -109,8 +113,8 @@ function SettingsContent({ agent, section, layout, provider, restart, onSection,
   </div>;
   const nav = <nav className={layout === "stacked" ? "settings-nav-group" : "settings-rail"} aria-label="Agent settings sections">{sections.map((item) =>
     <button type="button" key={item.id} data-settings-section={item.id} className={layout === "stacked" ? "settings-nav-row" : "settings-rail-item"} aria-current={layout === "split" && active.id === item.id ? "page" : undefined} onClick={() => onSection(item.id)}>
-      <span className={layout === "stacked" ? "settings-nav-icon" : "settings-rail-icon"}><Icon name={item.icon} size={17} /></span>
-      <span className={layout === "stacked" ? "settings-nav-copy" : "settings-rail-copy"}><span className={layout === "stacked" ? "settings-nav-label" : "settings-rail-label"}>{item.label}</span><span className={layout === "stacked" ? "settings-nav-summary" : "settings-rail-summary"}>{summaries[item.id]}</span></span>
+      <span className={`${layout === "stacked" ? "settings-nav-icon" : "settings-rail-icon"}${item.id === "agent" && restartWarning && !restartProgress ? " is-warning" : ""}`}><Icon name={item.icon} size={17} /></span>
+      <span className={layout === "stacked" ? "settings-nav-copy" : "settings-rail-copy"}><span className={layout === "stacked" ? "settings-nav-label" : "settings-rail-label"}>{item.label}</span><span className={`${layout === "stacked" ? "settings-nav-summary" : "settings-rail-summary"}${item.id === "agent" && restartWarning && !restartProgress ? " is-warning" : ""}`}>{summaries[item.id]}</span></span>
       {(item.id === "new-conversations" && dirty || item.id === "agent" && restartProgress) && <span className="settings-dot" aria-hidden="true" />}
       {layout === "stacked" && <Icon name="chevron" size={14} />}
     </button>,
