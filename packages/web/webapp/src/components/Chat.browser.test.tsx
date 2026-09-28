@@ -544,3 +544,50 @@ describe("Chat conversation viewport in Chromium", () => {
     expect(gapFromBottom(viewport)).toBeGreaterThan(1);
   });
 });
+
+describe("wake-up schedule from the conversation actions menu", () => {
+  const wakeThread = (id: string) => thread(id, "agent", {
+    title: `Wake ${id}`,
+    wakeSchedule: { state: "active", kind: "weekly", revision: 2, nextFireAt: "2031-05-12T12:30:00.000Z" },
+  });
+  const wakeStore = (selectedThread: ThreadSummary) => ({
+    ...chatStore(selectedThread, chatDetail(selectedThread, messageIds(2))),
+    loadProjects: vi.fn().mockResolvedValue(undefined),
+    setThreadProject: vi.fn().mockResolvedValue(undefined),
+  });
+  const openEditor = async () => {
+    await userEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /Edit wake-up schedule/u }));
+    const dialog = await screen.findByRole("dialog", { name: "Scheduled wake-up" });
+    await waitFor(() => expect(dialog).toHaveFocus());
+    return dialog;
+  };
+
+  it("opens over the whole console and returns focus to the actions trigger", async () => {
+    const first = wakeThread("wake-a");
+    vi.spyOn(api, "wakeSchedule").mockResolvedValue({ schedule: null });
+    storeMock.current = wakeStore(first);
+    render(chatTree());
+    const menu = await screen.findByRole("button", { name: "Conversation actions" });
+    const dialog = await openEditor();
+    expect(dialog.closest(".chat-header")).toBeNull();
+    await waitFor(() => expect(screen.getByLabelText("Message")).toBeEnabled());
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(menu).toHaveFocus());
+  });
+
+  it("closes instead of retargeting when another conversation is selected", async () => {
+    const first = wakeThread("wake-a");
+    const second = wakeThread("wake-b");
+    const read = vi.spyOn(api, "wakeSchedule").mockResolvedValue({ schedule: null });
+    storeMock.current = wakeStore(first);
+    const { rerender } = render(chatTree());
+    await openEditor();
+    await waitFor(() => expect(read).toHaveBeenCalledWith(first.id));
+    storeMock.current = wakeStore(second);
+    rerender(chatTree());
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(read).not.toHaveBeenCalledWith(second.id);
+  });
+});

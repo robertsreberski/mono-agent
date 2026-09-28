@@ -11,6 +11,7 @@ import { ProjectTag } from "../project/ProjectTag";
 import { resolveThreadRoute } from "../route-label";
 import { RouteBadge } from "../RouteBadge";
 import { relativeTime } from "../time";
+import { wakeStatusText } from "../wake/wake-schedule-model";
 import {
   dashboardKindIcon,
   dashboardKindLabel,
@@ -97,7 +98,7 @@ export function ThreadListItem({
             </span>
             {unread && <i className="thread-unread" role="img" aria-label="Unread" />}
             {thread.wakeSchedule?.state === "active" && <span className="wake-indicator" role="img"
-              aria-label="Active scheduled wake-up" title="Active scheduled wake-up"><Icon name="clock" size={14} /></span>}
+              aria-label="Active scheduled wake-up" title={`Scheduled wake-up: ${wakeStatusText(thread.wakeSchedule)}`}><Icon name="clock" size={14} /></span>}
             <time dateTime={thread.updatedAt}>{relativeTime(thread.updatedAt)}</time>
           </span>
           <span className="thread-preview">

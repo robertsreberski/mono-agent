@@ -110,9 +110,13 @@ An ordinary existing conversation can have one schedule, configured through
 **Conversation actions → Schedule wake-up**. Choose a one-off local date and time
 or weekly weekdays and up to eight distinct times, an editable IANA timezone
 (defaulting to the browser's zone), and an optional message of up to 1,000 UTF-8
-bytes. The conversation row indicates active schedules; the menu shows state and
-next UTC-derived fire time in local display time. Paused schedules stay attached;
-editing a completed one-off replaces its definition with a future time.
+bytes. The editor summarizes the schedule in words and shows the saved next
+wake-up in the schedule's timezone, plus this device's time when it differs.
+The conversation row indicates active schedules; the menu shows the kind with
+the state or next fire time in local display time. Paused schedules stay
+attached; saving a paused or completed schedule turns it back on, and editing a
+completed one-off replaces its definition with a future time. Deleting asks
+for confirmation in the editor.
 
 During a writable turn, `GetWakeSchedule({})`, `SetWakeSchedule` and
 `ClearWakeSchedule({ expectedRevision })` let the agent manage only this

@@ -9,6 +9,7 @@ import { storyStore } from "../store";
 import { useEffect } from "react";
 import { RecentFixtures } from "../screen-fixtures";
 import { waitForOverlay } from "../overlay-play";
+import { installWakeStoryApi, wakeFixtures, wakeSummary } from "../wake-api";
 
 const streamingMessages: readonly ThreadMessageLike[] = [sampleMessages[0]!, {
   role: "assistant", status: { type: "running" }, content: [
@@ -55,3 +56,26 @@ export const ProjectMenuOpen: Story = { args: Desktop.args, play: async (context
   await userEvent.click(submenu);
   await waitForOverlay(context.canvasElement, '.conversation-menu-popup[aria-label="Move to project"]');
 } };
+// A conversation with an active weekly wake-up: the menu row's status line,
+// then the editor opened from it over the whole console. The selected thread
+// and the scripted wake API are both installed by the story's own lifecycle
+// and restored by its cleanup; the stories stay out of the inline Docs page.
+const wakeSchedule = { ...wakeFixtures.activeWeekly, threadId: gardenThread.id };
+const wakeSetup = () => {
+  const previous = { selectedThread: storyStore.selectedThread, selectedThreadId: storyStore.selectedThreadId };
+  Object.assign(storyStore, { selectedThread: { ...gardenThread, wakeSchedule: wakeSummary(wakeSchedule) }, selectedThreadId: gardenThread.id });
+  const uninstall = installWakeStoryApi({ schedule: wakeSchedule, nextFireAt: wakeSchedule.nextFireAt });
+  return () => { uninstall(); Object.assign(storyStore, previous); };
+};
+const openWakeEditor: NonNullable<Story["play"]> = async (context) => {
+  await openActions(context);
+  const item = [...context.canvasElement.ownerDocument.querySelectorAll<HTMLElement>(".conversation-menu-item.is-wake")][0];
+  if (!item) throw new Error("Wake-up menu item missing");
+  await userEvent.click(item);
+  await waitForOverlay(context.canvasElement, ".wake-schedule-sheet");
+};
+const wakeStory = { tags: ["!autodocs"], beforeEach: wakeSetup } satisfies Partial<Story>;
+export const WakeMenu: Story = { ...wakeStory, args: Desktop.args, play: openActions };
+export const WakeMenuPhone: Story = { ...wakeStory, args: Phone.args, globals: Phone.globals, play: openActions };
+export const WakeEditorOpen: Story = { ...wakeStory, args: Desktop.args, play: openWakeEditor };
+export const WakeEditorOpenPhone: Story = { ...wakeStory, args: Phone.args, globals: Phone.globals, play: openWakeEditor };
