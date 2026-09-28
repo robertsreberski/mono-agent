@@ -81,9 +81,15 @@ export function ensureInteractionBridge(controller: ContinuationControllerPort, 
     });
     const deliveryHistoryNeeded = adapterSendSettings?.slack !== undefined
       || adapterSendSettings?.telegram?.tools.send === true;
+    // Schedule tools reach the host schedule service only through the bridge.
+    const telegramTools = adapterSendSettings?.telegram?.tools;
+    const schedulesNeeded = telegramTools?.listSchedules === true
+      || telegramTools?.createSchedule === true
+      || telegramTools?.updateSchedule === true
+      || telegramTools?.deleteSchedule === true;
     const scopedProgressNeeded = settings.progressEnabled
       && (coreConfig.tools.mcpRequestContextServers?.length ?? 0) > 0;
-    if (!askUserAllowed && !deliveryHistoryNeeded && !scopedProgressNeeded && !settings.configured) {
+    if (!askUserAllowed && !deliveryHistoryNeeded && !schedulesNeeded && !scopedProgressNeeded && !settings.configured) {
       return undefined;
     }
     try {

@@ -68,6 +68,18 @@ export interface InteractionBridgeHandle {
     readonly producerConversationId: string;
     readonly allowedChannels: readonly ("slack" | "telegram")[];
   }): { readonly url: string; readonly token: string; release(): void };
+  /**
+   * Issue a bearer for the Telegram schedule tools of one run. `mutate` is set
+   * by the host only for a trusted human Telegram request turn; every other
+   * turn may list schedules but never change them.
+   */
+  issueScheduleCapability(input: {
+    readonly runId: string;
+    readonly producerConversationId: string;
+    readonly mutate: boolean;
+  }): { readonly url: string; readonly token: string; release(): void };
+  /** Install (or clear) the host schedule service; returns an unregister function. */
+  registerScheduleHandler(handler: InteractionScheduleHandler): () => void;
   /** Add this run's answered/expired blocking asks to its durable assistant history text. */
   enrichAssistantHistory(input: {
     readonly runId: string;
@@ -77,6 +89,29 @@ export interface InteractionBridgeHandle {
   /** Discard all interaction-history state owned by a completed run. */
   releaseRun(input: { readonly runId: string; readonly conversationId: string }): void;
   stop(): Promise<void>;
+}
+
+/** Host schedule service reached through `POST /v1/telegram-schedules`. */
+export type InteractionScheduleHandler = (
+  operation: string,
+  args: unknown,
+  context: { readonly runId: string; readonly producerConversationId: string; readonly mutate: boolean },
+) => Promise<{
+  readonly ok: boolean;
+  readonly result?: Record<string, unknown>;
+  readonly error?: string;
+  readonly code?: string;
+}>;
+
+/** The schedule-hosting part of a bridge handle, when the channel hub is this app's bridge. */
+export function interactionScheduleHost(
+  hub: unknown,
+): Pick<InteractionBridgeHandle, "registerScheduleHandler"> | undefined {
+  return typeof hub === "object"
+    && hub !== null
+    && typeof (hub as { registerScheduleHandler?: unknown }).registerScheduleHandler === "function"
+    ? hub as Pick<InteractionBridgeHandle, "registerScheduleHandler">
+    : undefined;
 }
 
 /** Default port 0 = ephemeral: consumers get the URL via env, so a fixed port only invites collisions. */
@@ -217,6 +252,12 @@ interface ProgressCapabilityBinding {
   readonly conversationId: string;
 }
 
+interface ScheduleCapabilityBinding {
+  readonly runId: string;
+  readonly producerConversationId: string;
+  readonly mutate: boolean;
+}
+
 interface DeliveryHistoryCapabilityBinding {
   readonly runId: string;
   readonly producerConversationId: string;
@@ -265,6 +306,8 @@ export async function startInteractionBridge(
   const interactionJournals = new Map<string, InteractionJournal>();
   const progressCapabilities = new Map<string, ProgressCapabilityBinding>();
   const deliveryHistoryCapabilities = new Map<string, DeliveryHistoryCapabilityBinding>();
+  const scheduleCapabilities = new Map<string, ScheduleCapabilityBinding>();
+  let scheduleHandler: InteractionScheduleHandler | undefined;
   let askCounter = 0;
 
   function orderedAnswers(ask: PendingAsk): readonly ChannelAskAnswer[] {
@@ -753,6 +796,36 @@ export async function startInteractionBridge(
     sendJson(response, 202, { accepted: true, conversationId });
   }
 
+  async function handleSchedules(
+    request: IncomingMessage,
+    response: ServerResponse,
+    bearer: string,
+    capability: ScheduleCapabilityBinding,
+  ): Promise<void> {
+    const body = await readJsonBody(request);
+    const operation = stringField(body, "operation");
+    if (operation === undefined) {
+      sendJson(response, 400, { error: "operation is required." });
+      return;
+    }
+    // Revalidate after reading the body so a release cannot race a slow request.
+    if (scheduleCapabilities.get(bearer) !== capability) {
+      sendJson(response, 401, { error: "missing, invalid, or revoked schedule bearer token." });
+      return;
+    }
+    const handler = scheduleHandler;
+    if (handler === undefined) {
+      sendJson(response, 503, { ok: false, code: "unavailable", error: "Telegram schedules are not running." });
+      return;
+    }
+    const outcome = await handler(operation, body.args, {
+      runId: capability.runId,
+      producerConversationId: capability.producerConversationId,
+      mutate: capability.mutate,
+    });
+    sendJson(response, 200, outcome);
+  }
+
   const server = createServer((request, response) => {
     void routeRequest(request, response).catch((error: unknown) => {
       options.logger?.warn?.("interaction bridge: request handling failed.", {
@@ -776,6 +849,15 @@ export async function startInteractionBridge(
         return;
       }
       await handleDeliveryHistory(request, response, bearer, capability);
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/v1/telegram-schedules") {
+      const capability = bearer === undefined ? undefined : scheduleCapabilities.get(bearer);
+      if (bearer === undefined || capability === undefined) {
+        sendJson(response, 401, { error: "missing, invalid, or revoked schedule bearer token." });
+        return;
+      }
+      await handleSchedules(request, response, bearer, capability);
       return;
     }
     if (request.method === "POST" && url.pathname === "/v1/progress") {
@@ -917,6 +999,33 @@ export async function startInteractionBridge(
         },
       };
     },
+    issueScheduleCapability(input) {
+      const scheduleToken = randomBytes(24).toString("base64url");
+      const binding: ScheduleCapabilityBinding = {
+        runId: input.runId,
+        producerConversationId: input.producerConversationId,
+        mutate: input.mutate,
+      };
+      scheduleCapabilities.set(scheduleToken, binding);
+      let released = false;
+      return {
+        url,
+        token: scheduleToken,
+        release() {
+          if (released) return;
+          released = true;
+          if (scheduleCapabilities.get(scheduleToken) === binding) {
+            scheduleCapabilities.delete(scheduleToken);
+          }
+        },
+      };
+    },
+    registerScheduleHandler(handler) {
+      scheduleHandler = handler;
+      return () => {
+        if (scheduleHandler === handler) scheduleHandler = undefined;
+      };
+    },
     enrichAssistantHistory(input) {
       const journal = interactionJournals.get(input.runId);
       if (journal === undefined || journal.conversationId !== input.conversationId || journal.entries.length === 0) {
@@ -939,6 +1048,11 @@ export async function startInteractionBridge(
           deliveryHistoryCapabilities.delete(historyToken);
         }
       }
+      for (const [scheduleToken, binding] of scheduleCapabilities) {
+        if (binding.runId === input.runId) {
+          scheduleCapabilities.delete(scheduleToken);
+        }
+      }
     },
     async stop() {
       for (const ask of asksById.values()) {
@@ -949,6 +1063,8 @@ export async function startInteractionBridge(
       interactionJournals.clear();
       progressCapabilities.clear();
       deliveryHistoryCapabilities.clear();
+      scheduleCapabilities.clear();
+      scheduleHandler = undefined;
       await new Promise<void>((resolve, reject) => {
         server.close((error) => (error === undefined || error === null ? resolve() : reject(error)));
       });

@@ -12,6 +12,7 @@ import {
   peerQuestionStateLabel,
   isAgentResponseCancelledError,
   isChannelUserCancelReason,
+  suppressesNotification,
   type AgentLiveInputOffer,
   type AgentPrecedingMessage,
   type ChannelAskSnapshot,
@@ -58,11 +59,15 @@ import {
   telegramConversationTarget,
   telegramMessageTarget,
   telegramMessageThreadId,
+  mergeTelegramTopicName,
+  telegramChatObservationFromMessage,
   telegramThreadParams,
-  telegramTopicNameFromMessage,
   withoutImplicitTopicReply,
+  type TelegramChatObservation,
   type TelegramConversationTarget,
   type TelegramDestination,
+  type TelegramKnownTopicName,
+  type TelegramTopicNameRecord,
 } from "./conversation.js";
 import { createGrammyTelegramApi } from "./grammy-client.js";
 import {
@@ -72,6 +77,7 @@ import {
 } from "./log-redaction.js";
 import {
   TelegramMessageStream,
+  type AgentMessageStream,
   type TelegramMessageStreamOptions,
 } from "./message-stream.js";
 import { TelegramReplyFileDelivery } from "./reply-files.js";
@@ -105,6 +111,15 @@ const REACTION_ERROR = "👎";
 const CALLBACK_DEDUPE_MAX = 200;
 const PROCESS_JOB_SURFACE_MAX_CHARS = 3_500;
 const PROCESS_JOB_WAKE_DELIVERY_METADATA = Symbol.for("mono-agent.process-job-wake.delivery-key.v1");
+
+/** Accepts and drops interim output for a final-answer-only proactive turn. */
+const SILENT_TURN_STREAM: AgentMessageStream = {
+  status: async () => {},
+  append: async () => {},
+  replace: async () => {},
+  event: async () => {},
+  finish: async () => {},
+};
 const RUNTIME_CALLBACK_PREFIX = "ma:";
 const MODEL_CALLBACK_PREFIX = `${RUNTIME_CALLBACK_PREFIX}m:`;
 const EFFORT_CALLBACK_PREFIX = `${RUNTIME_CALLBACK_PREFIX}e:`;
@@ -329,6 +344,24 @@ export interface TelegramNotifyOptions {
    * a push sound. Set by the channel driver during configured quiet hours.
    */
   readonly silent?: boolean;
+  /**
+   * Host-owned request metadata merged into this proactive turn's request (for
+   * example a scheduled-turn marker). The adapter's own `telegram` key always
+   * wins. Ignored for verbatim deliveries.
+   */
+  readonly requestMetadata?: Readonly<Record<string, unknown>>;
+  /**
+   * Post only a finished answer: the turn runs without a live chat stream (no
+   * status, typing or tool ledger), an empty or `NOTHING_TO_REPORT` answer
+   * posts nothing (`code: "nothing_to_report"`), and the answer is then posted
+   * once. Ignored for verbatim deliveries.
+   */
+  readonly finalAnswerOnly?: boolean;
+  /**
+   * Host cancellation for this notification. Aborting before delivery cancels
+   * the turn and posts nothing (`reason: "cancelled"`).
+   */
+  readonly abortSignal?: AbortSignal;
 }
 
 /**
@@ -505,6 +538,17 @@ export interface CreateTelegramBotOptions {
   readonly pendingAsks?: TelegramPendingAsks;
   /** Clear one host-owned conversation session for the built-in `/new` command. */
   readonly startNewSession?: (conversationId: string) => Promise<void>;
+  /**
+   * Topic names a host persisted earlier, restored at startup so a topic is
+   * named before one of its messages reveals the name again.
+   */
+  readonly knownTopicNames?: readonly TelegramKnownTopicName[];
+  /**
+   * Called for every message from an allowlisted chat, after the allowlist
+   * gate and before trigger filtering, with what it reveals about the chat and
+   * its forum topic. Must not throw; failures are logged and ignored.
+   */
+  readonly onChatObserved?: (observation: TelegramChatObservation) => void;
   /**
    * Base URL of a self-hosted Bot API server (e.g. `http://127.0.0.1:8081`).
    * Applied to every API call and to file downloads; a `--local` server's
@@ -866,16 +910,40 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   // topic-root reply, keyed by topic conversation id. Process-local: after a
   // restart a topic is shown by chat name only until one of its messages
   // reveals the name again.
-  const topicNames = new Map<string, string>();
-  function learnTopicName(message: TelegramMessage): void {
-    const learned = telegramTopicNameFromMessage(message);
-    if (learned === undefined) return;
-    const key = telegramConversationId({ chatId: message.chat.id, messageThreadId: learned.messageThreadId });
+  // An explicit rename beats the creation name every later message quotes
+  // from the topic root (see mergeTelegramTopicName). A host may hydrate names
+  // it persisted earlier.
+  const topicNames = new Map<string, TelegramTopicNameRecord>();
+  function rememberTopicName(key: string, observed: TelegramTopicNameRecord): void {
+    const merged = mergeTelegramTopicName(topicNames.get(key), observed);
     topicNames.delete(key);
-    topicNames.set(key, learned.name);
+    topicNames.set(key, merged);
     if (topicNames.size > TOPIC_NAME_CACHE_MAX) {
       const oldest = topicNames.keys().next().value;
       if (oldest !== undefined) topicNames.delete(oldest);
+    }
+  }
+  for (const known of options.knownTopicNames ?? []) {
+    if (!Number.isSafeInteger(known.messageThreadId) || known.messageThreadId <= 0) continue;
+    rememberTopicName(
+      telegramConversationId({ chatId: known.chatId, messageThreadId: known.messageThreadId }),
+      known.nameRecord,
+    );
+  }
+  function observeChatMessage(message: TelegramMessage): void {
+    const observation = telegramChatObservationFromMessage(message);
+    const nameRecord = observation.topic?.nameRecord;
+    if (observation.topic !== undefined && nameRecord !== undefined) {
+      rememberTopicName(
+        telegramConversationId({ chatId: observation.chatId, messageThreadId: observation.topic.messageThreadId }),
+        nameRecord,
+      );
+    }
+    if (options.onChatObserved === undefined) return;
+    try {
+      options.onChatObserved(observation);
+    } catch (error) {
+      logger?.warn?.("Telegram chat observation hook failed.", { error: errorMessage(error) });
     }
   }
 
@@ -1362,6 +1430,11 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       await ctx.reply(messages.unauthorizedText);
       return;
     }
+    // Observe after the allowlist gate and before any command or trigger
+    // filtering, so a topic is learned even when no turn starts.
+    if (ctx.message !== undefined) {
+      observeChatMessage(ctx.message as unknown as TelegramMessage);
+    }
     await next();
   });
 
@@ -1747,7 +1820,6 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       return;
     }
     const rawMessage = message as unknown as TelegramMessage;
-    learnTopicName(rawMessage);
     // Topic lifecycle service messages (created, renamed, closed…) only teach
     // the topic name; they are never a turn or an "unsupported" reply.
     if (isTelegramForumServiceMessage(rawMessage)) {
@@ -2086,7 +2158,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       );
     }
 
-    const topicName = target.messageThreadId === undefined ? undefined : topicNames.get(conversationId);
+    const topicName = target.messageThreadId === undefined ? undefined : topicNames.get(conversationId)?.name;
     const request = buildAgentRequest(
       ctx.update as unknown as TelegramUpdate,
       message as unknown as TelegramMessage,
@@ -2232,6 +2304,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     deliveryKey?: string,
     showHints = false,
     contextCutoff?: number,
+    turnOptions: Pick<TelegramNotifyOptions, "requestMetadata" | "finalAnswerOnly"> = {},
   ): Promise<TelegramNotifyResult> {
     try {
       if (controller.signal.aborted) {
@@ -2257,6 +2330,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         text,
         abortSignal: controller.signal,
         metadata: {
+          ...turnOptions.requestMetadata,
           ...(deliveryKey === undefined
             ? {}
             : { [PROCESS_JOB_WAKE_DELIVERY_METADATA]: deliveryKey }),
@@ -2264,16 +2338,13 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         },
         ...(precedingMessages === undefined ? {} : { precedingMessages }),
       };
-      const stream = new TelegramMessageStream(buildStreamOptions(
-        target,
-        undefined,
-        controller.signal,
-        silent,
-        showHints,
-      ));
+      const streamOptions = buildStreamOptions(target, undefined, controller.signal, silent, showHints);
+      // A final-answer-only turn writes nothing to the chat while it runs; the
+      // real stream is created only once there is an answer worth posting.
+      const liveStream = turnOptions.finalAnswerOnly === true ? undefined : new TelegramMessageStream(streamOptions);
       let response: AgentResponse;
       try {
-        response = await options.responder.respond(request, stream);
+        response = await options.responder.respond(request, liveStream ?? SILENT_TURN_STREAM);
       } catch (error) {
         if (controller.signal.aborted || isAgentResponseCancelledError(error)) {
           return { delivered: false, reason: "cancelled" };
@@ -2291,6 +2362,10 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       ) {
         return { delivered: false, reason: "agent produced no answer" };
       }
+      if (turnOptions.finalAnswerOnly === true && suppressesNotification(answer) && (response.parts?.length ?? 0) === 0) {
+        return { delivered: false, code: "nothing_to_report", reason: "agent reported nothing to deliver" };
+      }
+      const stream = liveStream ?? new TelegramMessageStream(streamOptions);
       try {
         const remainingParts = await replyFiles.deliver(response.parts, {
           conversationId,
@@ -2598,6 +2673,16 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     }
     const conversationId = telegramConversationId(target);
     const controller = registerController(target);
+    const hostSignal = notifyOptions?.abortSignal;
+    if (hostSignal !== undefined) {
+      if (hostSignal.aborted) {
+        controller.abort(hostSignal.reason);
+      } else {
+        const onHostAbort = (): void => controller.abort(hostSignal.reason);
+        hostSignal.addEventListener("abort", onHostAbort, { once: true });
+        controller.signal.addEventListener("abort", () => hostSignal.removeEventListener("abort", onHostAbort), { once: true });
+      }
+    }
     const silent = notifyOptions?.silent === true;
     // Interactive turns (custom command prompts, reply-button taps) are asked
     // by a person in the conversation, so they see what was said before them;
@@ -2712,6 +2797,10 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
               notifyOptions?.deliveryKey,
               false,
               contextCutoff,
+              {
+                ...(notifyOptions?.requestMetadata === undefined ? {} : { requestMetadata: notifyOptions.requestMetadata }),
+                ...(notifyOptions?.finalAnswerOnly === undefined ? {} : { finalAnswerOnly: notifyOptions.finalAnswerOnly }),
+              },
             );
       },
       () => {

@@ -572,6 +572,7 @@ export async function adapterSendToolsRuntimeOptions(controller: ResponderContro
       effectiveInteraction,
       runOutputRoot,
       controller.interactionBridge,
+      settings.telegram?.topicDirectory?.root,
     )(requestInput);
   };
   return { createExtension, blockingToolNames };

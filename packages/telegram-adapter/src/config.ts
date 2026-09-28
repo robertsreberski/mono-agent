@@ -101,6 +101,30 @@ export interface TelegramSendToolsConfig {
   readonly pathScope?: "run-output";
 }
 
+/**
+ * Persistent forum-topic directory (JSON-only, off by default). When enabled
+ * the host remembers topic names it has seen so tools can address a topic by
+ * name. Telegram offers no topic listing, so discovery stays passive.
+ */
+export interface TelegramTopicDirectoryConfig {
+  readonly enabled: boolean;
+}
+
+/**
+ * Agent-managed schedules (JSON-only, off by default). Requires the topic
+ * directory. Limits bound what schedule tools may create.
+ */
+export interface TelegramSchedulesConfig {
+  readonly enabled: boolean;
+  /** Maximum schedules that are not finished or deleted (1–100). Default 20. */
+  readonly maxSchedules: number;
+  /** Smallest gap between two runs of one schedule, in minutes (1–60). Default 15. */
+  readonly minIntervalMinutes: number;
+}
+
+export const DEFAULT_TELEGRAM_MAX_SCHEDULES = 20;
+export const DEFAULT_TELEGRAM_SCHEDULE_MIN_INTERVAL_MINUTES = 15;
+
 export interface TelegramAdapterConfig {
   readonly enabled: boolean;
   readonly botToken: string;
@@ -137,6 +161,10 @@ export interface TelegramAdapterConfig {
    */
   readonly transcription?: TelegramTranscriptionConfig;
   readonly sendTools?: TelegramSendToolsConfig;
+  /** Persistent topic directory. Omit (or `enabled: false`) to keep topic names in memory only. */
+  readonly topicDirectory?: TelegramTopicDirectoryConfig;
+  /** Agent-managed schedules. Omit (or `enabled: false`) to leave schedule tools off. */
+  readonly schedules?: TelegramSchedulesConfig;
 }
 
 export interface RedactedTelegramAdapterConfig {
@@ -157,6 +185,8 @@ export interface RedactedTelegramAdapterConfig {
   readonly reactions?: TelegramReactionsConfig;
   readonly transcription?: TelegramTranscriptionConfig;
   readonly sendTools?: TelegramSendToolsConfig;
+  readonly topicDirectory?: TelegramTopicDirectoryConfig;
+  readonly schedules?: TelegramSchedulesConfig;
 }
 
 export type TelegramAdapterConfigErrorCode =
@@ -273,6 +303,8 @@ export async function loadTelegramAdapterConfig(
           max: 3_600_000,
         });
   const sendTools = readTelegramSendTools(json);
+  const topicDirectory = readTelegramTopicDirectory(json);
+  const schedules = readTelegramSchedules(json, topicDirectory);
   const topics = readTelegramTopics(json, allowedChatIds, allowAllChats);
   const quietHours = readTelegramQuietHours(json);
   const commands = readTelegramCommands(json);
@@ -298,6 +330,71 @@ export async function loadTelegramAdapterConfig(
     ...(reactions === undefined ? {} : { reactions }),
     ...(transcription === undefined ? {} : { transcription }),
     ...(sendTools === undefined ? {} : { sendTools }),
+    ...(topicDirectory === undefined ? {} : { topicDirectory }),
+    ...(schedules === undefined ? {} : { schedules }),
+  };
+}
+
+function readTelegramTopicDirectory(json: SettingsJson): TelegramTopicDirectoryConfig | undefined {
+  const raw = readJsonSection(json, "telegram").topicDirectory;
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw invalidConfig("telegram.topicDirectory must be an object with { enabled }.");
+  }
+  const record = raw as Record<string, unknown>;
+  const unknown = Object.keys(record).filter((key) => key !== "enabled");
+  if (unknown.length > 0) {
+    throw invalidConfig("telegram.topicDirectory contains unknown fields.", { fields: unknown });
+  }
+  if (record.enabled !== undefined && typeof record.enabled !== "boolean") {
+    throw invalidConfig("telegram.topicDirectory.enabled must be a boolean.");
+  }
+  return { enabled: record.enabled === true };
+}
+
+const TELEGRAM_SCHEDULES_FIELDS = new Set(["enabled", "maxSchedules", "minIntervalMinutes"]);
+
+/**
+ * Read `telegram.schedules`. Enabling schedules without the topic directory is
+ * a hard error rather than a silent enable: schedules address topics by name.
+ */
+function readTelegramSchedules(
+  json: SettingsJson,
+  topicDirectory: TelegramTopicDirectoryConfig | undefined,
+): TelegramSchedulesConfig | undefined {
+  const raw = readJsonSection(json, "telegram").schedules;
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw invalidConfig("telegram.schedules must be an object with { enabled, maxSchedules?, minIntervalMinutes? }.");
+  }
+  const record = raw as Record<string, unknown>;
+  const unknown = Object.keys(record).filter((key) => !TELEGRAM_SCHEDULES_FIELDS.has(key));
+  if (unknown.length > 0) {
+    throw invalidConfig("telegram.schedules contains unknown fields.", { fields: unknown });
+  }
+  if (record.enabled !== undefined && typeof record.enabled !== "boolean") {
+    throw invalidConfig("telegram.schedules.enabled must be a boolean.");
+  }
+  const readBounded = (value: unknown, field: string, fallback: number, max: number): number => {
+    if (value === undefined) return fallback;
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > max) {
+      throw invalidConfig(`telegram.schedules.${field} must be an integer from 1 to ${String(max)}.`, { field });
+    }
+    return value;
+  };
+  const enabled = record.enabled === true;
+  if (enabled && topicDirectory?.enabled !== true) {
+    throw invalidConfig("telegram.schedules.enabled requires telegram.topicDirectory.enabled: true.");
+  }
+  return {
+    enabled,
+    maxSchedules: readBounded(record.maxSchedules, "maxSchedules", DEFAULT_TELEGRAM_MAX_SCHEDULES, 100),
+    minIntervalMinutes: readBounded(
+      record.minIntervalMinutes,
+      "minIntervalMinutes",
+      DEFAULT_TELEGRAM_SCHEDULE_MIN_INTERVAL_MINUTES,
+      60,
+    ),
   };
 }
 
@@ -749,6 +846,8 @@ export function redactTelegramAdapterConfig(
     // The endpoint/model are not secrets, so they pass through verbatim.
     ...(config.transcription === undefined ? {} : { transcription: config.transcription }),
     ...(config.sendTools === undefined ? {} : { sendTools: config.sendTools }),
+    ...(config.topicDirectory === undefined ? {} : { topicDirectory: config.topicDirectory }),
+    ...(config.schedules === undefined ? {} : { schedules: config.schedules }),
   };
 }
 

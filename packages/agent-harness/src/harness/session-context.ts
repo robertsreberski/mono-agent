@@ -115,8 +115,13 @@ function continuationPromise(hostOwnedContinuation: boolean): string {
   return `You may promise a later reply only after a continuation-capable tool explicitly confirms that a destination-bound continuation was registered${confirmation}; otherwise finish synchronously or explain that background delivery was not scheduled.`;
 }
 
+/**
+ * Cron and webhook triggers, plus a channel-owned schedule firing
+ * (`metadata.channelSchedule`, e.g. an agent-managed Telegram schedule): the
+ * turn has a destination but no person waiting on it.
+ */
 function hasRequestDrivenTrigger(metadata: Record<string, unknown> | undefined): boolean {
-  return metadata?.cron !== undefined || metadata?.webhook !== undefined;
+  return metadata?.cron !== undefined || metadata?.webhook !== undefined || metadata?.channelSchedule !== undefined;
 }
 
 type ConsoleSurface = "web" | "tui";
@@ -313,13 +318,16 @@ const HOST_MANAGED_MEMORY_GUIDANCE = [
 ].join(" ");
 
 /**
- * Guidance for a notify-enabled cron/webhook turn (its trigger metadata carries
+ * Guidance for a notify-enabled cron/webhook/channel-schedule turn (its trigger metadata carries
  * `nativeNotify.enabled`): the agent's final reply is delivered to the user
  * VERBATIM by the host, so it should read as the finished message and there is no
  * tool to call. Returns undefined for any non-notify turn.
  */
 function notifyDeliveryGuidance(metadata: Record<string, unknown> | undefined): string | undefined {
-  if (metadata === undefined || !(nativeNotifyEnabled(metadata.cron) || nativeNotifyEnabled(metadata.webhook))) {
+  if (
+    metadata === undefined
+    || !(nativeNotifyEnabled(metadata.cron) || nativeNotifyEnabled(metadata.webhook) || nativeNotifyEnabled(metadata.channelSchedule))
+  ) {
     return undefined;
   }
   return [

@@ -27,11 +27,20 @@ export type {
 } from "./types.js";
 
 export {
+  mergeTelegramTopicName,
   parseTelegramConversationId,
+  telegramChatObservationFromMessage,
   telegramConversationId,
   telegramMessageThreadId,
 } from "./conversation.js";
-export type { TelegramConversationTarget, TelegramDestination } from "./conversation.js";
+export type {
+  TelegramChatObservation,
+  TelegramConversationTarget,
+  TelegramDestination,
+  TelegramKnownTopicName,
+  TelegramTopicNameRecord,
+  TelegramTopicNameSource,
+} from "./conversation.js";
 
 export { TelegramApiError } from "./telegram-error.js";
 export type {
@@ -130,6 +139,8 @@ export type {
 } from "./bot.js";
 
 export {
+  DEFAULT_TELEGRAM_MAX_SCHEDULES,
+  DEFAULT_TELEGRAM_SCHEDULE_MIN_INTERVAL_MINUTES,
   isWithinQuietHours,
   loadTelegramAdapterConfig,
   redactTelegramAdapterConfig,
@@ -147,7 +158,9 @@ export type {
   TelegramGroupTriggerMode,
   TelegramQuietHours,
   TelegramReactionsConfig,
+  TelegramSchedulesConfig,
   TelegramTopicConfig,
+  TelegramTopicDirectoryConfig,
   TelegramTopicTriggerMode,
   TelegramSendToolsConfig,
 } from "./config.js";

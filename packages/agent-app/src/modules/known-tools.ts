@@ -56,6 +56,11 @@ export const ADAPTER_SEND_TOOL_NAMES = [
   "SlackSendMessage",
   "TelegramSendMessage",
   "TelegramSendFile",
+  "TelegramListTopics",
+  "TelegramListSchedules",
+  "TelegramCreateSchedule",
+  "TelegramUpdateSchedule",
+  "TelegramDeleteSchedule",
   "AskUser",
 ] as const;
 

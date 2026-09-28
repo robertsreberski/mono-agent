@@ -323,3 +323,67 @@ describe("structured AskUser interaction bridge", () => {
     expect(handle.getAsk(interactionId)).toBeUndefined();
   });
 });
+
+describe("interaction bridge schedule capability", () => {
+  async function post(url: string, token: string | undefined, body: unknown): Promise<{ status: number; body: Record<string, unknown> }> {
+    const response = await fetch(new URL("/v1/telegram-schedules", url), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
+      },
+      body: JSON.stringify(body),
+    });
+    return { status: response.status, body: await response.json() as Record<string, unknown> };
+  }
+
+  it("forwards host-bound context, never caller-supplied identity, and revokes on release", async () => {
+    const bridge = await startInteractionBridge();
+    handles.push(bridge);
+    const seen: unknown[] = [];
+    bridge.registerScheduleHandler(async (operation, args, context) => {
+      seen.push({ operation, args, context });
+      return { ok: true, result: { operation } };
+    });
+    const capability = bridge.issueScheduleCapability({
+      runId: "run-1",
+      producerConversationId: "telegram:-1001",
+      mutate: false,
+    });
+
+    const response = await post(bridge.url, capability.token, {
+      operation: "create",
+      args: { name: "x" },
+      context: { mutate: true, producerConversationId: "telegram:-9" },
+    });
+
+    expect(response).toEqual({ status: 200, body: { ok: true, result: { operation: "create" } } });
+    expect(seen).toEqual([{
+      operation: "create",
+      args: { name: "x" },
+      context: { runId: "run-1", producerConversationId: "telegram:-1001", mutate: false },
+    }]);
+    // The master bridge token is not a schedule capability.
+    expect((await post(bridge.url, bridge.token, { operation: "list" })).status).toBe(401);
+    expect((await post(bridge.url, undefined, { operation: "list" })).status).toBe(401);
+    capability.release();
+    expect((await post(bridge.url, capability.token, { operation: "list" })).status).toBe(401);
+  });
+
+  it("revokes a run's capabilities with the run and reports a missing service", async () => {
+    const bridge = await startInteractionBridge();
+    handles.push(bridge);
+    const capability = bridge.issueScheduleCapability({ runId: "run-2", producerConversationId: "telegram:1", mutate: true });
+
+    expect(await post(bridge.url, capability.token, { operation: "list" })).toMatchObject({
+      status: 503,
+      body: { ok: false, code: "unavailable" },
+    });
+    const unregister = bridge.registerScheduleHandler(async () => ({ ok: true, result: {} }));
+    expect((await post(bridge.url, capability.token, { operation: "list" })).status).toBe(200);
+    unregister();
+    expect((await post(bridge.url, capability.token, { operation: "list" })).status).toBe(503);
+    bridge.releaseRun({ runId: "run-2", conversationId: "telegram:1" });
+    expect((await post(bridge.url, capability.token, { operation: "list" })).status).toBe(401);
+  });
+});

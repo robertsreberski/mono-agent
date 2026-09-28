@@ -154,6 +154,117 @@ export function telegramTopicNameFromMessage(
   return name.length === 0 ? undefined : { messageThreadId, name };
 }
 
+/**
+ * How a topic name was revealed. `created`/`edited` are the topic's own
+ * service messages; `root_reply` is the creation name quoted by the implicit
+ * reply to the topic root, which never reflects a later rename.
+ */
+export type TelegramTopicNameSource = "created" | "edited" | "root_reply";
+
+/** One learned topic name plus the evidence that produced it. */
+export interface TelegramTopicNameRecord {
+  readonly name: string;
+  readonly source: TelegramTopicNameSource;
+  /** Telegram message id of the revealing message (orders explicit renames). */
+  readonly messageId: number;
+}
+
+/**
+ * What one inbound message from an allowlisted chat reveals about the chat and,
+ * for a forum-topic message, its topic. A topic id is reported even when no name
+ * is visible, so a host can list "unnamed topic seen" instead of nothing.
+ */
+export interface TelegramChatObservation {
+  readonly chatId: TelegramChatId;
+  /** Bounded chat title when the message carries one. */
+  readonly chatTitle?: string;
+  readonly topic?: {
+    readonly messageThreadId: number;
+    readonly nameRecord?: TelegramTopicNameRecord;
+    /** Set by the topic's closed/reopened service messages. */
+    readonly state?: "open" | "closed";
+  };
+}
+
+/** A topic name a host persisted earlier and hands back at startup. */
+export interface TelegramKnownTopicName {
+  readonly chatId: TelegramChatId;
+  readonly messageThreadId: number;
+  readonly nameRecord: TelegramTopicNameRecord;
+}
+
+/** The observation one inbound message yields. Never undefined for a real chat message. */
+export function telegramChatObservationFromMessage(message: TelegramMessage): TelegramChatObservation {
+  const chatTitle = boundedLabel(message.chat.title);
+  const messageThreadId = telegramMessageThreadId(message);
+  if (messageThreadId === undefined) {
+    return { chatId: message.chat.id, ...(chatTitle === undefined ? {} : { chatTitle }) };
+  }
+  const nameRecord = telegramTopicNameRecordFromMessage(message);
+  const state = message.forum_topic_closed !== undefined
+    ? "closed" as const
+    : message.forum_topic_reopened !== undefined || message.forum_topic_created !== undefined
+      ? "open" as const
+      : undefined;
+  return {
+    chatId: message.chat.id,
+    ...(chatTitle === undefined ? {} : { chatTitle }),
+    topic: {
+      messageThreadId,
+      ...(nameRecord === undefined ? {} : { nameRecord }),
+      ...(state === undefined ? {} : { state }),
+    },
+  };
+}
+
+function telegramTopicNameRecordFromMessage(message: TelegramMessage): TelegramTopicNameRecord | undefined {
+  const learned = telegramTopicNameFromMessage(message);
+  if (learned === undefined) {
+    return undefined;
+  }
+  const source: TelegramTopicNameSource = typeof message.forum_topic_edited?.name === "string"
+    ? "edited"
+    : typeof message.forum_topic_created?.name === "string"
+      ? "created"
+      : "root_reply";
+  return { name: learned.name, source, messageId: message.message_id };
+}
+
+/**
+ * Merge one observed topic name into the name already known. An explicit
+ * rename always beats creation evidence: every later message quotes the topic
+ * root, whose `forum_topic_created` still carries the ORIGINAL name, so letting
+ * that evidence win would undo each rename on the next ordinary message.
+ * Renames are ordered by message id. Returns the record to keep.
+ */
+export function mergeTelegramTopicName(
+  existing: TelegramTopicNameRecord | undefined,
+  observed: TelegramTopicNameRecord,
+): TelegramTopicNameRecord {
+  if (existing === undefined) {
+    return observed;
+  }
+  if (observed.source === "edited") {
+    return existing.source !== "edited" || observed.messageId >= existing.messageId ? observed : existing;
+  }
+  if (existing.source === "edited") {
+    return existing;
+  }
+  // Both are creation evidence. A real creation service message is stronger
+  // than a quoted root; otherwise keep the first-seen record stable.
+  return observed.source === "created" || (existing.source === "root_reply" && existing.name !== observed.name)
+    ? observed
+    : existing;
+}
+
+function boundedLabel(raw: unknown): string | undefined {
+  if (typeof raw !== "string") {
+    return undefined;
+  }
+  const label = Array.from(raw.replace(/\s+/gu, " ").trim()).slice(0, TOPIC_NAME_MAX_CHARS).join("");
+  return label.length === 0 ? undefined : label;
+}
+
 const FORUM_SERVICE_FIELDS = [
   "forum_topic_created",
   "forum_topic_edited",

@@ -58,6 +58,10 @@ export interface TelegramMessage {
   forum_topic_created?: { name?: string; [key: string]: unknown };
   /** Present on the service message that renames (or re-icons) a forum topic. */
   forum_topic_edited?: { name?: string; [key: string]: unknown };
+  /** Present on the service message that closes a forum topic. */
+  forum_topic_closed?: Record<string, unknown>;
+  /** Present on the service message that reopens a forum topic. */
+  forum_topic_reopened?: Record<string, unknown>;
   /** Set on each message of a multi-photo/video album; shared across the group. */
   media_group_id?: string;
   animation?: unknown;

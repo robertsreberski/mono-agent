@@ -342,6 +342,14 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         ...(args.json === true ? { json: true } : {}),
       });
     }
+    case "schedules": {
+      const { runSchedulesCommand } = await import("./cli-schedules-command.js");
+      return await runSchedulesCommand({
+        cwd: process.cwd(),
+        positionals: args.positionals,
+        ...(args.json === true ? { json: true } : {}),
+      });
+    }
     case "runs":
       return await runRunsCommand(args);
     case "memory": {

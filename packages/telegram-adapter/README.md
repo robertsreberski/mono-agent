@@ -69,12 +69,23 @@ JSON-only `telegram.topics` list overrides the trigger rule per topic
 (`{ chatId, topicId, groupMode: "inherit" | "any" | "mention" | "listen" }`);
 entries must name allowlisted chats and never widen the allowlist. Topic names
 learned from the topic's service messages and implicit root replies appear in
-the model-visible surface as `Chat › Topic`; the topic id stays host-owned.
+the model-visible surface as `Chat › Topic`; the topic id stays host-owned. An
+explicit rename wins over the original name that every later message quotes
+from the topic root (`mergeTelegramTopicName`). A host can persist what the bot
+learns: `onChatObserved` receives a `TelegramChatObservation` for every message
+from an allowlisted chat (after the allowlist gate, before trigger filtering;
+topic ids are reported even without a visible name), and `knownTopicNames`
+restores persisted names at startup. The package itself stores nothing;
+agent-app's opt-in `telegram.topicDirectory` and `telegram.schedules` config
+blocks are parsed here and implemented by the host.
 `groupMode: "listen"` triggers like `mention` and passes the unaddressed
 messages since the bot's last turn (newest 30, in memory) to the next triggered
 turn as `precedingMessages`. Proactive `notify`,
 `presentAsk`, `postStatus`, and `updateProcessJob` accept either a bare chat id
-(the main conversation) or `{ chatId, messageThreadId }`.
+(the main conversation) or `{ chatId, messageThreadId }`. `notify` also takes
+`finalAnswerOnly` (no live stream; an empty or `NOTHING_TO_REPORT` answer posts
+nothing), host-owned `requestMetadata`, and an `abortSignal` for host
+cancellation.
 
 ### Programmatic use
 
@@ -335,6 +346,7 @@ The request lifecycle is:
 | `loadTelegramAdapterConfig` | Load, validate, and redact the config/env surface. |
 | `startTelegramAdapter` | Start the complete bot/poller lifecycle and obtain notify/post helpers. |
 | `createTelegramBot` | Control the bot controller lifecycle directly. |
+| `telegramChatObservationFromMessage` / `mergeTelegramTopicName` | Persist passive topic discovery in a host without undoing renames. |
 | `TelegramBotController.updateProcessJob` | Post or monotonically update one exact-origin host lifecycle card without a model turn. |
 | `createGrammyTelegramApi` / `createTelegramMessageSender` | Compose the Bot API boundary separately. |
 | `downloadTelegramAttachments` | Normalize authorized Telegram media into shared attachments. |
@@ -359,6 +371,8 @@ DEFAULT_AGENT_ATTACHMENT_MAX_BYTES
 DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST
 DEFAULT_ATTACHMENT_MAX_BYTES
 DEFAULT_ATTACHMENT_MIME_ALLOWLIST
+DEFAULT_TELEGRAM_MAX_SCHEDULES
+DEFAULT_TELEGRAM_SCHEDULE_MIN_INTERVAL_MINUTES
 DownloadTelegramAttachmentsOptions
 LoadTelegramAdapterConfigInput
 RedactedTelegramAdapterConfig
@@ -393,6 +407,7 @@ TelegramBotApi
 TelegramBotController
 TelegramChat
 TelegramChatId
+TelegramChatObservation
 TelegramCommandConfig
 TelegramConversationTarget
 TelegramDeleteMessageParams
@@ -406,6 +421,7 @@ TelegramFileDownloader
 TelegramFileReference
 TelegramGetUpdatesParams
 TelegramGroupTriggerMode
+TelegramKnownTopicName
 TelegramMessage
 TelegramMessageEntity
 TelegramMessageSender
@@ -422,6 +438,7 @@ TelegramRequestOptions
 TelegramRuntimeControls
 TelegramRuntimeEffortOption
 TelegramRuntimeModelOption
+TelegramSchedulesConfig
 TelegramSendDocumentParams
 TelegramSendMessageParams
 TelegramSendOutcome
@@ -430,6 +447,9 @@ TelegramSendToolsConfig
 TelegramSentMessage
 TelegramTextQuote
 TelegramTopicConfig
+TelegramTopicDirectoryConfig
+TelegramTopicNameRecord
+TelegramTopicNameSource
 TelegramTopicTriggerMode
 TelegramTranscriber
 TelegramTranscriptionConfig
@@ -452,12 +472,14 @@ downloadTelegramAttachments
 isTelegramReplyCallbackData
 isWithinQuietHours
 loadTelegramAdapterConfig
+mergeTelegramTopicName
 parseTelegramAskUserCallbackData
 parseTelegramConversationId
 redactTelegramAdapterConfig
 renderTelegramMarkdown
 startTelegramAdapter
 telegramAskUserCallbackData
+telegramChatObservationFromMessage
 telegramConversationId
 telegramMessageThreadId
 telegramReplyCallbackData

@@ -249,6 +249,9 @@ describe("adapter send tools MCP spec/env", () => {
       MONO_AGENT_ADAPTER_TOOLS_ALLOWED_TOOLS: JSON.stringify(allowedTools),
       MONO_AGENT_ADAPTER_TOOLS_HISTORY_BRIDGE_URL: "",
       MONO_AGENT_ADAPTER_TOOLS_HISTORY_BRIDGE_TOKEN: "",
+      MONO_AGENT_ADAPTER_TOOLS_TOPIC_DIRECTORY: "",
+      MONO_AGENT_ADAPTER_TOOLS_SCHEDULE_BRIDGE_URL: "",
+      MONO_AGENT_ADAPTER_TOOLS_SCHEDULE_BRIDGE_TOKEN: "",
     });
     expect(spec.env).not.toHaveProperty("HTTP_PROXY");
     expect(spec.env).not.toHaveProperty("HTTPS_PROXY");

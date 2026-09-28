@@ -16,7 +16,20 @@ import { buildChannelConfigView } from "../channel-config-view.js";
 import { isChannelConfigured } from "../channel-gate.js";
 import type { ChannelGateSpec } from "../channel-gate.js";
 import type { ChannelDriver, ChannelStartInput } from "../channels.js";
+import { interactionScheduleHost } from "../interaction-bridge.js";
 import { telegramTargetFromConversation, type TelegramDestinationTarget } from "../telegram-destination.js";
+import {
+  startTelegramScheduleService,
+  type TelegramScheduleDeliverInput,
+  type TelegramScheduleDeliveryResult,
+  type TelegramScheduleService,
+} from "../telegram-schedule-service.js";
+import {
+  openTelegramTopicDirectory,
+  sanitizeTelegramLabel,
+  telegramBotIdFromToken,
+  type TelegramTopicDirectoryStore,
+} from "../telegram-topic-directory.js";
 import { unconfiguredChannelView } from "./shared.js";
 
 type TelegramAdapterModule = typeof import("@mono-agent/telegram-adapter");
@@ -71,7 +84,16 @@ export function createTelegramChannelDriver(
     async start(input) {
       const adapter = await loadTelegramModule();
       const startAdapter = overrides.startAdapter ?? adapter.startTelegramAdapter;
-      const result = await startAdapter(telegramStartOptions(input, overrides));
+      const topicDirectory = await openTopicDirectory(input);
+      let result: TelegramAdapterStartResult;
+      try {
+        result = await startAdapter(telegramStartOptions(input, overrides, topicDirectory.store));
+      } catch (error) {
+        topicDirectory.store?.close();
+        throw error;
+      }
+      const schedules = await startSchedules(input, topicDirectory.store, (delivery) =>
+        deliverScheduledTurn(input, result, adapter, delivery));
       const interactionSink: ChannelInteractionSink = {
         presentAsk: async (conversationId, snapshot) => {
           await result.presentAsk(requireAllowedTelegramTarget(conversationId, input), snapshot);
@@ -85,8 +107,23 @@ export function createTelegramChannelDriver(
       };
       input.interaction?.registerSink("telegram", interactionSink);
       return {
-        summary: {},
-        stop: () => result.stop(),
+        summary: {
+          ...(topicDirectory.summary === undefined ? {} : { topicDirectory: topicDirectory.summary }),
+          ...(schedules.summary === undefined ? {} : { schedules: schedules.summary }),
+        },
+        stop: async () => {
+          // Schedules stop first so in-flight scheduled turns are cancelled
+          // through the still-running adapter, then the lease is released.
+          schedules.unregister?.();
+          await schedules.service?.stop().catch((error: unknown) => {
+            input.logger?.warn?.("Telegram schedules did not stop cleanly.", { error: errorMessage(error) });
+          });
+          try {
+            await result.stop();
+          } finally {
+            topicDirectory.store?.close();
+          }
+        },
         processJobs: {
           update: async ({ conversationId, processJob, retirementOnly }) => {
             if (processJob.origin.channel !== "telegram"
@@ -235,6 +272,121 @@ export function createTelegramChannelDriver(
   };
 }
 
+interface TopicDirectoryStart {
+  readonly store?: TelegramTopicDirectoryStore;
+  readonly summary?: string;
+}
+
+/**
+ * Open the persistent topic directory when enabled. A corrupt or insecure
+ * directory disables name addressing with a diagnostic; ordinary Telegram
+ * conversations keep working.
+ */
+async function openTopicDirectory(input: ChannelStartInput<TelegramAdapterConfig>): Promise<TopicDirectoryStart> {
+  if (input.config.topicDirectory?.enabled !== true) return {};
+  try {
+    const store = await openTelegramTopicDirectory({
+      cwd: input.cwd,
+      botId: telegramBotIdFromToken(input.config.botToken),
+      ...(input.logger === undefined ? {} : { logger: input.logger }),
+    });
+    return { store, summary: "on" };
+  } catch (error) {
+    input.logger?.warn?.("Telegram topic directory is unavailable; topics cannot be addressed by name.", {
+      error: errorMessage(error),
+    });
+    return { summary: `unavailable: ${errorMessage(error)}` };
+  }
+}
+
+interface SchedulesStart {
+  readonly service?: TelegramScheduleService;
+  readonly unregister?: () => void;
+  readonly summary?: string;
+}
+
+/**
+ * Start agent-managed schedules after the adapter is running. Records are
+ * never deleted by disabling the feature; a lease conflict or corrupt state
+ * leaves schedules unavailable with a visible reason.
+ */
+async function startSchedules(
+  input: ChannelStartInput<TelegramAdapterConfig>,
+  directory: TelegramTopicDirectoryStore | undefined,
+  deliver: (delivery: TelegramScheduleDeliverInput) => Promise<TelegramScheduleDeliveryResult>,
+): Promise<SchedulesStart> {
+  const config = input.config.schedules;
+  if (config?.enabled !== true) return {};
+  const host = interactionScheduleHost(input.interaction);
+  if (directory === undefined || host === undefined) {
+    const reason = directory === undefined
+      ? "the topic directory is unavailable"
+      : "the interaction bridge is not running";
+    input.logger?.warn?.("Telegram schedules are unavailable.", { reason });
+    return { summary: `unavailable: ${reason}` };
+  }
+  try {
+    const service = await startTelegramScheduleService({
+      cwd: input.cwd,
+      botId: telegramBotIdFromToken(input.config.botToken),
+      maxSchedules: config.maxSchedules,
+      minIntervalMinutes: config.minIntervalMinutes,
+      isChatAllowed: (chatId) => input.config.allowAllChats || input.config.allowedChatIds.includes(chatId),
+      directory,
+      deliver,
+      ...(input.logger === undefined ? {} : { logger: input.logger }),
+    });
+    const unregister = host.registerScheduleHandler((operation, args, context) => service.call(operation, args, context));
+    return { service, unregister, summary: "running" };
+  } catch (error) {
+    input.logger?.warn?.("Telegram schedules are unavailable.", { error: errorMessage(error) });
+    return { summary: `unavailable: ${errorMessage(error)}` };
+  }
+}
+
+/**
+ * Run one scheduled turn in its destination conversation through the regular
+ * proactive path (per-conversation queue, topic routing, quiet-hours silence),
+ * with the allowlist re-checked right before. Only a finished answer is
+ * posted; an empty or NOTHING_TO_REPORT answer posts nothing.
+ */
+async function deliverScheduledTurn(
+  input: ChannelStartInput<TelegramAdapterConfig>,
+  result: TelegramAdapterStartResult,
+  adapter: TelegramAdapterModule,
+  delivery: TelegramScheduleDeliverInput,
+): Promise<TelegramScheduleDeliveryResult> {
+  const { schedule } = delivery;
+  const chatId = /^-?\d+$/u.test(schedule.destination.chatId)
+    ? Number(schedule.destination.chatId)
+    : schedule.destination.chatId;
+  const target: TelegramDestinationTarget = schedule.destination.topicId === undefined
+    ? { chatId }
+    : { chatId, messageThreadId: schedule.destination.topicId };
+  if (!isAllowedTelegramChat(target, input)) {
+    return { delivered: false, code: "destination_not_allowlisted", reason: "telegram chat is not in the adapter allowlist" };
+  }
+  const silent = input.config.quietHours !== undefined
+    && adapter.isWithinQuietHours(new Date(), input.config.quietHours);
+  const prompt = `Scheduled task "${sanitizeTelegramLabel(schedule.name)}":\n\n${schedule.prompt}`;
+  return await result.notify(adapterDestination(target), prompt, {
+    finalAnswerOnly: true,
+    abortSignal: delivery.signal,
+    requestMetadata: {
+      channelSchedule: {
+        scheduleId: schedule.id,
+        scheduledAt: delivery.scheduledAt,
+        nativeNotify: { enabled: true },
+      },
+    },
+    ...(silent ? { silent: true } : {}),
+  });
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function baseConversationId(conversationId: string): string {
   return conversationId.split("#", 1)[0] ?? conversationId;
 }
@@ -323,6 +475,7 @@ export function telegramChatIdFromConversation(conversationId: string): Telegram
 function telegramStartOptions(
   input: ChannelStartInput<TelegramAdapterConfig>,
   overrides: TelegramChannelOverrides,
+  topicDirectory?: TelegramTopicDirectoryStore,
 ): TelegramAdapterStartOptions {
   const runtimeControls: TelegramRuntimeControls = buildChannelRuntimeControls(input.coreConfig);
   const resetter = input.responder as typeof input.responder & {
@@ -386,6 +539,12 @@ function telegramStartOptions(
     ...(input.config.commands === undefined ? {} : { commands: [...input.config.commands] }),
     ...(input.config.reactions === undefined ? {} : { reactions: input.config.reactions }),
     ...(input.logger === undefined ? {} : { logger: input.logger }),
+    ...(topicDirectory === undefined
+      ? {}
+      : {
+          knownTopicNames: topicDirectory.knownTopicNames(),
+          onChatObserved: (observation) => topicDirectory.observe(observation),
+        }),
     ...(overrides.botFactory === undefined ? {} : { botFactory: overrides.botFactory }),
     ...(overrides.runnerFactory === undefined ? {} : { runnerFactory: overrides.runnerFactory }),
   };

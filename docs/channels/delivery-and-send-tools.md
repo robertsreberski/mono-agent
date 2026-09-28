@@ -130,6 +130,8 @@ mono-agent derives MCP **send tools** from already-enabled chat adapters so the 
 - `SlackSendMessage` — send through the configured Slack adapter
 - `TelegramSendMessage` — send through the configured Telegram adapter, optionally with non-blocking `reply_options`
 - `TelegramSendFile` — upload and send a file (`kind:"document"`) or an inline image (`kind:"photo"`) through the Telegram adapter
+- `TelegramListTopics` — list the forum topics the bot has seen, by name (with `telegram.topicDirectory.enabled`)
+- `TelegramListSchedules`, `TelegramCreateSchedule`, `TelegramUpdateSchedule`, `TelegramDeleteSchedule` — manage [agent-managed schedules](/channels/telegram/#agent-managed-schedules) (with `telegram.schedules.enabled`)
 - `AskUser` — ask one to five structured questions on the active interaction destination and **block until the user answers** (one tool across web, Slack, and Telegram; see below)
 
 Coverage: `config`. Three conditions must hold for a send tool to work:
@@ -153,6 +155,12 @@ remaining the destination boundary.
   stays in the current topic (a reply follows the replied message instead), and
   any other chat receives its main conversation, including a forum's General
   topic. A message sent into a topic is recorded in that topic's own history.
+- **`topic_name`** (optional on both tools, with the
+  [topic directory](/channels/telegram/#topic-directory-address-topics-by-name)
+  enabled) addresses a forum topic by its name instead of `message_thread_id`.
+  It must match exactly one known, open topic; otherwise the send fails with
+  the known names and never falls back to General. A name-addressed result
+  reports the topic name, not its id.
 - **`TelegramSendFile`** uploads and sends a file (`kind:"document"`) or an inline image (`kind:"photo"`) to an allowed chat. It accepts the bytes as base64 `data` (with a `filename`) **or** a workspace `path` (filename derived from the path), plus an optional `caption`. Uploads are bounded by the adapter's attachment size cap (~20 MB).
 
 The adapter's own allowlist (`slack.allowedChannelIds` / `slack.allowAllChannels`, `telegram.allowedChatIds` / `telegram.allowAllChats`) **remains the destination boundary**: allowing the tool does not widen where the agent may send. A send to a destination outside the adapter allowlist is refused.

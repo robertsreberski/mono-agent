@@ -548,3 +548,77 @@ function processJobProjection(
       : null,
   };
 }
+
+describe("createTelegramBot notify final-answer-only turns", () => {
+  it("runs without a live stream, merges host metadata, and posts only the finished answer", async () => {
+    let captured: AgentRequest | undefined;
+    const responder: AgentResponder = {
+      async respond(request, stream) {
+        captured = request as AgentRequest;
+        await stream.status?.("Searching flights");
+        await stream.append("draft");
+        return { text: "Fares dropped to 120 EUR." };
+      },
+    };
+    const { controller, calls } = buildNotifiableBot(responder);
+
+    const result = await controller.notify({ chatId: -1001, messageThreadId: 77 }, "Check fares.", {
+      finalAnswerOnly: true,
+      requestMetadata: { channelSchedule: { scheduleId: "sch_1" }, telegram: { forged: true } },
+    });
+
+    expect(result.delivered).toBe(true);
+    expect(captured?.conversationId).toBe("telegram:-1001:77");
+    expect(captured?.metadata.channelSchedule).toEqual({ scheduleId: "sch_1" });
+    // The adapter's own telegram metadata always wins over host-supplied keys.
+    expect(captured?.metadata.telegram).not.toHaveProperty("forged");
+    const sent = calls.filter((call) => call.method === "sendMessage" || call.method === "sendChatAction");
+    expect(sent.map((call) => call.method)).toEqual(["sendMessage"]);
+    expect(sent[0]?.payload.text).toContain("Fares dropped");
+    expect(sent[0]?.payload.message_thread_id).toBe(77);
+  });
+
+  it("posts nothing when a final-answer-only turn reports NOTHING_TO_REPORT", async () => {
+    const responder: AgentResponder = {
+      async respond() {
+        return { text: "Checked every route.\nNOTHING_TO_REPORT" };
+      },
+    };
+    const { controller, calls } = buildNotifiableBot(responder);
+
+    const result = await controller.notify(42, "Check fares.", { finalAnswerOnly: true });
+
+    expect(result).toMatchObject({ delivered: false, code: "nothing_to_report" });
+    expect(calls.filter((call) => call.method === "sendMessage")).toHaveLength(0);
+  });
+
+  it("still delivers a NOTHING_TO_REPORT answer for ordinary proactive turns", async () => {
+    const responder: AgentResponder = {
+      async respond() {
+        return { text: "NOTHING_TO_REPORT" };
+      },
+    };
+    const { controller } = buildNotifiableBot(responder);
+
+    const result = await controller.notify(42, "Check fares.");
+
+    expect(result.delivered).toBe(true);
+  });
+
+  it("cancels the turn and posts nothing when the host signal aborts", async () => {
+    const host = new AbortController();
+    const responder: AgentResponder = {
+      async respond(request) {
+        host.abort(new Error("schedule changed"));
+        expect((request as AgentRequest).abortSignal.aborted).toBe(true);
+        return { text: "stale answer" };
+      },
+    };
+    const { controller, calls } = buildNotifiableBot(responder);
+
+    const result = await controller.notify(42, "Check fares.", { finalAnswerOnly: true, abortSignal: host.signal });
+
+    expect(result).toMatchObject({ delivered: false, reason: "cancelled" });
+    expect(calls.filter((call) => call.method === "sendMessage")).toHaveLength(0);
+  });
+});

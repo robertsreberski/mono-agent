@@ -749,3 +749,61 @@ describe("self-hosted Bot API server config", () => {
     expect(redacted.attachments).toEqual({ maxBytes: 1_048_576 });
   });
 });
+
+describe("topic directory and schedules config", () => {
+  const base = { enabled: true, botToken: "123456:json-token", allowedChatIds: ["-1001"] };
+  const load = (telegram: Record<string, unknown>) =>
+    loadTelegramAdapterConfig({ env: {}, json: { telegram: { ...base, ...telegram } } });
+
+  it("leaves both features absent for existing configs", async () => {
+    const config = await load({});
+    expect(config).not.toHaveProperty("topicDirectory");
+    expect(config).not.toHaveProperty("schedules");
+  });
+
+  it("reads the directory and schedules with their defaults", async () => {
+    await expect(load({ topicDirectory: { enabled: true }, schedules: { enabled: true } })).resolves.toMatchObject({
+      topicDirectory: { enabled: true },
+      schedules: { enabled: true, maxSchedules: 20, minIntervalMinutes: 15 },
+    });
+    await expect(load({
+      topicDirectory: { enabled: true },
+      schedules: { enabled: true, maxSchedules: 100, minIntervalMinutes: 1 },
+    })).resolves.toMatchObject({ schedules: { maxSchedules: 100, minIntervalMinutes: 1 } });
+    await expect(load({ schedules: { enabled: false } })).resolves.toMatchObject({
+      schedules: { enabled: false, maxSchedules: 20, minIntervalMinutes: 15 },
+    });
+  });
+
+  it("rejects schedules without the topic directory instead of enabling it silently", async () => {
+    await expect(load({ schedules: { enabled: true } })).rejects.toThrow(/requires telegram\.topicDirectory\.enabled/u);
+    await expect(load({ topicDirectory: { enabled: false }, schedules: { enabled: true } }))
+      .rejects.toThrow(/requires telegram\.topicDirectory\.enabled/u);
+  });
+
+  it("rejects out-of-range limits, wrong types, and unknown fields", async () => {
+    const directory = { topicDirectory: { enabled: true } };
+    for (const schedules of [
+      { enabled: true, maxSchedules: 0 },
+      { enabled: true, maxSchedules: 101 },
+      { enabled: true, minIntervalMinutes: 0 },
+      { enabled: true, minIntervalMinutes: 61 },
+      { enabled: true, minIntervalMinutes: 1.5 },
+      { enabled: "yes" },
+      { enabled: true, perUser: true },
+    ]) {
+      await expect(load({ ...directory, schedules })).rejects.toThrow(/telegram\.schedules/u);
+    }
+    await expect(load({ topicDirectory: { enabled: 1 } })).rejects.toThrow(/telegram\.topicDirectory/u);
+    await expect(load({ topicDirectory: { enabled: true, path: "/tmp" } })).rejects.toThrow(/unknown fields/u);
+    await expect(load({ topicDirectory: true })).rejects.toThrow(/telegram\.topicDirectory/u);
+  });
+
+  it("redacts nothing sensitive from the feature blocks", async () => {
+    const config = await load({ topicDirectory: { enabled: true }, schedules: { enabled: true } });
+    expect(redactTelegramAdapterConfig(config)).toMatchObject({
+      topicDirectory: { enabled: true },
+      schedules: { enabled: true, maxSchedules: 20, minIntervalMinutes: 15 },
+    });
+  });
+});

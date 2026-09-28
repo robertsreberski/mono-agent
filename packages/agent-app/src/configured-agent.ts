@@ -616,6 +616,11 @@ const SUBAGENT_HARD_DENY = [
   "SlackSendMessage",
   "TelegramSendMessage",
   "TelegramSendFile",
+  "TelegramListTopics",
+  "TelegramListSchedules",
+  "TelegramCreateSchedule",
+  "TelegramUpdateSchedule",
+  "TelegramDeleteSchedule",
 ] as const;
 
 /** Read-only default when a profile does not enumerate its tools. */

@@ -508,7 +508,15 @@ function isUnknownRecord(value: unknown): value is Record<string, unknown> {
 /** Adapter send tools each channel owns; an allowed entry needs BOTH the tool AND the enabled channel. */
 const CHANNEL_OWNED_SEND_TOOLS: Record<string, readonly string[]> = {
   slack: ["SlackSendMessage"],
-  telegram: ["TelegramSendMessage", "TelegramSendFile"],
+  telegram: [
+    "TelegramSendMessage",
+    "TelegramSendFile",
+    "TelegramListTopics",
+    "TelegramListSchedules",
+    "TelegramCreateSchedule",
+    "TelegramUpdateSchedule",
+    "TelegramDeleteSchedule",
+  ],
 };
 
 /**

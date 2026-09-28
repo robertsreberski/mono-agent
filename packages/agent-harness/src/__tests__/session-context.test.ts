@@ -422,3 +422,28 @@ it("gives blocked child recovery guidance using only the bounded job identity", 
   expect(rendered).toContain("recovery blocked: inspect with AgentManage before any continuation; do not replay");
   expect(rendered).toContain("job job-identity");
 });
+
+describe("channel schedule turns", () => {
+  it("treats a channel schedule firing as request-driven with native delivery guidance", () => {
+    const scheduled = sessionContextBlock({
+      conversationId: "telegram:-1001:77",
+      replyTo: { conversationId: "telegram:-1001:77" },
+      surface: { kind: "group", channel: "telegram", id: "-1001", name: "Trips › Flights" } as AgentSurface,
+      metadata: { telegram: {}, channelSchedule: { scheduleId: "sch_1", nativeNotify: { enabled: true } } },
+    });
+    expect(scheduled).toContain("request-driven run");
+    expect(scheduled).toContain("NOTHING_TO_REPORT");
+    expect(scheduled).toContain("do NOT call any tool to send it");
+    expect(scheduled).not.toContain("interactive push conversation");
+  });
+
+  it("leaves an ordinary Telegram turn interactive", () => {
+    const interactive = sessionContextBlock({
+      conversationId: "telegram:-1001",
+      replyTo: { conversationId: "telegram:-1001" },
+      metadata: { telegram: {} },
+    });
+    expect(interactive).toContain("interactive push conversation");
+    expect(interactive).not.toContain("NOTHING_TO_REPORT");
+  });
+});

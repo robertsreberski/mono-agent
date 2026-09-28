@@ -19,8 +19,21 @@ import type {
 import * as z from "zod/v4";
 
 import type { MonoAgentAppConfigInput } from "./app-config.js";
+import {
+  registerTelegramListTopicsTool,
+  registerTelegramScheduleTools,
+  resolveTelegramTopicName,
+  type TelegramScheduleBridgeSettings,
+  type TelegramTopicDirectoryToolSettings,
+} from "./adapter-send-telegram-topic-tools.js";
 import { LEGACY_TOOL_ALIASES } from "./modules/known-tools.js";
 import { appendPostedMessage } from "./posted-message-index.js";
+import {
+  isTrustedTelegramHumanTurn,
+  TELEGRAM_SCHEDULE_MUTATION_TOOL_NAMES,
+  TELEGRAM_SCHEDULE_TOOL_NAMES,
+} from "./telegram-schedule-service.js";
+import { resolveTelegramTopicDirectoryRoot, telegramBotIdFromToken } from "./telegram-topic-directory.js";
 import {
   telegramConversationIdFor,
   telegramTargetFromConversation,
@@ -49,7 +62,7 @@ const loadTelegramModule = async (): Promise<TelegramAdapterModule> =>
 const SLACK_SEND_MESSAGE_MAX_CHARS = DEFAULT_MAX_MESSAGE_CHARS;
 /** Keep cancellation responsive even when the loopback bridge is wedged. */
 const ASK_BRIDGE_CLEANUP_TIMEOUT_MS = 1_000;
-type TelegramSendToolName = "TelegramSendMessage" | "TelegramSendFile";
+type TelegramSendToolName = "TelegramSendMessage" | "TelegramSendFile" | "TelegramListTopics";
 
 /**
  * Model-visible send tools for explicitly allowed, already-enabled communication adapters.
@@ -83,7 +96,18 @@ export interface TelegramSendToolSettings {
     readonly send: boolean;
     /** The single TelegramSendFile tool (document + photo via a `kind` param). */
     readonly file: boolean;
+    /** TelegramListTopics; requires `telegram.topicDirectory.enabled`. */
+    readonly listTopics?: boolean;
+    /** Schedule tools; require `telegram.schedules.enabled`. */
+    readonly listSchedules?: boolean;
+    readonly createSchedule?: boolean;
+    readonly updateSchedule?: boolean;
+    readonly deleteSchedule?: boolean;
   };
+  /** Persistent topic directory for name addressing, when enabled. */
+  readonly topicDirectory?: TelegramTopicDirectoryToolSettings;
+  /** Host-issued schedule bridge bearer for this run (child only). */
+  readonly scheduleBridge?: TelegramScheduleBridgeSettings;
   readonly sendTools?: {
     readonly scope?: "producing-conversation";
     readonly pathScope?: "run-output";
@@ -139,6 +163,12 @@ export interface AdapterSendToolsDeliveryHistoryCapabilityIssuer {
     readonly producerConversationId: string;
     readonly allowedChannels: readonly ("slack" | "telegram")[];
   }): { readonly url: string; readonly token: string; release(): void };
+  /** Schedule-tool bearer; `mutate` only for a trusted human Telegram turn. */
+  issueScheduleCapability?(input: {
+    readonly runId: string;
+    readonly producerConversationId: string;
+    readonly mutate: boolean;
+  }): { readonly url: string; readonly token: string; release(): void };
 }
 
 export interface AdapterSendToolsRuntimeExtension {
@@ -166,6 +196,8 @@ interface AdapterSendToolsRequestInput {
   readonly request?: {
     readonly conversationId?: string;
     readonly replyTo?: { readonly conversationId?: string };
+    readonly captureSpeakerKind?: string;
+    readonly metadata?: Record<string, unknown>;
   };
   readonly runId?: string;
 }
@@ -188,16 +220,22 @@ export async function resolveAdapterSendToolsSettings(
 ): Promise<AdapterSendToolsSettings | undefined> {
   const telegramSendAllowed = isAdapterToolAllowed("TelegramSendMessage", options);
   const telegramFileAllowed = isAdapterToolAllowed("TelegramSendFile", options);
-  const telegramAnyAllowed = telegramSendAllowed || telegramFileAllowed;
+  const telegramPolicy = {
+    send: telegramSendAllowed,
+    file: telegramFileAllowed,
+    listTopics: isAdapterToolAllowed("TelegramListTopics", options),
+    listSchedules: isAdapterToolAllowed("TelegramListSchedules", options),
+    createSchedule: isAdapterToolAllowed("TelegramCreateSchedule", options),
+    updateSchedule: isAdapterToolAllowed("TelegramUpdateSchedule", options),
+    deleteSchedule: isAdapterToolAllowed("TelegramDeleteSchedule", options),
+  };
+  const telegramAnyAllowed = Object.values(telegramPolicy).some(Boolean);
   const [slack, telegram] = await Promise.all([
     isAdapterToolAllowed("SlackSendMessage", options)
       ? resolveSlackSendToolSettings(input, options)
       : undefined,
     telegramAnyAllowed
-        ? resolveTelegramSendToolSettings(input, options, {
-          send: telegramSendAllowed,
-          file: telegramFileAllowed,
-        })
+      ? resolveTelegramSendToolSettings(input, options, telegramPolicy)
       : undefined,
   ]);
   const askUser = options.suppressInteractionTools !== true && isAdapterToolAllowed("AskUser", options)
@@ -263,6 +301,13 @@ export function adapterSendToolNames(settings: AdapterSendToolsSettings): readon
   if (settings.telegram?.tools.file === true) {
     names.push("TelegramSendFile");
   }
+  if (settings.telegram?.tools.listTopics === true) {
+    names.push("TelegramListTopics");
+  }
+  if (settings.telegram?.tools.listSchedules === true) names.push("TelegramListSchedules");
+  if (settings.telegram?.tools.createSchedule === true) names.push("TelegramCreateSchedule");
+  if (settings.telegram?.tools.updateSchedule === true) names.push("TelegramUpdateSchedule");
+  if (settings.telegram?.tools.deleteSchedule === true) names.push("TelegramDeleteSchedule");
   return names;
 }
 
@@ -291,6 +336,9 @@ export interface AdapterSendToolsChildContext {
   readonly runOutputDir?: string;
   readonly runOutputIdentity?: FileIdentity;
   readonly deliveryHistory?: AdapterSendToolsDeliveryHistory;
+  /** Trusted topic directory root for name addressing. */
+  readonly topicDirectoryRoot?: string;
+  readonly scheduleBridge?: TelegramScheduleBridgeSettings;
 }
 
 export interface AdapterSendToolsInteractionEnv {
@@ -332,6 +380,9 @@ export function adapterSendToolsMcpEnv(
     // Reserved app-owned credentials must override inherited host environment.
     MONO_AGENT_ADAPTER_TOOLS_HISTORY_BRIDGE_URL: context?.deliveryHistory?.bridgeUrl ?? "",
     MONO_AGENT_ADAPTER_TOOLS_HISTORY_BRIDGE_TOKEN: context?.deliveryHistory?.bridgeToken ?? "",
+    MONO_AGENT_ADAPTER_TOOLS_TOPIC_DIRECTORY: context?.topicDirectoryRoot ?? "",
+    MONO_AGENT_ADAPTER_TOOLS_SCHEDULE_BRIDGE_URL: context?.scheduleBridge?.bridgeUrl ?? "",
+    MONO_AGENT_ADAPTER_TOOLS_SCHEDULE_BRIDGE_TOKEN: context?.scheduleBridge?.bridgeToken ?? "",
     ...(interaction === undefined
       ? {}
       : {
@@ -418,6 +469,7 @@ export function createAdapterSendToolsRuntimeExtension(
   interaction?: AdapterSendToolsInteractionEnv,
   runOutputRoot?: string,
   deliveryHistoryCapabilityIssuer?: AdapterSendToolsDeliveryHistoryCapabilityIssuer,
+  topicDirectoryRoot?: string,
 ): (input: AdapterSendToolsRequestInput) => Promise<AdapterSendToolsRuntimeExtension> {
   return async (input) => {
     const conversationId = input?.request?.conversationId;
@@ -425,6 +477,32 @@ export function createAdapterSendToolsRuntimeExtension(
     const runId = input?.runId;
     const hasConversation = typeof conversationId === "string" && conversationId.trim().length > 0;
     const hasRunId = typeof runId === "string" && runId.trim().length > 0;
+    // Schedules may be changed only from a trusted human Telegram turn; every
+    // other turn (scheduled, cron, webhook, process-job wake, console) can at
+    // most list them, so a schedule can never create or edit schedules.
+    const mayMutateSchedules = isTrustedTelegramHumanTurn(input?.request);
+    const requestTools = mayMutateSchedules
+      ? allowedTools
+      : allowedTools.filter((name) => !TELEGRAM_SCHEDULE_MUTATION_TOOL_NAMES.includes(name));
+    const wantsScheduleBridge = requestTools.some((name) =>
+      (TELEGRAM_SCHEDULE_TOOL_NAMES as readonly string[]).includes(name));
+    const scheduleCapability = !wantsScheduleBridge
+      || !hasRunId
+      || !hasConversation
+      || deliveryHistoryCapabilityIssuer?.issueScheduleCapability === undefined
+      ? undefined
+      : deliveryHistoryCapabilityIssuer.issueScheduleCapability({
+          runId,
+          producerConversationId: conversationId as string,
+          mutate: mayMutateSchedules,
+        });
+    // Without a bearer the schedule tools could only fail; do not offer them.
+    const effectiveTools = scheduleCapability === undefined
+      ? requestTools.filter((name) => !(TELEGRAM_SCHEDULE_TOOL_NAMES as readonly string[]).includes(name))
+      : requestTools;
+    if (effectiveTools.length === 0) {
+      return { runtimeOptions: { mcpServers: {} }, cleanup: async () => {} };
+    }
     const runOutput = runOutputRoot === undefined || !hasRunId
       ? undefined
       : await ensureAdapterRunOutputDir(runOutputRoot, runId);
@@ -463,6 +541,10 @@ export function createAdapterSendToolsRuntimeExtension(
                   bridgeToken: deliveryHistory.token,
                 },
               }),
+          ...(topicDirectoryRoot === undefined ? {} : { topicDirectoryRoot }),
+          ...(scheduleCapability === undefined
+            ? {}
+            : { scheduleBridge: { bridgeUrl: scheduleCapability.url, bridgeToken: scheduleCapability.token } }),
         }
       : undefined;
     return {
@@ -479,7 +561,7 @@ export function createAdapterSendToolsRuntimeExtension(
           [ADAPTER_SEND_TOOLS_MCP_SERVER_NAME]: adapterSendToolsMcpServerSpec(
             configPath,
             cwd,
-            allowedTools,
+            effectiveTools,
             context,
             interaction,
           ),
@@ -487,6 +569,7 @@ export function createAdapterSendToolsRuntimeExtension(
       },
       cleanup: async () => {
         deliveryHistory?.release();
+        scheduleCapability?.release();
       },
       settleCleanup: async () => {
         if (runOutput !== undefined) {
@@ -570,6 +653,37 @@ export async function createAdapterSendToolsServer(
         adapter,
       );
     }
+  }
+  const telegramSettings = settings.telegram;
+  if (telegramSettings?.topicDirectory !== undefined && telegramSettings.tools.listTopics === true) {
+    registerTelegramListTopicsTool(server, telegramSettings.topicDirectory, (requested) => {
+      const producing = producingTelegramTarget(telegramSettings);
+      const chatId = requested ?? producing?.chatId;
+      if (chatId === undefined) {
+        throw new Error("TelegramListTopics: chat_id is required outside a Telegram conversation.");
+      }
+      if (telegramSettings.sendTools?.scope === "producing-conversation"
+        && (producing === undefined || String(producing.chatId) !== String(chatId).trim())) {
+        throw new Error("TelegramListTopics: chat_id must match the producing Telegram conversation.");
+      }
+      if (!telegramSettings.allowAllChats && !telegramSettings.allowedChatIds.includes(String(chatId).trim())) {
+        throw new Error("TelegramListTopics: chat_id is not allowed by Telegram adapter config.");
+      }
+      return String(chatId).trim();
+    });
+  }
+  if (telegramSettings?.scheduleBridge !== undefined) {
+    registerTelegramScheduleTools(
+      server,
+      telegramSettings.scheduleBridge,
+      {
+        list: telegramSettings.tools.listSchedules === true,
+        create: telegramSettings.tools.createSchedule === true,
+        update: telegramSettings.tools.updateSchedule === true,
+        delete: telegramSettings.tools.deleteSchedule === true,
+      },
+      options.fetchImpl ?? globalThis.fetch,
+    );
   }
 
   return server;
@@ -1088,6 +1202,7 @@ function registerTelegramSendTool(
           .positive()
           .optional()
           .describe("Optional forum topic id to post into. When omitted, a send to the chat this conversation is in stays in the current topic; any other chat gets its main conversation (a forum's General topic)."),
+        ...(settings.topicDirectory === undefined ? {} : { topic_name: TOPIC_NAME_SCHEMA }),
         reply_to_message_id: z.number().int().optional().describe("Optional message id to reply to."),
         disable_web_page_preview: z.boolean().optional().describe("Disable Telegram link previews."),
         reply_options: z
@@ -1100,12 +1215,14 @@ function registerTelegramSendTool(
     },
     async (args, extra) => {
       assertTelegramChatAllowed(settings, args.chat_id, "TelegramSendMessage");
+      const topicName = "topic_name" in args ? args.topic_name as string | undefined : undefined;
+      const namedTopic = await resolveNamedTopic(settings, args.chat_id, topicName, args.message_thread_id, "TelegramSendMessage");
       // A reply lands in the replied message's topic, so only a fresh post
       // inherits the current topic by default.
       const messageThreadId = resolveTelegramThreadId(
         settings,
         args.chat_id,
-        args.message_thread_id,
+        namedTopic?.topicId ?? args.message_thread_id,
         "TelegramSendMessage",
         args.reply_to_message_id === undefined,
       );
@@ -1145,13 +1262,17 @@ function registerTelegramSendTool(
         text: args.text,
         idempotencyKey: `adapter-send:telegram:${String(result.chat.id)}:${String(result.message_id)}`,
       });
-      const message = `Sent Telegram message ${result.message_id} to ${String(result.chat.id)}.`;
+      const message = namedTopic === undefined
+        ? `Sent Telegram message ${result.message_id} to ${String(result.chat.id)}.`
+        : `Sent Telegram message ${result.message_id} to ${String(result.chat.id)} in topic ${JSON.stringify(namedTopic.name)}.`;
       return {
         content: [{ type: "text", text: withDeliveryHistoryWarning(message, history) }],
         structuredContent: {
           ok: true,
           chat_id: result.chat.id,
-          ...(landedTopic === undefined ? {} : { message_thread_id: landedTopic }),
+          // A name-addressed send never echoes the host-owned topic id.
+          ...(landedTopic === undefined || namedTopic !== undefined ? {} : { message_thread_id: landedTopic }),
+          ...(namedTopic === undefined ? {} : { topic_name: namedTopic.name }),
           message_id: result.message_id,
           ...(args.reply_options === undefined ? {} : { reply_options: args.reply_options }),
           ...(history === undefined ? {} : { history }),
@@ -1191,6 +1312,7 @@ function registerTelegramSendFileTool(
             .positive()
             .optional()
             .describe("Optional forum topic id to post into. When omitted, a send to the chat this conversation is in stays in the current topic; any other chat gets its main conversation (a forum's General topic)."),
+          ...(settings.topicDirectory === undefined ? {} : { topic_name: TOPIC_NAME_SCHEMA }),
         }),
     data: z.string().min(1).optional().describe("Base64-encoded file bytes. Provide this or `path`."),
     path: z.string().min(1).optional().describe("Path to a file to upload (resolved against the agent working dir). Provide this or `data`."),
@@ -1215,7 +1337,17 @@ function registerTelegramSendFileTool(
         throw new Error(`TelegramSendFile: the ${kind} sender is unavailable.`);
       }
       const requestedChatId = "chat_id" in args ? args.chat_id : undefined;
-      const requestedThreadId = "message_thread_id" in args ? args.message_thread_id : undefined;
+      const requestedTopicName = "topic_name" in args ? args.topic_name as string | undefined : undefined;
+      const namedTopic = requestedChatId === undefined
+        ? undefined
+        : await resolveNamedTopic(
+            settings,
+            requestedChatId,
+            requestedTopicName,
+            "message_thread_id" in args ? args.message_thread_id : undefined,
+            "TelegramSendFile",
+          );
+      const requestedThreadId = namedTopic?.topicId ?? ("message_thread_id" in args ? args.message_thread_id : undefined);
       const destination = resolveTelegramSendFileDestination(settings, requestedChatId, requestedThreadId);
       const chatId = destination.chatId;
       const threadParams = destination.messageThreadId === undefined
@@ -1297,6 +1429,35 @@ function registerTelegramSendFileTool(
       return telegramSendFileResult(producingConversationScope, kind, result, filename);
     },
   );
+}
+
+const TOPIC_NAME_SCHEMA = z
+  .string()
+  .min(1)
+  .max(256)
+  .optional()
+  .describe("Optional forum topic by its name (see TelegramListTopics), instead of message_thread_id. Never falls back to General.");
+
+/**
+ * Resolve an optional `topic_name` against the topic directory. The chat must
+ * already be allowed; the name must match exactly one known, open topic.
+ */
+async function resolveNamedTopic(
+  settings: TelegramSendToolSettings,
+  chatId: TelegramChatId,
+  topicName: string | undefined,
+  messageThreadId: number | undefined,
+  toolName: TelegramSendToolName,
+): Promise<{ readonly topicId: number; readonly name: string } | undefined> {
+  if (topicName === undefined) return undefined;
+  if (messageThreadId !== undefined) {
+    throw new Error(`${toolName}: use either topic_name or message_thread_id, not both.`);
+  }
+  if (settings.topicDirectory === undefined) {
+    throw new Error(`${toolName}: topic names are unavailable (telegram.topicDirectory is off).`);
+  }
+  assertTelegramChatAllowed(settings, chatId, toolName);
+  return await resolveTelegramTopicName(settings.topicDirectory, chatId, topicName, toolName);
 }
 
 function resolveTelegramSendFileDestination(
@@ -1590,13 +1751,37 @@ async function resolveTelegramSendToolSettings(
       input.env.MONO_AGENT_ADAPTER_TOOLS_RUN_OUTPUT_DEV,
       input.env.MONO_AGENT_ADAPTER_TOOLS_RUN_OUTPUT_INO,
     );
+    const topicDirectory = config.topicDirectory?.enabled === true
+      ? telegramTopicDirectorySettings(input, config.botToken)
+      : undefined;
+    const schedulesEnabled = config.schedules?.enabled === true && topicDirectory !== undefined;
+    // Optional tools appear only when both the policy and the feature allow them,
+    // so a config without the new features resolves exactly as before.
+    const effectiveTools: TelegramSendToolSettings["tools"] = {
+      send: tools.send,
+      file: tools.file,
+      ...(tools.listTopics === true && topicDirectory !== undefined ? { listTopics: true } : {}),
+      ...(tools.listSchedules === true && schedulesEnabled ? { listSchedules: true } : {}),
+      ...(tools.createSchedule === true && schedulesEnabled ? { createSchedule: true } : {}),
+      ...(tools.updateSchedule === true && schedulesEnabled ? { updateSchedule: true } : {}),
+      ...(tools.deleteSchedule === true && schedulesEnabled ? { deleteSchedule: true } : {}),
+    };
+    if (!Object.values(effectiveTools).some(Boolean)) {
+      return undefined;
+    }
+    const scheduleBridgeUrl = optionalString(input.env.MONO_AGENT_ADAPTER_TOOLS_SCHEDULE_BRIDGE_URL);
+    const scheduleBridgeToken = optionalString(input.env.MONO_AGENT_ADAPTER_TOOLS_SCHEDULE_BRIDGE_TOKEN);
     return {
       botToken: config.botToken,
       allowedChatIds: config.allowedChatIds,
       allowAllChats: config.allowAllChats,
       ...(config.apiRoot === undefined ? {} : { apiRoot: config.apiRoot }),
       maxUploadBytes: config.attachments?.maxUploadBytes ?? adapter.DEFAULT_ATTACHMENT_MAX_BYTES,
-      tools,
+      tools: effectiveTools,
+      ...(topicDirectory === undefined ? {} : { topicDirectory }),
+      ...(schedulesEnabled && scheduleBridgeUrl !== undefined && scheduleBridgeToken !== undefined
+        ? { scheduleBridge: { bridgeUrl: scheduleBridgeUrl, bridgeToken: scheduleBridgeToken } }
+        : {}),
       ...(config.sendTools === undefined ? {} : { sendTools: config.sendTools }),
       ...(producingConversationId === undefined ? {} : { producingConversationId }),
       ...(runOutputDir === undefined ? {} : { runOutputDir }),
@@ -1606,6 +1791,25 @@ async function resolveTelegramSendToolSettings(
     options.logger?.warn?.("Telegram send tool skipped because Telegram adapter config is unavailable.", {
       reason: reasonOf(error),
     });
+    return undefined;
+  }
+}
+
+/**
+ * The directory the child reads: the parent-injected root when present, else
+ * the agent's own `.mono-agent/telegram-topics-v1`. Undefined when the bot id
+ * cannot be derived (name addressing stays off).
+ */
+function telegramTopicDirectorySettings(
+  input: MonoAgentAppConfigInput,
+  botToken: string,
+): TelegramTopicDirectoryToolSettings | undefined {
+  try {
+    return {
+      root: optionalString(input.env.MONO_AGENT_ADAPTER_TOOLS_TOPIC_DIRECTORY) ?? resolveTelegramTopicDirectoryRoot(input.cwd),
+      botId: telegramBotIdFromToken(botToken),
+    };
+  } catch {
     return undefined;
   }
 }

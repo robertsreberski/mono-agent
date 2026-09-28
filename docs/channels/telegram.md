@@ -43,6 +43,8 @@ Add a `telegram` block to your `mono-agent.config.json`. The channel is opt-in: 
 | `reactions` | boolean or object | off | Lifecycle reactions; object form is JSON-only. |
 | `quietHours` | object | — | JSON-only silent-notification window for proactive delivery. |
 | `sendTools` | object | — | JSON-only request/path restrictions for app-owned Telegram tools. |
+| `topicDirectory.enabled` | boolean | `false` | JSON-only. Remember seen forum topics so tools can address them by name. See [Topic directory](#topic-directory-address-topics-by-name). |
+| `schedules` | object | off | JSON-only agent-managed schedules; requires `topicDirectory.enabled`. See [Agent-managed schedules](#agent-managed-schedules). |
 | `transcription` | object | — | Optional speech-to-text settings; see [Transcription](#transcription). |
 
 Provide **either** an `allowedChatIds` allowlist **or** `allowAllChats: true`. Leaving both unset means no chat is authorized.
@@ -170,6 +172,119 @@ host-owned. When the agent sends its own message or file to the same group with
 `TelegramSendMessage` or `TelegramSendFile`, it stays in the current topic unless
 it names another `message_thread_id` or replies to a specific message. Topic
 created/renamed/closed service messages never start a turn.
+
+### Topic directory (address topics by name)
+
+The Bot API cannot list a forum's topics, and topic IDs are deliberately kept
+away from the model. Turn on the persistent topic directory so the agent can
+address a topic by its name instead:
+
+```json
+{
+  "telegram": {
+    "topicDirectory": { "enabled": true }
+  }
+}
+```
+
+The bot then remembers every topic of an allowlisted chat that it sees a
+message in, including unaddressed chatter in `mention`/`listen` mode, topic
+creation, rename, close and reopen, in an owner-only SQLite store under
+`.mono-agent/telegram-topics-v1/`. Names survive restarts, and a rename sticks
+even though later messages still quote the topic's original name. Records are
+kept per bot and chat, capped at 1,024 topics per bot.
+
+- `TelegramListTopics({ chat_id? })` lists the known topic names with their
+  open/closed status and when they were last seen, plus a count of topics seen
+  without a visible name. It never returns topic IDs and is always marked
+  `incomplete`: a topic appears only after the bot has seen one of its messages.
+- `TelegramSendMessage` and `TelegramSendFile` accept `topic_name` instead of
+  `message_thread_id` (not both). Matching is exact after Unicode NFC
+  normalization, whitespace trimming and case folding. An unknown, duplicate or
+  closed name fails with the known names and how to fix it; it never falls back
+  to General.
+
+To make an unseen topic addressable, send any message in it that the bot can
+see (with privacy mode on, mention the bot or reply to it), then retry. The bot
+never creates topics. `TelegramListTopics` is a separate tool name under
+`tools.allowedTools`. A corrupt or insecure directory disables name addressing
+with a warning; ordinary conversations keep working.
+
+### Agent-managed schedules
+
+With the topic directory on, the agent can also manage durable schedules from
+Telegram, for example "for those daily flight checks, post a report into the
+Flights topic every morning at 8":
+
+```json
+{
+  "telegram": {
+    "topicDirectory": { "enabled": true },
+    "schedules": { "enabled": true, "maxSchedules": 20, "minIntervalMinutes": 15 }
+  },
+  "tools": {
+    "allowedTools": [
+      "TelegramListTopics",
+      "TelegramListSchedules",
+      "TelegramCreateSchedule",
+      "TelegramUpdateSchedule",
+      "TelegramDeleteSchedule"
+    ]
+  }
+}
+```
+
+`schedules.enabled` without `topicDirectory.enabled` is a config error.
+`maxSchedules` (1–100, default 20) caps active and paused schedules;
+`minIntervalMinutes` (1–60, default 15) is the smallest gap between two runs of
+one schedule. Each tool name is gated by `tools.allowedTools` and
+`disallowedTools` like the send tools; none is added to any default.
+
+- `TelegramCreateSchedule({ name, prompt, destination?, schedule })` stores a
+  self-contained `prompt`. `schedule` is `{ "kind": "once", "at": "<RFC 3339
+  with offset>" }` or `{ "kind": "cron", "expression": "<5 fields>",
+  "timezone": "<IANA zone>" }`; the timezone is never guessed, so the agent asks
+  when it does not know it. `destination` is `{ chat_id?, topic_name?, main? }`:
+  it defaults to the current conversation, `topic_name` picks a known topic,
+  `main: true` the chat's main conversation (General), and `chat_id` any other
+  allowlisted chat. The topic is resolved when the schedule is saved, so a later
+  rename does not retarget it.
+- `TelegramListSchedules`, `TelegramUpdateSchedule({ id, expectedRevision, ... })`
+  (name, prompt, destination, schedule, or `enabled` to pause and resume) and
+  `TelegramDeleteSchedule({ id, expectedRevision })`. A stale
+  `expectedRevision` is rejected; list again and retry.
+
+A due schedule runs a turn in its **destination** conversation, with that
+conversation's history and the stored prompt, never the history of the
+conversation it was created in. Only the finished answer is posted (silently
+during quiet hours); an empty or `NOTHING_TO_REPORT` answer posts nothing.
+Results show opaque schedule IDs, `Chat › Topic` labels, the next run and the
+last run's outcome, never routes.
+
+Trust model: like the web console, the agent is single-user. Any person whose
+message starts a turn in an allowlisted chat may list, create, change or delete
+any of the agent's schedules; the chat allowlist is the only boundary and is
+re-checked when a schedule is saved, before it runs and before delivery.
+Scheduled, cron, webhook and background turns can list schedules but never
+change them, so a schedule cannot create more schedules.
+
+Timing is never late. A recurring occurrence missed while the agent was stopped
+is skipped, an overdue one-off becomes `missed`, and a run that was in progress
+when the agent stopped is recorded as interrupted with unknown delivery; none
+is replayed. Overlapping runs of one schedule are skipped, at most two
+schedules run at once, and a run is cancelled after 20 minutes. Changing or
+deleting a schedule cancels its in-flight run of the old version. Three
+consecutive delivery failures, or a destination chat leaving the allowlist,
+pause the schedule with a visible reason. The recurring interval check is
+conservative: it looks at the cron minute field alone, so some sparse
+expressions are rejected even though they would be safe.
+
+Schedules live in `.mono-agent/telegram-schedules-v1/`, separate from
+config-owned `cron` jobs, which the tools cannot touch. Setting
+`schedules.enabled: false` stops every schedule without deleting it. The
+operator can inspect or remove them with
+[`mono-agent schedules list|delete`](/observability/cli-reference/#schedules); deleting is
+refused while the agent is running.
 
 ### Smoke test
 
@@ -527,7 +642,7 @@ When the Telegram adapter is enabled the agent can send Telegram messages on its
 }
 ```
 
-The existing `telegram.*` adapter config (token + chat allowlist) remains the destination boundary — the tool can only send where the adapter is already permitted. Pass `message_thread_id` to post into a forum topic; omit it for the chat's main conversation (a forum's General topic). This powers proactive/async delivery; see [Delivery and Send Tools](/channels/delivery-and-send-tools/) and [Tool Policy](/tools/policy/).
+The existing `telegram.*` adapter config (token + chat allowlist) remains the destination boundary — the tool can only send where the adapter is already permitted. Pass `message_thread_id`, or `topic_name` with the [topic directory](#topic-directory-address-topics-by-name) on, to post into a forum topic; omit both for the chat's main conversation (a forum's General topic). This powers proactive/async delivery; see [Delivery and Send Tools](/channels/delivery-and-send-tools/) and [Tool Policy](/tools/policy/).
 
 ## Related
 

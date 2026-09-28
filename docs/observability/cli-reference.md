@@ -19,7 +19,7 @@ Every command follows one exit-code contract:
 | `1` | Ran but failed — a gate reported errors or an operational error occurred (`ok` is false). |
 | `2` | Usage error — an unknown command/flag, a missing argument, or a flag on a command that does not support it. |
 
-The read/status commands accept `--json` for scripting: `validate`, `config`, `presets`, `status`, `sandbox status`, `install-skill --project --check`, `runs report`, `runs audit`, `memory`, and `continuations`. In `--json` mode:
+The read/status commands accept `--json` for scripting: `validate`, `config`, `presets`, `status`, `sandbox status`, `install-skill --project --check`, `runs report`, `runs audit`, `memory`, `continuations`, and `schedules list`. In `--json` mode:
 
 - stdout is exactly one JSON object with a top-level `ok: boolean` and the command-specific payload fields flat beside it (no `{ok, data}` wrapper), with no ANSI and no human prose.
 - When a command fails but can still emit JSON, the object is `{ "ok": false, "error": { "code", "message" } }`.
@@ -80,6 +80,7 @@ command.
 | `config` | Print the resolved config field-by-field with each value's source (`env` / `json` / `default`), including every channel section, plus secret-placement warnings. | `--config <path>`, `--env-file <path>`, `--json` |
 | `memory` | Preview, strictly audit, safely maintain, and move the configured memory store and its durable completed-turn intake. | `stats`, `today`, `show`, `search`, `top`, `audit`, `inspect`, `retry`, `resolve`, `rebuild`, `rollback`, `adopt-replay`, `forget`, `export`, `import`; `--strict`, `--limit`, `--bundle`, `--json` |
 | `jobs` | Discover one running local agent and inspect or cancel its owner-private background Exec/Bash jobs. | `list`, `get <job-id>`, `cancel <job-id>`; `--agent <label\|sourceId>`, `--json` |
+| `schedules` | List or delete the agent-managed Telegram schedules in this agent folder. | `list`, `delete <schedule-id>`; `--json` (list only) |
 | `start` | Start the agent as a macOS launchd or Linux systemd user service, or as a foreground worker. Managed macOS start also installs fixed-policy recovery and log maintenance. | `--config <path>`, `--env-file <path>`, `--foreground` |
 | `restart` | Restart the service for this config (starts it if stopped). macOS also maintains logs while the old writer is proven down and supports `--clear-sessions`; Linux rejects that flag without changing state. | `--config <path>`, `--env-file <path>`, `--clear-sessions` |
 | `stop` | Stop the background instance and remove its owned launchd definitions or systemd user unit. | `--config <path>`, `--env-file <path>` |
@@ -634,6 +635,27 @@ Agent discovery, credentials, connection, or response validation failures exit
 `1`; an unreachable selection uses `agent_unreachable`, while a remote endpoint
 uses `remote_refused`. Invalid subcommands, missing/extra ids, or ids longer
 than 256 characters exit `2`.
+
+## `schedules`
+
+Lists or deletes the [agent-managed Telegram schedules](/channels/telegram/#agent-managed-schedules)
+stored in the current agent folder (`.mono-agent/telegram-schedules-v1/`):
+
+```bash
+mono-agent schedules list
+mono-agent schedules list --json
+mono-agent schedules delete SCHEDULE_ID
+```
+
+`list` (the default) reads the store read-only, so it also works while the
+agent runs. Each schedule shows its id, status (and pause reason), name,
+destination label, timing, next run and the last run's execution and delivery
+outcome. JSON output is `{ "ok": true, "schedules": [...] }` and includes the
+destination chat id but never the internal forum-topic id.
+
+`delete` takes the store's exclusive lease, so it is refused (exit `1`) while
+the agent is running; ask the agent to delete the schedule, or stop the agent
+first. An unknown id exits `1`; a missing or extra argument exits `2`.
 
 ## Removed terminal renderer
 

@@ -437,11 +437,15 @@ Compaction only changes the active prompt projection. Within sidecar retention, 
 
 :::note
 The **app-owned adapter tools** (`SlackSendMessage`, `TelegramSendMessage`,
-`TelegramSendFile`, and structured `AskUser`) are also delivered as MCP tools
+`TelegramSendFile`, `TelegramListTopics`, the Telegram schedule tools, and
+structured `AskUser`) are also delivered as MCP tools
 but, unlike external MCP tools, they **are** governed by the tool policy. Under
 allow-all they become available automatically when their host prerequisites are
 present. On runtimes that enforce specific lists, name them explicitly or deny
-them normally. Valid `slack.*` / `telegram.*` adapter config is required for send tools. See
+them normally. Valid `slack.*` / `telegram.*` adapter config is required for send tools;
+`TelegramListTopics` also needs `telegram.topicDirectory.enabled` and the schedule
+tools `telegram.schedules.enabled`. Only a turn started by a person's Telegram
+message receives the schedule-changing tools. See
 [Delivery & send tools](/channels/delivery-and-send-tools/).
 :::
 

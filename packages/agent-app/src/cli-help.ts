@@ -333,6 +333,20 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
     ],
   },
   {
+    command: "schedules",
+    group: "Maintain",
+    short: "schedules list|delete",
+    summary: "List or delete agent-managed Telegram schedules in this agent folder.",
+    json: true,
+    signature: "mono-agent schedules [list] [--json]\nmono-agent schedules delete <schedule-id>",
+    lines: [
+      "Schedules are created by the agent from Telegram (telegram.schedules).",
+      "list reads the schedule store read-only and works while the agent runs.",
+      "delete takes the store's lease, so it is refused while the agent is running;",
+      "ask the agent to delete the schedule, or stop the agent first.",
+    ],
+  },
+  {
     command: "web-control",
     group: "Maintain",
     short: "web-control status|reset",

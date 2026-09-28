@@ -420,6 +420,42 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
     example: "run-output",
     description: "Confine Telegram path uploads to the current run output directory.",
   },
+  {
+    jsonPath: "telegram.topicDirectory.enabled",
+    env: "--",
+    type: "boolean",
+    defaultLabel: "false",
+    defaultValue: false,
+    example: true,
+    description: "Remember forum-topic names the bot has seen (under `.mono-agent/telegram-topics-v1/`) so tools can address a topic by name: `TelegramListTopics` and `topic_name` on the send tools. Discovery is passive; the bot never lists or creates topics.",
+  },
+  {
+    jsonPath: "telegram.schedules.enabled",
+    env: "--",
+    type: "boolean",
+    defaultLabel: "false",
+    defaultValue: false,
+    example: true,
+    description: "Let the agent manage durable schedules from Telegram (`TelegramListSchedules`, `TelegramCreateSchedule`, `TelegramUpdateSchedule`, `TelegramDeleteSchedule`, each still gated by `tools.allowedTools`). Requires `telegram.topicDirectory.enabled: true`. Disabling stops every schedule without deleting it.",
+  },
+  {
+    jsonPath: "telegram.schedules.maxSchedules",
+    env: "--",
+    type: "integer",
+    defaultLabel: "20",
+    defaultValue: 20,
+    example: 20,
+    description: "Maximum active or paused agent-managed schedules (1–100).",
+  },
+  {
+    jsonPath: "telegram.schedules.minIntervalMinutes",
+    env: "--",
+    type: "integer",
+    defaultLabel: "15",
+    defaultValue: 15,
+    example: 15,
+    description: "Smallest allowed gap between two runs of one schedule, in minutes (1–60). Checked conservatively from the cron minute field and again when a schedule fires.",
+  },
 ];
 
 export interface ConfigReferenceField {
@@ -1268,6 +1304,8 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
     "runtime.retry.maxBackoffMs": { minimum: 0, maximum: 300_000 },
     "cron.preflightTimeoutMs": { minimum: 1, maximum: 60_000 },
     "tools.web.search.maxRequestsPerRun": { minimum: 1, maximum: 20 },
+    "telegram.schedules.maxSchedules": { minimum: 1, maximum: 100 },
+    "telegram.schedules.minIntervalMinutes": { minimum: 1, maximum: 60 },
   };
   const bounds = numericBounds[field.jsonPath];
   if (bounds !== undefined) {

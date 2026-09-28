@@ -110,7 +110,7 @@ controls *whether* a tool exists; the sandbox controls *what it can reach*. See
 
 ## Adapter send tools
 
-The app can expose MCP tools that send messages back out through an already-enabled channel adapter: `SlackSendMessage`, `TelegramSendMessage` (optionally with non-blocking reply buttons), `TelegramSendFile` (document or photo), and one structured `AskUser` tool across web, Slack, and Telegram (coverage: `config`).
+The app can expose MCP tools that send messages back out through an already-enabled channel adapter: `SlackSendMessage`, `TelegramSendMessage` (optionally with non-blocking reply buttons), `TelegramSendFile` (document or photo), and one structured `AskUser` tool across web, Slack, and Telegram (coverage: `config`). With the matching opt-in Telegram features, `TelegramListTopics` and the schedule tools (`TelegramListSchedules`, `TelegramCreateSchedule`, `TelegramUpdateSchedule`, `TelegramDeleteSchedule`) follow the same per-name policy.
 
 Under **allow-all** these are available automatically once the matching channel is enabled — you do not add them to any list. They only need an explicit `allowedTools` entry when you switch to a hand-picked allowlist: in that case, add the exact tool name **in addition** to valid `slack.*` / `telegram.*` adapter config. Either way, `disallowedTools` can remove them.
 

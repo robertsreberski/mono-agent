@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- Add an opt-in persistent Telegram topic directory
+  (`telegram.topicDirectory.enabled`): the bot remembers the forum topics it
+  has seen across restarts, `TelegramListTopics` lists their names and status
+  (never ids, always marked incomplete), and `TelegramSendMessage` and
+  `TelegramSendFile` accept `topic_name` instead of `message_thread_id`. An
+  unknown, duplicate or closed name fails with the known names and never falls
+  back to General. An explicit topic rename is no longer undone by later
+  messages that quote the topic's original name.
+
+- Add opt-in agent-managed Telegram schedules (`telegram.schedules`, requires
+  the topic directory): from a message in an allowlisted chat the agent can
+  `TelegramCreateSchedule`, `TelegramUpdateSchedule`, `TelegramDeleteSchedule`
+  and `TelegramListSchedules` one-off or recurring cron schedules (explicit IANA
+  timezone) that run a turn in the destination chat or named topic and post the
+  answer there; `NOTHING_TO_REPORT` posts nothing. Scheduled and background
+  turns can only list schedules. Missed runs are skipped, never run late, and
+  interrupted deliveries are recorded, never replayed. `maxSchedules` (default
+  20) and `minIntervalMinutes` (default 15) bound what the agent can create, and
+  `mono-agent schedules list|delete` lets an operator inspect or remove them.
+
 - Give each Telegram forum topic its own conversation, history, queue,
   `/cancel`, `/new`, and `/model`/`/effort` selection, and send replies,
   activity, questions, status lines, files, and background-job cards back to

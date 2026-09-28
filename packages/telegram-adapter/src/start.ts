@@ -23,7 +23,7 @@ import type {
   TelegramReactionsConfig,
   TelegramTopicTriggerMode,
 } from "./config.js";
-import type { TelegramDestination } from "./conversation.js";
+import type { TelegramChatObservation, TelegramDestination, TelegramKnownTopicName } from "./conversation.js";
 import type { TelegramChatId } from "./types.js";
 
 export type { TelegramNotifyOptions, TelegramNotifyResult, TelegramPendingAsks } from "./bot.js";
@@ -71,6 +71,10 @@ export interface TelegramAdapterStartOptions {
   readonly pendingAsks?: TelegramPendingAsks;
   /** Host-owned current-conversation reset used by the built-in `/new` command. */
   readonly startNewSession?: (conversationId: string) => Promise<void>;
+  /** Topic names persisted by the host, restored before polling starts. */
+  readonly knownTopicNames?: readonly TelegramKnownTopicName[];
+  /** Observes every allowlisted message (after the allowlist gate, before trigger filtering). */
+  readonly onChatObserved?: (observation: TelegramChatObservation) => void;
   /** Base URL of a self-hosted Bot API server (API calls + file downloads). Omit for api.telegram.org. */
   readonly apiRoot?: string;
   /** Delete any configured webhook before polling. Defaults to true. */
@@ -165,6 +169,8 @@ function toCreateOptions(options: TelegramAdapterStartOptions): CreateTelegramBo
     ...(options.reactions === undefined ? {} : { reactions: options.reactions }),
     ...(options.pendingAsks === undefined ? {} : { pendingAsks: options.pendingAsks }),
     ...(options.startNewSession === undefined ? {} : { startNewSession: options.startNewSession }),
+    ...(options.knownTopicNames === undefined ? {} : { knownTopicNames: options.knownTopicNames }),
+    ...(options.onChatObserved === undefined ? {} : { onChatObserved: options.onChatObserved }),
     ...(options.apiRoot === undefined ? {} : { apiRoot: options.apiRoot }),
     ...(options.deleteWebhookOnStart === undefined
       ? {}
