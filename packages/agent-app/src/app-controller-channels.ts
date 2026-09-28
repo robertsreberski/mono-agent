@@ -175,7 +175,9 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
       await disposeChannelResponder(controller, driver, disposeResponder, `${reason}:superseded`);
       return currentStatus();
     }
-    const observability = driver.id === "tui"
+    // The console channel binds work to its source; Telegram mirrors forum
+    // topics into that source's projects when `telegram.projects` is on.
+    const observability = driver.id === "tui" || driver.id === "telegram"
       ? await controller.observabilityContext()
       : {};
     if (!isCurrentGeneration()) {

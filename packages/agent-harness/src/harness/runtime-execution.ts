@@ -282,16 +282,22 @@ export async function runHarnessRuntime(
       // live speaker, so it is skipped -- the same guard memory uses.
       const capabilityContext = formatHostCapabilities(merged as Partial<RuntimeRunOptions>);
       const currentTurnContext = `${context.turnContext}\n\n${capabilityContext}`;
+      const speakerMessage = request.continuation === undefined
+        ? composeUserMessageWithSpeakerContext(
+            request.userMessage,
+            request.sender,
+            request.precedingMessages,
+          )
+        : request.userMessage;
+      // Standing host context (a project's shared instructions) decorates the
+      // prompt copy only; persistUserMessage already stored the canonical text.
+      // Continuation synthesis gets it too: the destination's instructions still
+      // apply to the host-synthesized prompt, which is never persisted either.
+      const decorate = requestExtension?.decorateUserMessage;
       const currentUserMessage: RuntimeMessage = {
         role: "user",
         content: composeHostTurnEnvelope(currentTurnContext, composeUserMessageWithMemory(
-          request.continuation === undefined
-            ? composeUserMessageWithSpeakerContext(
-                request.userMessage,
-                request.sender,
-                request.precedingMessages,
-              )
-            : request.userMessage,
+          decorate === undefined ? speakerMessage : decorate(speakerMessage),
           memory,
         )),
       };

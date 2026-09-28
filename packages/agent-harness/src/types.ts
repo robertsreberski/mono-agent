@@ -585,6 +585,14 @@ export interface AgentHarnessRuntimeOptionsExtension {
    * configuration where ordinary action tools must not leak through.
    */
   readonly toolPolicyOverride?: ToolPolicy;
+  /**
+   * Host-owned standing context for this one turn, such as a project's shared
+   * instructions: rewrites only the prompt copy of the user message (after
+   * speaker context, before recalled memory). History, memory recall queries
+   * and memory capture keep the canonical message. Continuation synthesis
+   * applies it to its host-synthesized prompt copy as well.
+   */
+  readonly decorateUserMessage?: (userMessage: string) => string;
   readonly cleanup?: () => void | Promise<void>;
   /**
    * Cleanup that must wait until the runtime call and all of its tool clients

@@ -2,6 +2,8 @@ import { ThreadListPrimitive } from "@assistant-ui/react";
 import { useMemo } from "react";
 import { useConsoleStore } from "../../console-store";
 import type { ProjectSummary } from "../../types";
+
+type ExternalConversation = NonNullable<ProjectSummary["external"]>;
 import { formatUsd } from "../../usage";
 import { Icon } from "../Icon";
 import { DashboardFooter } from "../dashboard/DashboardFooter";
@@ -10,6 +12,33 @@ import { flattenCatalogModels } from "../route-label";
 
 const conversationCountLabel = (count: number): string =>
   `${String(count)} conversation${count === 1 ? "" : "s"}`;
+
+const EXTERNAL_STATE_LABEL: Record<Exclude<ExternalConversation["state"], "open">, string> = {
+  closed: "Closed in Telegram",
+  gone: "Telegram topic gone",
+};
+
+/**
+ * The Telegram forum topic this project mirrors. It is a conversation of the
+ * project, but its history lives in Telegram: the row names it and its state
+ * and opens nothing.
+ */
+function ExternalConversationRow({ conversation }: { readonly conversation: ExternalConversation }) {
+  return (
+    <div className="project-external" data-state={conversation.state} role="group" aria-label={`Telegram topic ${conversation.label}`}>
+      <span className="project-external-tile" aria-hidden="true">
+        <Icon name="send" size={14} />
+      </span>
+      <span className="project-external-copy">
+        <span className="project-external-title">{conversation.label}</span>
+        <span className="project-external-meta">Telegram · history not viewable here</span>
+      </span>
+      {conversation.state !== "open" && (
+        <span className="project-external-state">{EXTERNAL_STATE_LABEL[conversation.state]}</span>
+      )}
+    </div>
+  );
+}
 
 /**
  * One project's page, in the Dashboard's own slot.
@@ -62,8 +91,9 @@ export function ProjectPage({
     () => new Map(projectMembers.map((thread) => [thread.id, thread])),
     [projectMembers],
   );
+  // A mirrored Telegram topic is one of the project's conversations.
   const meta = [
-    conversationCountLabel(project.conversationCount),
+    conversationCountLabel(project.conversationCount + (project.external === undefined ? 0 : 1)),
     `${String(project.runningCount)} running`,
     ...(project.monthUsd === undefined ? [] : [`${formatUsd(project.monthUsd)} this month`]),
   ].join(" · ");
@@ -146,6 +176,7 @@ export function ProjectPage({
             <button type="button" onClick={() => openProjectById(project.id)}>Retry conversations</button>
           </div>
         )}
+        {project.external !== undefined && <ExternalConversationRow conversation={project.external} />}
         <ThreadListPrimitive.Root className="thread-list">
           <ThreadListPrimitive.Items archived={false}>
             {({ threadListItem }) => {
@@ -163,7 +194,7 @@ export function ProjectPage({
               );
             }}
           </ThreadListPrimitive.Items>
-          {projectMembers.length === 0 && (
+          {projectMembers.length === 0 && (project.external === undefined || projectMembersError !== null || projectMembersLoading) && (
             <div className="thread-list-empty">
               <Icon name="threads" size={19} />
               <span>

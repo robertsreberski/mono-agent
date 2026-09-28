@@ -80,7 +80,13 @@ import {
   type WebPushSubscriptionStatus,
 } from "./contracts.js";
 import { formatCronReplyContext, type CronReplySnapshotCandidate } from "./cron-reply-context.js";
-import type { WebTag, CreateWebTagInput, PatchWebTagInput } from "./contracts.js";
+import type { WebTag, CreateWebTagInput, PatchWebTagInput, WebExternalConversation, WebExternalConversationChannel, WebExternalConversationState } from "./contracts.js";
+import {
+  externalConversationLabel,
+  MAX_EXTERNAL_CONVERSATIONS_PER_SOURCE,
+  type ExternalConversationKind,
+  type ExternalConversationObservation,
+} from "./external-conversations.js";
 import { withProjectContext, formatQuotedTurn, type ProjectContextSource } from "./project-context.js";
 import { isConversationMarker } from "./conversation-markers.js";
 import { parseTagColor, parseTagName } from "./tag-color.js";
@@ -133,6 +139,36 @@ export interface CreateStoredThreadInput {
   readonly effort?: string | null;
   readonly projectId?: string;
 }
+
+interface ExternalConversationRow {
+  id: string;
+  source_id: string;
+  channel: WebExternalConversationChannel;
+  external_key: string;
+  kind: ExternalConversationKind;
+  chat_label: string | null;
+  topic_label: string | null;
+  state: WebExternalConversationState;
+  state_at: string;
+  project_id: string | null;
+  project_auto_named: number;
+  detached_at: string | null;
+  first_seen_at: string;
+  last_seen_at: string;
+  updated_at: string;
+}
+
+/** A stored channel conversation with its owning agent, for scope checks. */
+export type StoredExternalConversation = WebExternalConversation & { readonly sourceId: string };
+
+/** A channel conversation's current project context, read for one channel turn. */
+export interface ExternalTurnContext {
+  readonly conversation?: StoredExternalConversation;
+  readonly project?: { readonly id: string; readonly name: string; readonly context: string };
+}
+
+/** Receipts for channel-turn tool operations are kept this long. */
+const EXTERNAL_TOOL_RECEIPT_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 
 interface ProjectRow {
   color: WebProjectColor;
@@ -3415,6 +3451,10 @@ export class WebStore {
     if (patch.name !== undefined) {
       sets.push("name = ?");
       values.push(patch.name);
+      // A chosen name is authoritative over the channel's learned label.
+      if (patch.name !== this.requireProject(id).name) {
+        this.database.prepare("UPDATE external_conversations SET project_auto_named = 0 WHERE project_id = ?").run(id);
+      }
     }
     if (patch.context !== undefined) {
       sets.push("context = ?");
@@ -3457,9 +3497,216 @@ export class WebStore {
         this.database.prepare("UPDATE threads SET revision = revision + 1 WHERE id = ?").run(memberId);
       }
       for (const memberId of members) this.recordThreadRevision(memberId, "project_changed", now);
+      // A mirrored channel conversation is detached, never deleted, and keeps
+      // a tombstone so the next observation does not recreate the project.
+      this.database.prepare(`UPDATE external_conversations SET project_id = NULL, detached_at = ?, updated_at = ?
+        WHERE project_id = ?`).run(now, now, id);
       this.database.prepare("DELETE FROM projects WHERE id = ?").run(id);
       return members;
     });
+  }
+
+  /**
+   * Mirror what an agent observed on a channel, one way, into projects.
+   *
+   * A newly seen conversation gets a project with empty context, named
+   * `Chat › Topic`; later labels rename only projects nobody renamed. A
+   * detached conversation (its project was deleted or it was moved out) keeps
+   * its tombstone and is never re-projected by observation. Lifecycle state
+   * follows the newest evidence: an explicit closed/reopened, or any activity
+   * after a send found the conversation gone. Returns the projects whose
+   * summaries changed.
+   */
+  observeExternalConversations(
+    sourceId: string,
+    channel: WebExternalConversationChannel,
+    observations: readonly ExternalConversationObservation[],
+  ): { readonly projects: readonly string[]; readonly truncated: boolean } {
+    if (this.getAgent(sourceId) === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    return this.transaction(() => {
+      const changed = new Set<string>();
+      let truncated = false;
+      for (const observation of observations) {
+        const now = this.now();
+        // A skewed sender clock must not pin state in the future.
+        const seenAt = observation.seenAt > now ? now : observation.seenAt;
+        const stateAt = observation.stateAt === undefined || observation.stateAt > now ? seenAt : observation.stateAt;
+        const row = this.externalRowByKey(sourceId, channel, observation.key);
+        if (row === undefined) {
+          const count = (this.database.prepare("SELECT COUNT(*) AS count FROM external_conversations WHERE source_id = ?")
+            .get(sourceId) as unknown as { count: number }).count;
+          if (count >= MAX_EXTERNAL_CONVERSATIONS_PER_SOURCE) { truncated = true; continue; }
+          const chatLabel = observation.chatLabel ?? null, topicLabel = observation.topicLabel ?? null;
+          const project = this.createProject({ sourceId, name: externalConversationLabel(observation.kind, chatLabel, topicLabel) });
+          this.database.prepare(`INSERT INTO external_conversations (id, source_id, channel, external_key, kind, chat_label, topic_label,
+            state, state_at, project_id, project_auto_named, detached_at, first_seen_at, last_seen_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, ?, ?)`)
+            .run(randomUUID(), sourceId, channel, observation.key, observation.kind, chatLabel, topicLabel,
+              observation.state ?? "open", stateAt, project.id, seenAt, seenAt, now);
+          changed.add(project.id);
+          continue;
+        }
+        const chatLabel = observation.chatLabel ?? row.chat_label;
+        const topicLabel = observation.topicLabel ?? row.topic_label;
+        let state = row.state, nextStateAt = row.state_at;
+        if (observation.state !== undefined && stateAt >= row.state_at) {
+          state = observation.state; nextStateAt = stateAt;
+        } else if (row.state === "gone" && seenAt > row.state_at) {
+          state = "open"; nextStateAt = seenAt;
+        }
+        const lastSeenAt = seenAt > row.last_seen_at ? seenAt : row.last_seen_at;
+        const summaryChanged = chatLabel !== row.chat_label || topicLabel !== row.topic_label || state !== row.state;
+        if (summaryChanged || lastSeenAt !== row.last_seen_at || nextStateAt !== row.state_at) {
+          this.database.prepare(`UPDATE external_conversations SET chat_label = ?, topic_label = ?, state = ?, state_at = ?,
+            last_seen_at = ?, updated_at = ? WHERE id = ?`).run(chatLabel, topicLabel, state, nextStateAt, lastSeenAt, now, row.id);
+        }
+        let projectId = row.project_id;
+        if (projectId === null && row.detached_at === null) {
+          projectId = this.createProject({ sourceId, name: externalConversationLabel(row.kind, chatLabel, topicLabel) }).id;
+          this.database.prepare("UPDATE external_conversations SET project_id = ?, project_auto_named = 1 WHERE id = ?").run(projectId, row.id);
+          changed.add(projectId);
+        }
+        if (projectId === null) continue;
+        const name = externalConversationLabel(row.kind, chatLabel, topicLabel);
+        if (row.project_auto_named === 1 && this.requireProject(projectId).name !== name) {
+          this.database.prepare("UPDATE projects SET name = ?, updated_at = ?, revision = revision + 1 WHERE id = ?").run(name, now, projectId);
+          changed.add(projectId);
+        } else if (summaryChanged) {
+          this.bumpProjectRevision(projectId);
+        }
+        if (summaryChanged) changed.add(projectId);
+      }
+      return { projects: [...changed], truncated };
+    });
+  }
+
+  /**
+   * Record that a send proved a channel conversation no longer exists.
+   * The project, its context and its web chats are kept. Returns the bound
+   * project to refresh, if any.
+   */
+  markExternalConversationGone(sourceId: string, channel: WebExternalConversationChannel, key: string): { readonly projectId?: string } {
+    const row = this.externalRowByKey(sourceId, channel, key);
+    if (row === undefined) return {};
+    const now = this.now();
+    if (row.state !== "gone") {
+      this.transaction(() => {
+        this.database.prepare("UPDATE external_conversations SET state = 'gone', state_at = ?, updated_at = ? WHERE id = ?").run(now, now, row.id);
+        if (row.project_id !== null) this.bumpProjectRevision(row.project_id);
+      });
+    }
+    return row.project_id === null ? {} : { projectId: row.project_id };
+  }
+
+  externalConversationByKey(sourceId: string, channel: WebExternalConversationChannel, key: string): StoredExternalConversation | undefined {
+    const row = this.externalRowByKey(sourceId, channel, key);
+    return row === undefined ? undefined : this.mapExternal(row);
+  }
+
+  getExternalConversation(id: string): StoredExternalConversation | undefined {
+    const row = this.database.prepare("SELECT * FROM external_conversations WHERE id = ?").get(id) as unknown as ExternalConversationRow | undefined;
+    return row === undefined ? undefined : this.mapExternal(row);
+  }
+
+  /** One agent's channel conversations, most recently seen first. */
+  listExternalConversations(sourceId: string, options: { readonly projectId?: string; readonly limit: number }): StoredExternalConversation[] {
+    const rows = (options.projectId === undefined
+      ? this.database.prepare("SELECT * FROM external_conversations WHERE source_id = ? ORDER BY last_seen_at DESC, id DESC LIMIT ?")
+        .all(sourceId, options.limit)
+      : this.database.prepare("SELECT * FROM external_conversations WHERE source_id = ? AND project_id = ? ORDER BY last_seen_at DESC, id DESC LIMIT ?")
+        .all(sourceId, options.projectId, options.limit)) as unknown as ExternalConversationRow[];
+    return rows.map((row) => this.mapExternal(row));
+  }
+
+  /**
+   * Bind, move or detach one channel conversation. A project holds at most one
+   * channel conversation beside any number of web chats; detaching leaves the
+   * same tombstone a project deletion does.
+   */
+  setExternalConversationProject(id: string, projectId: string | null): StoredExternalConversation {
+    return this.transaction(() => {
+      const row = this.database.prepare("SELECT * FROM external_conversations WHERE id = ?").get(id) as unknown as ExternalConversationRow | undefined;
+      if (row === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+      const now = this.now();
+      if (projectId === null) {
+        if (row.project_id !== null || row.detached_at === null) {
+          this.database.prepare("UPDATE external_conversations SET project_id = NULL, detached_at = ?, updated_at = ? WHERE id = ?").run(now, now, id);
+          if (row.project_id !== null) this.bumpProjectRevision(row.project_id, now);
+        }
+        return this.getExternalConversation(id)!;
+      }
+      this.requireProjectForThread(projectId, row.source_id);
+      const occupant = this.database.prepare("SELECT id FROM external_conversations WHERE project_id = ? AND id <> ?").get(projectId, id);
+      if (occupant !== undefined) {
+        throw new WebConsoleError("project_has_external_conversation", "This project is already linked to another Telegram topic.", 409);
+      }
+      if (row.project_id !== projectId || row.detached_at !== null) {
+        this.database.prepare(`UPDATE external_conversations SET project_id = ?, project_auto_named = 0, detached_at = NULL, updated_at = ?
+          WHERE id = ?`).run(projectId, now, id);
+        this.bumpProjectRevision(projectId, now);
+        // The project it left no longer shows it: a new revision there too.
+        if (row.project_id !== null && row.project_id !== projectId) this.bumpProjectRevision(row.project_id, now);
+      }
+      return this.getExternalConversation(id)!;
+    });
+  }
+
+  /** The project context a channel turn in this conversation carries, read at dispatch. */
+  externalTurnContext(sourceId: string, channel: WebExternalConversationChannel, key: string): ExternalTurnContext {
+    const conversation = this.externalConversationByKey(sourceId, channel, key);
+    if (conversation?.projectId == null) return conversation === undefined ? {} : { conversation };
+    const project = this.requireProject(conversation.projectId);
+    return { conversation, project: { id: project.id, name: project.name, context: project.context } };
+  }
+
+  /**
+   * Resolve a project to its bound channel conversation for a send. Refuses
+   * rather than falling back: an unbound project, another channel, a closed
+   * topic and a gone topic each have their own code.
+   */
+  resolveExternalProjectDestination(
+    sourceId: string,
+    channel: WebExternalConversationChannel,
+    projectId: string,
+  ): { readonly key: string; readonly label: string } {
+    const project = this.getProjectRow(projectId);
+    if (project === undefined || project.source_id !== sourceId) throw new WebConsoleError("project_not_found", "Project not found.", 404);
+    const row = this.database.prepare("SELECT * FROM external_conversations WHERE project_id = ?").get(projectId) as unknown as ExternalConversationRow | undefined;
+    if (row === undefined || row.channel !== channel) {
+      throw new WebConsoleError("project_not_linked", "This project is not linked to a Telegram topic.", 409);
+    }
+    if (row.state === "gone") throw new WebConsoleError("external_conversation_gone", "This project's Telegram topic no longer exists.", 409);
+    if (row.state === "closed") throw new WebConsoleError("external_conversation_closed", "This project's Telegram topic is closed.", 409);
+    return { key: row.external_key, label: this.mapExternal(row).label };
+  }
+
+  /**
+   * A project summary carries its bound channel conversation, so every change
+   * to that binding, label or state is a new project revision; otherwise a
+   * listing read before the change would carry the same revision and a
+   * console's revision guard would let it restore the stale state. Binding
+   * changes also move recency when `at` is given.
+   */
+  private bumpProjectRevision(projectId: string, at?: string): void {
+    if (at === undefined) this.database.prepare("UPDATE projects SET revision = revision + 1 WHERE id = ?").run(projectId);
+    else this.database.prepare("UPDATE projects SET revision = revision + 1, updated_at = ? WHERE id = ?").run(at, projectId);
+  }
+
+  private externalRowByKey(sourceId: string, channel: WebExternalConversationChannel, key: string): ExternalConversationRow | undefined {
+    return this.database.prepare("SELECT * FROM external_conversations WHERE source_id = ? AND channel = ? AND external_key = ?")
+      .get(sourceId, channel, key) as unknown as ExternalConversationRow | undefined;
+  }
+
+  private mapExternal(row: ExternalConversationRow): StoredExternalConversation {
+    return {
+      id: row.id,
+      sourceId: row.source_id,
+      channel: row.channel,
+      label: externalConversationLabel(row.kind, row.chat_label, row.topic_label),
+      state: row.state,
+      projectId: row.project_id,
+      lastSeenAt: row.last_seen_at,
+    };
   }
 
   /**
@@ -3504,6 +3751,27 @@ export class WebStore {
     const readOnly = CONSOLE_READ_TOOL_NAMES.has(operation.tool);
     const canonicalArgs = Object.fromEntries(Object.entries(operation.args).sort(([a], [b]) => a.localeCompare(b)));
     const hash = createHash("sha256").update(JSON.stringify({ ...scope, tool: operation.tool, args: canonicalArgs })).digest("hex");
+    if (scope.kind === "external") {
+      // A channel turn has no web thread or turn row; its receipt is keyed by
+      // the owning process's turn identity instead of fabricating either.
+      return this.transaction(() => {
+        if (this.getAgent(scope.sourceId) === undefined) throw new WebConsoleError("console_tool_revoked", "The originating turn is no longer writable.", 403);
+        if (readOnly) return executeConsoleTool(this, scope, operation);
+        const prior = this.database.prepare("SELECT payload_sha256, result_json FROM external_tool_operations WHERE operation_id = ?")
+          .get(operation.operationId) as { payload_sha256: string; result_json: string } | undefined;
+        if (prior !== undefined) {
+          if (prior.payload_sha256 !== hash) throw new WebConsoleError("operation_conflict", "Operation identity was reused with a different request.", 409);
+          return { result: JSON.parse(prior.result_json), projects: [], threads: [], deletedProjects: [], tags: [], deletedTags: [] };
+        }
+        const commit = executeConsoleTool(this, scope, operation);
+        const now = this.now();
+        this.database.prepare("DELETE FROM external_tool_operations WHERE created_at < ?")
+          .run(new Date(Date.parse(now) - EXTERNAL_TOOL_RECEIPT_RETENTION_MS).toISOString());
+        this.database.prepare(`INSERT INTO external_tool_operations(operation_id, source_id, scope_key, turn_key, payload_sha256, result_json, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)`).run(operation.operationId, scope.sourceId, `${scope.channel}:${scope.key ?? "-"}`, scope.turnKey, hash, JSON.stringify(commit.result), now);
+        return commit;
+      });
+    }
     return this.transaction(() => {
       const origin = this.requireThread(scope.threadId);
       if (origin.sourceId !== scope.sourceId || origin.trigger !== undefined || origin.archivedAt !== null
@@ -3765,6 +4033,8 @@ export class WebStore {
           WHERE thread_id IN (SELECT value FROM json_each(?)) AND status = 'running'
         `).get(JSON.stringify(memberIds)) as unknown as { count: number }).count;
     const monthUsd = this.projectMonthUsd(memberIds, this.now());
+    const external = this.database.prepare("SELECT * FROM external_conversations WHERE project_id = ?")
+      .get(row.id) as unknown as ExternalConversationRow | undefined;
     return {
       id: row.id,
       sourceId: row.source_id,
@@ -3778,6 +4048,7 @@ export class WebStore {
       conversationCount: memberIds.length,
       runningCount,
       ...(monthUsd === undefined ? {} : { monthUsd }),
+      ...(external === undefined ? {} : { external: this.mapExternal(external) }),
     };
   }
 

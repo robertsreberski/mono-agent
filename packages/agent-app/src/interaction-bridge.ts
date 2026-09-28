@@ -46,10 +46,29 @@ export interface InteractionBridgeOptions {
   };
 }
 
+/**
+ * `telegram.projects` for the adapter-send child: resolve a project to its
+ * forum topic, and report a topic a send proved gone. Registered by the
+ * running Telegram channel; absent otherwise.
+ */
+export interface TelegramProjectsBridgePort {
+  resolveDestination(projectId: string): Promise<
+    | { readonly ok: true; readonly conversationId: string; readonly label: string }
+    | { readonly ok: false; readonly code: string; readonly message: string }
+  >;
+  reportGone(conversationId: string): Promise<void>;
+}
+
 export interface InteractionBridgeHandle {
   readonly url: string;
   readonly token: string;
   registerSink(channelId: string, sink: ChannelInteractionSink): void;
+  /**
+   * Install the Telegram project destination port. The returned function
+   * removes it only while it is still the installed one, so a stopping
+   * channel never removes its successor's port.
+   */
+  registerTelegramProjects(port: TelegramProjectsBridgePort): () => void;
   getPendingAsk(conversationId: string): ChannelAskSnapshot | undefined;
   getAsk(interactionId: string): ChannelAskSnapshot | undefined;
   submitAskAnswers(input: ChannelAskSubmission): Promise<ChannelAskSubmissionResult>;
@@ -265,6 +284,7 @@ export async function startInteractionBridge(
   const interactionJournals = new Map<string, InteractionJournal>();
   const progressCapabilities = new Map<string, ProgressCapabilityBinding>();
   const deliveryHistoryCapabilities = new Map<string, DeliveryHistoryCapabilityBinding>();
+  let telegramProjects: TelegramProjectsBridgePort | undefined;
   let askCounter = 0;
 
   function orderedAnswers(ask: PendingAsk): readonly ChannelAskAnswer[] {
@@ -778,6 +798,43 @@ export async function startInteractionBridge(
       await handleDeliveryHistory(request, response, bearer, capability);
       return;
     }
+    if (request.method === "POST" && (url.pathname === "/v1/telegram/project-destination" || url.pathname === "/v1/telegram/topic-gone")) {
+      // The adapter-send run's own delivery capability, scoped to Telegram.
+      const capability = bearer === undefined ? undefined : deliveryHistoryCapabilities.get(bearer);
+      if (bearer === undefined || capability === undefined) {
+        sendJson(response, 401, { error: "missing, invalid, or revoked delivery-history bearer token." });
+        return;
+      }
+      if (!capability.allowedChannels.has("telegram")) {
+        sendJson(response, 403, { error: "delivery capability is not valid for Telegram." });
+        return;
+      }
+      const body = await readJsonBody(request);
+      const port = telegramProjects;
+      if (url.pathname === "/v1/telegram/topic-gone") {
+        const conversationId = stringField(body, "conversationId");
+        if (conversationId === undefined || channelIdOf(conversationId) !== "telegram") {
+          sendJson(response, 400, { error: "conversationId must be a Telegram conversation." });
+          return;
+        }
+        if (port !== undefined) await port.reportGone(conversationId);
+        sendJson(response, 202, { accepted: true });
+        return;
+      }
+      const projectId = stringField(body, "projectId");
+      if (projectId === undefined || projectId.length > 128) {
+        sendJson(response, 400, { error: "projectId is required." });
+        return;
+      }
+      if (port === undefined) {
+        sendJson(response, 503, { error: "project_destinations_unavailable", message: "Telegram project destinations are unavailable." });
+        return;
+      }
+      const resolved = await port.resolveDestination(projectId);
+      if (resolved.ok) sendJson(response, 200, { conversationId: resolved.conversationId, label: resolved.label });
+      else sendJson(response, 409, { error: resolved.code, message: resolved.message });
+      return;
+    }
     if (request.method === "POST" && url.pathname === "/v1/progress") {
       const capability = bearer === undefined ? undefined : progressCapabilities.get(bearer);
       if (bearer !== token && capability === undefined) {
@@ -821,6 +878,12 @@ export async function startInteractionBridge(
   return {
     url,
     token,
+    registerTelegramProjects(port) {
+      telegramProjects = port;
+      return () => {
+        if (telegramProjects === port) telegramProjects = undefined;
+      };
+    },
     registerSink(channelId, sink) {
       sinks.set(channelId, sink);
     },

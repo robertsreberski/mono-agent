@@ -1,4 +1,16 @@
-import { CONSOLE_TOOL_NAMES, type ConsoleToolScope, type ConsoleToolName } from "./console-tools.js";
+import {
+  CONSOLE_TOOL_NAMES,
+  type ConsoleToolName,
+  type ConsoleToolScope,
+  type ExternalConsoleToolScope,
+  type WebConsoleToolScope,
+} from "./console-tools.js";
+import {
+  parseExternalChannel,
+  parseExternalKey,
+  parseExternalObservation,
+  parseExternalObservations,
+} from "./external-conversations.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { chmod, lstat, open, readFile, rename, unlink } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -24,6 +36,8 @@ const INGRESS_HOST = "127.0.0.1";
 const INGRESS_PATH = "/internal/v1/notifications";
 const MAX_INGRESS_BODY_BYTES = 8 * 1024 * 1024;
 const MAX_INGRESS_RECORD_BYTES = 64 * 1024;
+/** Upper bound on one channel turn's capability, independent of its revocation at settlement. */
+const EXTERNAL_CAPABILITY_TTL_MS = 6 * 60 * 60 * 1_000;
 
 export interface WebNotificationIngressRecord {
   readonly schema: typeof INGRESS_SCHEMA;
@@ -87,41 +101,71 @@ export async function startWebNotificationIngress(
   });
 
   // Owner discovery authorizes issuance; subsequent calls use only a turn-bound capability.
-  const capabilities = new Map<string, ConsoleToolScope>();
-  app.post("/internal/v1/console-tools", (req, res, next) => {
+  const capabilities = new Map<string, { readonly scope: ConsoleToolScope; readonly expiresAt?: number }>();
+  /** Loopback-only, same-host, no browser origin: shared by every internal callback below. */
+  const localOnly = (req: Request, res: Response): boolean => {
     const bound = server.address();
     if (stopPromise !== undefined || req.header("origin") !== undefined
       || req.socket.remoteAddress !== "127.0.0.1" || bound === null || typeof bound === "string"
       || req.header("host") !== `127.0.0.1:${bound.port}`) {
-      res.status(403).json({ error: { code: "forbidden", message: "Forbidden." } }); return;
+      res.status(403).json({ error: { code: "forbidden", message: "Forbidden." } });
+      return false;
     }
+    return true;
+  };
+  const ownerOnly = (req: Request, res: Response, next: NextFunction): void => {
+    if (!localOnly(req, res)) return;
+    const presented = readAuthorizationBearer(req.header("authorization"));
+    if (presented === undefined || !bearerTokensEqual(presented, token)) {
+      res.status(401).json({ error: { code: "unauthorized", message: "Unauthorized." } }); return;
+    }
+    next();
+  };
+  const pruneCapabilities = (): void => {
+    const now = Date.now();
+    for (const [key, entry] of capabilities) {
+      try {
+        if (entry.expiresAt !== undefined && entry.expiresAt <= now) throw new Error("expired");
+        service.assertConsoleToolTurn(entry.scope);
+      } catch { capabilities.delete(key); }
+    }
+  };
+  const mint = (scope: ConsoleToolScope, expiresAt?: number): string => {
+    if (capabilities.size >= 256) throw new WebConsoleError("console_tool_busy", "Too many active console capabilities.", 409);
+    const capability = randomBytes(32).toString("base64url");
+    capabilities.set(capability, { scope, ...(expiresAt === undefined ? {} : { expiresAt }) });
+    return capability;
+  };
+  app.post("/internal/v1/console-tools", (req, res, next) => {
+    if (!localOnly(req, res)) return;
     const presented = readAuthorizationBearer(req.header("authorization"));
     const capability = presented === undefined ? undefined : capabilities.get(presented);
     if (presented === undefined || (!bearerTokensEqual(presented, token) && capability === undefined)) {
       res.status(401).json({ error: { code: "unauthorized", message: "Unauthorized." } }); return;
     }
-    res.locals.consoleScope = capability;
+    res.locals.consoleScope = capability?.scope;
     next();
   }, express.json({ limit: 16 * 1024, strict: true }), (req, res, next) => {
     try {
       const body = asRecord(req.body);
       if (body === undefined) throw new WebConsoleError("invalid_console_tool", "Invalid request.", 400);
-      for (const [key, scope] of capabilities) {
-        try { service.assertConsoleToolTurn(scope); } catch { capabilities.delete(key); }
-      }
+      pruneCapabilities();
       if (res.locals.consoleScope === undefined) {
         if (Object.keys(body).some((key) => !["sourceId", "threadId", "turnId"].includes(key))
           || [body.sourceId, body.threadId, body.turnId].some((item) => typeof item !== "string" || item.length === 0 || item.length > 128)) {
           throw new WebConsoleError("invalid_console_tool", "Invalid turn scope.", 400);
         }
-        const scope = body as unknown as ConsoleToolScope;
+        const scope = body as unknown as WebConsoleToolScope;
         service.assertConsoleToolTurn(scope);
-        const existing = [...capabilities].find(([, item]) => item.sourceId === scope.sourceId && item.threadId === scope.threadId && item.turnId === scope.turnId);
+        const existing = [...capabilities].find(([, { scope: item }]) => item.kind !== "external"
+          && item.sourceId === scope.sourceId && item.threadId === scope.threadId && item.turnId === scope.turnId);
         if (existing !== undefined) { res.json({ capability: existing[0] }); return; }
-        if (capabilities.size >= 256) throw new WebConsoleError("console_tool_busy", "Too many active console capabilities.", 409);
-        const capability = randomBytes(32).toString("base64url");
-        capabilities.set(capability, scope);
-        res.json({ capability }); return;
+        res.json({ capability: mint(scope) }); return;
+      }
+      // A capability revoked or expired by the prune above no longer authorizes.
+      const presented = readAuthorizationBearer(req.header("authorization"));
+      if (presented === undefined || !capabilities.has(presented)) {
+        throw new WebConsoleError("console_tool_revoked", "The originating turn is no longer writable.", 403);
       }
       if (Object.keys(body).some((key) => !["operationId", "tool", "args"].includes(key))
         || typeof body.operationId !== "string" || typeof body.tool !== "string"
@@ -132,6 +176,84 @@ export async function startWebNotificationIngress(
         operationId: body.operationId, tool: body.tool as ConsoleToolName, args: body.args as Record<string, unknown>,
       });
       res.json({ result });
+    } catch (error) { next(error); }
+  });
+
+  // The capability itself authorizes its own revocation; revoking twice is a no-op.
+  app.post("/internal/v1/console-tools/revoke", (req, res) => {
+    if (!localOnly(req, res)) return;
+    const presented = readAuthorizationBearer(req.header("authorization"));
+    if (presented !== undefined && !bearerTokensEqual(presented, token)) capabilities.delete(presented);
+    res.json({ revoked: true });
+  });
+
+  // One-way mirror of what an owning agent process observed on a channel.
+  app.post("/internal/v1/external-conversations", ownerOnly, express.json({ limit: 256 * 1024, strict: true }), (req, res, next) => {
+    try {
+      const body = requireFields(req.body, ["sourceId", "channel", "observations"]);
+      const result = service.observeExternalConversations(sourceField(body.sourceId), parseExternalChannel(body.channel), parseExternalObservations(body.observations));
+      res.json({ truncated: result.truncated });
+    } catch (error) { next(error); }
+  });
+
+  // A send proved a channel conversation gone.
+  app.post("/internal/v1/external-conversations/gone", ownerOnly, express.json({ limit: 16 * 1024, strict: true }), (req, res, next) => {
+    try {
+      const body = requireFields(req.body, ["sourceId", "channel", "key"]);
+      service.markExternalConversationGone(sourceField(body.sourceId), parseExternalChannel(body.channel), parseExternalKey(body.key));
+      res.json({ recorded: true });
+    } catch (error) { next(error); }
+  });
+
+  // Resolve a project to its bound channel conversation for a send by the owning process.
+  app.post("/internal/v1/external-destinations", ownerOnly, express.json({ limit: 16 * 1024, strict: true }), (req, res, next) => {
+    try {
+      const body = requireFields(req.body, ["sourceId", "channel", "projectId"]);
+      if (typeof body.projectId !== "string" || body.projectId.length === 0 || body.projectId.length > 128) {
+        throw new WebConsoleError("invalid_external_conversation", "Invalid projectId.", 400);
+      }
+      res.json(service.resolveExternalProjectDestination(sourceField(body.sourceId), parseExternalChannel(body.channel), body.projectId));
+    } catch (error) { next(error); }
+  });
+
+  // Begin one channel turn: its project context, and optionally a capability
+  // bound to the discovered process generation and revoked at settlement.
+  app.post("/internal/v1/external-turns", ownerOnly, express.json({ limit: 16 * 1024, strict: true }), (req, res, next) => {
+    try {
+      const body = requireFields(req.body, ["sourceId", "channel", "pid", "turnKey", "key", "observation", "tools"]);
+      const sourceId = sourceField(body.sourceId);
+      const channel = parseExternalChannel(body.channel);
+      const key = body.key === undefined ? undefined : parseExternalKey(body.key);
+      if (!Number.isSafeInteger(body.pid) || (body.pid as number) <= 0 || typeof body.tools !== "boolean"
+        || typeof body.turnKey !== "string" || !/^[A-Za-z0-9._:-]{8,128}$/u.test(body.turnKey)) {
+        throw new WebConsoleError("invalid_external_conversation", "Invalid channel turn.", 400);
+      }
+      if (body.observation !== undefined) {
+        const observation = parseExternalObservation(body.observation);
+        if (observation.key !== key) throw new WebConsoleError("invalid_external_conversation", "Observation key mismatch.", 400);
+        service.observeExternalConversations(sourceId, channel, [observation]);
+      }
+      const context = key === undefined ? {} : service.externalTurnContext(sourceId, channel, key);
+      // Context never depends on tool admission: a refused capability still
+      // returns the project context, with the refusal code alone.
+      let capability: string | undefined, capabilityError: string | undefined;
+      if (body.tools === true) {
+        const scope: ExternalConsoleToolScope = { kind: "external", sourceId, channel, ...(key === undefined ? {} : { key }), turnKey: body.turnKey, pid: body.pid as number };
+        try {
+          service.assertExternalToolScope(scope);
+          pruneCapabilities();
+          capability = mint(scope, Date.now() + EXTERNAL_CAPABILITY_TTL_MS);
+        } catch (error) {
+          capabilityError = error instanceof WebConsoleError ? error.code : "console_tool_unavailable";
+        }
+      }
+      res.json({
+        conversation: context.conversation === undefined ? null
+          : { id: context.conversation.id, label: context.conversation.label, state: context.conversation.state },
+        project: context.project ?? null,
+        ...(capability === undefined ? {} : { capability }),
+        ...(capabilityError === undefined ? {} : { capabilityError }),
+      });
     } catch (error) { next(error); }
   });
 
@@ -356,6 +478,22 @@ async function removeOwnIngressRecord(path: string, instanceId: string): Promise
   }
   const record = typeof parsed === "object" && parsed !== null ? parsed as Record<string, unknown> : undefined;
   if (record?.instanceId === instanceId) await unlink(path).catch(() => undefined);
+}
+
+/** A JSON object whose keys are all allowed; optional fields may be absent. */
+function requireFields(value: unknown, allowed: readonly string[]): Record<string, unknown> {
+  const record = asRecord(value);
+  if (record === undefined || Object.keys(record).some((key) => !allowed.includes(key))) {
+    throw new WebConsoleError("invalid_external_conversation", "Invalid request.", 400);
+  }
+  return record;
+}
+
+function sourceField(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 512) {
+    throw new WebConsoleError("invalid_external_conversation", "Invalid sourceId.", 400);
+  }
+  return value;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

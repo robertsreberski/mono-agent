@@ -59,10 +59,14 @@ import {
   telegramMessageTarget,
   telegramMessageThreadId,
   telegramThreadParams,
-  telegramTopicNameFromMessage,
+  mergeTelegramTopicName,
+  telegramChatObservationFromMessage,
   withoutImplicitTopicReply,
+  type TelegramChatObservation,
   type TelegramConversationTarget,
   type TelegramDestination,
+  type TelegramKnownTopicName,
+  type TelegramTopicNameRecord,
 } from "./conversation.js";
 import { createGrammyTelegramApi } from "./grammy-client.js";
 import {
@@ -74,6 +78,7 @@ import {
   TelegramMessageStream,
   type TelegramMessageStreamOptions,
 } from "./message-stream.js";
+import { isTelegramTopicGoneError } from "./telegram-error.js";
 import { TelegramReplyFileDelivery } from "./reply-files.js";
 import type {
   TelegramChatId,
@@ -312,6 +317,16 @@ export interface TelegramNotifyResult {
 }
 
 /**
+ * A failed proactive post. A forum topic Telegram reports as gone gets the
+ * stable `telegram_topic_gone` code so a host can mark it without parsing text.
+ */
+function deliveryFailure(error: unknown): TelegramNotifyResult {
+  return isTelegramTopicGoneError(error)
+    ? { delivered: false, code: "telegram_topic_gone", reason: "delivery failed: the forum topic no longer exists" }
+    : { delivered: false, reason: "delivery failed" };
+}
+
+/**
  * Options for {@link TelegramBotController.notify}. With `verbatim`, `text` is
  * posted to the chat UNCHANGED with no model call (native cron/webhook
  * notification — the producing run already wrote the message) and recorded to
@@ -505,6 +520,18 @@ export interface CreateTelegramBotOptions {
   readonly pendingAsks?: TelegramPendingAsks;
   /** Clear one host-owned conversation session for the built-in `/new` command. */
   readonly startNewSession?: (conversationId: string) => Promise<void>;
+  /**
+   * Topic names a host persisted earlier, restored at startup so a topic is
+   * named before one of its messages reveals the name again.
+   */
+  readonly knownTopicNames?: readonly TelegramKnownTopicName[];
+  /**
+   * Called for every message from an allowlisted chat, after the allowlist
+   * gate and before command or trigger filtering, with what it reveals about
+   * the chat and its forum topic. Never awaited: a thrown error or a rejected
+   * promise is logged and ignored, and the update proceeds.
+   */
+  readonly onChatObserved?: (observation: TelegramChatObservation) => void | Promise<void>;
   /**
    * Base URL of a self-hosted Bot API server (e.g. `http://127.0.0.1:8081`).
    * Applied to every API call and to file downloads; a `--local` server's
@@ -863,19 +890,48 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       : topicTriggerModes.get(telegramConversationId(target)) ?? groupMode;
 
   // Topic names learned from creation/rename service messages and the implicit
-  // topic-root reply, keyed by topic conversation id. Process-local: after a
-  // restart a topic is shown by chat name only until one of its messages
-  // reveals the name again.
-  const topicNames = new Map<string, string>();
-  function learnTopicName(message: TelegramMessage): void {
-    const learned = telegramTopicNameFromMessage(message);
-    if (learned === undefined) return;
-    const key = telegramConversationId({ chatId: message.chat.id, messageThreadId: learned.messageThreadId });
+  // topic-root reply, keyed by topic conversation id. An explicit rename beats
+  // the creation name every later message quotes from the topic root (see
+  // mergeTelegramTopicName). Process-local unless a host hydrates names it
+  // persisted earlier; otherwise, after a restart a topic is shown by chat
+  // name only until one of its messages reveals the name again.
+  const topicNames = new Map<string, TelegramTopicNameRecord>();
+  function rememberTopicName(key: string, observed: TelegramTopicNameRecord): void {
+    const merged = mergeTelegramTopicName(topicNames.get(key), observed);
     topicNames.delete(key);
-    topicNames.set(key, learned.name);
+    topicNames.set(key, merged);
     if (topicNames.size > TOPIC_NAME_CACHE_MAX) {
       const oldest = topicNames.keys().next().value;
       if (oldest !== undefined) topicNames.delete(oldest);
+    }
+  }
+  for (const known of options.knownTopicNames ?? []) {
+    if (!Number.isSafeInteger(known.messageThreadId) || known.messageThreadId <= 0) continue;
+    rememberTopicName(
+      telegramConversationId({ chatId: known.chatId, messageThreadId: known.messageThreadId }),
+      known.nameRecord,
+    );
+  }
+  function observeChatMessage(message: TelegramMessage): void {
+    const observation = telegramChatObservationFromMessage(message);
+    const nameRecord = observation.topic?.nameRecord;
+    if (observation.topic !== undefined && nameRecord !== undefined) {
+      rememberTopicName(
+        telegramConversationId({ chatId: observation.chatId, messageThreadId: observation.topic.messageThreadId }),
+        nameRecord,
+      );
+    }
+    if (options.onChatObserved === undefined) return;
+    const onFailure = (error: unknown): void => {
+      logger?.warn?.("Telegram chat observation hook failed.", { error: errorMessage(error) });
+    };
+    try {
+      // Never awaited: observation must not delay the update. An async hook's
+      // rejection is logged instead of becoming an unhandled rejection.
+      const pending = options.onChatObserved(observation);
+      if (pending !== undefined) void Promise.resolve(pending).catch(onFailure);
+    } catch (error) {
+      onFailure(error);
     }
   }
 
@@ -1362,6 +1418,11 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       await ctx.reply(messages.unauthorizedText);
       return;
     }
+    // Observe after the allowlist gate and before any command or trigger
+    // filtering, so a topic is learned even when no turn starts.
+    if (ctx.message !== undefined) {
+      observeChatMessage(ctx.message as unknown as TelegramMessage);
+    }
     await next();
   });
 
@@ -1747,7 +1808,6 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       return;
     }
     const rawMessage = message as unknown as TelegramMessage;
-    learnTopicName(rawMessage);
     // Topic lifecycle service messages (created, renamed, closed…) only teach
     // the topic name; they are never a turn or an "unsupported" reply.
     if (isTelegramForumServiceMessage(rawMessage)) {
@@ -2086,7 +2146,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       );
     }
 
-    const topicName = target.messageThreadId === undefined ? undefined : topicNames.get(conversationId);
+    const topicName = target.messageThreadId === undefined ? undefined : topicNames.get(conversationId)?.name;
     const request = buildAgentRequest(
       ctx.update as unknown as TelegramUpdate,
       message as unknown as TelegramMessage,
@@ -2308,7 +2368,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         logger?.error?.("Telegram proactive delivery failed after a successful AI run.", {
           error: errorMessage(error),
         });
-        return { delivered: false, reason: "delivery failed" };
+        return deliveryFailure(error);
       }
       return { delivered: true };
     } finally {
@@ -2345,7 +2405,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
           return { delivered: false, reason: "cancelled" };
         }
         logger?.error?.("Telegram verbatim notify delivery failed.", { error: errorMessage(error) });
-        return { delivered: false, reason: "delivery failed" };
+        return deliveryFailure(error);
       }
       try {
         await options.responder.deliverVerbatim?.(telegramConversationId(target), text);

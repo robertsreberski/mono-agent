@@ -174,6 +174,31 @@ describe("createTelegramBot notify (proactive)", () => {
     expect(verbatimCalls).toEqual([["telegram:42", "Your morning brief: all clear."]]);
   });
 
+  it("reports a deleted forum topic with a stable code instead of a generic failure", async () => {
+    const responder: AgentResponder = {
+      async respond() {
+        return { text: "should not run" };
+      },
+      async deliverVerbatim() {},
+    };
+    const controller = createTelegramBot({
+      botToken: "test-token",
+      allowAllChats: true,
+      responder,
+      stream: { maxSendRetries: 0 },
+      botFactory: () => {
+        const bot = new Bot("test-token", { botInfo: FAKE_BOT_INFO });
+        bot.api.config.use(async (_prev, method) => (method === "sendMessage"
+          ? { ok: false, error_code: 400, description: "Bad Request: message thread not found" }
+          : ok(true)) as never);
+        return bot;
+      },
+    });
+
+    await expect(controller.notify({ chatId: -1001, messageThreadId: 77 }, "Digest.", { verbatim: true }))
+      .resolves.toMatchObject({ delivered: false, code: "telegram_topic_gone" });
+  });
+
   it("forwards silent through the verbatim path as disable_notification", async () => {
     const responder: AgentResponder = {
       async respond() {

@@ -45,7 +45,7 @@ async function seeded(version: number, sequenced17 = false): Promise<string> {
 }
 
 function schema(database: DatabaseSync): unknown {
-  const tables = ["tags", "thread_tags", "pending_project_memberships", "console_tool_operations", "agents", "threads", "projects", "turns", "messages", "live_inputs", "web_submissions", "cron_reply_operations", "attachments", "notification_deliveries", "monitor_wake_deliveries", "agent_run_overrides"];
+  const tables = ["external_conversations", "external_tool_operations", "tags", "thread_tags", "pending_project_memberships", "console_tool_operations", "agents", "threads", "projects", "turns", "messages", "live_inputs", "web_submissions", "cron_reply_operations", "attachments", "notification_deliveries", "monitor_wake_deliveries", "agent_run_overrides"];
   return tables.map((table) => ({
     table,
     // ALTER appends columns, so physical column ordinal is not a shape claim.
@@ -553,10 +553,53 @@ describe("web storage migration history", () => {
   });
 });
 
+describe("external conversation projects migration", () => {
+  it("opens a schema-37 store with its projects and chats unchanged and no channel conversations", async () => {
+    const stateDir = await seeded(18);
+    const store = await WebStore.open({ stateDir });
+    const thread = store.listThreadsPage({ sourceId: "fixture-agent", archived: false }).threads[0]
+      ?? store.createThread("fixture-agent");
+    const project = store.createProject({ sourceId: "fixture-agent", name: "Existing", context: "Keep me." });
+    store.patchThread(thread.id, { projectId: project.id });
+    const before = { project: store.getProject(project.id), thread: store.getThread(thread.id) };
+    store.close();
+    const legacy = new DatabaseSync(join(stateDir, "state.sqlite"));
+    try {
+      // The exact schema-37 layout: v38 only adds these tables and indexes.
+      legacy.exec(`DROP INDEX external_conversations_one_per_project; DROP INDEX external_conversations_by_source;
+        DROP INDEX external_tool_operations_by_age; DROP TABLE external_conversations; DROP TABLE external_tool_operations;
+        PRAGMA user_version = 37;`);
+    } finally { legacy.close(); }
+    const reopened = await WebStore.open({ stateDir });
+    try {
+      expect(reopened.getProject(project.id)).toEqual(before.project);
+      expect(reopened.getProject(project.id)).not.toHaveProperty("external");
+      expect(reopened.getThread(thread.id)).toEqual(before.thread);
+      expect(reopened.listExternalConversations("fixture-agent", { limit: 50 })).toEqual([]);
+    } finally { reopened.close(); }
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
+    try {
+      expect(database.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 38 });
+      expect(database.prepare("SELECT COUNT(*) AS count FROM external_conversations").get()).toEqual({ count: 0 });
+    } finally { database.close(); }
+  });
+
+  it("refuses a binding index that no longer fences one conversation per project", async () => {
+    const stateDir = await seeded(18);
+    (await WebStore.open({ stateDir })).close();
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    try {
+      database.exec(`DROP INDEX external_conversations_one_per_project;
+        CREATE INDEX external_conversations_one_per_project ON external_conversations(project_id)`);
+      expect(() => validateWebStorageShape(database)).toThrowError(expect.objectContaining({ code: "storage_corrupt" }));
+    } finally { database.close(); }
+  });
+});
+
 describe("named migration registry", () => {
   const step = (version: number, name: string): WebStorageMigration => ({ version, name, up: vi.fn() });
-  it("is immutable and derives schema 37 from its last step", () => {
-    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(37);
+  it("is immutable and derives schema 38 from its last step", () => {
+    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(38);
     expect(WEB_STORAGE_SCHEMA_VERSION).toBe(WEB_STORAGE_MIGRATIONS.at(-1)?.version);
     expect(Object.isFrozen(WEB_STORAGE_MIGRATIONS)).toBe(true);
     expect(WEB_STORAGE_MIGRATIONS.every(Object.isFrozen)).toBe(true);

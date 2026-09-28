@@ -79,8 +79,11 @@ export function ensureInteractionBridge(controller: ContinuationControllerPort, 
       suppressInteractionTools: true,
       ...(controller.logger === undefined ? {} : { logger: controller.logger }),
     });
+    const telegramSend = adapterSendSettings?.telegram;
+    // `projectId` sends resolve their forum topic through this bridge too.
     const deliveryHistoryNeeded = adapterSendSettings?.slack !== undefined
-      || adapterSendSettings?.telegram?.tools.send === true;
+      || telegramSend?.tools.send === true
+      || (telegramSend?.projects === true && telegramSend.tools.file);
     const scopedProgressNeeded = settings.progressEnabled
       && (coreConfig.tools.mcpRequestContextServers?.length ?? 0) > 0;
     if (!askUserAllowed && !deliveryHistoryNeeded && !scopedProgressNeeded && !settings.configured) {

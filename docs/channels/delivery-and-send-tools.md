@@ -153,6 +153,16 @@ remaining the destination boundary.
   stays in the current topic (a reply follows the replied message instead), and
   any other chat receives its main conversation, including a forum's General
   topic. A message sent into a topic is recorded in that topic's own history.
+- **`projectId`** (both tools, only with
+  [`telegram.projects.enabled`](/channels/telegram/#forum-topics-as-projects))
+  posts into the forum topic of a Telegram-linked project instead of naming
+  `chat_id`/`message_thread_id`, which it excludes. The web console resolves it;
+  the send is refused (and never redirected to General) when the project has no
+  topic, the topic is closed or gone, the chat is outside the allowlist, or the
+  console is unreachable. The result names the project, not the chat or topic.
+  A send Telegram answers with "thread not found" marks that topic gone. In
+  `producing-conversation` scope the destination is already bound, so
+  `projectId` is not offered.
 - **`TelegramSendFile`** uploads and sends a file (`kind:"document"`) or an inline image (`kind:"photo"`) to an allowed chat. It accepts the bytes as base64 `data` (with a `filename`) **or** a workspace `path` (filename derived from the path), plus an optional `caption`. Uploads are bounded by the adapter's attachment size cap (~20 MB).
 
 The adapter's own allowlist (`slack.allowedChannelIds` / `slack.allowAllChannels`, `telegram.allowedChatIds` / `telegram.allowAllChats`) **remains the destination boundary**: allowing the tool does not widen where the agent may send. A send to a destination outside the adapter allowlist is refused.

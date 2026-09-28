@@ -101,6 +101,16 @@ export interface TelegramSendToolsConfig {
   readonly pathScope?: "run-output";
 }
 
+/**
+ * Forum topics as web-console projects (JSON-only, off by default). When
+ * enabled the host passively records the forum topics it sees and mirrors each
+ * one, one way, into a web-console project whose shared context reaches every
+ * turn in that topic.
+ */
+export interface TelegramProjectsConfig {
+  readonly enabled: boolean;
+}
+
 export interface TelegramAdapterConfig {
   readonly enabled: boolean;
   readonly botToken: string;
@@ -137,6 +147,8 @@ export interface TelegramAdapterConfig {
    */
   readonly transcription?: TelegramTranscriptionConfig;
   readonly sendTools?: TelegramSendToolsConfig;
+  /** Forum topics as web-console projects. Omit (or `enabled: false`) to leave topics unmirrored. */
+  readonly projects?: TelegramProjectsConfig;
 }
 
 export interface RedactedTelegramAdapterConfig {
@@ -157,6 +169,7 @@ export interface RedactedTelegramAdapterConfig {
   readonly reactions?: TelegramReactionsConfig;
   readonly transcription?: TelegramTranscriptionConfig;
   readonly sendTools?: TelegramSendToolsConfig;
+  readonly projects?: TelegramProjectsConfig;
 }
 
 export type TelegramAdapterConfigErrorCode =
@@ -273,6 +286,7 @@ export async function loadTelegramAdapterConfig(
           max: 3_600_000,
         });
   const sendTools = readTelegramSendTools(json);
+  const projects = readTelegramProjects(json);
   const topics = readTelegramTopics(json, allowedChatIds, allowAllChats);
   const quietHours = readTelegramQuietHours(json);
   const commands = readTelegramCommands(json);
@@ -298,7 +312,26 @@ export async function loadTelegramAdapterConfig(
     ...(reactions === undefined ? {} : { reactions }),
     ...(transcription === undefined ? {} : { transcription }),
     ...(sendTools === undefined ? {} : { sendTools }),
+    ...(projects === undefined ? {} : { projects }),
   };
+}
+
+/** Read `telegram.projects`. Absent or `enabled: false` leaves the feature off. */
+function readTelegramProjects(json: SettingsJson): TelegramProjectsConfig | undefined {
+  const raw = readJsonSection(json, "telegram").projects;
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw invalidConfig("telegram.projects must be an object with { enabled }.");
+  }
+  const record = raw as Record<string, unknown>;
+  const unknown = Object.keys(record).filter((key) => key !== "enabled");
+  if (unknown.length > 0) {
+    throw invalidConfig("telegram.projects contains unknown fields.", { fields: unknown });
+  }
+  if (record.enabled !== undefined && typeof record.enabled !== "boolean") {
+    throw invalidConfig("telegram.projects.enabled must be a boolean.");
+  }
+  return { enabled: record.enabled === true };
 }
 
 function readTelegramSendTools(json: SettingsJson): TelegramSendToolsConfig | undefined {
@@ -749,6 +782,7 @@ export function redactTelegramAdapterConfig(
     // The endpoint/model are not secrets, so they pass through verbatim.
     ...(config.transcription === undefined ? {} : { transcription: config.transcription }),
     ...(config.sendTools === undefined ? {} : { sendTools: config.sendTools }),
+    ...(config.projects === undefined ? {} : { projects: config.projects }),
   };
 }
 

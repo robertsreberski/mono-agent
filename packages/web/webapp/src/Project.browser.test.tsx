@@ -364,6 +364,35 @@ describe.each([
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
   });
 
+  it("draws a Telegram-bound project with its topic row inside the viewport", async () => {
+    await page.viewport(width, height);
+    const flights = {
+      ...webProject,
+      conversationCount: 0,
+      runningCount: 0,
+      monthUsd: undefined,
+      name: "Trips › Flights with a long Telegram topic name that must stay on one line",
+      external: { id: "ext-1", channel: "telegram" as const, label: "Trips › Flights with a long Telegram topic name that must stay on one line", state: "gone" as const, projectId: webProject.id, lastSeenAt: "2026-09-28T09:00:00Z" },
+    };
+    storeMock.current = dashboardStore({ openProjectId: flights.id, openProject: flights, projectMembers: [] });
+    render(
+      <WebRuntimeProvider>
+        <Dashboard highlightSelected={false} />
+      </WebRuntimeProvider>,
+    );
+
+    const row = await screen.findByRole("group", { name: /^Telegram topic Trips › Flights/u });
+    expect(row).toBeVisible();
+    expect(screen.getByText("Telegram · history not viewable here")).toBeVisible();
+    expect(screen.getByText("Telegram topic gone")).toBeVisible();
+    // The topic is the project's only conversation, so the page never calls it empty.
+    expect(screen.getByText("1 conversation · 0 running")).toBeVisible();
+    expect(screen.queryByText("No conversations yet")).toBeNull();
+    expect(row.getBoundingClientRect().right).toBeLessThanOrEqual(width);
+    await capture(`project-page-telegram-${label}`);
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+  });
+
   it("draws the project settings sheet", async () => {
     await page.viewport(width, height);
     storeMock.current = dashboardStore({

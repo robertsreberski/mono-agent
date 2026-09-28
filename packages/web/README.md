@@ -674,6 +674,24 @@ Web turns can use the app-owned console tools described in
 woken by a background process job advertise the same capability;
 cron and webhook channels do not.
 
+Schema 38 adds channel conversations for
+[Telegram forum topics as projects](../../docs/channels/telegram.md#forum-topics-as-projects):
+the owning agent process reports what it observed over the owner-private
+ingress (`syncWebExternalConversations`), and this store creates one
+`Chat › Topic` project per new topic, renames only auto-named projects, tracks
+closed/reopened and gone (`markWebExternalConversationGone`), and keeps a
+tombstone when a project is deleted so observation never re-projects it. A
+project binds at most one channel conversation beside any number of web chats;
+`WebProject.external` carries its opaque id, `Chat › Topic` label and state,
+never the host-owned routing key. `beginWebExternalTurn` returns a channel
+turn's project context and, when asked, a console-tool capability bound to the
+discovered agent pid, limited to the project tools, expiring after six hours
+and revoked by the owner at settlement; its receipts live in their own table
+rather than fabricated web threads or turns. `resolveWebExternalProjectDestination`
+answers the owner with a project's routing key for a send, refusing unbound,
+closed and gone topics. `withProjectContext` is exported for hosts that inject
+the same envelope into their own prompt copies.
+
 Cron channels are non-sendable and non-uploadable. Configured channels may be
 archived but not deleted; removed jobs become historical tombstones and may be
 deleted only after archival. Deletion leaves delivery receipts threadless and
@@ -992,6 +1010,7 @@ ACP_PROTOCOL_VERSION
 AcpBridgeDiscovery
 AcpBridgeSourceDescriptor
 AcpBridgeSourceHealth
+BeginWebExternalTurnInput
 ConsoleToolName
 ConsoleToolOperation
 ConsoleToolScope
@@ -1011,6 +1030,7 @@ DeliverWebThreadNotificationInput
 DiscoverAcpBridgeAgentsOptions
 DiscoverOperatorAgentsOptions
 DiscoveredOperatorAgent
+ExternalConsoleToolScope
 OperatorClient
 OperatorClientOptions
 OperatorConnection
@@ -1021,6 +1041,7 @@ PatchWebAgentInput
 PatchWebProjectInput
 PatchWebTagInput
 PatchWebThreadInput
+ProjectContextSource
 PutWebAgentRunSettingsInput
 SearchWebThreadsInput
 StartWebLiveInputInput
@@ -1058,12 +1079,18 @@ WebBootstrap
 WebBootstrapScope
 WebConsoleError
 WebConsoleIdentity
+WebConsoleToolScope
 WebConversationMarkerPart
 WebCronReplyContextPart
 WebCronReplyReceipt
 WebCronReplySnapshotKind
 WebEvent
 WebEventType
+WebExternalConversation
+WebExternalConversationChannel
+WebExternalConversationState
+WebExternalObservationInput
+WebExternalTurn
 WebJobActivity
 WebLiveInputReceipt
 WebMessage
@@ -1115,6 +1142,7 @@ WebUsageSlice
 WebUsageTokens
 WebWakeSchedule
 WebWakeScheduleDefinition
+beginWebExternalTurn
 createWebConsoleToolClient
 defaultTraceRegistryDir
 defaultWebStateDir
@@ -1122,12 +1150,16 @@ deliverWebNotification
 discoverAcpBridgeAgents
 discoverOperatorAgents
 isTrustedOperatorBaseUrl
+markWebExternalConversationGone
 operatorBaseUrlFromMetadata
 prepareWebState
 prepareWebStatePaths
 resetWebState
+resolveWebExternalProjectDestination
 resolveWebStatePaths
 startWebServer
+syncWebExternalConversations
+withProjectContext
 ```
 
 <!-- public-api-inventory:end -->

@@ -482,6 +482,23 @@ context until settlement. Deleting active or pending projects, or archiving a
 pending destination, returns a conflict; wait for current turns to finish.
 `CreateConversation` creates an idle conversation without running it.
 
+With [`telegram.projects.enabled`](/channels/telegram/#forum-topics-as-projects),
+a message a person sends in an allowlisted Telegram chat can use `ListProjects`,
+`GetProject`, `CreateProject`, `UpdateProject`, `DeleteProject`,
+`ListConversations`, `SearchConversations`, `CreateConversation`, and
+`SetConversationProject` too; tag, read-state and wake-up tools stay web-only.
+The capability is issued through the same owner-private discovery, bound to the
+agent process that owns the turn, and revoked when the turn settles.
+`CreateProject` with `attachCurrentConversation` and `SetConversationProject`
+without `conversationId` then act on the current forum topic; a project holds
+at most one topic beside any number of web chats, and a private chat cannot be
+attached. `ListProjects` accepts `channel: "telegram"`, `limit` and `cursor`,
+and marks a topic-bound project with `external: {id, channel, label, state}`
+(`open`, `closed`, or `gone`). The first unfiltered `ListConversations` page adds
+`externalConversations` with `historyAvailable: false`; their opaque `id` works
+as `conversationId` for `SetConversationProject`. Telegram topic and chat IDs
+never appear in any result.
+
 Owner-private loopback discovery issues a capability bound to source,
 conversation, and turn. Credentials and endpoint choices are never model
 arguments or results. Settlement, cancellation, and shutdown revoke access.

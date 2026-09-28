@@ -27,13 +27,22 @@ export type {
 } from "./types.js";
 
 export {
+  mergeTelegramTopicName,
   parseTelegramConversationId,
+  telegramChatObservationFromMessage,
   telegramConversationId,
   telegramMessageThreadId,
 } from "./conversation.js";
-export type { TelegramConversationTarget, TelegramDestination } from "./conversation.js";
+export type {
+  TelegramChatObservation,
+  TelegramConversationTarget,
+  TelegramDestination,
+  TelegramKnownTopicName,
+  TelegramTopicNameRecord,
+  TelegramTopicNameSource,
+} from "./conversation.js";
 
-export { TelegramApiError } from "./telegram-error.js";
+export { isTelegramTopicGoneError, TelegramApiError } from "./telegram-error.js";
 export type {
   TelegramApiErrorDetails,
   TelegramApiErrorKind,
@@ -146,6 +155,7 @@ export type {
   TelegramCommandConfig,
   TelegramGroupTriggerMode,
   TelegramQuietHours,
+  TelegramProjectsConfig,
   TelegramReactionsConfig,
   TelegramTopicConfig,
   TelegramTopicTriggerMode,

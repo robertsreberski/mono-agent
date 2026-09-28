@@ -16,6 +16,8 @@ export interface TelegramChat {
   username?: string;
   first_name?: string;
   last_name?: string;
+  /** True for a supergroup with forum topics enabled. */
+  is_forum?: boolean;
 }
 
 /** The Bot API message-entity fields used for native @mention matching. */
@@ -58,6 +60,10 @@ export interface TelegramMessage {
   forum_topic_created?: { name?: string; [key: string]: unknown };
   /** Present on the service message that renames (or re-icons) a forum topic. */
   forum_topic_edited?: { name?: string; [key: string]: unknown };
+  /** Present on the service message that closes a forum topic. */
+  forum_topic_closed?: Record<string, unknown>;
+  /** Present on the service message that reopens a forum topic. */
+  forum_topic_reopened?: Record<string, unknown>;
   /** Set on each message of a multi-photo/video album; shared across the group. */
   media_group_id?: string;
   animation?: unknown;

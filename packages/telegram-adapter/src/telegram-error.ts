@@ -60,3 +60,21 @@ export class TelegramApiError extends Error {
     }
   }
 }
+
+/**
+ * True when a failed send proves its forum topic no longer exists. Telegram
+ * sends bots no topic-deletion update; the only evidence is a send into the
+ * topic answered with "message thread not found" or `TOPIC_DELETED`. Walks the
+ * `cause` chain (bounded) because the delivery layer wraps API errors.
+ */
+export function isTelegramTopicGoneError(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && typeof current === "object" && current !== null; depth += 1) {
+    const description = (current as { readonly telegramDescription?: unknown }).telegramDescription;
+    if (typeof description === "string" && /message thread not found|TOPIC_DELETED/iu.test(description)) {
+      return true;
+    }
+    current = (current as { readonly cause?: unknown }).cause;
+  }
+  return false;
+}

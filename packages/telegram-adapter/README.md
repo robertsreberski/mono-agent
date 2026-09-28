@@ -69,7 +69,16 @@ JSON-only `telegram.topics` list overrides the trigger rule per topic
 (`{ chatId, topicId, groupMode: "inherit" | "any" | "mention" | "listen" }`);
 entries must name allowlisted chats and never widen the allowlist. Topic names
 learned from the topic's service messages and implicit root replies appear in
-the model-visible surface as `Chat › Topic`; the topic id stays host-owned.
+the model-visible surface as `Chat › Topic`; the topic id stays host-owned. An
+explicit rename always beats the stale creation name later messages quote
+(`mergeTelegramTopicName`). A host can hydrate names it persisted
+(`knownTopicNames`) and observe every allowlisted message before trigger
+filtering with `onChatObserved` (`TelegramChatObservation`: chat title, forum
+flag, topic id, name evidence, closed/reopened); the hook is never awaited and
+its failures are logged. A proactive post Telegram answers with "thread not
+found" returns `code: "telegram_topic_gone"` (`isTelegramTopicGoneError`).
+JSON-only `telegram.projects.enabled` is read here and acted on by the
+mono-agent app ([Forum topics as projects](../../docs/channels/telegram.md#forum-topics-as-projects)).
 `groupMode: "listen"` triggers like `mention` and passes the unaddressed
 messages since the bot's last turn (newest 30, in memory) to the next triggered
 turn as `precedingMessages`. Proactive `notify`,
@@ -393,6 +402,7 @@ TelegramBotApi
 TelegramBotController
 TelegramChat
 TelegramChatId
+TelegramChatObservation
 TelegramCommandConfig
 TelegramConversationTarget
 TelegramDeleteMessageParams
@@ -406,6 +416,7 @@ TelegramFileDownloader
 TelegramFileReference
 TelegramGetUpdatesParams
 TelegramGroupTriggerMode
+TelegramKnownTopicName
 TelegramMessage
 TelegramMessageEntity
 TelegramMessageSender
@@ -415,6 +426,7 @@ TelegramMessageStreamOptions
 TelegramPhotoAttachment
 TelegramPhotoAttachmentSize
 TelegramPhotoSize
+TelegramProjectsConfig
 TelegramQuietHours
 TelegramReactionsConfig
 TelegramRequestMetadata
@@ -430,6 +442,8 @@ TelegramSendToolsConfig
 TelegramSentMessage
 TelegramTextQuote
 TelegramTopicConfig
+TelegramTopicNameRecord
+TelegramTopicNameSource
 TelegramTopicTriggerMode
 TelegramTranscriber
 TelegramTranscriptionConfig
@@ -450,14 +464,17 @@ createTelegramMessageSender
 decodeAgentAttachmentText
 downloadTelegramAttachments
 isTelegramReplyCallbackData
+isTelegramTopicGoneError
 isWithinQuietHours
 loadTelegramAdapterConfig
+mergeTelegramTopicName
 parseTelegramAskUserCallbackData
 parseTelegramConversationId
 redactTelegramAdapterConfig
 renderTelegramMarkdown
 startTelegramAdapter
 telegramAskUserCallbackData
+telegramChatObservationFromMessage
 telegramConversationId
 telegramMessageThreadId
 telegramReplyCallbackData

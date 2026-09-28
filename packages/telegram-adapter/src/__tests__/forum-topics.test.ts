@@ -9,10 +9,13 @@ import { describe, expect, it, vi } from "vitest";
 import type { AgentRequest, AgentResponder } from "../adapter.js";
 import { createTelegramBot, type CreateTelegramBotOptions } from "../bot.js";
 import {
+  mergeTelegramTopicName,
   parseTelegramConversationId,
+  telegramChatObservationFromMessage,
   telegramConversationId,
   telegramMessageThreadId,
   withoutImplicitTopicReply,
+  type TelegramChatObservation,
 } from "../conversation.js";
 import type { TelegramMessage } from "../types.js";
 
@@ -682,5 +685,149 @@ describe("createTelegramBot forum topics", () => {
 
     expect(requests.map((request) => request.text)).toEqual(["start", "again"]);
     expect(requests[1]?.precedingMessages?.map((entry) => entry.text)).toEqual(["chatter while busy"]);
+  });
+});
+
+describe("forum topic discovery", () => {
+  it("keeps an explicit rename even though later messages quote the original root name", async () => {
+    const requests: AgentRequest[] = [];
+    const { bot } = harness({ groupMode: "any", responder: recordingResponder(requests) });
+
+    await bot.handleUpdate(topicMessage("first", { topicName: "Budapest" }));
+    await bot.handleUpdate(topicServiceMessage({ forum_topic_edited: { name: "Flights" } }, { updateId: 2 }));
+    // An ordinary message still carries the root service message, whose
+    // forum_topic_created name is the ORIGINAL one.
+    await bot.handleUpdate(topicMessage("second", { updateId: 3, messageId: 991, topicName: "Budapest" }));
+
+    expect(requests.map((request) => request.surface?.name)).toEqual(["Trips › Budapest", "Trips › Flights"]);
+  });
+
+  it("orders explicit renames by message id and prefers creation evidence over a quoted root", () => {
+    const renamed = { name: "Flights", source: "edited" as const, messageId: 20 };
+    expect(mergeTelegramTopicName(renamed, { name: "Old", source: "root_reply", messageId: 30 })).toBe(renamed);
+    expect(mergeTelegramTopicName(renamed, { name: "Older", source: "edited", messageId: 10 })).toBe(renamed);
+    expect(mergeTelegramTopicName(renamed, { name: "Newer", source: "edited", messageId: 25 }).name).toBe("Newer");
+    expect(mergeTelegramTopicName(renamed, { name: "Created", source: "created", messageId: 5 })).toBe(renamed);
+    const root = { name: "Trips", source: "root_reply" as const, messageId: 3 };
+    expect(mergeTelegramTopicName(root, { name: "Trips", source: "created", messageId: 1 }).source).toBe("created");
+  });
+
+  it("observes allowlisted messages before trigger filtering, including unnamed topics", async () => {
+    const observations: TelegramChatObservation[] = [];
+    const requests: AgentRequest[] = [];
+    const { bot } = harness({
+      groupMode: "mention",
+      responder: recordingResponder(requests),
+      onChatObserved: (observation) => {
+        observations.push(observation);
+      },
+    });
+
+    // Unaddressed in mention mode: no turn, but the topic is still learned.
+    await bot.handleUpdate(topicMessage("chatter", { topicName: "Flights" }));
+    await bot.handleUpdate(topicMessage("explicit reply", { updateId: 2, topic: 88, replyToMessageId: 850 }));
+    await bot.handleUpdate(topicServiceMessage({ forum_topic_closed: {} }, { updateId: 3 }));
+    await bot.handleUpdate(generalMessage("general chatter", { updateId: 4 }));
+
+    expect(requests).toHaveLength(0);
+    expect(observations).toEqual([
+      {
+        chatId: -1001,
+        chatTitle: "Trips",
+        isForum: true,
+        topic: { messageThreadId: TOPIC, nameRecord: { name: "Flights", source: "root_reply", messageId: 900 } },
+      },
+      { chatId: -1001, chatTitle: "Trips", isForum: true, topic: { messageThreadId: 88 } },
+      { chatId: -1001, chatTitle: "Trips", isForum: true, topic: { messageThreadId: TOPIC, state: "closed" } },
+      // The forum's General conversation: a forum chat without a topic.
+      { chatId: -1001, chatTitle: "Trips", isForum: true },
+    ]);
+  });
+
+  it("never observes a chat outside the allowlist", async () => {
+    const observations: TelegramChatObservation[] = [];
+    const { bot } = harness({
+      responder: recordingResponder([]),
+      onChatObserved: (observation) => {
+        observations.push(observation);
+      },
+    });
+
+    await bot.handleUpdate(topicMessage("hello", { chat: { id: -2002, type: "supergroup", title: "Other", is_forum: true } }));
+
+    expect(observations).toEqual([]);
+  });
+
+  it("names hydrated topics before any of their messages reveal the name", async () => {
+    const requests: AgentRequest[] = [];
+    const { bot } = harness({
+      groupMode: "any",
+      responder: recordingResponder(requests),
+      knownTopicNames: [{
+        chatId: -1001,
+        messageThreadId: TOPIC,
+        nameRecord: { name: "Flights", source: "edited", messageId: 40 },
+      }],
+    });
+
+    // The root still quotes the creation name; the persisted rename wins.
+    await bot.handleUpdate(topicMessage("hi", { topicName: "Budapest" }));
+
+    expect(requests[0]?.surface?.name).toBe("Trips › Flights");
+  });
+
+  it("logs an async observation hook rejection instead of leaking it", async () => {
+    const requests: AgentRequest[] = [];
+    const warn = vi.fn();
+    const { bot } = harness({
+      groupMode: "any",
+      responder: recordingResponder(requests),
+      logger: { warn },
+      onChatObserved: async () => {
+        throw new Error("disk full");
+      },
+    });
+
+    await bot.handleUpdate(topicMessage("still answered"));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(requests).toHaveLength(1);
+    expect(warn).toHaveBeenCalledWith("Telegram chat observation hook failed.", { error: "disk full" });
+  });
+
+  it("keeps an observation hook failure from blocking the turn", async () => {
+    const requests: AgentRequest[] = [];
+    const { bot } = harness({
+      groupMode: "any",
+      responder: recordingResponder(requests),
+      onChatObserved: () => {
+        throw new Error("disk full");
+      },
+    });
+
+    await bot.handleUpdate(topicMessage("still answered"));
+
+    expect(requests).toHaveLength(1);
+  });
+
+  it("reports the topic of a non-topic reply thread as the chat only", () => {
+    const observation = telegramChatObservationFromMessage({
+      message_id: 5,
+      message_thread_id: 44,
+      chat: { id: -3003, type: "supergroup", title: "Plain group" },
+    } as TelegramMessage);
+    expect(observation).toEqual({ chatId: -3003, chatTitle: "Plain group" });
+  });
+});
+
+describe("topic-gone evidence", () => {
+  it("recognizes Telegram's deleted-topic answers through wrapped causes only", async () => {
+    const { isTelegramTopicGoneError, TelegramApiError } = await import("../telegram-error.js");
+    const gone = new TelegramApiError("Bad Request", { kind: "telegram", method: "sendMessage", telegramDescription: "Bad Request: message thread not found" });
+    expect(isTelegramTopicGoneError(gone)).toBe(true);
+    expect(isTelegramTopicGoneError(new Error("wrapped", { cause: gone }))).toBe(true);
+    expect(isTelegramTopicGoneError(new TelegramApiError("x", { kind: "telegram", method: "sendMessage", telegramDescription: "Bad Request: TOPIC_DELETED" }))).toBe(true);
+    expect(isTelegramTopicGoneError(new TelegramApiError("x", { kind: "telegram", method: "sendMessage", telegramDescription: "Bad Request: TOPIC_CLOSED" }))).toBe(false);
+    expect(isTelegramTopicGoneError(new Error("message thread not found"))).toBe(false);
   });
 });
