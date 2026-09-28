@@ -30,6 +30,7 @@ vi.mock("./api", async (importOriginal) => ({
     cronRuns: vi.fn(),
     searchThreads: vi.fn(),
     latestAgentRestart: vi.fn(),
+    patchAgent: vi.fn(),
     providerAuthStatus: vi.fn(),
     providerUsage: vi.fn(),
   },
@@ -153,6 +154,21 @@ const prepareRouteFixture = () => {
 };
 
 describe("real route writers under mounted App settings", () => {
+  it("reverts a rejected pin and displays the one real store-owned toast (A17a)", async () => {
+    await page.viewport(1200, 800);
+    vi.mocked(api.patchAgent).mockRejectedValue(new Error("Fictional pin refusal"));
+    renderApp();
+    await waitFor(() => expect(currentStore?.selectedAgent?.sourceId).toBe("alpha"));
+    act(() => window.dispatchEvent(new CustomEvent("mono-agent:agent-settings", { detail: { section: "agent" } })));
+    const pin = await screen.findByRole("switch", { name: "Pin Console demo first" });
+    expect(pin).toHaveAttribute("aria-checked", "false");
+    pin.click();
+    await waitFor(() => expect(api.patchAgent).toHaveBeenCalledExactlyOnceWith("alpha", true));
+    await waitFor(() => expect(pin).toHaveAttribute("aria-checked", "false"));
+    await waitFor(() => expect(screen.getAllByRole("alert").filter((item) => item.textContent?.includes("Fictional pin refusal"))).toHaveLength(1));
+    expect(currentStore?.actionError).toBe("Fictional pin refusal");
+    expect(currentStore?.selectedAgent?.pinned).toBe(false);
+  });
   it("re-scopes desktop settings on the real agent switch and Back/Forward never copy a settings marker (N13)", async () => {
     await page.viewport(1200, 800);
     prepareRouteFixture();
