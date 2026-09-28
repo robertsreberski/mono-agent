@@ -11,7 +11,8 @@ export function WakeSummary({ schedule, sentence, dirty, loading, archived, expi
   readonly schedule: WebWakeSchedule | null;
   readonly sentence: string | null;
   readonly dirty: boolean;
-  readonly loading: boolean;
+  /** Before the first read resolves: still waiting, or the read failed. */
+  readonly loading: false | "loading" | "failed";
   readonly archived: boolean;
   /** A paused one-off whose wall time has clearly passed: it cannot resume unchanged. */
   readonly expired: boolean;
@@ -19,8 +20,8 @@ export function WakeSummary({ schedule, sentence, dirty, loading, archived, expi
   readonly noteId: string;
   readonly onToggle: (next: "pause" | "resume") => void;
 }) {
-  if (loading) return <section className="wake-summary" data-state="loading" aria-label="Schedule summary">
-    <p className="wake-summary-state"><span className="wake-state">Loading schedule…</span></p>
+  if (loading !== false) return <section className="wake-summary" data-state="loading" aria-label="Schedule summary">
+    <p className="wake-summary-state"><span className="wake-state">{loading === "failed" ? "Schedule unavailable" : "Loading schedule…"}</span></p>
   </section>;
   const saved = schedule !== null && !dirty;
   const state = schedule === null ? "new" : dirty ? "dirty" : schedule.state;

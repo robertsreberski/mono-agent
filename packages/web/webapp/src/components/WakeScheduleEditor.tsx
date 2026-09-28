@@ -123,7 +123,8 @@ export function WakeScheduleEditor({ thread, onClose, returnFocusRef }: {
 
   const issues = validateDraft(draft);
   const now = new Date();
-  const pastHint = draft.kind === "once" && onceLooksPast(draft, now);
+  // An unchanged saved one-off already explains itself in the summary.
+  const pastHint = draft.kind === "once" && dirty && onceLooksPast(draft, now);
   const expired = schedule?.definition.kind === "once" && schedule.state === "paused"
     && onceLooksPast(draftFromDefinition(schedule.definition), now);
   const canSave = loaded && !archived && busy === null && !hasIssues(issues) && dirty;
@@ -165,7 +166,7 @@ export function WakeScheduleEditor({ thread, onClose, returnFocusRef }: {
             <button type="button" className="wake-alert-action" onClick={() => void read("explicit")}>Load latest</button>
           </div>}
           <WakeSummary schedule={schedule} sentence={describeDraft(draft, { order })} dirty={schedule !== null && dirty}
-            loading={!loaded} archived={archived} expired={expired} busy={busy === "pause" || busy === "resume" ? busy : null}
+            loading={loaded ? false : failure === null ? "loading" : "failed"} archived={archived} expired={expired} busy={busy === "pause" || busy === "resume" ? busy : null}
             noteId={noteId} onToggle={(action) => void mutate(action)} />
           <fieldset className="wake-form" disabled={!loaded || busy !== null}>
             <legend className="sr-only">Schedule</legend>
