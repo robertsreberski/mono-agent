@@ -128,6 +128,8 @@ export const agentJob = (jobId: string, summary: string, secondsAgo: number, ins
 export const busyThread: readonly Job[] = [succeeded, failed, queued, runningTail, peerPending, subagentRunning, timedOut, subagentDone];
 export const singleThread: readonly Job[] = [succeeded, runningTail];
 export const idleThread: readonly Job[] = [succeeded, subagentDone, cancelled];
+/** Nothing current: every settled outcome, for the History glyphs. */
+export const finishedThread: readonly Job[] = [succeeded, subagentDone, failed, timedOut, cancelled, spawnFailed, queueExpired, interrupted, peerAnswered];
 export const idleWithIssueThread: readonly Job[] = [succeeded, failed, subagentDone];
 export const questionOnlyThread: readonly Job[] = [succeeded, peerPending];
 export const agentsAndCommandsThread: readonly Job[] = [

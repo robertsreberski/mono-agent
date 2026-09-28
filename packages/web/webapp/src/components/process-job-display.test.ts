@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { backgroundSubagentJob } from "../test/background-subagent-fixtures";
 import { processJob } from "../test/fixtures";
 import type { ProcessJobProjection, ProcessJobState } from "../types";
+import type { ProcessJobMark, ProcessJobTone } from "./process-job-display";
 import {
   nextPeerQuestionDeadline,
   peerQuestionExpiryLabel,
@@ -14,7 +15,9 @@ import {
   processJobGroupName,
   processJobIsCurrent,
   processJobIsIssue,
+  processJobActiveMark,
   processJobKind,
+  processJobMarkIsSettled,
   processJobOutputIsEmpty,
   processJobPreview,
   processJobStackAnnouncement,
@@ -39,20 +42,51 @@ const peer = (state: ProcessJobState, question: "awaiting_answer" | "answered", 
 });
 
 describe("processJobDisplayState", () => {
-  it.each<[ProcessJobState, string, string, string]>([
-    ["queued", "waiting", "clock", "Queued"],
-    ["starting", "running", "ring", "Starting"],
-    ["running", "running", "ring", "Running"],
+  it.each<[ProcessJobState, ProcessJobTone, ProcessJobMark, string]>([
+    ["queued", "waiting", "empty", "Queued"],
+    // Starting shares the half mark: a quarter would read as a measured 25 %.
+    ["starting", "running", "half", "Starting"],
+    ["running", "running", "half", "Running"],
     ["succeeded", "success", "check", "Done"],
-    ["failed", "danger", "close", "Failed"],
+    ["failed", "danger", "cross", "Failed"],
     ["timed_out", "danger", "clock", "Timed out"],
-    ["spawn_failed", "danger", "close", "Failed to start"],
+    ["spawn_failed", "danger", "cross", "Failed to start"],
     ["queue_expired", "danger", "clock", "Expired in queue"],
-    ["interrupted", "danger", "close", "Interrupted"],
-    ["cancelled", "neutral", "stop", "Cancelled"],
+    ["interrupted", "danger", "cross", "Interrupted"],
+    ["cancelled", "neutral", "stopped", "Cancelled"],
   ])("gives %s a tone, a distinct mark and a word", (state, tone, mark, word) => {
     const job = processJob({ state });
     expect(processJobDisplayState(job, NOW)).toMatchObject({ tone, mark, word });
+  });
+
+  it("outlines current work and fills settled outcomes, so shape alone tells them apart", () => {
+    const outlined: readonly ProcessJobMark[] = ["empty", "half", "stop", "question"];
+    const solid: readonly ProcessJobMark[] = ["check", "cross", "clock", "stopped"];
+    for (const mark of outlined) expect(processJobMarkIsSettled(mark)).toBe(false);
+    for (const mark of solid) expect(processJobMarkIsSettled(mark)).toBe(true);
+    // Every settled state draws a solid disc; every lifecycle-active state a ring.
+    for (const state of ["succeeded", "failed", "timed_out", "spawn_failed", "queue_expired", "interrupted", "cancelled"] as const) {
+      expect(processJobMarkIsSettled(processJobDisplayState(processJob({ state }), NOW).mark)).toBe(true);
+    }
+    for (const state of ["queued", "starting", "running"] as const) {
+      expect(processJobMarkIsSettled(processJobDisplayState(active(state), NOW).mark)).toBe(false);
+    }
+    // Stopping (still winding down) and cancelled (settled) share the square, not the fill.
+    expect(processJobDisplayState(active("running", { cancelRequested: true }), NOW).mark).toBe("stop");
+    expect(processJobDisplayState(processJob({ state: "cancelled" }), NOW).mark).toBe("stopped");
+  });
+
+  it("spins the bar's active mark only while a job is starting or running", () => {
+    const queued = active("queued", { jobId: "queued" });
+    const running = active("running", { jobId: "running" });
+    const starting = active("starting", { jobId: "starting" });
+    const stopping = active("running", { jobId: "stopping", cancelRequested: true });
+    const done = processJob({ jobId: "done" });
+    expect(processJobActiveMark([queued, running, done], NOW)).toEqual({ tone: "running", mark: "half", spinning: true });
+    expect(processJobActiveMark([queued, starting], NOW)).toEqual({ tone: "running", mark: "half", spinning: true });
+    // Nothing in progress: a still mark for what the active jobs are doing.
+    expect(processJobActiveMark([queued, stopping, done], NOW)).toEqual({ tone: "stopping", mark: "stop", spinning: false });
+    expect(processJobActiveMark([queued, active("queued", { jobId: "queued-2" }), done], NOW)).toEqual({ tone: "waiting", mark: "empty", spinning: false });
   });
 
   it("names a stop request on running work, but a terminal state wins", () => {

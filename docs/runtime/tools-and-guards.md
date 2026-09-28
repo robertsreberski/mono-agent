@@ -123,7 +123,7 @@ console as its own entry, named `<profile>▸<tool>` and bracketed by the
 subagent's own start/finish rows. The subagent's thinking and prose stay
 internal — only its final answer reaches the parent, through the tool result.
 Detached persistent children instead publish bounded, redacted tool progress and
-a terminal report in the web Background jobs card, with a subagent glyph and
+a terminal report in the web Background jobs card, with an agent icon and a
 scrollable body; the parent Activity keeps the launch and terminal job rows.
 
 **Limits.** `maxConcurrent` (default 5) is an upper bound on simultaneous

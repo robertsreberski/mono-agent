@@ -1115,9 +1115,12 @@ describe("background native subagent cards", () => {
     // The empty-tail stand-in belongs to command output, which a subagent card
     // never shows: its progress region is the payload.
     expect(view.container.querySelector(".process-job-empty-output")).toBeNull();
-    // An agent's glyph is the circular container; a command's is the rounded square.
+    // The glyph says only the status; the status line's icon and tool name say
+    // it is an agent.
     expect(card).toHaveAttribute("data-kind", "agent");
-    expect(card.querySelector(".process-job-glyph")).toHaveClass("is-agent");
+    expect(card.querySelector(".process-job-glyph")).toHaveClass("is-success", "is-check");
+    expect(card.querySelector(".process-job-glyph")).not.toHaveClass("is-agent");
+    expect(card.querySelector(".process-job-tool .process-job-kind-icon")).not.toBeNull();
     expect(card.querySelector(".process-job-tool")).toHaveTextContent(tool);
     const meta = card.querySelector(".process-job-live-meta");
     expect(meta).toHaveTextContent("implementer");
