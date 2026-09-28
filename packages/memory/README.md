@@ -201,7 +201,7 @@ preference to the owner's own stated taste and drop assistant lines that are gen
 information or transient process reports, never changing text or dropping user, tool or document
 lines. A preference needs a `user` source on a human turn; unidentified
 speakers' preferences are conversation-scoped. A verified lesson needs the
-model's lesson label and a host-observed successful tool outcome. Optional `capture.focus` (operator guidance) narrows extraction selection;
+model's lesson label and a host-observed successful tool outcome. Optional `capture.focus` (operator guidance) narrows extraction selection and the subsequent review of assistant lines; review cannot drop owner-stated lines. With no focus, the review prompt is unchanged.
 `capture.only` filters curated capture to host-accepted label kinds after final
 reconcile text validation, including its graph. Because the host labels every
 person-associated note/event line with a coarse fact, `capture.only: ["fact"]`

@@ -639,7 +639,7 @@
           "additionalProperties": false,
           "properties": {
             "focus": {
-              "description": "Operator guidance (at most 2048 UTF-8 bytes) narrows BuJo capture extraction; it cannot override host safety or the strict JSON contract. Requires mode bujo and writeMode capture.",
+              "description": "Operator guidance (at most 2048 UTF-8 bytes) narrows BuJo capture extraction and review; it cannot override host safety or the strict JSON contract. Requires mode bujo and writeMode capture.",
               "examples": [
                 "Keep durable coding preferences and verified lessons; skip PR and CI status."
               ],
