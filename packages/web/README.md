@@ -948,6 +948,11 @@ from upgraded agents. Older jobs without counts keep the totals as lower bounds.
 Assistant parts are scanned on demand and memoized by message row identity and
 sequence; no additional storage table is required.
 
+Compaction outcomes are now stored as conversation markers as well as usage telemetry.
+Roll back to a console version that understands compaction markers, or remove these
+marker rows before using an older strict reader; older consoles reject unknown
+marker kinds. New readers hide future unknown marker kinds on persisted reads.
+
 **Rollout and rollback.** Deploy the #1107 console readers before agents send
 usage-bearing detached job cards. An older console rejects the entire web job
 notification with HTTP 400, losing the card update and parent wake. Once those

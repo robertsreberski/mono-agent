@@ -43,6 +43,15 @@ describe("transient manual compaction marker", () => {
     rerender(<ManualCompactionMarker thread={{ ...active, compaction: undefined }} detail={completed} />);
     expect(screen.queryByRole("note")).not.toBeInTheDocument();
   });
+  it("hands off to a persisted marker row without telemetry", () => {
+    const { rerender } = render(<ManualCompactionMarker thread={active} detail={detail} />);
+    expect(screen.getByRole("note")).toBeVisible();
+    rerender(<ManualCompactionMarker thread={active} detail={{ ...detail, messages: [...detail.messages, {
+      ...detail.messages[0]!, id: "marker", role: "system", parts: [{ type: "conversation-marker", kind: "compaction",
+        at: "2026-09-28T10:00:01Z", operationId: "fictional-result", trigger: "manual", status: "succeeded" }],
+    }] }} />);
+    expect(screen.queryByRole("note")).not.toBeInTheDocument();
+  });
   it("does not suppress a new run because of an older result", () => {
     const old: ThreadDetail = { ...detail, messages: [{ ...detail.messages[0]!, parts: [
       { type: "telemetry", event: "runtime_telemetry", data: { kind: "context_compaction", data: {

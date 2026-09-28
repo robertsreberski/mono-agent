@@ -22,7 +22,10 @@ export function ManualCompactionMarker({ thread, detail }: {
   const pendingAt = runningAt ?? (held !== null && held.threadId === thread?.id ? held.at : undefined);
   if (pendingAt === undefined) return null;
   const startedAt = Date.parse(pendingAt);
-  const hasResult = detail !== null && detail.thread.id === thread?.id && detail.messages.some((message) => message.role === "assistant" && message.parts.some((part) => {
+  const hasResult = detail !== null && detail.thread.id === thread?.id && detail.messages.some((message) => message.parts.some((part) => {
+    if (part.type === "conversation-marker" && part.kind === "compaction")
+      return part.trigger === "manual" && Date.parse(part.at) >= startedAt;
+    if (message.role !== "assistant") return false;
     if (part.type !== "telemetry" || !isContextCompactionPart(part)) return false;
     const outer = part.data as { data?: { trigger?: unknown; timestamp?: unknown } } | undefined;
     const payload = outer?.data;

@@ -329,6 +329,7 @@ const foldSettledActivity = (parts: readonly ConvertedPart[]): ConvertedPart[] =
 interface ConvertWebMessageOptions {
   readonly processJobEvents?: readonly ProcessJobActivityEvent[];
   readonly processJobs?: ReadonlyMap<string, ProcessJobProjection>;
+  readonly compactionMarkerIds?: ReadonlySet<string>;
 }
 
 /**
@@ -352,6 +353,10 @@ const withLaunchArgs = (
   };
 };
 
+export const compactionMarkerIdsForMessages = (messages: readonly WebMessage[]): ReadonlySet<string> =>
+  new Set(messages.flatMap((message) => message.parts.flatMap((part) =>
+    part.type === "conversation-marker" && part.kind === "compaction" ? [part.operationId] : [])));
+
 export const convertWebMessage = (
   message: WebMessage,
   options: ConvertWebMessageOptions = {},
@@ -363,6 +368,11 @@ export const convertWebMessage = (
     processJobEvents.set(event.toolCallId, [...current, event]);
   }
   const joined = joinAdjacentText(message.parts.flatMap((part) => {
+    if (part.type === "telemetry" && isContextCompactionPart(part)) {
+      const outer = part.data as { data?: { operationId?: unknown; status?: unknown } } | undefined;
+      const { operationId, status } = outer?.data ?? {};
+      if (status !== "running" && typeof operationId === "string" && options.compactionMarkerIds?.has(operationId)) return [];
+    }
     if (part.type === "cron-reply-context") {
       const data = jsonObject(part);
       return [
@@ -718,15 +728,15 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
       store.selectedThreadId,
     ],
   );
-  // What a message shows now depends only on the message itself, so switching
-  // the conversation's model no longer rebuilds the converter or reconverts the
-  // loaded transcript.
+  const compactionMarkerIds = useMemo(() => compactionMarkerIdsForMessages(store.detail?.messages ?? []), [store.detail?.messages]);
+  // The loaded page determines whether legacy telemetry needs its fallback divider.
   const convertMessage = useCallback(
     (message: WebMessage) => convertWebMessage(message, {
+      compactionMarkerIds,
       processJobEvents: presentation.eventsByMessageId.get(message.id),
       processJobs: presentation.jobsById,
     }),
-    [presentation.eventsByMessageId, presentation.jobsById],
+    [presentation.eventsByMessageId, presentation.jobsById, compactionMarkerIds],
   );
   const runtime = useExternalStoreRuntime<WebMessage>({
     messages: presentation.messages,

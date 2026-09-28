@@ -978,20 +978,23 @@ export class WebStore {
 
   /** Persist a promptless compaction notice on this thread's last settled answer. */
   recordManualCompaction(threadId: string, result: import("@mono-agent/agent-contracts").AgentManualCompactionResult): string | undefined {
-    this.requireThread(threadId);
-    const row = this.database.prepare(`SELECT id, parts_json FROM messages
-      WHERE thread_id = ? AND role = 'assistant' AND status != 'running'
-      ORDER BY created_at DESC, id DESC LIMIT 1`).get(threadId) as { id: string; parts_json: string } | undefined;
-    if (row === undefined) return undefined;
-    const parts = parseParts(row.parts_json);
-    const recordedAt = this.now();
-    upsertContextCompaction(parts, {
-      type: "runtime_telemetry", kind: "context_compaction",
-      data: { ...result, sdk: "pi", timestamp: Date.parse(recordedAt) },
+    return this.transaction(() => {
+      this.requireThread(threadId);
+      const row = this.database.prepare(`SELECT id, parts_json FROM messages
+        WHERE thread_id = ? AND role = 'assistant' AND status != 'running'
+        ORDER BY created_at DESC, id DESC LIMIT 1`).get(threadId) as { id: string; parts_json: string } | undefined;
+      const recordedAt = this.now();
+      this.insertCompactionMarker(threadId, recordedAt, result);
+      if (row === undefined) return undefined;
+      const parts = parseParts(row.parts_json);
+      upsertContextCompaction(parts, {
+        type: "runtime_telemetry", kind: "context_compaction",
+        data: { ...result, sdk: "pi", timestamp: Date.parse(recordedAt) },
+      });
+      this.database.prepare("UPDATE messages SET parts_json = ?, updated_at = ?, seq = seq + 1 WHERE id = ?")
+        .run(serializeParts(parts), recordedAt, row.id);
+      return row.id;
     });
-    this.database.prepare("UPDATE messages SET parts_json = ?, updated_at = ?, seq = seq + 1 WHERE id = ?")
-      .run(serializeParts(parts), recordedAt, row.id);
-    return row.id;
   }
   private readonly usageMemo = new Map<string, MessageUsageRollup>();
   private readonly streamSnapshots = new Map<string, WebMessage>();
@@ -3582,6 +3585,27 @@ export class WebStore {
     this.pendingMarkers.push({ threadId, messageId: id, updatedAt: createdAt });
   }
 
+  /** The assistant row is the turn's anchor; the unbound marker sorts after it. */
+  private insertCompactionMarker(threadId: string, at: string, data: unknown): void {
+    if (data === null || typeof data !== "object" || Array.isArray(data)) return;
+    const value = data as Record<string, unknown>;
+    const marker: unknown = {
+      type: "conversation-marker", kind: "compaction", at,
+      operationId: value.operationId,
+      trigger: value.trigger === "manual" ? "manual" : "automatic",
+      status: value.status,
+      ...(value.tokensBefore === undefined ? {} : { tokensBefore: value.tokensBefore }),
+      ...(value.tokensAfter === undefined ? {} : { tokensAfter: value.tokensAfter }),
+      ...(value.tokenCountsExact === undefined ? {} : { tokenCountsExact: value.tokenCountsExact }),
+    };
+    if (!isConversationMarker(marker) || marker.kind !== "compaction") return; // Untrusted stream data never enters marker storage.
+    const existing = this.database.prepare(`SELECT 1 FROM messages WHERE thread_id = ?
+      AND role = 'system' AND json_extract(parts_json, '$[0].kind') = 'compaction'
+      AND json_extract(parts_json, '$[0].operationId') = ? LIMIT 1`).get(threadId, marker.operationId);
+    if (existing !== undefined) return;
+    this.insertMarker(threadId, null, at, marker);
+  }
+
   private recordResumeMarker(threadId: string, turnId: string, createdAt: string): void {
     const previous = this.database.prepare(`SELECT m.created_at FROM messages m WHERE m.thread_id = ?
       AND ${visibleMessageSql("m")} AND NOT (${markerMessageSql("m")})
@@ -3616,8 +3640,9 @@ export class WebStore {
     const row = this.database.prepare("SELECT conversation_markers_json FROM turns WHERE id = ?").get(turnId) as { conversation_markers_json: string | null } | undefined;
     if (row?.conversation_markers_json == null) return [];
     const markers: unknown = JSON.parse(row.conversation_markers_json);
-    if (!Array.isArray(markers) || !markers.every(isConversationMarker)) throw new WebConsoleError("storage_corrupt", "Invalid turn marker snapshot.", 500);
-    return markers;
+    if (!Array.isArray(markers) || !markers.every((part: unknown) => isConversationMarker(part) || isUnknownMarker(part)))
+      throw new WebConsoleError("storage_corrupt", "Invalid turn marker snapshot.", 500);
+    return markers.filter(isConversationMarker);
   }
 
   markTurnDispatchStarted(turnId: string): void {
@@ -4891,6 +4916,12 @@ export class WebStore {
         parts[index] = durable;
       }
       const now = this.now();
+      // A terminal compaction may be replayed or updated by later frames. One
+      // durable row per operation is written in the same transaction as the answer.
+      for (const frame of frames) if (frame.kind === "event"
+        && frame.event.type === "runtime_telemetry" && frame.event.kind === "context_compaction") {
+        this.insertCompactionMarker(turn.thread_id, now, frame.event.data);
+      }
       const serialized = serializeParts(parts);
       // The cache is optimistic, never authoritative. A stale sequence writes
       // nothing; roll back routing changes too, reread, and replay the frames.
@@ -8855,6 +8886,14 @@ function validOptionalBoundedText(value: unknown, maxBytes: number): boolean {
   return value === undefined || (typeof value === "string" && Buffer.byteLength(value, "utf8") <= maxBytes);
 }
 
+/** Unknown future marker kinds are hidden on read; known malformed kinds still fail. */
+function isUnknownMarker(value: unknown): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const part = value as Record<string, unknown>;
+  return part.type === "conversation-marker" && typeof part.kind === "string"
+    && !["model", "project", "resumed", "compaction"].includes(part.kind);
+}
+
 function parseParts(value: string): WebMessagePart[] {
   let parsed: unknown;
   try {
@@ -8869,6 +8908,7 @@ function parseParts(value: string): WebMessagePart[] {
   const parts = Array.isArray(parsed)
     ? parsed.filter((part: unknown) => !(typeof part === "object" && part !== null
       && !Array.isArray(part) && (part as Record<string, unknown>).type === "monitor-activity"))
+      .filter((part: unknown) => !isUnknownMarker(part))
       .map(canonicalizePersistedPartHistory)
     : parsed;
   if (!Array.isArray(parts) || !parts.every(isWebMessagePart)) {

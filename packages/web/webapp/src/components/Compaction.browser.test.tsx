@@ -5,7 +5,8 @@ import { useCallback, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { convertWebMessage } from "../runtime";
 import type { WebMessage } from "../types";
-import { AssistantMessage, UserMessage } from "./Messages";
+import { AssistantMessage, CompactionMarkerRow, UserMessage } from "./Messages";
+import { ModelMarkers } from "./ModelMarkers";
 import { ContextDisplay } from "./assistant-ui/ContextDisplay";
 import { ManualCompactionMarker } from "./ManualCompactionMarker";
 import { thread } from "../test/fixtures";
@@ -14,6 +15,7 @@ import "../styles.css";
 declare module "@vitest/browser/context" {
   interface BrowserCommands {
     emulateReducedMotion(reducedMotion: "reduce" | "no-preference" | null): Promise<void>;
+    emulateColorScheme(colorScheme: "light" | "dark" | null): Promise<void>;
   }
 }
 
@@ -102,5 +104,43 @@ describe("Transcript compaction", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Context usage" })).not.toBeInTheDocument());
     const shots = import.meta.env.VITE_CONTEXT_FOLLOWUP_SHOTS as string | undefined;
     if (shots) await page.screenshot({ path: `${shots}/compaction-row-${label}.png` });
+  });
+});
+
+const shotDirectory = import.meta.env.VITE_COMPACTION_MARKER_SHOTS as string | undefined;
+describe("Compaction marker and unknown context visual states", () => {
+  afterEach(async () => { document.documentElement.removeAttribute("data-console-theme"); await commands.emulateColorScheme(null); });
+  it.each(["light", "dark"] as const)("colors the pre-turn dash muted in every %s palette", async (scheme) => {
+    await page.viewport(800, 360);
+    await commands.emulateColorScheme(scheme);
+    render(<div style={{ padding: 36, zoom: 4 }}><ContextDisplay context={{ status: "unavailable" }}
+      totals={{ total: {}, byModel: [], settledAssistantTurns: 0, computedAt: "2026-01-15T10:00:00Z" }} /></div>);
+    const trigger = screen.getByRole("button", { name: /Context usage:/u });
+    const percent = trigger.querySelector<HTMLElement>(".context-display-trigger-percent")!;
+    expect(percent.textContent).toBe("—");
+    expect(trigger).toHaveAttribute("data-unknown");
+    for (const palette of ["default", "ocean", "plum", "terracotta"]) {
+      if (palette === "default") document.documentElement.removeAttribute("data-console-theme");
+      else document.documentElement.setAttribute("data-console-theme", palette);
+      const reference = document.createElement("span");
+      reference.style.color = "var(--text-muted)";
+      document.body.append(reference);
+      expect(getComputedStyle(percent).color).toBe(getComputedStyle(reference).color);
+      reference.remove();
+    }
+    document.documentElement.removeAttribute("data-console-theme");
+    if (shotDirectory) await page.screenshot({ path: `${shotDirectory}/dash-${scheme}.png` });
+  });
+  it("shows compaction next to a model change in a transcript", async () => {
+    await page.viewport(1440, 900);
+    render(<div className="thread-root"><div className="thread-viewport"><div className="message-column">
+      <ModelMarkers transitions={[{ type: "conversation-marker", kind: "model", at: "2026-01-15T09:00:00Z",
+        before: { model: "atlas/standard", effort: "high" }, after: { model: "grove/fast", effort: "medium" } }]} />
+      <div className="message message-assistant">A fictional garden plan is ready.</div>
+      <CompactionMarkerRow marker={{ type: "conversation-marker", kind: "compaction", at: "2026-01-15T10:00:00Z",
+        operationId: "fictional-compact", trigger: "manual", status: "succeeded", tokensBefore: 183_400, tokensAfter: 41_300 }} />
+    </div></div></div>);
+    expect(screen.getByRole("note", { name: /Context compacted/u })).toBeVisible();
+    if (shotDirectory) await page.screenshot({ path: `${shotDirectory}/markers-desktop.png` });
   });
 });

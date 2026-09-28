@@ -875,7 +875,10 @@ function ContextCompactionPart({ data }: DataMessagePartProps) {
   // A part followed by more prose is complete even while the whole turn runs.
   // Compaction remains running until the message itself settles.
   const isMessageRunning = useAuiState((state) => state.message.status?.type === "running");
-  const payload = compactionPayload(data);
+  return <ContextCompactionDisplay payload={compactionPayload(data)} isMessageRunning={isMessageRunning} />;
+}
+
+function ContextCompactionDisplay({ payload, isMessageRunning = false }: { readonly payload: Record<string, unknown>; readonly isMessageRunning?: boolean }) {
   const reported = ["running", "succeeded", "skipped", "failed"].includes(String(payload.status))
     ? payload.status as Exclude<CompactionDisplayStatus, "interrupted">
     : "failed";
@@ -1495,11 +1498,17 @@ export function AssistantMessage() {
   );
 }
 
+/** Reuse the settled telemetry divider while older conversations await no backfill. */
+export function CompactionMarkerRow({ marker }: { readonly marker: Extract<import("../types").ConversationMarkerPart, { kind: "compaction" }> }) {
+  return <ContextCompactionDisplay payload={marker} />;
+}
+
 export function SystemMessage() {
   const marker = useAuiState((state) => {
     const part = state.message.metadata.custom?.conversationMarker as { data?: unknown } | undefined;
     return isConversationMarker(part?.data) ? part.data : undefined;
   });
+  if (marker?.kind === "compaction") return <CompactionMarkerRow marker={marker} />;
   if (marker?.kind === "model") return <ModelMarkers transitions={[marker]} />;
   if (marker?.kind === "project") return <ProjectMarkers transitions={[marker]} />;
   if (marker?.kind === "resumed") {

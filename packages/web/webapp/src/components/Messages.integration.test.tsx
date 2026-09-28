@@ -14,7 +14,7 @@ import {
   ProcessJobPresentationProvider,
   projectProcessJobPresentation,
 } from "../process-job-presentation";
-import { convertWebMessage } from "../runtime";
+import { compactionMarkerIdsForMessages, convertWebMessage } from "../runtime";
 import type { WebMessage } from "../types";
 import { processJob } from "../test/fixtures";
 import { AssistantMessage, SystemMessage, UserMessage } from "./Messages";
@@ -62,10 +62,11 @@ function MessagesHarness({
   );
   const convertMessage = useCallback(
     (message: WebMessage) => convertWebMessage(message, {
+      compactionMarkerIds: compactionMarkerIdsForMessages(messages),
       processJobEvents: presentation.eventsByMessageId.get(message.id),
       processJobs: presentation.jobsById,
     }),
-    [presentation.eventsByMessageId, presentation.jobsById],
+    [presentation.eventsByMessageId, presentation.jobsById, messages],
   );
   const runtime = useExternalStoreRuntime<WebMessage>({
     messages: presentation.messages,
@@ -166,6 +167,20 @@ const userMessage: WebMessage = {
   attachments: [],
   parts: [{ type: "text", text: "Inspect this workspace." }],
 };
+
+describe("compaction system row", () => {
+  it("renders the persisted marker without duplicating its assistant telemetry divider", () => {
+    const assistant = assistantMessage("complete");
+    const marker: WebMessage = { ...assistant, id: "compaction-marker", role: "system", parts: [{
+      type: "conversation-marker", kind: "compaction", operationId: "compact-1",
+      at: "2026-07-17T10:00:13.000Z", trigger: "automatic", status: "succeeded",
+      tokensBefore: 80_000, tokensAfter: 20_000,
+    }] };
+    render(<MessagesHarness messages={[assistant, marker]} />);
+    expect(screen.getAllByRole("note", { name: /Context compacted/u })).toHaveLength(1);
+    expect(screen.getByRole("note", { name: /Context compacted.*automatic/u })).toBeVisible();
+  });
+});
 
 describe("AssistantMessage grouped parts", () => {
   it("mounts restart proposals immediately after answer text, not inside the Activity band", () => {

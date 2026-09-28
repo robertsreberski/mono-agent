@@ -3,6 +3,7 @@ import {
   canSendInConsole,
   canUploadInConsole,
   convertWebMessage,
+  compactionMarkerIdsForMessages,
 } from "./runtime";
 import { projectProcessJobPresentation } from "./process-job-presentation";
 import { agent, attachment, processJob, thread } from "./test/fixtures";
@@ -1261,6 +1262,20 @@ describe("convertWebMessage", () => {
         },
       },
     ]);
+  });
+
+  it("shows older telemetry only without a matching marker in the loaded transcript", () => {
+    const telemetry = message({ role: "assistant", status: "complete", parts: [
+      { type: "text", text: "Done" },
+      { type: "telemetry", event: "runtime_telemetry", data: { type: "runtime_telemetry", kind: "context_compaction",
+        data: { operationId: "fictional-operation", status: "succeeded", trigger: "manual" } } },
+    ] });
+    const marker = message({ role: "system", parts: [{ type: "conversation-marker", kind: "compaction", at: "2026-01-15T10:00:00Z",
+      operationId: "fictional-operation", status: "succeeded", trigger: "manual" }] });
+    expect(convertWebMessage(telemetry, { compactionMarkerIds: compactionMarkerIdsForMessages([telemetry]) }).content)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ type: "data-context-compaction" })]));
+    expect(convertWebMessage(telemetry, { compactionMarkerIds: compactionMarkerIdsForMessages([telemetry, marker]) }).content)
+      .not.toEqual(expect.arrayContaining([expect.objectContaining({ type: "data-context-compaction" })]));
   });
 
   it("maps a persisted quote into assistant-ui message metadata", () => {

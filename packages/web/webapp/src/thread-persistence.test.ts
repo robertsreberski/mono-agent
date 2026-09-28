@@ -183,6 +183,30 @@ describe("createThreadPersistence", () => {
     store.close();
   });
 
+  it("hides future marker kinds on device hydration without discarding the conversation", async () => {
+    const store = createThreadPersistence();
+    await store.save({ entries: [entry("alpha-thread", { messages: [message("answer", [{ type: "text", text: "Ready" }])], etag: "old" })] });
+    await new Promise<void>((resolve, reject) => {
+      const open = indexedDB.open(PERSISTENCE_DB_NAME, PERSISTENCE_DB_VERSION);
+      open.onsuccess = () => {
+        const db = open.result;
+        const tx = db.transaction("threads", "readwrite");
+        const table = tx.objectStore("threads");
+        const get = table.get("alpha-thread");
+        get.onsuccess = () => table.put({ ...get.result, messages: [{ ...get.result.messages[0], parts: [
+          ...get.result.messages[0].parts, { type: "conversation-marker", kind: "future", at: "2026-01-15T10:00:00Z" },
+        ] }] });
+        tx.oncomplete = () => { db.close(); resolve(); };
+        tx.onerror = () => reject(tx.error);
+      };
+      open.onerror = () => reject(open.error);
+    });
+    const held = (await createThreadPersistence().hydrate())?.threads[0];
+    expect(held?.messages[0]?.parts).toEqual([{ type: "text", text: "Ready" }]);
+    expect(held).not.toHaveProperty("etag");
+    store.close();
+  });
+
   it("hands back the conversations it was given, with their cursors and validators", async () => {
     const writer = createThreadPersistence({ now: () => 1_000 });
     await writer.save({

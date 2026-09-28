@@ -251,7 +251,7 @@ export function ContextDisplay({ threadId, detail, compactThreadId, compactBlock
   return <Popover.Root open={open} onOpenChange={changeOpen}>
     <Popover.Trigger type="button" className={["context-display-trigger", className].filter(Boolean).join(" ")}
       data-slot="context-display-trigger" data-state={context.status} data-level={contextLevel(percent)}
-      data-estimate={estimate ? "" : undefined} data-muted={last ? "" : undefined} data-busy={busy ? "" : undefined} aria-label={ariaLabel}>
+      data-unknown={percent === undefined ? "" : undefined} data-estimate={estimate ? "" : undefined} data-muted={last ? "" : undefined} data-busy={busy ? "" : undefined} aria-label={ariaLabel}>
       <ContextRing percent={percent} unknown={percent === undefined} />
       <span className="context-display-trigger-percent" data-slot="context-display-percent">{badge}</span>
     </Popover.Trigger>
