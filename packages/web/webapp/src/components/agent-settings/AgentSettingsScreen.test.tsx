@@ -22,7 +22,7 @@ beforeEach(() => {
   store.setAgentRunDefaults.mockResolvedValue(undefined);
   store.clearAgentRunDefaults.mockResolvedValue(undefined);
 });
-afterEach(() => discardSettingsDraft("fictional"));
+afterEach(() => { discardSettingsDraft("fictional"); discardSettingsDraft("grove-fictional"); });
 
 describe("agent settings screen", () => {
   it("has a single settings main and a navigation-only rail with three sections", async () => {
@@ -41,6 +41,21 @@ describe("agent settings screen", () => {
     expect(getSettingsDraft("fictional")).toEqual({ model: "atlas/example", effort: "low" });
     discardSettingsDraft("fictional");
     expect(getSettingsDraft("fictional")).toBeNull();
+  });
+  it("preserves each agent's draft across agent and generation switches without leaking between agents (A9)", () => {
+    setSettingsDraft("fictional", { model: "atlas/other", effort: "low" });
+    const view = render(<AgentSettingsScreen {...props} section="new-conversations" />);
+    expect(screen.getByRole("button", { name: "Save for new conversations" })).toBeTruthy();
+    store.selectedAgent = agent("grove-fictional", { label: "Grove" });
+    view.rerender(<AgentSettingsScreen {...props} section="new-conversations" />);
+    expect(screen.queryByRole("button", { name: "Save for new conversations" })).toBeNull();
+    act(() => setSettingsDraft("grove-fictional", { model: "grove/fast", effort: "high" }));
+    expect(screen.getByRole("button", { name: "Save for new conversations" })).toBeTruthy();
+    store.selectedAgent = agent("fictional", { label: "Atlas", generation: "next" });
+    view.rerender(<AgentSettingsScreen {...props} section="new-conversations" />);
+    expect(getSettingsDraft("fictional")).toEqual({ model: "atlas/other", effort: "low" });
+    expect(getSettingsDraft("grove-fictional")).toEqual({ model: "grove/fast", effort: "high" });
+    expect(screen.getByRole("button", { name: "Save for new conversations" })).toBeTruthy();
   });
   it("pins through the Agent switch, keeps its name constant and reports the requested state while pending", async () => {
     let settle!: () => void;

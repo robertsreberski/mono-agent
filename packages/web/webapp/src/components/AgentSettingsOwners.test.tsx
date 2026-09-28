@@ -205,6 +205,36 @@ describe("SettingsHarness", () => {
       windows: [{ kind: "credits", label: "Credits", usedPercent: 42, periodMs: 2592000000 }] },
   ] };
 
+  it("keeps one usage owner across section and layout changes and restarts it on generation change (A7)", async () => {
+    storeMock.selectedAgent = agent("alpha", { generation: "first", supportsProviderUsage: true });
+    apiMock.providerUsage.mockResolvedValue(usageSnapshot);
+    const props = { open: true, onClose: vi.fn() };
+    const view = render(<SettingsHarness {...props} section="providers" layout="split" />);
+    await waitFor(() => expect(apiMock.providerUsage).toHaveBeenCalledTimes(1));
+    view.rerender(<SettingsHarness {...props} section="agent" layout="stacked" />);
+    view.rerender(<SettingsHarness {...props} section="providers" layout="stacked" />);
+    expect(apiMock.providerUsage).toHaveBeenCalledTimes(1);
+    storeMock.selectedAgent = agent("alpha", { generation: "second", supportsProviderUsage: true });
+    view.rerender(<SettingsHarness {...props} section="providers" layout="stacked" />);
+    await waitFor(() => expect(apiMock.providerUsage).toHaveBeenCalledTimes(2));
+    expect(apiMock.providerUsage).toHaveBeenNthCalledWith(2, "alpha", expect.any(AbortSignal));
+  });
+
+  it("retains restart tracking when only the agent generation changes (A7)", async () => {
+    storeMock.selectedAgent = agent("alpha", { generation: "first", restart: { supported: true } });
+    apiMock.latestAgentRestart.mockResolvedValue(restartOperation("requesting"));
+    const pending = deferred<RestartOperation>();
+    apiMock.restartStatus.mockReturnValue(pending.promise);
+    const props = { open: true, onClose: vi.fn(), section: "agent" as const };
+    const view = render(<SettingsHarness {...props} />);
+    await waitFor(() => expect(apiMock.restartStatus).toHaveBeenCalledTimes(1));
+    storeMock.selectedAgent = agent("alpha", { generation: "second", restart: { supported: true } });
+    view.rerender(<SettingsHarness {...props} />);
+    expect(apiMock.latestAgentRestart).toHaveBeenCalledTimes(1);
+    await act(async () => pending.resolve(restartOperation("back_online", "success")));
+    await waitFor(() => expect(screen.getByText(/Back online ·/u)).toBeVisible());
+  });
+
   it("renders meter-only cards when usage is supported without auth support", async () => {
     storeMock.selectedAgent = agent("alpha", { supportsProviderUsage: true, supportsProviderUsageRefresh: true });
     apiMock.providerUsage.mockResolvedValue(usageSnapshot);

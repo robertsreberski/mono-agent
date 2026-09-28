@@ -69,6 +69,9 @@ vi.mock("./components/dashboard/Dashboard", () => ({
     <div data-testid="dashboard">
       <button type="button" onClick={() => window.dispatchEvent(new CustomEvent("mono-agent:agent-settings"))}>Agent settings gear</button>
       <button type="button" onClick={onNavigate}>Open a conversation</button>
+      <button type="button" onClick={onNavigate}>Open a running card</button>
+      <button type="button" onClick={onNavigate}>Open an automation</button>
+      <button type="button" onClick={onNavigate}>New conversation</button>
       {storeMock.openProjectId !== null && (
         <button type="button" onClick={onCloseProject}>Back to project conversations</button>
       )}
@@ -381,6 +384,53 @@ describe("settings screen navigation", () => {
     window.history.back();
     await waitFor(() => expect(position()).toBe(detail));
     expect(screen.getByRole("heading", { name: "Providers", level: 2 })).toBeVisible();
+  });
+  it("opens from the palette over a phone conversation and returns to it with Back (N8)", async () => {
+    await page.viewport(390, 844);
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Open a conversation" }));
+    const conversation = position();
+    window.dispatchEvent(new Event("mono-agent:command"));
+    fireEvent.click(await screen.findByRole("option", { name: /Agent settings · Atlas/ }));
+    await waitFor(() => expect(screen.getByRole("navigation", { name: "Agent settings sections" })).toBeVisible());
+    expect(position()).toBe(conversation + 1);
+    window.history.back();
+    await waitFor(() => expect(position()).toBe(conversation));
+    expect(screen.queryByRole("navigation", { name: "Agent settings sections" })).toBeNull();
+    expect(window.history.state.monoAgentMobileNavigation.surface).toBe("conversation");
+  });
+  it("closes desktop settings on a store route pop (N12)", async () => {
+    await page.viewport(1200, 800);
+    window.history.pushState({ preceding: true }, "", "/?earlier=1");
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Agent settings gear" }));
+    expect(screen.getByRole("button", { name: "Close agent settings" })).toBeVisible();
+    window.history.back();
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Close agent settings" })).toBeNull());
+  });
+  it.each(["Open a conversation", "Open a running card", "Open an automation", "New conversation"])("closes before %s shows and focuses the desktop conversation (N14)", async (destination) => {
+    await page.viewport(1200, 800);
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Agent settings gear" }));
+    fireEvent.click(screen.getByRole("button", { name: destination }));
+    expect(screen.queryByRole("button", { name: "Close agent settings" })).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(document.querySelector(".chat-region")));
+  });
+  it("only unwinds owned settings depth, not an unrelated earlier entry (N17)", async () => {
+    await page.viewport(390, 844);
+    window.history.pushState({ preceding: true }, "", "/?earlier=1");
+    const original = position();
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Agent settings gear" }));
+    fireEvent.click(screen.getByRole("button", { name: /Providers/ }));
+    await page.viewport(1200, 800);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Close agent settings" })).toBeVisible());
+    fireEvent.click(screen.getByRole("button", { name: "Close agent settings" }));
+    await waitFor(() => expect(position()).toBe(original));
+    expect(window.location.search).toBe("?earlier=1");
+    window.history.back();
+    await waitFor(() => expect(position()).toBe(original - 1));
+    expect(screen.queryByRole("button", { name: "Close agent settings" })).toBeNull();
   });
   it("restores a project entry through breakpoint changes and Forward (N22/N23)", async () => {
     await page.viewport(390, 844);

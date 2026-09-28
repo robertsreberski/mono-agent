@@ -17,7 +17,7 @@ import {
   THREAD_PAGE_LIMIT,
 } from "./api";
 import { writeDataModeSetting } from "./data-mode";
-import { mobileHistoryEntry, pushMobileHistoryEntry } from "./mobile-history";
+import { mobileHistoryEntry, ownedSettingsEntry, pushMobileHistoryEntry } from "./mobile-history";
 import { closeSettingsHistory } from "./settings-navigation";
 import {
   readComposerDraft,
@@ -1344,7 +1344,7 @@ describe("ConsoleStoreProvider integration", () => {
     expect(window.location.pathname).toBe("/");
     window.history.back();
     await waitFor(() => expect(mobileHistoryEntry(window.history.state)?.surface).toBe("settings"));
-    expect(mobileHistoryEntry(window.history.state)?.section).toBe("providers");
+    expect(ownedSettingsEntry()?.section).toBe("providers");
     window.history.forward();
     await waitFor(() => expect(mobileHistoryEntry(window.history.state)?.surface).toBe("conversation"));
   });
@@ -1365,7 +1365,7 @@ describe("ConsoleStoreProvider integration", () => {
     expect(window.location.pathname).toBe("/agents/alpha/cron/daily%3Areport");
     window.history.back();
     await waitFor(() => expect(mobileHistoryEntry(window.history.state)?.surface).toBe("settings"));
-    expect(mobileHistoryEntry(window.history.state)?.section).toBe("agent");
+    expect(ownedSettingsEntry()?.section).toBe("agent");
   });
 
   it("reports a truncated cron overview honestly without selecting a bootstrap fallback", async () => {
