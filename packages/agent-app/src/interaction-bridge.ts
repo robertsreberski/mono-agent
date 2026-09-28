@@ -63,8 +63,12 @@ export interface InteractionBridgeHandle {
   readonly url: string;
   readonly token: string;
   registerSink(channelId: string, sink: ChannelInteractionSink): void;
-  /** Install (or with undefined, remove) the Telegram project destination port. */
-  registerTelegramProjects(port: TelegramProjectsBridgePort | undefined): void;
+  /**
+   * Install the Telegram project destination port. The returned function
+   * removes it only while it is still the installed one, so a stopping
+   * channel never removes its successor's port.
+   */
+  registerTelegramProjects(port: TelegramProjectsBridgePort): () => void;
   getPendingAsk(conversationId: string): ChannelAskSnapshot | undefined;
   getAsk(interactionId: string): ChannelAskSnapshot | undefined;
   submitAskAnswers(input: ChannelAskSubmission): Promise<ChannelAskSubmissionResult>;
@@ -876,6 +880,9 @@ export async function startInteractionBridge(
     token,
     registerTelegramProjects(port) {
       telegramProjects = port;
+      return () => {
+        if (telegramProjects === port) telegramProjects = undefined;
+      };
     },
     registerSink(channelId, sink) {
       sinks.set(channelId, sink);

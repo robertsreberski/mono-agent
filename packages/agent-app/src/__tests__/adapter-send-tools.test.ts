@@ -2695,14 +2695,13 @@ describe("self-hosted server send tools", () => {
 });
 
 describe("Telegram sends by projectId", () => {
-  const projectSettings = (overrides: Partial<NonNullable<AdapterSendToolsSettings["telegram"]>> = {}): AdapterSendToolsSettings => ({
+  const projectSettings = (projects = true): AdapterSendToolsSettings => ({
     telegram: {
       botToken: "telegram-token",
       allowedChatIds: ["-1001"],
       allowAllChats: false,
       tools: { send: true, file: true },
-      projects: true,
-      ...overrides,
+      ...(projects ? { projects: true } : {}),
     },
   });
 
@@ -2714,7 +2713,7 @@ describe("Telegram sends by projectId", () => {
   }
 
   it("keeps the existing schemas byte for byte when the feature is off", async () => {
-    const server = await createAdapterSendToolsServer(projectSettings({ projects: undefined }), {
+    const server = await createAdapterSendToolsServer(projectSettings(false), {
       telegram: { sendMessage: vi.fn(), sendDocument: vi.fn() },
     });
     await withMcpClient(server, async (client) => {

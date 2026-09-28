@@ -328,10 +328,14 @@ describe("Telegram project destinations on the bridge", () => {
   it("serves only a Telegram-scoped delivery capability and validates gone reports", async () => {
     const bridge = await startInteractionBridge({ host: "127.0.0.1", port: 0 });
     const gone: string[] = [];
-    bridge.registerTelegramProjects({
-      resolveDestination: async () => ({ ok: true, conversationId: "telegram:-1001:77", label: "Trips › Flights" }),
-      reportGone: async (conversationId) => { gone.push(conversationId); },
-    });
+    const port = {
+      resolveDestination: async () => ({ ok: true as const, conversationId: "telegram:-1001:77", label: "Trips › Flights" }),
+      reportGone: async (conversationId: string) => { gone.push(conversationId); },
+    };
+    const stale = bridge.registerTelegramProjects({ ...port });
+    bridge.registerTelegramProjects(port);
+    // A stopping predecessor never removes its successor's port.
+    stale();
     const post = (path: string, token: string | undefined, body: unknown) => fetch(`${bridge.url}${path}`, {
       method: "POST",
       headers: { "content-type": "application/json", ...(token === undefined ? {} : { authorization: `Bearer ${token}` }) },

@@ -193,6 +193,8 @@ export function createTelegramProjectsService(options: TelegramProjectsServiceOp
   return {
     knownTopicNames,
     observe(observation) {
+      // Only forums have topics; private chats and plain groups are never recorded.
+      if (observation.isForum !== true && observation.topic === undefined) return;
       if (closed || !options.isAllowedChat(String(observation.chatId))) return;
       if (directory.observe(observation)) schedule(options.syncDebounceMs ?? SYNC_DEBOUNCE_MS);
     },

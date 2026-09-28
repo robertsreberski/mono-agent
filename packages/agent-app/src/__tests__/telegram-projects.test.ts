@@ -127,6 +127,16 @@ describe("telegram projects service", () => {
     expect(console.calls.every((call) => call.body.sourceId === "agent-one")).toBe(true);
   });
 
+  it("never records private chats or plain groups", async () => {
+    const ledger = await directory();
+    const service = createTelegramProjectsService({ directory: ledger, botId: "42", sourceId: "agent-one", isAllowedChat: () => true, syncDebounceMs: 1 });
+    open.push(service);
+    service.observe({ chatId: 500, chatTitle: "Direct" });
+    service.observe({ chatId: -3003, chatTitle: "Plain group" });
+    expect(ledger.pending(100).entries).toEqual([]);
+    expect(ledger.isForum("500")).toBe(false);
+  });
+
   it("ignores sightings from chats outside the allowlist", async () => {
     const ledger = await directory();
     const service = createTelegramProjectsService({ directory: ledger, botId: "42", sourceId: "agent-one", isAllowedChat: () => false, syncDebounceMs: 1 });

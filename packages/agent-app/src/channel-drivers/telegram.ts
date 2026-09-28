@@ -106,20 +106,18 @@ export function createTelegramChannelDriver(
       };
       input.interaction?.registerSink("telegram", interactionSink);
       // The app-owned bridge lets the adapter-send child resolve `projectId`.
-      const projectsBridge = input.interaction as { registerTelegramProjects?: (port: TelegramProjectsBridgePort | undefined) => void } | undefined;
-      if (projects !== undefined) {
-        projectsBridge?.registerTelegramProjects?.({
-          resolveDestination: (projectId) => projects.resolveDestination(projectId),
-          reportGone: (conversationId) => projects.reportGone(conversationId),
-        });
-      }
+      const projectsBridge = input.interaction as { registerTelegramProjects?: (port: TelegramProjectsBridgePort) => () => void } | undefined;
+      const unregisterProjects = projects === undefined ? undefined : projectsBridge?.registerTelegramProjects?.({
+        resolveDestination: (projectId) => projects.resolveDestination(projectId),
+        reportGone: (conversationId) => projects.reportGone(conversationId),
+      });
       return {
         summary: {},
         stop: async () => {
           try {
             await result.stop();
           } finally {
-            if (projects !== undefined) projectsBridge?.registerTelegramProjects?.(undefined);
+            unregisterProjects?.();
             await projects?.close();
           }
         },
