@@ -105,7 +105,7 @@ function SettingsContent({ agent, section, layout, provider, restart, onSection,
         <div className="settings-section-head"><div><h2 className="settings-section-title" tabIndex={-1} ref={layout === "stacked" ? titleRef : undefined}>{active.label}</h2><p className="settings-section-summary">{active.description}</p></div></div>
         {agent.status === "offline" && <div className="settings-notice">{agent.label} is offline. Changes that need the agent are paused. Using the agent config still works.</div>}
         {active.id === "new-conversations" && <NewConversationsSection agent={agent} onNotice={onNotice} {...(layout === "stacked" ? { footerNode } : {})} />}
-        {active.id === "providers" && <ProvidersSection agent={agent} controller={provider} />}
+        {active.id === "providers" && <ProvidersSection agent={agent} controller={provider} compact={layout === "stacked"} />}
         {active.id === "agent" && <AgentSection agent={agent} restart={restart} runningCount={runningCount} />}
       </div></main>
     </div>}

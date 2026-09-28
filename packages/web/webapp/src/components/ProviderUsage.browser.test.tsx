@@ -9,7 +9,10 @@ const store = vi.hoisted(() => ({ selectedAgent: null as ReturnType<typeof agent
 const mocks = vi.hoisted(() => ({ providerAuthStatus: vi.fn(), providerUsage: vi.fn(), refreshProviderUsage: vi.fn(), latestAgentRestart: vi.fn() }));
 vi.mock("../console-store", () => ({ useConsoleStore: () => store }));
 vi.mock("../api", async (importOriginal) => ({ ...await importOriginal<typeof import("../api")>(), api: mocks }));
-import { AgentSettingsDialog } from "./AgentSettingsDialog";
+import { AgentSettingsScreen } from "./agent-settings/AgentSettingsScreen";
+function SettingsHarness({ open }: { readonly open: boolean; readonly onClose?: () => void; readonly dialogRef?: ReturnType<typeof createRef<HTMLElement>> }) {
+  return open ? <AgentSettingsScreen layout={window.matchMedia("(max-width: 900px)").matches ? "stacked" : "split"} section="providers" onSection={() => undefined} onBack={() => undefined} onClose={() => undefined} onNotice={() => undefined} /> : null;
+}
 declare module "vitest" {
   export interface ProvidedContext { providerUsageTouch: boolean }
 }
@@ -61,7 +64,7 @@ describe("compact Agent settings subscription meters", () => {
     expect(matchMedia("(pointer: coarse)").matches).toBe(touch);
     expect(matchMedia("(pointer: fine)").matches).toBe(!touch);
     expect(navigator.maxTouchPoints > 0).toBe(touch);
-    render(<AgentSettingsDialog open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
     await screen.findByRole("progressbar", { name: /Codex Weekly used/ });
     expect(screen.getAllByRole("progressbar")).toHaveLength(8);
     expect(screen.queryByRole("progressbar", { name: "Codex Session used" })).toBeNull();
@@ -74,13 +77,14 @@ describe("compact Agent settings subscription meters", () => {
     expect(liveBadge).toHaveClass("is-ok");
     expect(getComputedStyle(accountBadge).color).toBe(getComputedStyle(liveBadge).color);
     expect(getComputedStyle(accountBadge).fontSize).toBe("10px");
-    const codexHeading = screen.getByText("Pro 20x").closest(".provider-auth-heading")!;
+    const codexHeading = screen.getByText("Pro 20x").closest(".settings-provider-head")!;
     expect([...codexHeading.querySelectorAll("b, .provider-usage-plan, .provider-auth-state")].map((child) => child.textContent?.trim())).toEqual(["Codex", "Pro 20x", "✓ OK"]);
     const headingItems = [...codexHeading.querySelectorAll("b, .provider-usage-plan, .provider-auth-state")];
     const centers = headingItems.map((item) => { const rect = item.getBoundingClientRect(); return rect.y + rect.height / 2; });
-    expect(Math.max(...centers) - Math.min(...centers)).toBeLessThanOrEqual(1);
+    if (touch) expect(Math.max(...centers) - Math.min(...centers)).toBeGreaterThan(1);
+    else expect(Math.max(...centers) - Math.min(...centers)).toBeLessThanOrEqual(1);
     const actions = [
-      ...screen.getAllByRole("button", { name: "Re-authenticate" }),
+      ...screen.getAllByRole("button", { name: /^Re-authenticate/u }),
       screen.getByRole("button", { name: "Check access" }),
       screen.getByRole("button", { name: "Refresh usage" }),
     ];
@@ -88,17 +92,14 @@ describe("compact Agent settings subscription meters", () => {
       expect(getComputedStyle(button).fontSize).toBe("10px");
       expect(button.getBoundingClientRect().height).toBe(28);
     }
-    const headerIcons = document.querySelectorAll(".agent-settings-header-actions .icon-button");
-    expect(headerIcons).toHaveLength(2);
-    for (const icon of headerIcons) {
-      expect(icon.getBoundingClientRect().width).toBe(36);
-      expect(icon.getBoundingClientRect().height).toBe(36);
-      expect(getComputedStyle(icon).borderRadius).toBe("10px");
-    }
+    const headerIcons = document.querySelectorAll(".settings-header-actions .icon-button");
+    expect(headerIcons).toHaveLength(touch ? 0 : 1);
+    if (touch) expect(screen.getByRole("button", { name: /settings/u }).getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
+    else expect(headerIcons[0]!.getBoundingClientRect().width).toBe(36);
     const copilot = screen.getByText("GitHub Copilot").closest("article")!;
     expect(screen.queryByText("Usage only")).toBeNull();
     expect(copilot.querySelector(".provider-auth-state")).not.toBeNull();
-    expect([...document.querySelectorAll(".provider-auth-card b")].map((element) => element.textContent)).toEqual(["Claude", "Codex", "OpenCode Go", "GitHub Copilot"]);
+    expect([...document.querySelectorAll(".settings-provider b")].map((element) => element.textContent)).toEqual(["Claude", "Codex", "OpenCode Go", "GitHub Copilot"]);
     expect(screen.getByRole("progressbar", { name: /GitHub Copilot Credits used/ })).toHaveAttribute("value", "42.1");
     const refreshButton = screen.getByRole("button", { name: "Refresh usage" });
     expect(refreshButton).toHaveAttribute("title", "Refresh usage");
@@ -109,19 +110,16 @@ describe("compact Agent settings subscription meters", () => {
     expect(screen.queryByText(/Run again|Run check/)).toBeNull();
     expect(refreshButton).toHaveAccessibleDescription(/Refresh usage reads subscription limits without inference\. Check access sends one small model request/);
     expect(runButton).toHaveAccessibleDescription(/may use quota or refresh OAuth/);
-    const actionsGroup = refreshButton.closest(".provider-auth-header-actions")!;
+    const actionsGroup = refreshButton.closest(".settings-section-actions-row")!;
     expect(actionsGroup.scrollWidth).toBeLessThanOrEqual(actionsGroup.clientWidth);
     expect(getComputedStyle(refreshButton).whiteSpace).toBe("nowrap");
     expect(getComputedStyle(runButton).whiteSpace).toBe("nowrap");
-    const save = screen.getByRole("button", { name: "Save for new conversations" });
-    expect(getComputedStyle(save).fontSize).toBe("12px");
-    expect(save.getBoundingClientRect().height).toBe(28);
+    expect(screen.queryByRole("button", { name: "Save for new conversations" })).toBeNull();
     expect(screen.queryByText(/Sonnet|Spark|credits/)).toBeNull();
-    const dialog = screen.getByRole("dialog");
+    const settings = document.querySelector(".settings-screen")!;
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
-    expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth);
-    expect(dialog.getBoundingClientRect().width).toBeLessThanOrEqual(width);
-    expect(screen.getByRole("button", { name: "Save for new conversations" })).toBeVisible();
+    expect(settings.scrollWidth).toBeLessThanOrEqual(settings.clientWidth);
+    expect(settings.getBoundingClientRect().width).toBeLessThanOrEqual(width);
     await waitFor(() => expect(screen.getByRole("progressbar", { name: /OpenCode Go Monthly used/ })).toBeVisible());
     expect(screen.getByRole("progressbar", { name: /GitHub Copilot Credits used/ })).toBeVisible();
     const directory = import.meta.env.VITE_PROVIDER_USAGE_SHOTS;
@@ -132,7 +130,7 @@ describe("compact Agent settings subscription meters", () => {
     await page.viewport(viewport.width, viewport.height);
     let reject!: (error: Error) => void;
     mocks.refreshProviderUsage.mockReturnValueOnce(new Promise((_resolve, fail) => { reject = fail; }));
-    render(<AgentSettingsDialog open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
     await screen.findByRole("progressbar", { name: /Codex Weekly used/ });
     const button = screen.getByRole("button", { name: "Refresh usage" });
     fireEvent.click(button);
@@ -156,12 +154,12 @@ describe("compact Agent settings subscription meters", () => {
   it("renders scoped meters without auth controls for an independent usage capability", async () => {
     await page.viewport(viewport.width, viewport.height);
     store.selectedAgent = agent("fixture", { supportsProviderUsage: true, supportsProviderUsageRefresh: true });
-    render(<AgentSettingsDialog open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
     await screen.findByRole("progressbar", { name: /GitHub Copilot Credits used/ });
-    expect(screen.getByRole("heading", { name: "Subscription usage" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Providers" })).toBeVisible();
     expect(screen.getAllByRole("progressbar")).toHaveLength(8);
-    expect(document.querySelectorAll(".provider-auth-card")).toHaveLength(4);
-    expect(document.querySelectorAll(".provider-auth-card button, .provider-auth-state, .provider-auth-check-result")).toHaveLength(0);
+    expect(document.querySelectorAll(".settings-provider")).toHaveLength(4);
+    expect(document.querySelectorAll(".settings-provider button, .provider-auth-state, .provider-auth-check-result")).toHaveLength(0);
     expect(screen.queryByText("Usage only")).toBeNull();
     expect(screen.queryByRole("button", { name: "Check access" })).toBeNull();
     expect(screen.getByRole("button", { name: "Refresh usage" })).toBeVisible();
@@ -174,10 +172,10 @@ describe("compact Agent settings subscription meters", () => {
     await page.viewport(viewport.width, viewport.height);
     const auth: ProviderAuthStatusSnapshot = await mocks.providerAuthStatus();
     mocks.providerAuthStatus.mockResolvedValue({ ...auth, providers: auth.providers.filter((provider) => provider.providerId === "openai-codex") });
-    render(<AgentSettingsDialog open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
     await screen.findByRole("progressbar", { name: /Codex Weekly used/ });
     expect(screen.getAllByRole("progressbar")).toHaveLength(1);
-    expect([...document.querySelectorAll(".provider-auth-card b")].map((element) => element.textContent)).toEqual(["Codex"]);
+    expect([...document.querySelectorAll(".settings-provider b")].map((element) => element.textContent)).toEqual(["Codex"]);
     expect(screen.queryByText("GitHub Copilot")).toBeNull();
     expect(screen.queryByText("Usage only")).toBeNull();
     const directory = import.meta.env.VITE_PROVIDER_USAGE_SHOTS;
@@ -195,7 +193,7 @@ describe("compact Agent settings subscription meters", () => {
       providerId: "github-copilot", label: "GitHub Copilot", usages: [], state: "present", source: "stored", verification: "not_verified",
       methods: [{ authType: "oauth", strategy: "paste_back", label: "Login", recommended: true }],
     }] : [] });
-    render(<AgentSettingsDialog open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
+    render(<SettingsHarness open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
     if (!configured) {
       await waitFor(() => expect(mocks.providerUsage).toHaveBeenCalled());
       expect(screen.queryByText("GitHub Copilot")).toBeNull();
@@ -207,9 +205,9 @@ describe("compact Agent settings subscription meters", () => {
     expect(screen.getAllByText("GitHub Copilot")).toHaveLength(1);
     expect(screen.getByRole("progressbar", { name: "GitHub Copilot Completions used" })).toHaveAttribute("value", "25");
     expect(screen.queryByRole("progressbar", { name: /GitHub Copilot Credits used/ })).toBeNull();
-    expect(document.querySelectorAll(".provider-auth-card")).toHaveLength(1);
+    expect(document.querySelectorAll(".settings-provider")).toHaveLength(1);
     expect(document.querySelectorAll(".provider-auth-state")).toHaveLength(configured ? 1 : 0);
-    expect(screen.queryAllByRole("button", { name: "Re-authenticate" })).toHaveLength(configured ? 1 : 0);
+    expect(screen.queryAllByRole("button", { name: /^Re-authenticate/u })).toHaveLength(configured ? 1 : 0);
     expect(screen.queryAllByText("Usage only")).toHaveLength(0);
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(viewport.width);
   });
@@ -236,28 +234,29 @@ describe("compact Agent settings subscription meters", () => {
     ] });
     for (const theme of ["light", "dark"] as const) {
       await commands.emulateColorScheme(theme);
-      const view = render(<AgentSettingsDialog open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
+      const view = render(<SettingsHarness open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
       await screen.findByRole("progressbar", { name: /OpenCode Go Weekly used/ });
-      const runouts = [...document.querySelectorAll(".provider-usage-projection.is-unsustainable, .provider-usage-projection.is-ahead")];
+      const runouts = [...document.querySelectorAll(touch ? ".context-display-plan-detail .is-unsustainable[title^='Projected'], .context-display-plan-detail .is-ahead[title^='Projected']" : ".provider-usage-projection.is-unsustainable, .provider-usage-projection.is-ahead")];
       expect(runouts).toHaveLength(1);
       const goLine = runouts[0]!;
-      expect(goLine).toHaveClass("provider-usage-projection", "is-unsustainable");
+      expect(goLine).toHaveClass("is-unsustainable");
+      if (!touch) expect(goLine).toHaveClass("provider-usage-projection");
       expect(goLine.textContent).toMatch(/empty .+ early/);
-      expect(goLine.closest(".provider-usage-window")).toContainElement(screen.getByRole("progressbar", { name: /OpenCode Go Weekly used/ }));
+      expect(goLine.closest(touch ? ".context-display-plan-window" : ".provider-usage-window")).toContainElement(screen.getByRole("progressbar", { name: /OpenCode Go Weekly used/ }));
       expect(screen.getByRole("progressbar", { name: "OpenCode Go Weekly used, 96 %, 44 % of the window elapsed, pace 2.2x, projected to run out before reset (unsustainable)" })).toBeVisible();
       // Underutilized sessions note their unused share, neutrally.
       for (const label of ["Claude Session", "OpenCode Go Session"]) {
         const bar = screen.getByRole("progressbar", { name: new RegExp(`${label} used`) });
-        expect(bar.closest(".provider-usage-window")!.querySelector(".provider-usage-projection.is-unused")).toHaveTextContent(/\d+% unused/);
+        expect(bar.closest(touch ? ".context-display-plan-window" : ".provider-usage-window")!.querySelector(touch ? ".context-display-plan-detail .is-unused" : ".provider-usage-projection.is-unused")).toHaveTextContent(/\d+% unused/);
       }
       // On-track monthly: a tail and a steady chip, but no line.
       const monthlyBar = screen.getByRole("progressbar", { name: /OpenCode Go Monthly used/ });
-      const monthlyWindow = monthlyBar.closest(".provider-usage-window")!;
+      const monthlyWindow = monthlyBar.closest(touch ? ".context-display-plan-window" : ".provider-usage-window")!;
       expect(monthlyWindow.querySelector(".provider-usage-projection")).toBeNull();
-      expect(monthlyWindow.querySelector(".provider-usage-pace")).toHaveClass("is-steady");
+      expect(monthlyWindow.querySelector(touch ? ".context-display-plan-detail .is-steady" : ".provider-usage-pace")).toHaveClass("is-steady");
       expect(monthlyWindow.querySelector(".provider-usage-tick")).not.toBeNull();
       // Low confidence: the overshoot is a fact, the chip, lines and alarm colour are withheld.
-      const codexWindow = screen.getByRole("progressbar", { name: /Codex Weekly used/ }).closest(".provider-usage-window")!;
+      const codexWindow = screen.getByRole("progressbar", { name: /Codex Weekly used/ }).closest(touch ? ".context-display-plan-window" : ".provider-usage-window")!;
       expect(codexWindow.querySelector(".provider-usage-projection")).toBeNull();
       expect(codexWindow.querySelector(".provider-usage-pace")).toBeNull();
       const tick = codexWindow.querySelector(".provider-usage-tick")!;
