@@ -3,12 +3,27 @@ import { createHash } from "node:crypto";
 import type { RuntimeEventLike } from "@mono-agent/observability";
 
 import type { HistoryMessage } from "../context/index.js";
-import type { AgentHarnessOptions } from "../types.js";
+import type { AgentHarnessOptions, AgentHarnessRequest } from "../types.js";
 import type { AppliedLiveInput } from "../live-input.js";
 import { senderLabel } from "./speaker-context.js";
 import { compactOneLine } from "./value-utils.js";
 
 const MEMORY_PERSISTENCE_WARNING = "Memory persistence was not confirmed after the provider answer; the provider response was preserved.";
+
+/** Web passes the unprefixed operator input alongside its model-visible envelope.
+ * Other hosts (and non-owner turns) keep their existing memory text. */
+export function memoryUserText(request: AgentHarnessRequest): string {
+  const web = request.metadata?.web;
+  const ownerText = typeof web === "object" && web !== null && !Array.isArray(web)
+    ? (web as Record<string, unknown>).ownerText : undefined;
+  const modelText = request.userMessage;
+  const wake = (request.metadata as Record<PropertyKey, unknown> | undefined)
+    ?.[Symbol.for("mono-agent.process-job-wake.delivery-key.v1")] !== undefined;
+  return request.captureSpeakerKind === "human-turn" && request.metadata?.source === "web"
+    && !wake && typeof ownerText === "string"
+    && (modelText === ownerText || modelText.endsWith(`\n\n${ownerText}`))
+    ? ownerText : modelText;
+}
 
 export async function buildSuccessfulTurn(
   options: AgentHarnessOptions,
@@ -18,6 +33,7 @@ export async function buildSuccessfulTurn(
   assistantText: string,
   runId: string,
   sender?: AgentMessageSender,
+  request?: AgentHarnessRequest,
 ): Promise<{
   readonly capturedAt: string;
   readonly messages: readonly HistoryMessage[];
@@ -37,9 +53,12 @@ export async function buildSuccessfulTurn(
       // original bytes when the optional app-owned enrichment fails.
     }
     const senderName = senderLabel(sender);
+    const captureInitial = request !== undefined && userMessage.startsWith(request.userMessage)
+      ? memoryUserText(request) + userMessage.slice(request.userMessage.length)
+      : userMessage;
     return {
       capturedAt,
-      userMemoryText: composeUserMemoryText(userMessage, userLiveInputs),
+      userMemoryText: composeUserMemoryText(captureInitial, userLiveInputs, request),
       messages: [
         {
           role: "user",
@@ -61,11 +80,17 @@ export async function buildSuccessfulTurn(
     };
 }
 
-function composeUserMemoryText(initial: string, liveInputs: readonly AppliedLiveInput[]): string {
+export function composeUserMemoryText(initial: string, liveInputs: readonly AppliedLiveInput[], request?: AgentHarnessRequest): string {
   if (liveInputs.length === 0) return initial;
   return [
     initial,
-    ...liveInputs.map((input, index) => `Live follow-up ${index + 1}:\n${input.text}`),
+    ...liveInputs.map((input, index) => {
+      const ownerText = request?.captureSpeakerKind === "human-turn" && request.metadata?.source === "web"
+        && input.deliveryKey === undefined && typeof input.ownerText === "string"
+        && (input.text === input.ownerText || input.text.endsWith(`\n\n${input.ownerText}`))
+        ? input.ownerText : input.text;
+      return `Live follow-up ${index + 1}:\n${ownerText}`;
+    }),
   ].join("\n\n");
 }
 

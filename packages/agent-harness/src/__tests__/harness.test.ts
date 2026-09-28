@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createChannelUserCancelReason } from "@mono-agent/agent-contracts";
-import { buildSuccessfulTurn, persistSuccessfulMemory } from "../harness/memory-persistence.js";
+import { buildSuccessfulTurn, composeUserMemoryText, memoryUserText, persistSuccessfulMemory } from "../harness/memory-persistence.js";
 import type {
   AgentContinuationOriginContext,
   MemoryCompletedTurn,
@@ -2141,6 +2141,103 @@ describe("AgentHarness", () => {
     const response = await harness.run({ conversationId: "read-only", userMessage: "Recall the fact.", abortSignal: new AbortController().signal });
     expect(response.text).toBe("The read-only memory was available.");
     expect(JSON.stringify(fake.calls[0]?.options.messages)).toContain("A durable read-only fact.");
+  });
+
+  it("uses only the web owner's original text for recall and capture across tagged and resumed turns", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const queries: string[] = [];
+    const admitted: MemoryCompletedTurn[] = [];
+    const harness = createAgentHarness({
+      identityPath, runtime: createFakeRuntime(async () => ({ text: "Acknowledged." })).runtime, model,
+      memoryWriteMode: "capture",
+      memory: {
+        async load(_conversationId, query) { queries.push(query ?? ""); return undefined; },
+        async persistCompletedTurn(turn) {
+          admitted.push(turn);
+          return { id: turn.runId, runId: turn.runId, conversationId: turn.conversationId,
+            source: "test", bytesWritten: 1, admissionStatus: "admitted" as const };
+        },
+      },
+    });
+    const ownerText = "Check the Maple plan.";
+    for (const [index, userMessage] of [ownerText,
+      '<conversation_tags>"planning"</conversation_tags>\n<conversation_markers>\n- conversation resumed\n</conversation_markers>\n\nCheck the Maple plan.'].entries()) {
+      await harness.run({ conversationId: `web:${index}`, userMessage, abortSignal: new AbortController().signal,
+        captureSpeakerKind: "human-turn", metadata: { source: "web", web: { ownerText } } });
+    }
+    expect(queries).toEqual([ownerText, ownerText]);
+    expect(admitted.map((turn) => turn.captureEvidence?.userText)).toEqual([ownerText, ownerText]);
+    expect(admitted.map((turn) => turn.captureText)).toEqual([
+      `User: ${ownerText}\nAssistant: Acknowledged.`, `User: ${ownerText}\nAssistant: Acknowledged.`,
+    ]);
+  });
+
+  it("captures a bound applied web follow-up without its project envelope", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    let started!: () => void;
+    const runningRuntime = new Promise<void>((resolve) => { started = resolve; });
+    const admitted: MemoryCompletedTurn[] = [];
+    const fake = createFakeRuntime(async (_prompt, options) => {
+      started();
+      const next = await options.liveInput![Symbol.asyncIterator]().next();
+      if (next.done) throw new Error("Expected applied live input.");
+      next.value.acknowledge?.();
+      return { text: "Noted." };
+    });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, memoryWriteMode: "capture",
+      memory: { load: async () => undefined, async persistCompletedTurn(turn) {
+        admitted.push(turn);
+        return { id: turn.runId, runId: turn.runId, conversationId: turn.conversationId,
+          source: "test", bytesWritten: 1, admissionStatus: "admitted" as const };
+      } } });
+    const running = harness.run({ conversationId: "web:maple", userMessage: "Start", captureSpeakerKind: "human-turn",
+      metadata: { source: "web", web: { ownerText: "Start" } }, abortSignal: new AbortController().signal });
+    await runningRuntime;
+    const offer = harness.offerLiveInput?.({ conversationId: "web:maple", id: "follow-up",
+      text: '<conversation_tags>"planning"</conversation_tags>\n\nCheck Maple.', ownerText: "Check Maple.",
+      receivedAt: "2026-07-21T09:00:00.000Z" });
+    expect(offer?.status).toBe("accepted");
+    await running;
+    expect(admitted[0]?.captureEvidence?.userText).toContain("Live follow-up 1:\nCheck Maple.");
+    expect(admitted[0]?.captureEvidence?.userText).not.toContain("conversation_tags");
+  });
+
+  it("keeps attachment-only web turns recallable with their original-query text", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const queries: string[] = [];
+    const harness = createAgentHarness({ identityPath, runtime: createFakeRuntime(async () => ({ text: "Noted." })).runtime,
+      model, memory: { async load(_id, query) { queries.push(query ?? ""); return undefined; } } });
+    await harness.run({ conversationId: "web:attachment", userMessage: "", metadata: { source: "web", web: { ownerText: "" } },
+      captureSpeakerKind: "human-turn", abortSignal: new AbortController().signal,
+      attachments: [{ kind: "document", mimeType: "text/plain", name: "maple.txt", text: "Fictional notes about Maple.", data: Buffer.from("Fictional notes about Maple.").toString("base64") }] });
+    expect(queries).toHaveLength(1);
+    expect(queries[0]).toContain("[The user attached 1 file(s):]");
+    expect(queries[0]).toContain("Fictional notes about Maple.");
+  });
+
+  it("binds web owner text to model-visible text and excludes non-web and host wakes", () => {
+    const suffix = "Check the Maple plan.";
+    const prefix = '<conversation_tags>"planning"</conversation_tags>\n\n';
+    const base = { conversationId: "web:maple", userMessage: prefix + suffix,
+      abortSignal: new AbortController().signal, captureSpeakerKind: "human-turn" as const };
+    expect(memoryUserText({ ...base, metadata: { source: "web", web: { ownerText: suffix } } })).toBe(suffix);
+    expect(memoryUserText({ ...base, metadata: { source: "web", web: { ownerText: "Spoofed note" } } })).toBe(base.userMessage);
+    for (const source of ["tui", "acp", "telegram"]) {
+      expect(memoryUserText({ ...base, metadata: { source, web: { ownerText: suffix } } })).toBe(base.userMessage);
+    }
+    const wakeMetadata: Record<string | symbol, unknown> = { source: "web", web: { ownerText: suffix } };
+    wakeMetadata[Symbol.for("mono-agent.process-job-wake.delivery-key.v1")] = "process-job:sample";
+    expect(memoryUserText({ ...base, metadata: wakeMetadata })).toBe(base.userMessage);
+    expect(composeUserMemoryText("Start", [
+      { id: "follow-up", text: prefix + suffix, ownerText: suffix, receivedAt: new Date().toISOString() },
+      { id: "wake", text: prefix + suffix, ownerText: suffix, deliveryKey: "process-job:sample", receivedAt: new Date().toISOString() },
+    ], { ...base, metadata: { source: "web" } })).toBe(`Start\n\nLive follow-up 1:\n${suffix}\n\nLive follow-up 2:\n${prefix}${suffix}`);
   });
 
   it("appends a deterministic host summary when memoryWriteMode is append-host-summary", async () => {

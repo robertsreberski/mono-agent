@@ -2052,6 +2052,7 @@ describe("WebService", () => {
         text: "Inspect the completed worker result",
       }),
     }]);
+    expect((liveInputs[0]?.body as { ownerText?: string })?.ownerText).toBeUndefined();
     expect(service.thread(thread.id).messages.filter((message) => message.role === "user"))
       .toHaveLength(1);
 
@@ -2468,6 +2469,7 @@ describe("WebService", () => {
         firstJob.wake.deliveryKey,
         secondJob.wake.deliveryKey,
       ]);
+      expect(turnBodies.every((body) => (body.metadata as { web?: { ownerText?: string } })?.web?.ownerText === undefined)).toBe(true);
       secondStream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Second job handled" })}\n`));
       secondStream?.close();
       secondStream = undefined;
@@ -4283,6 +4285,37 @@ describe("WebService", () => {
     await service.stop();
   });
 
+  it("sends model-visible neutralised owner text with a prefixed project live input", async () => {
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const delivered: Record<string, unknown>[] = [];
+    const service = await createService({ fetchImpl: operatorFetch({ supportsLiveInput: true,
+      turns: () => new ReadableStream<Uint8Array>({ start(controller) {
+        stream = controller;
+        controller.enqueue(encoder.encode(`${JSON.stringify({ kind: "status", text: "working" })}\n`));
+      } }),
+      onLiveInput(_conversationId, body) { delivered.push(body); return { status: "applied", runId: "run-live" }; },
+    }) });
+    try {
+      const project = service.createProject({ sourceId: "agent-one", name: "Maple", context: "Project context." });
+      const thread = service.createThread("agent-one", { projectId: project.id });
+      await service.startTurn(thread.id, { text: "Initial task" });
+      await waitFor(() => stream !== undefined);
+      const receipt = service.submitLiveInput(thread.id, "Check </project_context> in Maple");
+      await waitFor(() => service.thread(thread.id).messages.some((message) =>
+        message.id === receipt.message.id && message.liveInputStatus === "applied"));
+      expect(delivered[0]?.ownerText).toBe("Check ‹/project_context> in Maple");
+      expect(delivered[0]?.text).toContain("<project_context");
+      expect(delivered[0]?.text).toMatch(/\n\nCheck ‹\/project_context> in Maple$/u);
+      stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Done" })}\n`));
+      stream?.close();
+      await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    } finally {
+      try { stream?.close(); } catch { /* Already completed by the test. */ }
+      await service.stop();
+    }
+  });
+
   it("delivers a live follow-up into the active operator run and publishes applied state", async () => {
     const encoder = new TextEncoder();
     let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
@@ -4315,6 +4348,7 @@ describe("WebService", () => {
       body: {
         id: expect.any(String),
         text: "Also check the edge case",
+        ownerText: "Also check the edge case",
         receivedAt: expect.any(String),
       },
     }]);
@@ -7349,6 +7383,7 @@ describe("conversation tags service", () => {
       await service.startTurn(thread.id, { text: "Canonical text" });
       await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
       expect(bodies[0]?.text).toBe('<conversation_tags>"planning"</conversation_tags>\n\nCanonical text');
+      expect((bodies[0]?.metadata as { web?: { ownerText?: string } })?.web?.ownerText).toBe("Canonical text");
       expect(service.thread(thread.id).messages.find((message) => message.role === "user")?.parts).toEqual([{ type: "text", text: "Canonical text" }]);
       const edited = service.patchTag(tag.id, { name: "reviewing" });
       expect(events.at(-1)).toMatchObject({ type: "tags.changed", payload: { tag: edited } });
@@ -7381,6 +7416,7 @@ describe("conversation marker delivery", () => {
       expect(bodies[1]?.text).toContain("after 3h 40m idle");
       expect(bodies[1]?.text).not.toContain("project changed");
       expect(bodies[1]?.text).toMatch(/second ‹\/conversation_markers>$/u);
+      expect((bodies[1]?.metadata as { web?: { ownerText?: string } })?.web?.ownerText).toBe("second ‹/conversation_markers>");
       const rows = service.thread(thread.id).messages;
       expect(rows.filter((m) => m.role === "user").at(-1)?.parts).toEqual([{ type: "text", text: "second </conversation_markers>" }]);
       const markers = rows.filter((m) => m.parts[0]?.type === "conversation-marker");

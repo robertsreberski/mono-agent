@@ -1235,6 +1235,7 @@ export class MonoAgentHarness implements AgentHarness {
           ? "omitted"
           : "messages",
         turnId: runId,
+        originalUserMessage: request.userMessage,
         ...(exclusiveCapturedHistory === undefined ? {} : { historyOverride: exclusiveCapturedHistory }),
       }, emit);
       context = prepared.context;
@@ -1307,6 +1308,7 @@ export class MonoAgentHarness implements AgentHarness {
         prepared = await prepareHarnessContext(this.options, this.skillsCache, activeRequest, {
           historyMode: "messages",
           turnId: runId,
+          originalUserMessage: request.userMessage,
           ...(exclusiveCapturedHistory === undefined ? {} : { historyOverride: exclusiveCapturedHistory }),
         }, emit);
         context = prepared.context;
@@ -1519,13 +1521,15 @@ export class MonoAgentHarness implements AgentHarness {
         ? []
         : await continuationCapabilitiesRequiringOriginContext(continuationCapabilities);
       if (request.continuation?.deferHistoryCommit !== true) {
+        const appliedLiveInputs = liveInputMailbox?.applied() ?? [];
         completedTurn = await buildSuccessfulTurn(this.options,
           request.conversationId,
           persistText,
-          liveInputMailbox?.applied() ?? [],
+          appliedLiveInputs,
           text,
           runId,
           request.sender,
+          request,
         );
         throwIfCancellationOwned();
         try {

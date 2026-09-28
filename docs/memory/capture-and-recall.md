@@ -385,7 +385,10 @@ Recall fuses two retrievers and re-ranks the result:
 - **Vector similarity** over the configured embeddings.
 - With embeddings, ranking is **embedding-first**: every candidate from either retriever is scored by its stored vector's cosine similarity (below `0.5` counts as no semantic evidence). Shared words add nothing by themselves; only exact names, numbers and dates earn a bounded bonus: each query anchor carries an equal share of up to `0.15` for numbers and dates and `0.08` for names. The embedding already reflects a name, so the smaller name bonus keeps records that only share a name from being lifted as far. A query word is such an anchor when it is a whole number, date or numeric identifier (`1988-11-02` never matches `1988-12-02`), or a word of at least three letters in the name of an entity associated with a candidate record; there is no question-word or stop-word list; matching normalizes Unicode and ignores case and accents (`Zoe` matches `Zoë`). A small **Reciprocal Rank Fusion (RRF)** rank hint breaks ties; salience/insight are small tie-breakers. `lastAccessedAt` and access counts are telemetry only and never affect ranking.
 - Without embeddings (Lite, or a temporary embedding outage), and for a record still waiting for its vector, evidence remains lexical term overlap as before.
-- Automatic recall at the start of a turn shows a small **possibly relevant** block. The main agent model decides what matters; the block never claims to answer:
+
+On web turns, recall and capture use the model-visible owner's unprefixed text rather than the host's project, tag, or conversation-marker envelope. Recall also uses the extracted attachment text, while capture keeps only redacted attachment metadata. The model still receives that envelope, and canonical history retains the dispatched text. This applies to bound live follow-ups too; other hosts use their existing message text. An authenticated direct adapter client can supply a matching trailing owner text that omits earlier model-visible context from capture; the web console always sends the whole owner message.
+
+Automatic recall at the start of a turn shows a small **possibly relevant** block. The main agent model decides what matters; the block never claims to answer:
 
   ```text
   ## Memory (possibly relevant — may be unrelated; verify before relying)

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix web memory recall and capture using host-generated project, tag, or
+  conversation-marker text instead of the owner's original message.
+
 - Give each Telegram forum topic its own conversation, history, queue,
   `/cancel`, `/new`, and `/model`/`/effort` selection, and send replies,
   activity, questions, status lines, files, and background-job cards back to
