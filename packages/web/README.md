@@ -939,8 +939,9 @@ whole conversation, independently of the paginated transcript. It folds
 synchronous delegation cost into the parent run, adds detached job spend once,
 and marks token or cost lower bounds when telemetry is incomplete. Synchronous
 subagents report their measured token share; older or unmeasured runs keep the
-sub-line partial, while detached progress can carry optional token counts when
-an upgraded agent begins reporting them. Assistant
+sub-line partial, while detached progress carries measured per-job token counts
+from upgraded agents. Older jobs without counts keep the totals as lower bounds.
+Assistant
 parts are scanned on demand and memoized by message row identity and sequence; no
 additional storage table is required.
 

@@ -292,5 +292,10 @@ describe("redesigned usage projections", () => {
     expect(windowUsage(sample).total).toMatchObject({ tokensPartial: true, costPartial: true, costUsd: 0 });
     expect(windowUsage(sample)).not.toHaveProperty("settledAssistantTurns");
     expect(windowUsage({ ...sample, messagesNextCursor: undefined })).toHaveProperty("settledAssistantTurns");
+    const child = { type: "subagent", toolCallId: "delegate", name: "helper", status: "complete", calls: [],
+      usage: { input: 7, output: 2, cacheRead: 0, cacheWrite: 0 } } as MessagePart;
+    const partial = windowUsage({ ...detail([message("child", [child])]), messagesNextCursor: "older" });
+    expect(partial.subagents).toMatchObject({ runs: 1, tokensPartial: true });
+    expect(partial.subagents).not.toHaveProperty("runsWithTokens");
   });
 });

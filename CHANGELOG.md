@@ -8,12 +8,15 @@
 
 - Let the web Context usage sheet show the window, conversation-wide tokens,
   estimated cost by model and subagent share, compact provider plan meters, and
-  manual Compact. Detached subagent jobs do not report token counts yet, so
-  token totals show a lower bound when they ran.
+  manual Compact. Older detached subagent jobs without token reports leave
+  totals as lower bounds.
 
 - Show measured synchronous subagent tokens in the web Context usage sub-line,
-  distinguish mixed reports from missing reports, and accept future detached
-  job token counts without emitting them yet.
+  distinguish mixed reports from missing reports, and accept detached job
+  token counts across staged upgrades.
+
+- Add per-job token counts to detached subagent progress when reported; show
+  exact Context totals once every detached job has measured tokens.
 
 - Fix manual context compaction for app-hosted conversations with durable Pi
   sessions, including web model selections; log safe unsupported reasons on the

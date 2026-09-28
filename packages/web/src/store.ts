@@ -3036,6 +3036,8 @@ export class WebStore {
     const fetch = this.database.prepare("SELECT id, parts_json FROM messages WHERE id IN (SELECT value FROM json_each(?))");
     // A same-run cron re-insert can reuse both the deterministic id and created_at.
     // The SQLite row identity distinguishes it even when seq restarts at zero.
+    // SQLite can reuse the highest deleted rowid, but cron retention deletes a
+    // same-run card before a usage read could memoize its discarded row.
     const memoKey = (row: (typeof rows)[number]) => `${row.id}:${row.rowid}:${row.seq}`;
     let misses = 0;
     let parsedBytes = 0;
@@ -9117,11 +9119,22 @@ function canonicalizePersistedPartHistory(value: unknown): unknown {
   if (part.type === "tool-call") return canonicalizePersistedHistoryRecord(part);
   if (part.type !== "subagent") return value;
   const canonicalPart = canonicalizePersistedObjectHistory(part);
-  const { attribution: _rawAttribution, ...withoutAttribution } = canonicalPart;
+  const { attribution: _rawAttribution, usage: _rawUsage, ...withoutOptional } = canonicalPart;
   const attribution = canonicalRunAttribution(part.attribution);
+  const rawUsage = part.usage;
+  // Old consoles may read newer optional subagent fields. Preserve the known
+  // sample and ignore extensions; drop malformed usage, never the whole message.
+  const candidate = typeof rawUsage === "object" && rawUsage !== null && !Array.isArray(rawUsage)
+    ? rawUsage as Record<string, unknown> : undefined;
+  const selected = candidate === undefined ? undefined : {
+    input: candidate.input, output: candidate.output,
+    cacheRead: candidate.cacheRead, cacheWrite: candidate.cacheWrite,
+  };
+  const usage = validSubagentUsage(selected) ? selected : undefined;
   return {
-    ...withoutAttribution,
+    ...withoutOptional,
     ...(attribution === undefined ? {} : { attribution }),
+    ...(usage === undefined ? {} : { usage }),
     ...(Array.isArray(part.calls)
       ? { calls: part.calls.map((call) => canonicalizePersistedHistoryRecord(call)) }
       : {}),
