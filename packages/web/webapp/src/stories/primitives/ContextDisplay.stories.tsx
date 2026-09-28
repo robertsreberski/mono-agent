@@ -80,3 +80,4 @@ export const ProviderUsageStale: Story = { args: { ...base, providerUsage: { ...
 export const ProviderUsageError: Story = { args: { ...base, providerUsage: { ...providerUsage, agent: { ...providerAgent, sourceId: "atlas-story-usage-error" } } }, play: open };
 export const Mobile: Story = { args: MultiModelSubagents.args, play: MultiModelSubagents.play, globals: { viewport: { value: "phone" } } };
 export const MobileNearlyFull: Story = { args: NearlyFull.args, play: NearlyFull.play, globals: { viewport: { value: "phone" } } };
+export const MobileOceanDark: Story = { args: Mobile.args, play: Mobile.play, globals: { viewport: { value: "phone" }, scheme: "dark", theme: "ocean" } };

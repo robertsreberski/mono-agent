@@ -170,9 +170,8 @@ const convertPart = (
       return { type: "data-cron-reply-context", data: jsonObject(part) };
     case "telemetry":
       // Most telemetry remains store-only for chrome such as ContextDisplay.
-      // Compaction is user-visible activity, so expose that one canonical kind
-      // as a named data part that can join reasoning/tools without leaking raw
-      // provider diagnostics into the transcript.
+      // Compaction is a user-visible transcript event, so expose its canonical
+      // kind without leaking raw provider diagnostics into the transcript.
       if (isContextCompactionPart(part)) {
         return { type: "data-context-compaction", data: jsonObject(part.data) };
       }
@@ -259,7 +258,6 @@ const ACTIVITY_PART_TYPES: ReadonlySet<string> = new Set([
   "reasoning",
   "tool-call",
   "data-subagent",
-  "data-context-compaction",
   "data-process-job",
   "data-process-job-event",
 ]);
@@ -285,9 +283,11 @@ const isSteerPart = (part: ConvertedPart): boolean => part.type === "data-steer"
  * the band splits at exactly the point the run consumed the follow-up. The
  * answer still closes the turn.
  *
- * An error part is neither: it stays behind the answer so it cannot split the
- * log, and so does any data part a newer server sends that this bundle cannot
- * place. A turn that produced no prose at all is all activity.
+ * A compaction is also neither: in settled turns it follows the final answer
+ * (including a manual result attached later); in running turns it retains its
+ * original part position. It never hides in Activity. An error part likewise
+ * stays behind the answer, as does any newer unplaced data part. A turn that
+ * produced no prose at all is all activity.
  */
 const foldSettledActivity = (parts: readonly ConvertedPart[]): ConvertedPart[] => {
   const visible = parts.filter((part) => !isBlankText(part));

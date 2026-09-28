@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix the web Context usage phone sheet's dark overlay and show manual and
+  automatic compaction outcomes as visible conversation dividers.
+
 - Let agents configure reply-file storage up to an explicit unlimited setting,
   default to 2 GiB, and select a per-file limit up to the 20 MiB delivery cap.
   Group repeated storage-full reply failures into one card per reply.

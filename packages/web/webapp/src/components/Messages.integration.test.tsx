@@ -687,6 +687,7 @@ describe("AssistantMessage grouped parts", () => {
       "aria-expanded",
       "false",
     );
+    expect(screen.getByRole("note", { name: /Context compacted · 80k → ≈20k tokens · automatic/u })).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Activity" }));
     // A thought is a row like any other: its own preview, with no label
     // competing with the text that says what the model was working out.
@@ -694,9 +695,7 @@ describe("AssistantMessage grouped parts", () => {
       selector: ".activity-row-summary",
     })).toBeVisible();
     expect(screen.getByText("Inspect workspace")).toBeVisible();
-    expect(screen.getByRole("status", {
-      name: "Context compacted, proactive, ~80k → ~20k tokens",
-    })).toBeVisible();
+    expect(screen.getByRole("note", { name: /Context compacted · 80k → ≈20k tokens · automatic/u })).toBeVisible();
     expect(screen.queryByText("Telemetry")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Token usage and cost")).not.toBeInTheDocument();
     expect(screen.getByText("The workspace is ready.")).toBeVisible();
@@ -779,14 +778,14 @@ describe("AssistantMessage grouped parts", () => {
     // The runtime settles a message asynchronously, so the settled state is
     // awaited on real timers. The frozen figure comes from the two server
     // stamps, not from the clock; the settled fixture folds to one band of
-    // reasoning + tool + compaction.
+    // reasoning + tool; the compaction divider is outside Activity.
     vi.useRealTimers();
     rerender(<MessageHarness message={{
       ...assistantMessage("complete"),
       finishedAt: "2026-07-17T10:00:05.400Z",
     }} />);
     const settled = await screen.findByRole("button", { name: "Activity" });
-    expect(settled).toHaveTextContent("3 steps \u00b7 5s");
+    expect(settled).toHaveTextContent("2 steps \u00b7 5s");
   });
 
   it("gives the clock to the band still open and counts steps on the rest", () => {
@@ -817,13 +816,13 @@ describe("AssistantMessage grouped parts", () => {
   });
 
   it("shows steps only for a historical record with no finish stamp", () => {
-    // A cancelled turn keeps arrival order: reasoning + tool + compaction form
-    // the band (3 steps); usage telemetry never renders; the text follows.
+    // A cancelled turn keeps arrival order: reasoning + tool form
+    // the band (2 steps); compaction appears as a divider, then text follows.
     const { finishedAt: _omitted, ...legacy } = assistantMessage("cancelled");
     render(<MessageHarness message={legacy} />);
 
     const trigger = screen.getByRole("button", { name: "Activity" });
-    expect(trigger).toHaveTextContent("3 steps");
+    expect(trigger).toHaveTextContent("2 steps");
     expect(trigger.textContent).not.toContain("\u00b7");
   });
 
@@ -957,29 +956,59 @@ describe("AssistantMessage grouped parts", () => {
     });
     const runningMessage: WebMessage = {
       ...assistantMessage("running"),
-      parts: [compaction("running")],
+      parts: [{ type: "text", text: "Before compaction." }, compaction("running"),
+        { type: "text", text: "After compaction." }],
     };
     const { rerender } = render(<MessageHarness message={runningMessage} />);
 
-    expect(screen.getByRole("status", { name: "Compacting context" })).toBeVisible();
-    expect(screen.getAllByRole("status")).toHaveLength(1);
+    const runningRow = screen.getByRole("note", { name: "Compacting context… · automatic" });
+    expect(runningRow).toBeVisible();
+    expect(screen.getByText("Before compaction.").compareDocumentPosition(runningRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
 
     rerender(<MessageHarness message={{
       ...runningMessage,
       updatedAt: "2026-07-17T10:00:01.000Z",
       parts: [compaction("succeeded")],
     }} />);
-    expect(await screen.findByRole("status", { name: "Context compacted" })).toBeVisible();
-    expect(screen.queryByRole("status", { name: "Compacting context" })).not.toBeInTheDocument();
-    expect(screen.getAllByRole("status")).toHaveLength(1);
+    expect(await screen.findByRole("note", { name: "Context compacted · automatic" })).toBeVisible();
+    expect(screen.queryByRole("note", { name: "Compacting context… · automatic" })).not.toBeInTheDocument();
 
     rerender(<MessageHarness message={{
       ...runningMessage,
       status: "interrupted",
       updatedAt: "2026-07-17T10:00:02.000Z",
     }} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Activity" }));
-    expect(await screen.findByRole("status", { name: "Context compaction interrupted" })).toBeVisible();
+    expect(await screen.findByRole("note", { name: "Context compaction interrupted · automatic" })).toBeVisible();
+  });
+
+  it("renders manual results after the answer and all automatic states inline, without opening Activity", () => {
+    const telemetry = (status: string, trigger: string, reason?: string) => ({
+      type: "telemetry" as const, event: "runtime_telemetry",
+      data: { kind: "context_compaction", data: {
+        status, trigger, reason, tokensBefore: 183_400, tokensAfter: 41_300,
+      } },
+    });
+    render(<MessagesHarness messages={[
+      { ...assistantMessage("complete"), parts: [
+        { type: "text", text: "The answer is ready." }, telemetry("succeeded", "manual"),
+      ] },
+      { ...assistantMessage("complete"), id: "auto-skipped", parts: [
+        { type: "text", text: "Before." }, telemetry("skipped", "automatic"), { type: "text", text: "After." },
+      ] },
+      { ...assistantMessage("complete"), id: "auto-failed", parts: [telemetry("failed", "overflow")] },
+      { ...assistantMessage("complete"), id: "model-changed", parts: [telemetry("skipped", "manual", "model_changed")] },
+    ]} />);
+    const rows = screen.getAllByRole("note");
+    expect(rows).toHaveLength(4);
+    expect(rows[0]).toHaveTextContent("Context compacted · 183.4k → ≈41.3k tokens · manual");
+    expect(screen.getByText("The answer is ready.").compareDocumentPosition(rows[0]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(rows[1]).toHaveTextContent("Context compaction skipped · 183.4k → ≈41.3k tokens · Nothing to compact yet. · automatic");
+    expect(screen.getByText("After.").compareDocumentPosition(rows[1]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Settled turns put compaction after the answer; running turns retain part order.
+    expect(rows[2]).toHaveTextContent("Context compaction failed");
+    expect(rows[3]).toHaveTextContent("Switch back to this conversation's model to compact this session.");
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
   it("keeps activity open while completed tool entries arrive in a running message", async () => {

@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { page } from "@vitest/browser/context";
+import { commands, page } from "@vitest/browser/context";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { agent } from "../../test/fixtures";
 import type { ProviderUsageSnapshot } from "../../types";
@@ -33,9 +33,19 @@ const show = async (data = totals) => {
   const region = await screen.findByRole("region", { name: "OpenCode Go plan" });
   return { trigger, dialog: screen.getByRole("dialog", { name: "Context usage" }), region };
 };
-afterEach(async () => { vi.clearAllMocks(); await page.viewport(1440, 1000); });
+afterEach(async () => { vi.clearAllMocks(); delete document.documentElement.dataset.consoleTheme; await commands.emulateColorScheme(null); await page.viewport(1440, 1000); });
 
 describe("Context usage layout", () => {
+  it.each(["ocean", "evergreen"])("uses the model-selector dark scrim on %s dark phone sheets", async (theme) => {
+    await page.viewport(390, 844);
+    await commands.emulateColorScheme("dark");
+    document.documentElement.dataset.consoleTheme = theme;
+    await show();
+    const backdrop = document.querySelector<HTMLElement>(".context-display-backdrop")!;
+    expect(getComputedStyle(backdrop).backgroundColor).toBe("rgba(7, 10, 8, 0.48)");
+    const shots = import.meta.env.VITE_CONTEXT_FOLLOWUP_SHOTS as string | undefined;
+    if (shots) await page.screenshot({ path: `${shots}/context-sheet-${theme}-dark-phone.png` });
+  });
   it("renders three bounded single-column provider rows and fits the 390 × 844 sheet", async () => {
     await page.viewport(390, 844);
     const { dialog, region } = await show();
