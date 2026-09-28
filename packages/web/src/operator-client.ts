@@ -188,6 +188,7 @@ export interface OperatorLiveInputInput {
   readonly conversationId: string;
   readonly id: string;
   readonly text: string;
+  readonly ownerText?: string;
   readonly receivedAt: string;
   readonly deliveryKey?: string;
   readonly targetTurnId?: string;
@@ -528,6 +529,7 @@ export class OperatorClient {
         body: JSON.stringify({
           id: input.id,
           text: input.text,
+          ...(input.ownerText === undefined ? {} : { ownerText: input.ownerText }),
           receivedAt: input.receivedAt,
           ...(input.targetTurnId === undefined ? {} : { targetTurnId: input.targetTurnId }),
           ...(input.targetRunId === undefined ? {} : { targetRunId: input.targetRunId }),

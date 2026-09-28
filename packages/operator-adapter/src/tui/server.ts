@@ -998,6 +998,8 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
             conversationId,
             id: inputId,
             text: inputText,
+            ...(typeof body.ownerText === "string" && body.ownerText.length <= inputText.length
+              ? { ownerText: body.ownerText } : {}),
             receivedAt,
             targetRunId: runId,
             ...(typeof body.deliveryKey === "string" ? { deliveryKey: body.deliveryKey } : {}),
@@ -1044,6 +1046,8 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
         conversationId,
         id: body.id,
         text: body.text,
+        ...(typeof body.ownerText === "string" && body.ownerText.length <= body.text.length
+          ? { ownerText: body.ownerText } : {}),
         receivedAt: body.receivedAt,
         ...(explicitRunId === undefined ? {} : { targetRunId: explicitRunId }),
         ...(typeof body.deliveryKey === "string" ? { deliveryKey: body.deliveryKey } : {}),
@@ -2176,7 +2180,11 @@ function requestMetadata(body: NormalizedTurnBody, requestId: string): Record<st
     return { ...body.metadata, source: "acp", acpRequestId: requestId };
   }
 
-  const web = isRecord(body.metadata.web) ? body.metadata.web : undefined;
+  const incomingWeb = isRecord(body.metadata.web) ? body.metadata.web : undefined;
+  const web = incomingWeb !== undefined && typeof incomingWeb.ownerText === "string"
+    && incomingWeb.ownerText.length > body.text.length
+    ? Object.fromEntries(Object.entries(incomingWeb).filter(([key]) => key !== "ownerText"))
+    : incomingWeb;
   const existingTui = isRecord(body.metadata.tui) ? body.metadata.tui : undefined;
   const overrideMirror = web === undefined
     ? undefined

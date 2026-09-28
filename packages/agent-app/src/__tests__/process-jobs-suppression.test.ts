@@ -50,7 +50,7 @@ describe("exact process-job wake silence", () => {
       return { text: "Wake received." };
     } });
     const key = "process-job:memory";
-    const human = { ...request(), text: "Morgan likes tea", captureSpeakerKind: "human-turn" as const };
+    const human = { ...request(), text: "What does Morgan like to drink?", captureSpeakerKind: "human-turn" as const };
     await responder.respond(human, stream);
     await runWithProcessJobWakeContext({ jobId: "memory", chainDepth: 1 }, async () => {
       await responder.respond({ ...human, metadata: request(key).metadata }, stream);

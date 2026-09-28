@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Fix web memory recall and capture using host-generated project, tag, or
+  conversation-marker text instead of the bound, model-visible owner message,
+  including attachment context and live follow-ups.
+
+- Keep owner turns of at most 16 Unicode code points on web, TUI and ACP from
+  injecting unsolicited relevant lines while retaining person cards, labelled
+  background, explicit `MemoryRecall`, and capture.
+
 - Give each Telegram forum topic its own conversation, history, queue,
   `/cancel`, `/new`, and `/model`/`/effort` selection, and send replies,
   activity, questions, status lines, files, and background-job cards back to

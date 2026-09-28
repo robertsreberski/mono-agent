@@ -10,6 +10,7 @@ import type { RuntimeLiveInputMessage } from "@mono-agent/runtime-adapter";
 export interface AppliedLiveInput {
   readonly id: string;
   readonly text: string;
+  readonly ownerText?: string;
   readonly receivedAt: string;
   /** Host-owned wake identity. Its text must not become canonical user history. */
   readonly deliveryKey?: string;
@@ -199,6 +200,7 @@ export function createLiveInputMailbox(runId: string, onClose?: () => void): Liv
         .map((entry) => ({
           id: entry.request.id,
           text: entry.request.text,
+          ...(entry.request.ownerText === undefined ? {} : { ownerText: entry.request.ownerText }),
           receivedAt: entry.request.receivedAt,
           ...(entry.request.deliveryKey === undefined ? {} : { deliveryKey: entry.request.deliveryKey }),
         }));

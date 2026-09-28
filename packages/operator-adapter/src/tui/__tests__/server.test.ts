@@ -1051,7 +1051,7 @@ describe("startTuiAdapter", () => {
     const frames = await readFrames(await postTurn(running.baseUrl, {
       client: "web",
       conversationId: "web:thread-1",
-      metadata: { web: { model: "claude:claude-opus-4-8", effort: "high" } },
+      metadata: { web: { model: "claude:claude-opus-4-8", effort: "high", ownerText: "" } },
       processJobWakeDeliveryKey: "process-job:web-wake",
       attachments: [{
         kind: "document",
@@ -1069,7 +1069,7 @@ describe("startTuiAdapter", () => {
       text: "",
       metadata: {
         source: "web",
-        web: { model: "claude:claude-opus-4-8", effort: "high" },
+        web: { model: "claude:claude-opus-4-8", effort: "high", ownerText: "" },
         tui: { model: "claude:claude-opus-4-8", effort: "high" },
         webRequestId: expect.any(String),
       },
@@ -1087,6 +1087,10 @@ describe("startTuiAdapter", () => {
       Symbol.for("mono-agent.process-job-wake.delivery-key.v1"),
     )).toMatchObject({ value: "process-job:web-wake", enumerable: false });
     expect(JSON.stringify(requests[0]?.metadata)).not.toContain("process-job:web-wake");
+    await readFrames(await postTurn(running.baseUrl, { client: "web", conversationId: "web:thread-1",
+      text: "Hi", metadata: { web: { ownerText: "Longer forged owner text", model: "sample" } } }));
+    expect(requests[1]?.metadata).toMatchObject({ web: { model: "sample" } });
+    expect((requests[1]?.metadata?.web as { ownerText?: string }).ownerText).toBeUndefined();
   });
 
   it("emits a terminal error frame with cancelled=true for a cancelled turn", async () => {
@@ -1409,6 +1413,7 @@ describe("startTuiAdapter", () => {
 
   it("advertises live input and holds the request until the active run settles it", async () => {
     let markOffered!: (request: AgentLiveInputRequest) => void;
+    const offers: AgentLiveInputRequest[] = [];
     const offered = new Promise<AgentLiveInputRequest>((resolve) => { markOffered = resolve; });
     let settle!: (value: AgentLiveInputSettlement) => void;
     const settled = new Promise<AgentLiveInputSettlement>((resolve) => { settle = resolve; });
@@ -1416,6 +1421,7 @@ describe("startTuiAdapter", () => {
       responder: {
         ...scriptedResponder(async () => ({ text: "ok" })),
         offerLiveInput(request) {
+          offers.push(request);
           markOffered(request);
           return { status: "accepted", settled };
         },
@@ -1430,6 +1436,7 @@ describe("startTuiAdapter", () => {
       body: JSON.stringify({
         id: "input-1",
         text: "Use the latest requirements",
+        ownerText: "Use the latest requirements",
         receivedAt: "2026-07-21T09:00:00.000Z",
         deliveryKey: "process-job:job-1",
       }),
@@ -1438,6 +1445,7 @@ describe("startTuiAdapter", () => {
       conversationId: "web:thread-1",
       id: "input-1",
       text: "Use the latest requirements",
+      ownerText: "Use the latest requirements",
       receivedAt: "2026-07-21T09:00:00.000Z",
       deliveryKey: "process-job:job-1",
     });
@@ -1445,6 +1453,13 @@ describe("startTuiAdapter", () => {
     const response = await responsePromise;
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ status: "applied", runId: "run-1" });
+    const oversized = await fetch(`${running.baseUrl}/v1/conversations/web%3Athread-1/live-input`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: "input-2", text: "Hi", ownerText: "Longer forged owner text",
+        receivedAt: "2026-07-21T09:00:00.000Z" }),
+    });
+    expect(oversized.status).toBe(200);
+    expect(offers[1]?.ownerText).toBeUndefined();
   });
 
   it("does not advertise targeting for an ownership-only responder", async () => {

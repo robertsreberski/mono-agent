@@ -912,6 +912,8 @@ export interface AgentLiveInputRequest {
   /** Stable transport message id, used to make duplicate delivery idempotent. */
   readonly id: string;
   readonly text: string;
+  /** Web owner-authored text, accepted for memory only when bound to text. */
+  readonly ownerText?: string;
   /** ISO-8601 transport receipt time, preserved in canonical history. */
   readonly receivedAt: string;
   /**
