@@ -171,6 +171,11 @@ describe("configured subagents", () => {
       "SlackSendMessage",
       "TelegramSendMessage",
       "TelegramSendFile",
+      "TelegramListTopics",
+      "TelegramListSchedules",
+      "TelegramCreateSchedule",
+      "TelegramUpdateSchedule",
+      "TelegramDeleteSchedule",
     ]);
   });
 
