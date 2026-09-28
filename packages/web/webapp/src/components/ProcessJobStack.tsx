@@ -232,10 +232,10 @@ export function ProcessJobStack() {
     chips.push(chip("questions", "question", <ProcessJobGlyph small tone="question" mark="question" />, counts.questions, processJobCountWords.questions(counts.questions)));
   }
   if (counts.issues > 0) {
-    chips.push(chip("issues", "danger", <Icon name="alert" size={12} strokeWidth={2.2} />, counts.issues, processJobCountWords.issues(counts.issues)));
+    chips.push(chip("issues", "danger", <ProcessJobGlyph small tone="danger" mark="cross" />, counts.issues, processJobCountWords.issues(counts.issues)));
   }
   if (current.length === 0 && counts.finished > 0) {
-    chips.push(chip("finished", "neutral", <Icon name="restore" size={12} strokeWidth={2} />, counts.finished, processJobCountWords.finished(counts.finished, historyIsBounded)));
+    chips.push(chip("finished", "success", <ProcessJobGlyph small tone="success" mark="check" />, counts.finished, processJobCountWords.finished(counts.finished, historyIsBounded)));
   }
 
   return (

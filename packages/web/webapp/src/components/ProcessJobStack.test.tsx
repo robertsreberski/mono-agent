@@ -206,10 +206,13 @@ describe("ProcessJobStack", () => {
     expect(stack).toHaveClass("is-quiet");
     expect(shelfToggle()).toHaveAccessibleName(/1 finished/u);
     expect(announcement(view.container)).toHaveTextContent("Background jobs: No active jobs, 1 finished.");
+    // Header chips use the rows' settled glyphs: finished is the green check.
+    expect(shelfToggle().querySelector(".process-job-chip.is-success .process-job-glyph")).toHaveClass("is-success", "is-check");
 
     view.rerender(<StackHarness threadId="thread" jobs={[entry(processJob({ jobId: "done-job" })), entry(processJob({ jobId: "broken-job", state: "failed" }))]} />);
     expect(stack).not.toHaveClass("is-quiet");
     expect(shelfToggle()).toHaveAccessibleName(/1 issue/u);
+    expect(shelfToggle().querySelector(".process-job-chip.is-danger .process-job-glyph")).toHaveClass("is-danger", "is-cross");
   });
 
   it("hides a polling card before the next frame when it settles and does not remount it", async () => {
