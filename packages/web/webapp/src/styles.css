@@ -1438,6 +1438,7 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .process-job-chip.is-running { color: var(--process-job-progress-text); background: color-mix(in srgb, var(--process-job-progress) 14%, transparent); }
 .process-job-chip.is-question { color: var(--process-job-warning-text); background: color-mix(in srgb, var(--warning) 14%, transparent); }
 .process-job-chip.is-danger { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+.process-job-chip.is-success { color: var(--process-job-success-text); background: color-mix(in srgb, var(--success) 12%, transparent); }
 .process-job-chip.is-neutral, .process-job-chip.is-waiting, .process-job-chip.is-stopping { color: var(--text-soft); background: color-mix(in srgb, var(--text) 7%, transparent); }
 /* A chip's glyph takes the chip's text colour: the text-safe tone on its tint. */
 .process-job-chip .process-job-chip-mark > .process-job-glyph { color: inherit; }

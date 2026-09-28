@@ -14,6 +14,10 @@
   that finds the topic deleted marks it gone, and deleting a project detaches
   the topic without touching Telegram. Existing configs are unchanged.
 
+- Use the same circular glyphs in the web Background jobs shelf's closed-bar
+  chips as in its rows: issues show a red cross and finished jobs a green
+  check, replacing the warning triangle and history arrow.
+
 - Fix web memory recall and capture using host-generated project, tag, or
   conversation-marker text instead of the bound, model-visible owner message,
   including attachment context and live follow-ups.
