@@ -32,12 +32,20 @@ vi.mock("./api", async (importOriginal) => ({
     latestAgentRestart: vi.fn(),
     patchAgent: vi.fn(),
     providerAuthStatus: vi.fn(),
+    beginProviderAuth: vi.fn(),
+    providerAuthSession: vi.fn(),
+    cancelProviderAuth: vi.fn(),
     providerUsage: vi.fn(),
   },
 }));
-vi.mock("./notifications", () => ({ NotificationBell: () => null }));
+vi.mock("./notifications", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./notifications")>(),
+  NotificationBell: () => null,
+}));
 
 import { api } from "./api";
+import { NOTIFICATION_OPEN_CONVERSATION_EVENT } from "./notifications";
+import { getSettingsDraft, setSettingsDraft, discardSettingsDraft } from "./settings-drafts";
 import { App } from "./App";
 
 /** Opt-in evidence; ordinary browser runs assert the same DOM without writing images. */
@@ -101,6 +109,8 @@ beforeEach(async () => {
   vi.resetAllMocks();
   SyntheticEventSource.instances = [];
   currentStore = null;
+  discardSettingsDraft("alpha");
+  discardSettingsDraft("beta");
   localStorage.clear();
   window.history.replaceState(null, "", "/");
   localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
@@ -138,6 +148,8 @@ afterEach(async () => {
   await commands.emulateColorScheme(null);
   await persistence.clearAll();
   localStorage.clear();
+  discardSettingsDraft("alpha");
+  discardSettingsDraft("beta");
   window.history.replaceState(null, "", "/");
 });
 
@@ -154,6 +166,59 @@ const prepareRouteFixture = () => {
 };
 
 describe("real route writers under mounted App settings", () => {
+  it("cancels an agent A sign-in after a cross-agent notification, restores B's section and retains A's draft (N24)", async () => {
+    await page.viewport(390, 844);
+    prepareRouteFixture();
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+      [agent("alpha", { label: "Alpha", supportsProviderAuth: true, models: ["provider/model", "provider/other"] }), agent("beta", { label: "Beta" })],
+      [selected, betaCron, alphaCron], selected.id,
+    ));
+    const status = {
+      schema: "mono-agent.provider-auth.v1" as const,
+      generatedAt: "2026-09-06T12:00:00.000Z",
+      providers: [{ providerId: "fictional", label: "Fictional provider", usages: [], state: "missing" as const,
+        verification: "not_verified" as const, methods: [{ authType: "api_key" as const, strategy: "api_key_prompt" as const, label: "API key", recommended: true }] }],
+    };
+    vi.mocked(api.providerAuthStatus).mockImplementation(async (source) => source === "alpha" ? status : { ...status, providers: [] });
+    const session = {
+      schema: "mono-agent.provider-auth-session.v1" as const, id: "fictional-session", providerId: "fictional",
+      authType: "api_key", strategy: "api_key_prompt", state: "awaiting_input",
+      createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:00.000Z", expiresAt: "2026-09-06T12:20:00.000Z",
+      prompt: { id: "fictional-prompt", type: "secret" as const, message: "Enter example key" },
+    } as const;
+    vi.mocked(api.beginProviderAuth).mockResolvedValue(session);
+    vi.mocked(api.providerAuthSession).mockResolvedValue(session);
+    vi.mocked(api.cancelProviderAuth).mockResolvedValue(undefined);
+    setSettingsDraft("alpha", { model: "provider/other", effort: "" });
+    renderApp();
+    await waitFor(() => expect(currentStore?.selectedAgent?.sourceId).toBe("alpha"));
+    act(() => window.dispatchEvent(new CustomEvent("mono-agent:agent-settings", { detail: { section: "providers" } })));
+    expect(await screen.findByText("Fictional provider")).toBeVisible();
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Authenticate/ })).toBeEnabled());
+    screen.getByRole("button", { name: /^Authenticate/ }).click();
+    expect(await screen.findByLabelText("Enter example key")).toBeVisible();
+    await waitFor(() => expect(api.beginProviderAuth).toHaveBeenCalledExactlyOnceWith("alpha", "fictional", status.providers[0]!.methods[0]));
+    act(() => {
+      currentStore!.selectThread(betaCron.id);
+      window.dispatchEvent(new Event(NOTIFICATION_OPEN_CONVERSATION_EVENT));
+    });
+    await waitFor(() => expect(currentStore?.selectedAgent?.sourceId).toBe("beta"));
+    await waitFor(() => expect(api.cancelProviderAuth).toHaveBeenCalledExactlyOnceWith("alpha", "fictional-session", expect.any(AbortSignal)));
+    expect(screen.queryByLabelText("Enter example key")).toBeNull();
+    expect(getSettingsDraft("alpha")).toEqual({ model: "provider/other", effort: "" });
+    expect(window.history.state.monoAgentMobileNavigation.surface).toBe("conversation");
+    window.history.back();
+    await waitFor(() => expect(window.history.state.monoAgentMobileNavigation.section).toBe("providers"));
+    expect(screen.getByRole("heading", { name: "Providers", level: 2 })).toBeVisible();
+    expect(currentStore?.selectedAgent?.sourceId).toBe("beta");
+    act(() => currentStore!.selectAgent("alpha"));
+    await waitFor(() => expect(currentStore?.selectedAgent?.sourceId).toBe("alpha"));
+    expect(getSettingsDraft("alpha")).toEqual({ model: "provider/other", effort: "" });
+    screen.getByRole("button", { name: "Alpha settings" }).click();
+    await waitFor(() => expect(screen.getByRole("navigation", { name: "Agent settings sections" })).toBeVisible());
+    screen.getByRole("button", { name: /New conversations/ }).click();
+    expect(await screen.findByRole("button", { name: "Save for new conversations" })).toBeVisible();
+  });
   it("reverts a rejected pin and displays the one real store-owned toast (A17a)", async () => {
     await page.viewport(1200, 800);
     vi.mocked(api.patchAgent).mockRejectedValue(new Error("Fictional pin refusal"));
