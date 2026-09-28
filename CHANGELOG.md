@@ -28,6 +28,10 @@
   lines as well as extraction, without changing unfocused capture or allowing
   review to drop owner-stated lines.
 
+- Let the web console open agent settings in the conversation column on desktop
+  and as a pushed list and detail on phones. Keep per-agent new-conversation
+  drafts until Save or Discard, and group pinning, restart and agent details.
+
 - Keep the web composer's input focused and its caret after inserting a skill
   from the browser, including on touch devices where focus must retain the
   software keyboard.

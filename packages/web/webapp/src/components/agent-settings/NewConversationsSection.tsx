@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import type { AgentSummary } from "../../types";
 import { useConsoleStore } from "../../console-store";
 import { clearSettingsDraftIfEqual, discardSettingsDraft, setSettingsDraft, useSettingsDraft } from "../../settings-drafts";
 import { ModelSelector } from "../assistant-ui/ModelSelector";
 import { buildSelectorModels, effectiveModelForAgent, effortLevelsForAgentModel, findCatalogModel, providerOfModel } from "../model-catalog";
 
-export function NewConversationsSection({ agent, onNotice }: { readonly agent: AgentSummary; readonly onNotice: (message: string) => void }) {
+export function NewConversationsSection({ agent, onNotice, footerNode }: { readonly agent: AgentSummary; readonly onNotice: (message: string) => void; readonly footerNode?: HTMLElement | null }) {
   const store = useConsoleStore();
   const draft = useSettingsDraft(agent.sourceId);
   const saved = { model: agent.runSettings.override?.model ?? "", effort: agent.runSettings.override?.effort ?? "" };
@@ -42,6 +43,10 @@ export function NewConversationsSection({ agent, onNotice }: { readonly agent: A
     } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
     finally { setSaving(false); }
   };
+  const saveBar = <div className={`settings-savebar${error ? " is-error" : ""}`}><div className="settings-savebar-text">{error ? `Couldn't save: ${error}` : <><span className="settings-dot" /> Unsaved <b>{model || agent.runSettings.config.model || "Agent config"} · {effort || agent.runSettings.config.effort || "default"}</b></>}</div>
+      <button type="button" className="settings-button is-ghost" disabled={saving} onClick={() => { discardSettingsDraft(agent.sourceId); setError(null); window.setTimeout(() => document.querySelector<HTMLElement>(".settings-screen .model-selector__trigger")?.focus(), 0); }}>Discard</button>
+      <button type="button" className="settings-button is-primary" aria-label="Save for new conversations" disabled={saving || agent.status === "offline" && (model !== "" || effort !== "")} onClick={() => void save()}>{saving ? "Saving…" : error ? "Retry" : "Save"}</button>
+    </div>;
   return <>
     <div className="settings-field">
       <div className="dashboard-section-label">START WITH <span className={`settings-chip${dirty ? " is-warning" : ""}`}>{saving ? "Saving…" : dirty ? "Unsaved" : agent.runSettings.override ? "Custom override" : "Agent config"}</span></div>
@@ -55,9 +60,6 @@ export function NewConversationsSection({ agent, onNotice }: { readonly agent: A
       </div>
     </div>
     <p className="settings-field-note">A fallback or model mismatch is shown on the run it affected.</p>
-    {dirty && <div className={`settings-savebar${error ? " is-error" : ""}`}><div className="settings-savebar-text">{error ? `Couldn't save: ${error}` : <><span className="settings-dot" /> Unsaved <b>{model || agent.runSettings.config.model || "Agent config"} · {effort || agent.runSettings.config.effort || "default"}</b></>}</div>
-      <button type="button" className="settings-button is-ghost" disabled={saving} onClick={() => { discardSettingsDraft(agent.sourceId); setError(null); window.setTimeout(() => document.querySelector<HTMLElement>(".settings-screen .model-selector__trigger")?.focus(), 0); }}>Discard</button>
-      <button type="button" className="settings-button is-primary" aria-label="Save for new conversations" disabled={saving || agent.status === "offline" && (model !== "" || effort !== "")} onClick={() => void save()}>{saving ? "Saving…" : error ? "Retry" : "Save"}</button>
-    </div>}
+    {dirty && (footerNode === undefined ? saveBar : footerNode ? createPortal(saveBar, footerNode) : null)}
   </>;
 }

@@ -446,6 +446,7 @@ export function App() {
       }
     }
     setScreen("conversation");
+    if (!isMobileViewport()) window.setTimeout(() => chatRef.current?.focus(), 0);
   }, []);
   const showDashboard = useCallback(() => {
     if (isMobileViewport() && mobileHistoryEntry(window.history.state)?.surface === "conversation") {

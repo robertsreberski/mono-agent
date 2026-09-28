@@ -88,6 +88,25 @@ window.fetch = (input, init) => {
   if (/^\/api\/v1\/agents\/atlas-story-auth-(missing|verified)\/restart$/.test(pathname) && (!init?.method || init.method === "GET")) {
     return Promise.resolve(new Response(JSON.stringify({ operation: null }), { headers: { "Content-Type": "application/json" } }));
   }
+  const settings = /^\/api\/v1\/agents\/atlas-story-settings-(base|dense|offline|unsaved|confirm|progress|success)\/(provider-auth|provider-usage|restart(?:\/story-op)?)$/.exec(pathname);
+  if (settings) {
+    const operation = { id: "story-op", sourceId: `atlas-story-settings-${settings[1]}`, stage: settings[1] === "progress" ? "restarting" : "back_online", ...(settings[1] === "progress" ? {} : { outcome: "success" }), requestedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    if (settings[2] === "restart" && init?.method === "POST") return Promise.resolve(Response.json(operation));
+    if (settings[2] === "restart/story-op") return Promise.resolve(Response.json(operation));
+    if (settings[2] === "restart") return Promise.resolve(Response.json({ operation: settings[1] === "progress" ? operation : null }));
+    if (init?.method && init.method !== "GET") return Promise.reject(new Error("Mutation disabled in Storybook"));
+    if (settings[2] === "provider-auth") return Promise.resolve(Response.json({ schema: "mono-agent.provider-auth.v1", generatedAt: new Date().toISOString(), providers: [
+      { providerId: "anthropic", label: "Claude", state: "present", verification: "verified_by_live_request", source: "stored", methods: [{ authType: "oauth", strategy: "device_code", label: "Sign in", recommended: true }] },
+      { providerId: "openai-codex", label: "Codex", state: "missing", verification: "not_verified", methods: [{ authType: "oauth", strategy: "paste_back", label: "Sign in", recommended: true }] },
+      { providerId: "opencode-go", label: "OpenCode Go", state: "present", verification: "verified_by_account_request", source: "stored", methods: [{ authType: "api_key", strategy: "manual", label: "Sign in", recommended: true }] },
+    ] }));
+    const fetchedAt = new Date(Date.now() - 7_200_000).toISOString();
+    return Promise.resolve(Response.json({ schema: "mono-agent.provider-usage.v1", providers: ["anthropic", "openai-codex", "opencode-go"].map((providerId, index) => ({ providerId, label: ["Claude", "Codex", "OpenCode Go"][index], ...(index === 0 ? {} : { plan: ["", "Pro", "Go"][index] }), fetchedAt, stale: index === 1, windows: index === 1
+      ? [{ kind: "weekly", label: "Weekly", usedPercent: 48, periodMs: 604_800_000, resetsAt: new Date(Date.now() + 300_000_000).toISOString() }]
+      : [{ kind: "session", label: "Session", usedPercent: 22 + index * 19, periodMs: 18_000_000, resetsAt: new Date(Date.now() + 2_000_000).toISOString() },
+        { kind: "weekly", label: "Weekly", usedPercent: 30 + index * 17, periodMs: 604_800_000, resetsAt: new Date(Date.now() + 300_000_000).toISOString() },
+        { kind: index === 0 ? "model" : "monthly", label: index === 0 ? "Fable" : "Monthly", usedPercent: 42 + index * 15, periodMs: 604_800_000, resetsAt: new Date(Date.now() + 360_000_000).toISOString() }], })) }));
+  }
   // This read-only fixture lets schedule editor examples show their actual
   // create/edit/paused controls; no mutation ever contacts a console.
   const match = /^\/api\/v1\/threads\/(garden-planner|garden-active|garden-paused)\/wake-schedule$/.exec(pathname);

@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { AgentSummary } from "../../types";
 import { useConsoleStore } from "../../console-store";
 import { clearSettingsDraftIfEqual, useSettingsDraft } from "../../settings-drafts";
@@ -61,6 +61,7 @@ function SettingsContent({ agent, section, layout, provider, restart, onSection,
   const summaries: Record<SettingsSection, string> = { "new-conversations": dirty ? "Unsaved change" : saved ? "Custom override" : "Agent config", providers: providerSummary, agent: restartSummary };
   const active = sections.find((item) => item.id === section) ?? sections[0]!;
   const titleRef = useRef<HTMLHeadingElement>(null);
+  const [footerNode, setFooterNode] = useState<HTMLDivElement | null>(null);
   const previousSection = useRef<SettingsSection | null | undefined>(undefined);
   useEffect(() => {
     if (previousSection.current === undefined) titleRef.current?.focus();
@@ -103,10 +104,11 @@ function SettingsContent({ agent, section, layout, provider, restart, onSection,
       <main className={layout === "split" ? "settings-content" : "settings-content settings-phone-content"}><div className="settings-pane">
         <div className="settings-section-head"><div><h2 className="settings-section-title" tabIndex={-1} ref={layout === "stacked" ? titleRef : undefined}>{active.label}</h2><p className="settings-section-summary">{active.description}</p></div></div>
         {agent.status === "offline" && <div className="settings-notice">{agent.label} is offline. Changes that need the agent are paused. Using the agent config still works.</div>}
-        {active.id === "new-conversations" && <NewConversationsSection agent={agent} onNotice={onNotice} />}
+        {active.id === "new-conversations" && <NewConversationsSection agent={agent} onNotice={onNotice} {...(layout === "stacked" ? { footerNode } : {})} />}
         {active.id === "providers" && <ProvidersSection agent={agent} controller={provider} />}
         {active.id === "agent" && <AgentSection agent={agent} restart={restart} runningCount={runningCount} />}
       </div></main>
     </div>}
+    {layout === "stacked" && section === "new-conversations" && dirty && <div className="settings-footer" ref={setFooterNode} />}
   </div>;
 }

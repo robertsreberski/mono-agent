@@ -56,6 +56,24 @@ describe("agent settings screen", () => {
     await act(async () => settle());
     expect(toggle).toHaveAttribute("aria-checked", "false");
   });
+  it("activates the pin exactly once when its row is clicked", async () => {
+    render(<AgentSettingsScreen {...props} section="agent" />);
+    fireEvent.click(screen.getByText("Pinned agents sort first on the agent strip."));
+    await waitFor(() => expect(store.setAgentPinned).toHaveBeenCalledTimes(1));
+  });
+  it("saves an offline use-config draft without closing the screen", async () => {
+    store.selectedAgent = agent("fictional", { label: "Atlas", status: "offline", runSettings: {
+      config: { model: "atlas/example" }, override: { model: "grove/fast", effort: "low" },
+      effective: { model: "grove/fast", modelSource: "override", effort: "low", effortSource: "override" },
+    } });
+    setSettingsDraft("fictional", { model: "", effort: "" });
+    render(<AgentSettingsScreen {...props} section="new-conversations" />);
+    fireEvent.click(screen.getByRole("button", { name: "Save for new conversations" }));
+    await waitFor(() => expect(store.clearAgentRunDefaults).toHaveBeenCalledTimes(1));
+    expect(props.onClose).not.toHaveBeenCalled();
+    expect(props.onNotice).toHaveBeenCalledWith(expect.stringContaining("New conversations will start with"));
+    expect(getSettingsDraft("fictional")).toBeNull();
+  });
   it("keeps restart read errors distinct from no history and retries the status read", async () => {
     mockApi.latestAgentRestart.mockRejectedValueOnce(new Error("read refused")).mockResolvedValue(null);
     render(<AgentSettingsScreen {...props} section="agent" />);

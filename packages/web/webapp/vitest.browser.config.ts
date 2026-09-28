@@ -59,8 +59,8 @@ export default defineConfig({
         {
           browser: "chromium",
           name: "chromium-touch",
-          include: ["src/components/ProviderUsage.browser.test.tsx"],
-          exclude: ["src/**/!(ProviderUsage).browser.test.tsx"],
+          include: ["src/components/ProviderUsage.browser.test.tsx", "src/components/agent-settings/ProvidersSection.browser.test.tsx"],
+          exclude: ["src/**/!(ProviderUsage|ProvidersSection).browser.test.tsx"],
           provide: { providerUsageTouch: true },
           context: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true },
         },

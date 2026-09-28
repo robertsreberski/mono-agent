@@ -46,14 +46,23 @@ export const ownedSettingsEntry = (state: unknown = window.history.state): Extra
 
 /** Keep all unrelated history.state fields when a route writer changes URL. */
 export const routeWriteState = (state: unknown, nextUrl: string | URL, mode: "push" | "replace"): unknown => {
-  const current = mobileHistoryEntry(state);
-  if (current?.surface !== "settings") return state;
+  // A writer must not copy a stale settings marker either: a later route could
+  // happen to equal its old href and accidentally resurrect the settings screen.
+  const raw = typeof state === "object" && state !== null && !Array.isArray(state)
+    ? (state as Record<string, unknown>)[MOBILE_HISTORY_STATE_KEY] : null;
+  const marker = typeof raw === "object" && raw !== null ? raw as Record<string, unknown> : null;
+  const current = marker?.version === 1 && marker.surface === "settings"
+    && (marker.depth === 1 || marker.depth === 2)
+    && ((marker.depth === 1 && marker.section === null)
+      || marker.depth === 2 && (marker.section === "new-conversations" || marker.section === "providers" || marker.section === "agent"))
+    ? marker : null;
+  if (current === null) return state;
   const href = new URL(nextUrl, window.location.href).href;
   const fields = typeof state === "object" && state !== null && !Array.isArray(state)
     ? state as Record<string, unknown> : {};
   return { ...fields, [MOBILE_HISTORY_STATE_KEY]: mode === "push"
     ? { version: 1, surface: "conversation", href }
-    : { ...current, href } };
+    : { version: 1, surface: "settings", section: current.section, depth: current.depth, href } };
 };
 
 const stateWithMobileHistoryEntry = (entry: MobileHistorySurface, href: string): Record<string, unknown> => ({
@@ -74,4 +83,3 @@ export const pushMobileHistoryEntry = (entry: MobileHistorySurface, target = win
   const href = new URL(target, window.location.href).href;
   window.history.pushState(stateWithMobileHistoryEntry(entry, href), "", href);
 };
-
