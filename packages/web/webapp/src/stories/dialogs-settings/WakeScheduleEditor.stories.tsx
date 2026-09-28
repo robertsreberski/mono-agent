@@ -35,9 +35,17 @@ const threadFor = (server: WakeStoryServer, overrides: Partial<ThreadSummary> = 
   ...(server.schedule === null ? {} : { id: server.schedule.threadId, wakeSchedule: wakeSummary(server.schedule) }),
   ...overrides,
 });
-const story = (server: WakeStoryServer, extra: Partial<StoryObj<Args>> = {}, overrides: Partial<ThreadSummary> = {}): StoryObj<Args> => ({
-  args: { server, thread: threadFor(server, overrides) }, ...extra,
-});
+/**
+ * The scripted server reports the fixture's own next fire time after a
+ * successful save or resume unless a story states another, so a saved
+ * weekly schedule reopens with a next wake-up rather than an impossible
+ * "waiting" state. New schedules state theirs explicitly.
+ */
+type StoryServer = Omit<WakeStoryServer, "nextFireAt"> & { readonly nextFireAt?: string | null };
+const story = (input: StoryServer, extra: Partial<StoryObj<Args>> = {}, overrides: Partial<ThreadSummary> = {}): StoryObj<Args> => {
+  const server: WakeStoryServer = { ...input, nextFireAt: input.nextFireAt !== undefined ? input.nextFireAt : input.schedule?.nextFireAt ?? null };
+  return { args: { server, thread: threadFor(server, overrides) }, ...extra };
+};
 const body = (canvasElement: HTMLElement) => within(canvasElement.ownerDocument.body);
 const loaded = async (canvasElement: HTMLElement) => {
   await waitFor(() => expect(body(canvasElement).getByLabelText("Message")).toBeEnabled());
@@ -53,7 +61,7 @@ export default {
 type Story = StoryObj<Args>;
 
 export const NewOnce: Story = story({ schedule: null, nextFireAt: "2031-05-14T09:00:00Z" });
-export const NewWeekly: Story = story({ schedule: null }, {
+export const NewWeekly: Story = story({ schedule: null, nextFireAt: "2031-05-12T09:00:00Z" }, {
   play: async ({ canvasElement }) => {
     await loaded(canvasElement);
     const view = body(canvasElement);
@@ -106,14 +114,27 @@ export const ServerValidationError: Story = story({ schedule: wakeFixtures.activ
     await waitFor(() => expect(view.getByRole("alert")).toBeVisible());
   },
 });
-export const StaleConflict: Story = story({ schedule: wakeFixtures.activeWeekly, save: "conflict",
-  remote: { ...wakeFixtures.activeWeekly, revision: 4, definition: { ...wakeFixtures.activeWeekly.definition, message: "Changed by the agent." } } }, {
+// The agent edits the schedule just before this Save arrives, so the server
+// answers with a stale revision; Load latest then Save succeeds.
+const staleServer: StoryServer = { schedule: wakeFixtures.activeWeekly, changeBeforeFirstSave: true,
+  remote: { ...wakeFixtures.activeWeekly, revision: 4, definition: { ...wakeFixtures.activeWeekly.definition, message: "Changed by the agent." } } };
+const saveIntoConflict = async (canvasElement: HTMLElement) => {
+  await loaded(canvasElement);
+  const view = body(canvasElement);
+  await userEvent.type(view.getByLabelText("Message"), " Also check the tomatoes.");
+  await userEvent.click(view.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(view.getByRole("button", { name: "Load latest" })).toBeVisible());
+};
+export const StaleConflict: Story = story(staleServer, { play: async ({ canvasElement }) => saveIntoConflict(canvasElement) });
+export const StaleConflictRecovered: Story = story(staleServer, {
   play: async ({ canvasElement }) => {
-    await loaded(canvasElement);
+    await saveIntoConflict(canvasElement);
     const view = body(canvasElement);
+    await userEvent.click(view.getByRole("button", { name: "Load latest" }));
+    await waitFor(() => expect(view.getByLabelText("Message")).toHaveValue("Changed by the agent."));
     await userEvent.type(view.getByLabelText("Message"), " Also check the tomatoes.");
     await userEvent.click(view.getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(view.getByRole("button", { name: "Load latest" })).toBeVisible());
+    await waitFor(() => expect(view.getByText("Editor closed")).toBeVisible());
   },
 });
 export const ChangedElsewhere: Story = story({ schedule: wakeFixtures.activeWeekly,
@@ -132,6 +153,17 @@ export const DeleteConfirm: Story = story({ schedule: wakeFixtures.activeWeekly 
     await userEvent.click(body(canvasElement).getByRole("button", { name: "Delete schedule" }));
   },
 });
+export const DeletePending: Story = story({ schedule: wakeFixtures.activeWeekly, remove: "pending" }, {
+  play: async ({ canvasElement }) => {
+    await loaded(canvasElement);
+    const view = body(canvasElement);
+    await userEvent.click(view.getByRole("button", { name: "Delete schedule" }));
+    await userEvent.click(view.getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(view.getByRole("button", { name: /Pause/u })).toBeDisabled());
+  },
+});
+export const LongTimezone: Story = story({ schedule: { ...wakeFixtures.activeWeekly,
+  definition: { ...wakeFixtures.activeWeekly.definition, timezone: "America/Argentina/ComodRivadavia" } } });
 export const Archived: Story = story({ schedule: wakeFixtures.pausedWeekly }, {}, { archivedAt: "2031-02-01T10:00:00Z" });
 export const SaveClosesEditor: Story = story({ schedule: wakeFixtures.activeWeekly, nextFireAt: "2031-05-12T12:30:00Z" }, {
   play: async ({ canvasElement }) => {
