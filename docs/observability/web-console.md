@@ -516,6 +516,16 @@ from a chat uses the existing conversation menu flow.
 The agent can also use [console project tools](../tools/mcp.md#console-project-tools)
 during a writable interactive turn. Creating a conversation does not start it.
 
+With [Telegram forum topics as projects](/channels/telegram/#forum-topics-as-projects),
+each topic the agent's bot has seen appears here as a project named
+`Chat › Topic`. Its page shows the topic as **Telegram · history not viewable
+here** (its history stays in Telegram) with **Closed in Telegram** or
+**Telegram topic gone** when that applies, and the Projects list prefixes it
+with `Telegram ·`. Edit its context like any project; it reaches the next turn
+in that topic. Web chats can join it as well. Deleting it detaches the topic
+without touching Telegram, and the topic is not re-projected until someone
+links it again. The console never creates, renames or deletes Telegram topics.
+
 
 On narrow touch screens the console opens on the Dashboard. Tapping a row, a
 Running card or the new-conversation control pushes the conversation over it;

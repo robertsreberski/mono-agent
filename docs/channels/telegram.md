@@ -171,6 +171,67 @@ host-owned. When the agent sends its own message or file to the same group with
 it names another `message_thread_id` or replies to a specific message. Topic
 created/renamed/closed service messages never start a turn.
 
+### Forum topics as projects
+
+Opt in with `telegram.projects.enabled` (JSON only, off by default) to make
+each forum topic an ordinary [web-console project](/observability/web-console/)
+while Telegram stays the place you talk. It needs the
+[web console](/observability/web-console/) running for the same agent
+(`mono-agent web run`); nothing changes for existing configs.
+
+```json
+{
+  "telegram": {
+    "allowedChatIds": ["-1001234567890"],
+    "projects": { "enabled": true }
+  }
+}
+```
+
+- **Discovery is passive and one way.** Telegram cannot list a forum's topics,
+  so the bot records each topic it sees in an allowlisted forum (any message,
+  including the topic-created service message, even when no turn starts) under
+  `.mono-agent/telegram-topics-v1/`, and the web console creates a project
+  named `Chat › Topic`, for example `Trips › Flights`, with empty shared
+  context. A forum's General conversation becomes `Trips › General`. Private
+  chats and groups without topics are not turned into projects. The console
+  never creates, renames or deletes Telegram topics, and the bot never creates
+  them either.
+- **Renames and lifecycle.** A topic renamed in Telegram renames its project,
+  unless you or the agent renamed the project; a chosen name wins. Closing and
+  reopening a topic is shown on the project. Telegram sends bots no deletion
+  update: when a send into the topic fails because the topic no longer exists,
+  the project is marked **Telegram topic gone** and keeps its context and web
+  chats. A new topic with the same name is a different topic and gets its own
+  project.
+- **Shared context reaches every turn in the topic.** The project's context is
+  prepended to the model's copy of each turn there, exactly like a web
+  conversation in that project; it is never stored in the Telegram history.
+  Edits apply from the next turn. If the web console is unreachable, the turn
+  uses the last context this agent process fetched for that topic and logs a
+  warning; if it never fetched one, the turn runs without project context and
+  logs that. Telegram keeps answering either way.
+- **Project tools from Telegram.** On a message a person sent in an allowlisted
+  chat, the agent can use the same [console project tools](/tools/mcp/#console-project-tools)
+  as in the web console (except tags, read state and wake-ups), still gated by
+  `tools.allowedTools`: ask it to "make this a project" (`CreateProject` with
+  `attachCurrentConversation`), move this topic to another project, or edit a
+  project's context. Proactive and background turns get the context but not the
+  tools.
+- **Deleting a project** in the console detaches its topic and remembers that,
+  so the topic keeps working as a plain topic without being re-projected. To
+  link it again, ask the agent in that topic to make it a project, or move it
+  in the console with `SetConversationProject`.
+- **Sending to a project.** `TelegramSendMessage` and `TelegramSendFile` accept
+  `projectId` instead of `chat_id`/`message_thread_id`, so the agent can post
+  into "Flights" found with `ListProjects` without ever seeing a topic ID. The
+  send is refused, never redirected to General, when the project is not linked
+  to a topic, its topic is closed or gone, or its chat left the allowlist.
+  Project names are not unique; the agent asks when several match.
+
+Topic and chat IDs stay host-owned throughout: projects and listings carry
+opaque project IDs and `Chat › Topic` labels only.
+
 ### Smoke test
 
 Send `Hello` from an allowed direct chat, or mention the bot in a group configured

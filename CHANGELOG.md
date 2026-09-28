@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Add opt-in `telegram.projects.enabled` to make each Telegram forum topic the
+  bot sees (and a forum's General conversation) an ordinary web-console
+  project named `Chat › Topic`. The project's shared context reaches every
+  turn in that topic; when the web console is unreachable the turn uses the
+  last known context and logs it. On a message a person sends, the agent can
+  use the console project tools (not tags, read state or wake-ups) to edit
+  context or make the current topic a project, and `TelegramSendMessage` /
+  `TelegramSendFile` accept `projectId` so topic ids stay hidden. Sync is one
+  way: renames update auto-named projects, closed topics are shown, a send
+  that finds the topic deleted marks it gone, and deleting a project detaches
+  the topic without touching Telegram. Existing configs are unchanged.
+
 - Give each Telegram forum topic its own conversation, history, queue,
   `/cancel`, `/new`, and `/model`/`/effort` selection, and send replies,
   activity, questions, status lines, files, and background-job cards back to

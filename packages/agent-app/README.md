@@ -806,6 +806,18 @@ IDs on the current or named conversation without replacing other tags. Tag chang
 apply immediately and reach the next turn's context snapshot. The MCP server name
 and policy aliases remain `mono-agent-console-projects`. See [Console project tools](../../docs/tools/mcp.md#console-project-tools).
 
+With JSON-only `telegram.projects.enabled`, the Telegram channel opens an
+owner-private topic ledger (`.mono-agent/telegram-topics-v1/`), records the
+forum topics its allowlisted chats reveal, and mirrors them one way to the web
+console, which owns the projects. Each Telegram turn in a project-bound topic
+gets the project context in its prompt copy only (the last snapshot this
+process fetched when the console is unreachable); a message a person sent may
+use the project tools above except tags, read state and wake-ups, through a
+capability bound to this process and revoked at settlement.
+`TelegramSendMessage`/`TelegramSendFile` accept `projectId`, resolved through
+the app-owned interaction bridge with allowlist and closed/gone rechecks. See
+[Forum topics as projects](../../docs/channels/telegram.md#forum-topics-as-projects).
+
 `MarkConversationRead({ conversationId? })` clears the unread dot for one of the
 calling agent's conversations (the current conversation by default). It returns
 `conversationId` and `readRevision`, persisting the current revision as an explicit
