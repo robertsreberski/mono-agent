@@ -901,6 +901,10 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       if (oldest !== undefined) listenBuffers.delete(oldest);
     }
   }
+  /** Whether buffered context from before `cutoff` is waiting for a turn. */
+  function hasUnaddressed(conversationId: string, cutoff: number): boolean {
+    return listenBuffers.get(conversationId)?.some((entry) => entry.seq < cutoff) === true;
+  }
   /** Remove and return the buffered context that arrived before `cutoff`. */
   function takeUnaddressed(conversationId: string, cutoff: number | undefined): AgentPrecedingMessage[] | undefined {
     if (cutoff === undefined) return undefined;
@@ -1840,6 +1844,9 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       && triggeredMessage.text.trim().length > 0
       && options.responder.offerLiveInput !== undefined
       && !queue.full
+      // Live steering carries only this message's text, so a ping with waiting
+      // listen-mode context runs as its own turn to receive that context.
+      && !hasUnaddressed(conversationId, contextCutoff)
     ) {
       const decision = createDeferred<"run" | "applied" | "discarded">();
       const reserved = queue.run(async () => {
@@ -2080,7 +2087,6 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     }
 
     const topicName = target.messageThreadId === undefined ? undefined : topicNames.get(conversationId);
-    const precedingMessages = takeUnaddressed(conversationId, contextCutoff);
     const request = buildAgentRequest(
       ctx.update as unknown as TelegramUpdate,
       message as unknown as TelegramMessage,
@@ -2088,10 +2094,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       controller.signal,
       resolvedAttachments,
       options.stream?.maxMessageChars,
-      {
-        ...(topicName === undefined ? {} : { topicName }),
-        ...(precedingMessages === undefined ? {} : { precedingMessages }),
-      },
+      topicName === undefined ? undefined : { topicName },
     );
     applyRuntimeSelection(target, request.metadata.telegram);
     const stream = new TelegramMessageStream(
@@ -2132,9 +2135,15 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         return;
       }
 
+      // Listen-mode context is taken only once the turn is really starting, so a
+      // turn cancelled while parked leaves it for the next one.
+      const precedingMessages = takeUnaddressed(conversationId, contextCutoff);
+      const turnRequest: AgentRequest = precedingMessages === undefined
+        ? request
+        : { ...request, precedingMessages };
       let response: AgentResponse;
       try {
-        response = await options.responder.respond(request, stream);
+        response = await options.responder.respond(turnRequest, stream);
       } catch (error) {
         if (controller.signal.aborted || isAgentResponseCancelledError(error)) {
           reactionOutcome = "cancelled";

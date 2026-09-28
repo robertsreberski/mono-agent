@@ -632,4 +632,55 @@ describe("createTelegramBot forum topics", () => {
     expect(requests.at(-1)?.text).toBe("fresh start");
     expect(requests.at(-1)?.precedingMessages).toBeUndefined();
   });
+
+  it("runs a listen-mode ping with waiting context as its own turn instead of live steering", async () => {
+    const requests: AgentRequest[] = [];
+    const offerLiveInput = vi.fn(() => ({
+      status: "accepted" as const,
+      settled: Promise.resolve({ status: "applied" as const }),
+    }));
+    const { bot } = harness({
+      groupMode: "listen",
+      responder: { ...recordingResponder(requests), offerLiveInput } as unknown as AgentResponder,
+    });
+
+    await bot.handleUpdate(topicMessage("the 12th works for me"));
+    await bot.handleUpdate(topicMessage("@ExampleBot book it?", { updateId: 2, messageId: 901, mention: true }));
+
+    expect(offerLiveInput).not.toHaveBeenCalled();
+    expect(requests.map((request) => request.precedingMessages?.map((entry) => entry.text))).toEqual([
+      ["the 12th works for me"],
+    ]);
+  });
+
+  it("keeps listen-mode context for the next turn when a parked ping is cancelled", async () => {
+    const requests: AgentRequest[] = [];
+    const { bot, controller } = harness({
+      groupMode: "listen",
+      responder: {
+        async respond(request) {
+          requests.push(request);
+          if (requests.length === 1) {
+            await new Promise<void>((resolve) => {
+              request.abortSignal.addEventListener("abort", () => resolve(), { once: true });
+            });
+          }
+          return { text: "ok" };
+        },
+      },
+    });
+
+    const first = bot.handleUpdate(topicMessage("@ExampleBot start", { mention: true }));
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    await bot.handleUpdate(topicMessage("chatter while busy", { updateId: 2, messageId: 901 }));
+    const parked = bot.handleUpdate(topicMessage("@ExampleBot parked", { updateId: 3, messageId: 902, mention: true }));
+    // The parked ping is admitted behind the active turn before /cancel arrives.
+    await vi.waitFor(() => expect(controller.activeControllerCount()).toBe(2));
+    await bot.handleUpdate(topicMessage("/cancel", { updateId: 4, messageId: 903, command: true }));
+    await Promise.all([first, parked]);
+    await bot.handleUpdate(topicMessage("@ExampleBot again", { updateId: 5, messageId: 904, mention: true }));
+
+    expect(requests.map((request) => request.text)).toEqual(["start", "again"]);
+    expect(requests[1]?.precedingMessages?.map((entry) => entry.text)).toEqual(["chatter while busy"]);
+  });
 });
