@@ -1,144 +1,208 @@
-import { useEffect, useRef, useState } from "react";
-import type { WebWakeSchedule, WebWakeScheduleDefinition } from "../../../src/contracts.js";
+import { Dialog } from "@base-ui/react/dialog";
+import { type RefObject, useEffect, useId, useMemo, useRef, useState } from "react";
+import type { WebWakeSchedule } from "../../../src/contracts.js";
 import { api } from "../api";
 import type { ThreadSummary } from "../types";
 import { Icon } from "./Icon";
-import { shortDateTime } from "./time";
+import { WakeSummary } from "./wake/WakeSummary";
+import { WakeWhenFields } from "./wake/WakeWhenFields";
+import {
+  MAX_MESSAGE_BYTES, MESSAGE_COUNTER_FROM, definitionFromDraft, describeDraft, describeWakeError, deviceTimeZone,
+  draftFromDefinition, hasIssues, isDraftDirty, newDraft, onceLooksPast, utf8Bytes, validateDraft, weekOrder,
+  type WakeDraft,
+} from "./wake/wake-schedule-model";
 
-const weekdays = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-const timezones = typeof Intl.supportedValuesOf === "function" ? Intl.supportedValuesOf("timeZone") : [];
+type Busy = "save" | "pause" | "resume" | "delete" | null;
+type Failure = { readonly message: string; readonly conflict: boolean; readonly reload?: boolean };
 
-export function WakeScheduleEditor({ thread, onClose }: { thread: ThreadSummary; onClose: () => void }) {
-  const dialogRef = useRef<HTMLElement>(null);
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
-  const dirty = useRef(false);
+/**
+ * The conversation's wake-up schedule, as a modal sheet: a bottom sheet on
+ * phones and a centered dialog on wider screens, like the project and tag
+ * sheets. Base UI owns modality (portal, focus containment, outside-press and
+ * Escape dismissal, scroll lock); this component owns the draft and the
+ * server round trips.
+ */
+export function WakeScheduleEditor({ thread, onClose, returnFocusRef }: {
+  readonly thread: ThreadSummary;
+  readonly onClose: () => void;
+  /** Where focus lands after closing; the menu item that opened this is gone by then. */
+  readonly returnFocusRef?: RefObject<HTMLElement | null>;
+}) {
+  const popupRef = useRef<HTMLDivElement>(null);
+  const deleteRowRef = useRef<HTMLButtonElement>(null);
+  const keepRef = useRef<HTMLButtonElement>(null);
+  const noteId = useId();
+  const messageId = useId();
+  const order = useMemo(() => weekOrder(), []);
+  // A new schedule's draft is computed once; later renders never move its date.
+  const [draft, setDraft] = useState<WakeDraft>(() => newDraft(deviceTimeZone(), new Date()));
+  // The loaded, immutable baseline. Its revision is what every mutation expects.
   const [schedule, setSchedule] = useState<WebWakeSchedule | null>(null);
-  const [kind, setKind] = useState<"once" | "weekly">("once");
-  const [timezone, setTimezone] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
-  const [localAt, setLocalAt] = useState("");
-  const [days, setDays] = useState<number[]>([]);
-  const [times, setTimes] = useState<string[]>(["09:00"]);
-  const [message, setMessage] = useState("");
-  const [error, setError] = useState("");
-  const [saving, setSaving] = useState(false);
-  const revision = thread.wakeSchedule?.revision;
+  const [loaded, setLoaded] = useState(false);
+  const [changedElsewhere, setChangedElsewhere] = useState(false);
+  const [busy, setBusy] = useState<Busy>(null);
+  const [failure, setFailure] = useState<Failure | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [reloadCount, setReloadCount] = useState(0);
+  // Request ordering: a read only applies if it is the newest read and no
+  // mutation started after it; mutations are serialized by `busy`.
+  const readSeq = useRef(0);
+  const mutationSeq = useRef(0);
+  const latest = useRef({ draft, schedule, loaded });
+  latest.current = { draft, schedule, loaded };
+  const baseline = schedule?.definition ?? null;
+  const dirty = schedule === null || isDraftDirty(draft, baseline);
+  const archived = thread.archivedAt != null;
+  const liveRevision = thread.wakeSchedule?.revision;
+
+  const adopt = (current: WebWakeSchedule | null) => {
+    setSchedule(current);
+    if (current !== null) setDraft(draftFromDefinition(current.definition));
+    setChangedElsewhere(false);
+  };
+
+  const read = async (mode: "initial" | "live" | "explicit") => {
+    const seq = ++readSeq.current;
+    const mutationAtStart = mutationSeq.current;
+    try {
+      const { schedule: current } = await api.wakeSchedule(thread.id);
+      if (seq !== readSeq.current || mutationAtStart !== mutationSeq.current) return;
+      const state = latest.current;
+      if (mode === "live" && state.loaded && state.schedule !== null && isDraftDirty(state.draft, state.schedule.definition)) {
+        // Keep the operator's edits and their base revision; say so instead.
+        if (current?.revision !== state.schedule.revision) setChangedElsewhere(true);
+        return;
+      }
+      if (mode === "live" && state.loaded && state.schedule === null && current !== null) {
+        setChangedElsewhere(true);
+        return;
+      }
+      if (mode === "explicit" && current === null) {
+        // Deleted elsewhere: keep the draft; the next Save creates it afresh.
+        setSchedule(null);
+        setChangedElsewhere(false);
+      } else adopt(current);
+      setLoaded(true);
+      setFailure(null);
+    } catch (cause) {
+      if (seq !== readSeq.current || mutationAtStart !== mutationSeq.current) return;
+      const { message } = describeWakeError(cause);
+      setFailure({ message: mode === "initial" ? `Couldn't load this schedule. ${message}` : `Couldn't load the latest version. ${message}`,
+        conflict: mode === "explicit", reload: mode === "initial" });
+    }
+  };
+
   useEffect(() => {
-    const previous = document.activeElement;
-    dialogRef.current?.focus();
-    const escape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      closeRef.current();
-    };
-    document.addEventListener("keydown", escape);
-    return () => {
-      document.removeEventListener("keydown", escape);
-      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
-    };
-  }, []);
-  useEffect(() => {
-    const controller = new AbortController();
-    void api.wakeSchedule(thread.id, controller.signal).then(({ schedule: current }) => {
-      if (controller.signal.aborted || dirty.current) return;
-      setSchedule(current);
-      if (current === null) return;
-      const definition = current.definition;
-      setKind(definition.kind);
-      setTimezone(definition.timezone);
-      setMessage(definition.message ?? "");
-      if (definition.kind === "once") setLocalAt(definition.localAt);
-      else { setDays([...definition.days]); setTimes([...definition.times]); }
-    }).catch((cause: unknown) => { if (!controller.signal.aborted) setError(String(cause)); });
-    return () => controller.abort();
-  }, [thread.id, revision]);
-  const edit = () => { dirty.current = true; };
-  const mutate = async (action: "save" | "pause" | "resume" | "delete") => {
-    setError(""); setSaving(true);
+    void read(latest.current.loaded ? "live" : "initial");
+    return () => { readSeq.current += 1; };
+    // `reloadCount` retries the initial read; the live revision refreshes.
+  }, [thread.id, liveRevision, reloadCount]);
+
+  const mutate = async (action: Exclude<Busy, null>) => {
+    if (busy !== null) return;
+    mutationSeq.current += 1;
+    setBusy(action); setFailure(null);
     try {
       if (action === "delete" && schedule !== null) {
         await api.deleteWakeSchedule(thread.id, schedule.revision);
-        setSchedule(null);
         onClose();
       } else if ((action === "pause" || action === "resume") && schedule !== null) {
         const result = await api.setWakeState(thread.id, schedule.revision, action === "pause" ? "paused" : "active");
         setSchedule(result.schedule);
       } else if (action === "save") {
-        const definition: WebWakeScheduleDefinition = kind === "once"
-          ? { kind, timezone, localAt, ...(message ? { message } : {}) }
-          : { kind, timezone, days, times, ...(message ? { message } : {}) };
-        const result = await api.saveWakeSchedule(thread.id, definition, schedule?.revision);
-        setSchedule(result.schedule);
-        dirty.current = false;
+        await api.saveWakeSchedule(thread.id, definitionFromDraft(draft), schedule?.revision);
+        onClose();
       }
-    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
-    finally { setSaving(false); }
+    } catch (cause) {
+      setFailure(describeWakeError(cause));
+      if (action === "delete") { setConfirmingDelete(false); deleteRowRef.current?.focus(); }
+    } finally { setBusy(null); }
   };
-  return <div className="sheet-layer" role="presentation" onMouseDown={onClose}>
-    <section ref={dialogRef} className="sheet wake-schedule-sheet" role="dialog" aria-modal="true"
-      aria-labelledby="wake-schedule-title" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
-      <span className="sheet-handle" aria-hidden="true" />
-      <header className="sheet-head"><h2 id="wake-schedule-title">Scheduled wake-up</h2>
-        <button type="button" className="icon-button" onClick={onClose} aria-label="Close schedule editor"><Icon name="close" size={16} /></button>
-      </header>
-      {schedule !== null && <p className="sheet-footnote">State: {schedule.state}. {schedule.nextFireAt !== null
-        ? `Next: ${shortDateTime(schedule.nextFireAt)} (${schedule.definition.timezone})`
-        : "No next fire time."}{schedule.lastOutcome !== null ? ` Last outcome: ${schedule.lastOutcome}.` : ""}</p>}
-      <label className="sheet-field"><span className="dashboard-section-label">Schedule type</span>
-        <select value={kind} onChange={(event) => { edit(); setKind(event.target.value as "once" | "weekly"); }}>
-          <option value="once">One-off</option><option value="weekly">Weekly</option>
-        </select>
-      </label>
-      <label className="sheet-field"><span className="dashboard-section-label">Timezone (IANA)</span>
-        <input list="wake-timezones" value={timezone} onChange={(event) => { edit(); setTimezone(event.target.value); }} placeholder="Europe/Berlin" />
-      </label>
-      <datalist id="wake-timezones">{timezones.map((zone) => <option value={zone} key={zone} />)}</datalist>
-      {kind === "once" ? <label className="sheet-field"><span className="dashboard-section-label">Local date and time</span>
-        <input type="datetime-local" value={localAt} onChange={(event) => { edit(); setLocalAt(event.target.value); }} />
-      </label> : <>
-        <fieldset className="wake-choice-group"><legend className="dashboard-section-label">Days of week</legend>
-          <div className="wake-choice-grid">{weekdays.map((day, index) => <label key={day}>
-            <input type="checkbox" checked={days.includes(index)} onChange={(event) => {
-              edit(); setDays(event.target.checked ? [...days, index].sort() : days.filter((entry) => entry !== index));
-            }} />{day}
-          </label>)}</div>
-        </fieldset>
-        <fieldset className="wake-choice-group"><legend className="dashboard-section-label">Times of day (up to 8)</legend>
-          <div className="wake-times">{times.map((time, index) => <div className="wake-time-row" key={index}>
-            <label className="sheet-field"><span className="sr-only">Time {index + 1}</span>
-              <input aria-label={`Time ${index + 1}`} type="time" value={time} onChange={(event) => {
-                edit(); setTimes(times.map((entry, at) => at === index ? event.target.value : entry));
-              }} />
-            </label>
-            {times.length > 1 && <button className="sheet-row" type="button" onClick={() => {
-              edit(); setTimes(times.filter((_, at) => at !== index));
-            }}>Remove time</button>}
-          </div>)}
-            {times.length < 8 && <button className="sheet-row" type="button" onClick={() => {
-              edit(); setTimes([...times, "09:00"]);
-            }}>Add time</button>}
-          </div>
-        </fieldset>
-      </>}
-      <label className="sheet-field"><span className="dashboard-section-label">Optional message</span>
-        <textarea value={message} onChange={(event) => { edit(); setMessage(event.target.value); }} maxLength={1000} />
-      </label>
-      {schedule !== null && <div className="sheet-group">
-        <button type="button" className="sheet-row" disabled={saving} onClick={() => void mutate(schedule.state === "active" ? "pause" : "resume")}>
-          <Icon name={schedule.state === "active" ? "clock" : "restore"} size={16} />
-          <span className="sheet-row-label">{schedule.state === "active" ? "Pause" : "Resume"} schedule</span>
-        </button>
-        <button type="button" className="sheet-row is-danger" disabled={saving} onClick={() => void mutate("delete")}>
-          <Icon name="trash" size={16} /><span className="sheet-row-label">Delete schedule</span>
-        </button>
-      </div>}
-      {error && <p className="sheet-error" role="alert">{error}</p>}
-      <footer className="wake-schedule-actions">
-        <button type="button" className="sheet-cancel" onClick={onClose}>Cancel</button>
-        <button type="button" className="primary-button" disabled={saving} onClick={() => void mutate("save")}>
-          {schedule === null ? "Create schedule" : "Save changes"}
-        </button>
-      </footer>
-    </section>
-  </div>;
+
+  const issues = validateDraft(draft);
+  const now = new Date();
+  const pastHint = draft.kind === "once" && onceLooksPast(draft, now);
+  const expired = schedule?.definition.kind === "once" && schedule.state === "paused"
+    && onceLooksPast(draftFromDefinition(schedule.definition), now);
+  const canSave = loaded && !archived && busy === null && !hasIssues(issues) && dirty;
+  const bytes = utf8Bytes(draft.message);
+  const edit = (next: Partial<WakeDraft>) => setDraft((current) => ({ ...current, ...next }));
+
+  useEffect(() => { if (confirmingDelete) keepRef.current?.focus(); }, [confirmingDelete]);
+
+  return <Dialog.Root open onOpenChange={(open) => { if (!open) onClose(); }}>
+    <Dialog.Portal>
+      <Dialog.Backdrop className="wake-schedule-backdrop" />
+      <Dialog.Popup ref={popupRef} className="sheet wake-schedule-sheet" aria-modal="true"
+        initialFocus={popupRef} finalFocus={returnFocusRef ?? true}>
+        <span className="sheet-handle" aria-hidden="true" />
+        <header className="sheet-head">
+          <Dialog.Close className="sheet-cancel">Cancel</Dialog.Close>
+          <Dialog.Title id="wake-schedule-title">Scheduled wake-up</Dialog.Title>
+          <button type="button" className="sheet-save" disabled={!canSave} onClick={() => void mutate("save")}>
+            {busy === "save" ? "Saving…" : "Save"}
+          </button>
+        </header>
+        <div className="wake-body" aria-busy={!loaded || busy !== null}>
+          {failure !== null && <div className="wake-alert" role="alert">
+            <Icon name="alert" size={15} />
+            <div className="wake-alert-copy">
+              <p>{failure.message}</p>
+              {failure.conflict && <p className="wake-alert-detail">Load the latest version to continue. This replaces your unsaved changes.</p>}
+            </div>
+            {failure.conflict && <button type="button" className="wake-alert-action" onClick={() => void read("explicit")}>Load latest</button>}
+            {failure.reload === true && <button type="button" className="wake-alert-action" onClick={() => { setFailure(null); setReloadCount((count) => count + 1); }}>Try again</button>}
+          </div>}
+          {changedElsewhere && failure === null && <div className="wake-alert is-notice" role="status">
+            <Icon name="refresh" size={15} />
+            <div className="wake-alert-copy">
+              <p>Changed elsewhere while you were editing.</p>
+              <p className="wake-alert-detail">Load the latest version before saving. This replaces your unsaved changes.</p>
+            </div>
+            <button type="button" className="wake-alert-action" onClick={() => void read("explicit")}>Load latest</button>
+          </div>}
+          <WakeSummary schedule={schedule} sentence={describeDraft(draft, { order })} dirty={schedule !== null && dirty}
+            loading={!loaded} archived={archived} expired={expired} busy={busy === "pause" || busy === "resume" ? busy : null}
+            noteId={noteId} onToggle={(action) => void mutate(action)} />
+          <fieldset className="wake-form" disabled={!loaded || busy !== null}>
+            <legend className="sr-only">Schedule</legend>
+            <WakeWhenFields draft={draft} issues={issues} pastHint={pastHint} order={order} onChange={edit} />
+            <div className="wake-group wake-message">
+              <div className="wake-label wake-label-row">
+                <label htmlFor={messageId}>Message</label><span className="wake-label-hint">Optional</span>
+              </div>
+              <textarea id={messageId} className="wake-text" rows={3} value={draft.message} maxLength={MAX_MESSAGE_BYTES}
+                placeholder="What should the agent pick up when it wakes?" aria-invalid={issues.message !== undefined || undefined}
+                aria-describedby={`${messageId}-help`} onChange={(event) => edit({ message: event.target.value })} />
+              <div className="wake-message-foot" id={`${messageId}-help`}>
+                <span>Sent to the agent as your message when this conversation wakes.</span>
+                {bytes >= MESSAGE_COUNTER_FROM && <span className="wake-counter" data-level={bytes > MAX_MESSAGE_BYTES ? "over" : bytes >= 950 ? "near" : "info"}>
+                  {bytes} / {MAX_MESSAGE_BYTES} bytes
+                </span>}
+              </div>
+              <p className="wake-field-error" aria-live="polite">{issues.message ?? ""}</p>
+            </div>
+          </fieldset>
+          {schedule !== null && <div className={`sheet-group wake-delete${confirmingDelete ? " is-confirming" : ""}`}>
+            {/* The row stays mounted while confirming, so cancelling can hand focus back to it. */}
+            <button ref={deleteRowRef} type="button" className="sheet-row is-danger" disabled={busy !== null || !loaded}
+              aria-expanded={confirmingDelete} onClick={() => setConfirmingDelete(true)}>
+              <Icon name="trash" size={16} /><span className="sheet-row-label">Delete schedule</span>
+            </button>
+            {confirmingDelete && <div className="wake-delete-confirm" role="group" aria-label="Confirm deletion">
+              <p className="wake-delete-title">Delete this schedule?</p>
+              <p className="wake-delete-detail">This removes future wake-ups; an already-started wake-up will continue.</p>
+              <div className="wake-delete-actions">
+                <button ref={keepRef} type="button" className="wake-delete-keep" disabled={busy !== null}
+                  onClick={() => { deleteRowRef.current?.focus(); setConfirmingDelete(false); }}>Keep schedule</button>
+                <button type="button" className="wake-delete-go" disabled={busy !== null} onClick={() => void mutate("delete")}>
+                  {busy === "delete" ? "Deleting…" : "Delete"}
+                </button>
+              </div>
+            </div>}
+          </div>}
+        </div>
+      </Dialog.Popup>
+    </Dialog.Portal>
+  </Dialog.Root>;
 }

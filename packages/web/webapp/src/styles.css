@@ -1900,18 +1900,143 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .scheduled-wake-item strong { display: block; }
 .scheduled-wake-item time { display: block; font-size: .8rem; opacity: .75; }
 .scheduled-wake-item p { margin: .5rem 0 0; }
-.wake-schedule-sheet { max-width: 570px; }
-.wake-schedule-sheet .icon-button { width: 34px; height: 34px; flex: none; color: var(--text-muted); background: var(--surface-subtle); border-radius: 9px; }
-.wake-schedule-sheet .sheet-field select { min-height: 44px; padding: 0 14px; color: var(--text); background: var(--surface-subtle); border: 1px solid var(--line-strong); border-radius: 12px; font: inherit; }
-.wake-choice-group { min-width: 0; margin: 0; padding: 0; border: 0; }
-.wake-choice-group legend { margin-bottom: 8px; }
-.wake-choice-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(115px, 1fr)); gap: 8px; color: var(--text); font-size: 12px; }
-.wake-choice-grid label { display: flex; align-items: center; gap: 8px; min-height: 32px; }
-.wake-choice-grid input { accent-color: var(--accent); }
-.wake-times { display: grid; gap: 6px; }
-.wake-time-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; }
-.wake-times .sheet-row { border-radius: 9px; }
-.wake-schedule-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+/* The wake-up editor: a Base UI modal wearing the shared sheet. The header
+   stays outside the scrolling body so Cancel/Save never scroll away; date and
+   time inputs are padding-free inside a padded wrapper, because WebKit
+   computes `width: 100%` wrongly for padded native date/time controls. */
+.wake-schedule-backdrop { position: fixed; inset: 0; z-index: 100; background: rgba(7, 10, 8, 0.42); backdrop-filter: blur(6px); }
+.wake-schedule-sheet.sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 101; min-width: 0; max-height: 92dvh; gap: 10px; padding: 10px 0 0; overflow: hidden; outline: 0; }
+.wake-schedule-sheet > .sheet-head { flex: none; min-height: 44px; padding: 0 max(17px, env(safe-area-inset-right)) 0 max(17px, env(safe-area-inset-left)); }
+.wake-schedule-sheet > .sheet-head h2 { min-width: 0; flex: 1 1 auto; overflow: hidden; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+.wake-schedule-sheet .sheet-cancel, .wake-schedule-sheet .sheet-save { flex: none; min-height: 36px; font-size: 13px; }
+.wake-schedule-sheet .sheet-save:disabled { color: var(--text-muted); opacity: 0.6; }
+.wake-body { flex: 0 1 auto; min-height: 0; min-width: 0; display: flex; flex-direction: column; gap: 20px; overflow-y: auto; overscroll-behavior-y: contain; padding: 4px max(17px, env(safe-area-inset-right)) calc(24px + env(safe-area-inset-bottom)) max(17px, env(safe-area-inset-left)); scroll-padding-block: 12px 24px; }
+.wake-schedule-sheet fieldset { min-inline-size: 0; margin: 0; padding: 0; border: 0; }
+.wake-schedule-sheet legend { padding: 0; }
+.wake-form, .wake-when { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+.wake-group { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.wake-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.wake-label { display: block; margin-bottom: 8px; color: var(--text-soft); font-size: 12px; font-weight: 600; line-height: 1.3; }
+.wake-field > .wake-label, .wake-group > label.wake-label { margin-bottom: 0; }
+.wake-label-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; width: 100%; }
+.wake-label-hint { color: var(--text-muted); font-weight: 500; font-variant-numeric: tabular-nums; }
+.wake-field-hint, .wake-field-error { margin: 0; color: var(--text-muted); font-size: 12px; line-height: 1.45; }
+.wake-field-hint.is-warning { color: var(--warning); }
+.wake-field-error { color: var(--danger); }
+.wake-field-error:empty { display: none; }
+
+/* Summary: the sentence first, saved facts beneath it. */
+.wake-summary { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 14px; }
+.wake-summary-top { min-height: 30px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.wake-state { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 11.5px; font-weight: 650; }
+.wake-state i { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+.wake-state[data-state="active"] { color: var(--accent); }
+.wake-state[data-state="dirty"] { color: var(--warning); }
+.wake-summary p { margin: 0; }
+.wake-summary-sentence { color: var(--text); font-size: 15px; font-weight: 650; line-height: 1.35; overflow-wrap: anywhere; }
+.wake-summary-sentence.is-empty { color: var(--text-muted); font-weight: 500; }
+.wake-summary-meta, .wake-summary-note { color: var(--text-soft); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.wake-summary-zone, .wake-summary-local { color: var(--text-muted); }
+.wake-outcome { display: flex; align-items: flex-start; gap: 6px; color: var(--text-muted); font-size: 12px; line-height: 1.4; }
+.wake-outcome svg { flex: none; margin-top: 1px; }
+.wake-outcome[data-tone="success"] svg { color: var(--success); }
+.wake-outcome[data-tone="warning"] { color: var(--warning); }
+.wake-outcome[data-tone="danger"] { color: var(--danger); }
+.wake-inline-action { min-height: 30px; flex: none; padding: 0 12px; color: var(--text); background: var(--surface-raised); border: 1px solid var(--line-strong); border-radius: 9px; cursor: pointer; font-size: 12px; font-weight: 650; transition: background-color 120ms ease, border-color 120ms ease; }
+.wake-inline-action:hover:not(:disabled) { background: var(--surface-hover); }
+.wake-inline-action:disabled { cursor: not-allowed; opacity: 0.5; }
+
+/* Alerts and notices sit next to the header's Save. */
+.wake-alert { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; color: var(--danger); background: var(--danger-soft); border-radius: 12px; font-size: 12px; line-height: 1.45; }
+.wake-alert.is-notice { color: var(--text); background: var(--surface-subtle); border: 1px solid var(--line-strong); }
+.wake-alert > svg { flex: none; margin-top: 2px; }
+.wake-alert-copy { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.wake-alert-copy p { margin: 0; }
+.wake-alert-detail { color: var(--text-soft); }
+.wake-alert-action { flex: none; align-self: center; min-height: 32px; padding: 0 10px; color: var(--text); background: var(--surface-raised); border: 1px solid var(--line-strong); border-radius: 9px; cursor: pointer; font-size: 12px; font-weight: 650; }
+
+/* Once | Weekly: native radios sharing one name, drawn as a segmented control. */
+.wake-schedule-sheet .wake-segmented { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px; padding: 3px; background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 12px; }
+.wake-segment { position: relative; min-height: 34px; display: flex; align-items: center; justify-content: center; color: var(--text-soft); border-radius: 9px; cursor: pointer; font-size: 12.5px; font-weight: 600; transition: background-color 120ms ease, color 120ms ease; }
+.wake-segment input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.wake-segment.is-selected { color: var(--text); background: var(--surface-raised); box-shadow: var(--shadow-sm); font-weight: 650; }
+.wake-segment:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* Native date/time controls: the wrapper is the field. */
+.wake-once-grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 10px; }
+.wake-native-control { min-width: 0; display: flex; align-items: center; padding-inline: 12px; background: var(--surface-subtle); border: 1px solid var(--line-strong); border-radius: 12px; transition: border-color 120ms ease, box-shadow 120ms ease; }
+.wake-native-control:focus-within { background: var(--surface-raised); border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+.wake-native-control.is-invalid { border-color: var(--danger); border-style: dashed; }
+.wake-native-control > input { -webkit-appearance: none; appearance: none; display: block; box-sizing: border-box; flex: 1 1 auto; width: 100%; min-width: 0; max-width: 100%; min-height: 42px; margin: 0; padding: 0; color: var(--text); background: transparent; border: 0; border-radius: 0; outline: 0; box-shadow: none; font: inherit; font-size: 12.5px; line-height: 1.5; }
+.wake-native-control > input::-webkit-date-and-time-value { min-height: 1.5em; text-align: start; }
+.wake-native-control > input::-webkit-calendar-picker-indicator { opacity: 0.55; cursor: pointer; }
+
+/* Weekdays: seven equal chips; two rows where seven thumb targets don't fit. */
+.wake-days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+.wake-day { position: relative; min-height: 40px; display: flex; align-items: center; justify-content: center; color: var(--text-soft); background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 10px; cursor: pointer; font-size: 12px; font-weight: 600; transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease; }
+.wake-day input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.wake-day.is-selected { color: var(--on-accent); background: var(--accent-strong); border-color: var(--accent-strong); font-weight: 700; }
+.wake-day:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Times: native inputs in wrapping pills with their own remove target. */
+.wake-times { display: grid; grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr)); gap: 8px; }
+.wake-time { padding-right: 0; }
+.wake-time-remove { width: 40px; min-height: 40px; flex: none; display: inline-flex; align-items: center; justify-content: center; color: var(--text-muted); background: transparent; border-radius: 0 11px 11px 0; cursor: pointer; }
+.wake-time-remove:hover { color: var(--text); background: var(--surface-hover); }
+.wake-time-add { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; color: var(--accent); background: transparent; border: 1px dashed var(--line-strong); border-radius: 12px; cursor: pointer; font-size: 12.5px; font-weight: 650; }
+.wake-time-add:hover { background: var(--surface-subtle); }
+
+/* Timezone: always visible, editable on demand. */
+.wake-timezone-row { width: 100%; min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 0 12px; color: var(--text); background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 12px; cursor: pointer; text-align: left; font-size: 12.5px; }
+.wake-timezone-label { flex: none; color: var(--text-soft); font-weight: 600; }
+.wake-timezone-value { min-width: 0; flex: 1; overflow: hidden; text-align: right; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.wake-timezone-note { color: var(--text-muted); font-weight: 500; }
+.wake-timezone-row svg { flex: none; color: var(--text-muted); }
+.wake-timezone-row svg.is-open { transform: rotate(180deg); }
+.wake-timezone-panel { display: flex; flex-direction: column; gap: 6px; }
+.wake-text-button { align-self: flex-start; min-height: 32px; padding: 0; color: var(--accent); background: transparent; cursor: pointer; font-size: 12px; font-weight: 650; text-align: left; }
+
+/* Text inputs: the shared field look, without the shared 118px textarea. */
+.wake-text { width: 100%; min-width: 0; padding: 11px 14px; color: var(--text); background: var(--surface-subtle); border: 1px solid var(--line-strong); border-radius: 12px; outline: 0; font: inherit; font-size: 12.5px; line-height: 1.5; transition: border-color 120ms ease, box-shadow 120ms ease; }
+.wake-text:focus { background: var(--surface-raised); border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+.wake-text[aria-invalid="true"] { border-color: var(--danger); }
+input.wake-text { min-height: 44px; padding-block: 0; }
+textarea.wake-text { min-height: calc(3lh + 24px); max-height: calc(12lh + 24px); overflow-y: auto; resize: vertical; field-sizing: content; }
+.wake-message-foot { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; color: var(--text-muted); font-size: 12px; line-height: 1.45; }
+.wake-counter { flex: none; font-family: var(--font-mono); font-size: 11px; font-variant-numeric: tabular-nums; }
+.wake-counter[data-level="near"] { color: var(--warning); }
+.wake-counter[data-level="over"] { color: var(--danger); font-weight: 650; }
+
+/* Delete: the shared danger row, confirmed in place. */
+.wake-delete-confirm { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; background: var(--danger-soft); border-top: 1px solid var(--line); }
+.wake-delete-confirm p { margin: 0; }
+.wake-delete-title { color: var(--text); font-size: 13px; font-weight: 650; }
+.wake-delete-detail { color: var(--text-soft); font-size: 12px; line-height: 1.45; }
+.wake-delete-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.wake-delete-keep, .wake-delete-go { min-height: 36px; padding: 0 14px; border-radius: 9px; cursor: pointer; font-size: 12.5px; font-weight: 650; }
+.wake-delete-keep { color: var(--text); background: var(--surface-raised); border: 1px solid var(--line-strong); }
+.wake-delete-go { color: var(--surface-raised); background: var(--danger); }
+
+@media (max-width: 379px) {
+  .wake-days { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .wake-once-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 900px), (hover: none), (pointer: coarse) {
+  .wake-schedule-sheet input, .wake-schedule-sheet textarea, .wake-native-control > input { font-size: 16px; }
+  .wake-schedule-sheet .sheet-cancel, .wake-schedule-sheet .sheet-save, .wake-time-remove, .wake-inline-action, .wake-alert-action, .wake-delete-keep, .wake-delete-go, .wake-text-button { min-width: 44px; min-height: 44px; }
+  .wake-time-remove { width: 44px; }
+  .wake-day, .wake-segment { min-height: 44px; }
+  .wake-native-control > input { min-height: 44px; }
+  .wake-summary-sentence { font-size: 16px; }
+}
+@media (min-width: 901px) {
+  .wake-schedule-sheet.sheet { left: 50%; right: auto; top: 50%; bottom: auto; width: min(480px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); padding: 16px 0 0; border-radius: 18px; transform: translate(-50%, -50%); }
+  .wake-schedule-sheet .wake-body { padding-inline: 20px; padding-bottom: 22px; }
+  .wake-schedule-sheet > .sheet-head { padding-inline: 20px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .wake-schedule-sheet *, .wake-schedule-sheet *::before { transition: none !important; }
+}
 .conversation-menu-item .conversation-menu-hint { overflow-wrap: anywhere; white-space: normal; }
 .conversation-menu-item.is-wake { height: auto; padding-top: 8px; padding-bottom: 8px; }
 .conversation-menu-item.is-wake .wake-menu-copy { display: grid; flex: 1; gap: 2px; white-space: normal; }

@@ -353,7 +353,10 @@ function ProjectPickerItems({ threadId, sourceId, currentProjectId }: {
 }
 
 function ConversationActions() {
-  const [scheduleOpen, setScheduleOpen] = useState(false);
+  // The conversation the schedule editor was opened for. A different selected
+  // conversation closes it rather than silently retargeting the open editor.
+  const [scheduleThreadId, setScheduleThreadId] = useState<string | null>(null);
+  const actionsTriggerRef = useRef<HTMLButtonElement>(null);
   const {
     selectedThread,
     archiveThread,
@@ -363,6 +366,10 @@ function ConversationActions() {
     projectsByAgent,
     setThreadProject,
   } = useConsoleStore();
+  const selectedThreadId = selectedThread?.id ?? null;
+  useEffect(() => {
+    if (scheduleThreadId !== null && scheduleThreadId !== selectedThreadId) setScheduleThreadId(null);
+  }, [scheduleThreadId, selectedThreadId]);
   if (selectedThread === null) return null;
   const archived = selectedThread.archivedAt !== null;
   const canDelete = archived
@@ -384,6 +391,7 @@ function ConversationActions() {
       }}
     >
       <Menu.Trigger
+        ref={actionsTriggerRef}
         type="button"
         className="icon-button header-more"
         aria-label="Conversation actions"
@@ -441,7 +449,7 @@ function ConversationActions() {
               </Menu.Item>
             )}
             {selectedThread.trigger === undefined && <Menu.Item className="conversation-menu-item is-wake"
-              onClick={() => setScheduleOpen(true)}>
+              onClick={() => setScheduleThreadId(selectedThread.id)}>
               <Icon name="clock" size={16} />
               <span className="wake-menu-copy">
                 <span>{selectedThread.wakeSchedule === undefined ? "Schedule wake-up" : "Edit wake-up schedule"}</span>
@@ -480,7 +488,8 @@ function ConversationActions() {
         </Menu.Positioner>
       </Menu.Portal>
     </Menu.Root>
-    {scheduleOpen && <WakeScheduleEditor key={selectedThread.id} thread={selectedThread} onClose={() => setScheduleOpen(false)} />}
+    {scheduleThreadId === selectedThread.id && <WakeScheduleEditor key={selectedThread.id} thread={selectedThread}
+      returnFocusRef={actionsTriggerRef} onClose={() => setScheduleThreadId(null)} />}
     </>
   );
 }
