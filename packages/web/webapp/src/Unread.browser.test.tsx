@@ -1,8 +1,10 @@
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { commands, page } from "@vitest/browser/context";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useEffect } from "react";
 import {
   ConsoleStoreProvider,
+  useConsoleStore,
   SELECTED_AGENT_STORAGE_KEY,
   SELECTED_THREADS_STORAGE_KEY,
 } from "./console-store";
@@ -27,6 +29,9 @@ vi.mock("./api", async (importOriginal) => ({
     listTags: vi.fn(),
     cronRuns: vi.fn(),
     searchThreads: vi.fn(),
+    latestAgentRestart: vi.fn(),
+    providerAuthStatus: vi.fn(),
+    providerUsage: vi.fn(),
   },
 }));
 vi.mock("./notifications", () => ({ NotificationBell: () => null }));
@@ -79,11 +84,20 @@ const background = thread("background-report", "alpha", {
   title: "Background report", messageCount: 1, runState: { status: "complete" },
 });
 const persistence = createThreadPersistence();
+type Store = ReturnType<typeof useConsoleStore>;
+let currentStore: Store | null = null;
+function StoreProbe() {
+  const store = useConsoleStore();
+  useEffect(() => { currentStore = store; }, [store]);
+  return null;
+}
+const renderApp = () => render(<ConsoleStoreProvider><WebRuntimeProvider><StoreProbe /><App /></WebRuntimeProvider></ConsoleStoreProvider>);
 
 beforeEach(async () => {
   await persistence.clearAll();
   vi.resetAllMocks();
   SyntheticEventSource.instances = [];
+  currentStore = null;
   localStorage.clear();
   window.history.replaceState(null, "", "/");
   localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
@@ -111,6 +125,7 @@ beforeEach(async () => {
   vi.mocked(api.listTags).mockResolvedValue([]);
   vi.mocked(api.cronRuns).mockResolvedValue({ runs: [] });
   vi.mocked(api.searchThreads).mockResolvedValue({ hits: [], truncated: false });
+  vi.mocked(api.latestAgentRestart).mockResolvedValue(null);
 });
 
 afterEach(async () => {
@@ -125,11 +140,38 @@ afterEach(async () => {
 
 describe.each([
   { label: "desktop", width: 1_280, height: 900 },
+  { label: "phone", width: 390, height: 844 },
+])("settings visibility and real unread store on $label", ({ label, width, height }) => {
+  it("retains the selected conversation's incoming update while covered, reads it when exposed (A8)", async () => {
+    await page.viewport(width, height);
+    renderApp();
+    const dashboard = await screen.findByRole("navigation", { name: "Dashboard" });
+    const row = await within(dashboard).findByRole("button", { name: `Open ${selected.title}` });
+    if (label === "phone") {
+      await act(async () => { row.click(); });
+      await waitFor(() => expect(document.querySelector(".chat-region")!.hasAttribute("inert")).toBe(false));
+    }
+    await waitFor(() => expect(currentStore?.selectedThread?.id).toBe(selected.id));
+    act(() => window.dispatchEvent(new CustomEvent("mono-agent:agent-settings")));
+    await screen.findByRole("navigation", { name: "Agent settings sections" });
+    await waitFor(() => expect(document.querySelector(".chat-region")!.hasAttribute("inert")).toBe(true));
+    act(() => SyntheticEventSource.changed({ ...selected, revision: 2 }));
+    await waitFor(() => expect(currentStore?.unreadThreadIds.has(selected.id)).toBe(true));
+    expect(currentStore?.selectedThread?.id).toBe(selected.id);
+    const close = screen.getByRole("button", { name: label === "phone" ? "Close settings" : "Close agent settings" });
+    await act(async () => { close.click(); });
+    await waitFor(() => expect(document.querySelector(".chat-region")!.hasAttribute("inert")).toBe(false));
+    await waitFor(() => expect(currentStore?.unreadThreadIds.has(selected.id)).toBe(false));
+  });
+});
+
+describe.each([
+  { label: "desktop", width: 1_280, height: 900 },
   { label: "mobile", width: 390, height: 844 },
 ])("server read watermark on $label", ({ label, width, height }) => {
   it("clears the dashboard dot without opening the conversation, until a later revision", async () => {
     await page.viewport(width, height);
-    render(<ConsoleStoreProvider><WebRuntimeProvider><App /></WebRuntimeProvider></ConsoleStoreProvider>);
+    renderApp();
     const dashboard = await screen.findByRole("navigation", { name: "Dashboard" });
     const row = await within(dashboard).findByRole("button", { name: `Open ${background.title}` });
     expect(row).toBeVisible();
