@@ -12,7 +12,18 @@ const mocks = vi.hoisted(() => ({
   run: vi.fn(),
   discover: vi.fn(),
   operators: vi.fn(),
+  interruptedWrite: undefined as undefined | { entered(): void; wait: Promise<void> },
 }));
+vi.mock("../continuation-store-fs.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../continuation-store-fs.js")>();
+  return { ...original, writeTextAtomic: async (...args: Parameters<typeof original.writeTextAtomic>) => {
+    if (args[0].endsWith("thread.json") && args[1].includes('"status":"interrupted"') && mocks.interruptedWrite) {
+      mocks.interruptedWrite.entered();
+      await mocks.interruptedWrite.wait;
+    }
+    return await original.writeTextAtomic(...args);
+  } };
+});
 vi.mock("@mono-agent/web", async (importOriginal) => ({
   ...await importOriginal<typeof import("@mono-agent/web")>(),
   discoverAcpBridgeAgents: mocks.discover,
@@ -32,6 +43,7 @@ const roots: string[] = [];
 afterEach(async () => {
   mocks.turns.splice(0);
   vi.clearAllMocks();
+  mocks.interruptedWrite = undefined;
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -393,7 +405,41 @@ describe("PeerAgent request lifecycle", () => {
       expect(await job.run(new AbortController().signal, () => {}, () => {})).toMatchObject({ status: "awaiting_reply" });
       job.onSettlementFailure?.();
       await vi.waitFor(() => expect(mocks.run.mock.calls[0]?.[0].signal.aborted).toBe(true));
+      // The failure hook is synchronous; stopping joins the aborted ACP owner
+      // before this test removes its thread directory.
+      expect((await f.client.callTool({ name: "PeerAgent", arguments: {
+        action: "stop", peer: "finance", thread: "portfolio",
+      } })).isError).not.toBe(true);
     } finally { await f.close(); }
+  });
+
+  it.each(["stop", "settlement failure", "foreground stop"] as const)("drains an interrupted peer write before %s returns", async (cause) => {
+    const f = await setup();
+    mocks.run.mockImplementation(parked);
+    let entered!: () => void;
+    let release!: () => void;
+    const writeEntered = new Promise<void>((resolve) => { entered = resolve; });
+    const writeGate = new Promise<void>((resolve) => { release = resolve; });
+    mocks.interruptedWrite = { entered, wait: writeGate };
+    try {
+      if (cause === "foreground stop") expect((await f.send()).isError).not.toBe(true);
+      else {
+        await f.send(true);
+        const job = f.pending()!;
+        expect(await job.run(new AbortController().signal, () => {}, () => {})).toMatchObject({ status: "awaiting_reply" });
+        if (cause === "settlement failure") job.onSettlementFailure?.();
+      }
+      const stopping = f.client.callTool({ name: "PeerAgent", arguments: {
+        action: "stop", peer: "finance", thread: "portfolio",
+      } });
+      await writeEntered;
+      // The interrupted record has not been written yet. The stop tool must not
+      // report completion while its detached ACP run can still write to this root.
+      expect(await Promise.race([stopping.then(() => "stopped"), new Promise<string>((resolve) => setImmediate(() => resolve("writing")))]))
+        .toBe("writing");
+      release();
+      expect((await stopping).isError).not.toBe(true);
+    } finally { release(); await f.close(); }
   });
 
   it("retires a background peer question projection when stopped", async () => {
