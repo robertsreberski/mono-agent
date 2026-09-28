@@ -10,3 +10,4 @@ export const Running: Story = { args: { ...defaults, thread: runningThread } };
 export const Unread: Story = { args: { ...defaults, unread: true } };
 export const LongTitle: Story = { args: { ...defaults, thread: { ...gardenThread, title: "Garden planner with extra community notes and a seasonal planting calendar" } } };
 export const Mobile: Story = { args: defaults, globals: { viewport: { value: "phone" } } };
+export const ActiveWakeSchedule: Story = { args: { ...defaults, thread: { ...gardenThread, wakeSchedule: { state: "active", kind: "weekly", revision: 3, nextFireAt: "2031-05-12T12:30:00Z" } } } };

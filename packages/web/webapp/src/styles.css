@@ -1911,6 +1911,11 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .wake-schedule-sheet .sheet-cancel, .wake-schedule-sheet .sheet-save { flex: none; min-height: 36px; font-size: 13px; }
 .wake-schedule-sheet .sheet-save:disabled { color: var(--text-muted); opacity: 0.6; }
 .wake-body { flex: 0 1 auto; min-height: 0; min-width: 0; display: flex; flex-direction: column; gap: 20px; overflow-y: auto; overscroll-behavior-y: contain; padding: 4px max(17px, env(safe-area-inset-right)) calc(24px + env(safe-area-inset-bottom)) max(17px, env(safe-area-inset-left)); scroll-padding-block: 12px 24px; }
+/* Scrolling column: children keep their height (an `overflow: hidden` group
+   would otherwise shrink and clip its last row at the bottom of the scroll). */
+.wake-body > * { flex-shrink: 0; }
+.wake-schedule-sheet > .sheet-head { border-bottom: 1px solid transparent; transition: border-color 120ms ease; }
+.wake-schedule-sheet[data-scrolled] > .sheet-head { border-bottom-color: var(--line); }
 .wake-schedule-sheet fieldset { min-inline-size: 0; margin: 0; padding: 0; border: 0; }
 .wake-schedule-sheet legend { padding: 0; }
 .wake-form, .wake-when { display: flex; flex-direction: column; gap: 20px; min-width: 0; }

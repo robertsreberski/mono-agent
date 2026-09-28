@@ -44,6 +44,8 @@ export function WakeScheduleEditor({ thread, onClose, returnFocusRef }: {
   const [failure, setFailure] = useState<Failure | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [reloadCount, setReloadCount] = useState(0);
+  // A hairline under the fixed header once the body has scrolled beneath it.
+  const [scrolled, setScrolled] = useState(false);
   // Request ordering: a read only applies if it is the newest read and no
   // mutation started after it; mutations are serialized by `busy`.
   const readSeq = useRef(0);
@@ -133,7 +135,7 @@ export function WakeScheduleEditor({ thread, onClose, returnFocusRef }: {
   return <Dialog.Root open onOpenChange={(open) => { if (!open) onClose(); }}>
     <Dialog.Portal>
       <Dialog.Backdrop className="wake-schedule-backdrop" />
-      <Dialog.Popup ref={popupRef} className="sheet wake-schedule-sheet" aria-modal="true"
+      <Dialog.Popup ref={popupRef} className="sheet wake-schedule-sheet" aria-modal="true" data-scrolled={scrolled || undefined}
         initialFocus={popupRef} finalFocus={returnFocusRef ?? true}>
         <span className="sheet-handle" aria-hidden="true" />
         <header className="sheet-head">
@@ -143,7 +145,8 @@ export function WakeScheduleEditor({ thread, onClose, returnFocusRef }: {
             {busy === "save" ? "Saving…" : "Save"}
           </button>
         </header>
-        <div className="wake-body" aria-busy={!loaded || busy !== null}>
+        <div className="wake-body" aria-busy={!loaded || busy !== null}
+          onScroll={(event) => { const next = event.currentTarget.scrollTop > 0; if (next !== scrolled) setScrolled(next); }}>
           {failure !== null && <div className="wake-alert" role="alert">
             <Icon name="alert" size={15} />
             <div className="wake-alert-copy">

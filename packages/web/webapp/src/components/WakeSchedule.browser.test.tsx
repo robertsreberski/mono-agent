@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { commands, page, userEvent } from "@vitest/browser/context";
 import { useRef, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
+import type { WebWakeSchedule } from "../../../src/contracts.js";
 import { ApiError, api } from "../api";
 import { convertWebMessage } from "../runtime";
 import type { ThreadSummary, WebMessage } from "../types";
@@ -32,7 +33,7 @@ function Transcript({ message }: { message: WebMessage }) {
   </ThreadPrimitive.Root></AssistantRuntimeProvider>;
 }
 const dialog = () => screen.getByRole("dialog", { name: "Scheduled wake-up" });
-const loadedEditor = async (value: typeof schedule | null = schedule, target: ThreadSummary = thread) => {
+const loadedEditor = async (value: WebWakeSchedule | null = schedule, target: ThreadSummary = thread) => {
   const read = vi.spyOn(api, "wakeSchedule").mockResolvedValue({ schedule: value });
   const close = vi.fn();
   const view = render(<WakeScheduleEditor thread={target} onClose={close} />);
@@ -197,7 +198,7 @@ describe("scheduled wake UI in Chromium", () => {
   it("offers no Resume for a completed one-off and explains what Save does", async () => {
     const completed = { ...schedule, state: "completed" as const, nextFireAt: null, lastOutcome: "uncertain" as const,
       definition: { kind: "once" as const, timezone: "UTC", localAt: "2026-01-20T08:00" } };
-    const { read, view } = await loadedEditor(completed as never);
+    const { read, view } = await loadedEditor(completed);
     const summary = screen.getByRole("region", { name: "Schedule summary" });
     expect(summary).toHaveTextContent("Completed");
     expect(summary).toHaveTextContent("No further wake-ups");
@@ -266,6 +267,23 @@ describe("scheduled wake UI in Chromium", () => {
     within();
     for (const day of ["Monday", "Sunday"]) expect(screen.getByLabelText(day).getBoundingClientRect().width).toBeGreaterThanOrEqual(40);
     expect(screen.getByLabelText("Time 1").getBoundingClientRect().width).toBeGreaterThan(70);
+    view.unmount(); read.mockRestore();
+    await page.viewport(1440, 1000);
+  });
+
+  it("scrolls a tall schedule to a fully visible delete row on a phone", async () => {
+    await page.viewport(390, 700);
+    const eight = { ...schedule, definition: { ...schedule.definition, days: [0, 1, 2, 3, 4, 5, 6],
+      times: ["06:00", "08:00", "10:00", "12:00", "14:00", "16:00", "18:00", "20:00"] } };
+    const { read, view } = await loadedEditor(eight);
+    const body = dialog().querySelector<HTMLElement>(".wake-body")!;
+    expect(body.scrollHeight).toBeGreaterThan(body.clientHeight);
+    body.scrollTop = body.scrollHeight;
+    await waitFor(() => expect(dialog()).toHaveAttribute("data-scrolled"));
+    const row = screen.getByRole("button", { name: "Delete schedule" }).getBoundingClientRect();
+    const group = screen.getByRole("button", { name: "Delete schedule" }).parentElement!.getBoundingClientRect();
+    expect(group.height).toBeGreaterThanOrEqual(row.height);
+    expect(row.bottom).toBeLessThanOrEqual(body.getBoundingClientRect().bottom);
     view.unmount(); read.mockRestore();
     await page.viewport(1440, 1000);
   });

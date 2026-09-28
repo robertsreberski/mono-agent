@@ -49,7 +49,7 @@ describe("wake schedule draft rules", () => {
   it("treats order, zone case and an absent message as unchanged", () => {
     const saved = definitionFromDraft(weekly);
     expect(saved).toEqual({ kind: "weekly", timezone: "UTC", days: [1, 3], times: ["14:30", "09:00"] });
-    expect(isDraftDirty({ ...weekly, days: [1, 3], times: ["09:00", "14:30"] }, { ...saved, times: ["09:00", "14:30"] })).toBe(false);
+    expect(isDraftDirty({ ...weekly, days: [1, 3], times: ["09:00", "14:30"] }, definitionFromDraft({ ...weekly, times: ["09:00", "14:30"] }))).toBe(false);
     expect(isDraftDirty({ ...weekly, timezone: "utc" }, saved)).toBe(false);
     expect(isDraftDirty({ ...weekly, date: "2040-01-01" }, saved)).toBe(false);
     expect(isDraftDirty({ ...weekly, message: " " }, saved)).toBe(true);
