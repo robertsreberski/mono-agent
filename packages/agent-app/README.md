@@ -164,10 +164,8 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
 Persistent Agent/AgentManage can run detached through the app-private in-process
 ProcessJobs lane. Completed job progress reports each child's priced cost and
 non-zero token counts for that job's turn, not cumulative persistent-instance
-usage. Consoles must support the optional progress `usage` field before agents
-begin emitting it; older consoles reject such job cards. Durable admission
-reserves the child; completion and AskParent
-wake the exact origin. Unresolved cancellation reports `childStillBusy:true`
+usage. Durable admission reserves the child; completion and AskParent wake the
+exact origin. Unresolved cancellation reports `childStillBusy:true`
 while retaining the child lock and runtime lease through actual settlement.
 `AgentManage({id, stop:true})` cooperatively stops managed detached work without
 starting a new turn. Only a proven `resumable:true` receipt permits ordinary
@@ -181,6 +179,14 @@ The child timer, job deadline (when detached), and parent abort remain
 authoritative; child-owned background commands are unsupported. Interactive
 parent turns and NodeRepl keep their 120-second caps.
 See [background subagents](../../docs/tools/background-process-jobs.md#detached-persistent-children).
+
+**Rollout and rollback.** Run consoles with the #1107 readers before agents
+start emitting detached `usage`. In the wrong order, a pre-#1107 console
+rejects the entire web job notification with HTTP 400, losing the terminal
+card update and the parent wake on that thread. After an agent has written a
+usage-bearing record, do not roll either side back before #1107: older agents
+cannot open their process-job store, and older consoles cannot open conversations
+holding those cards.
 
 ## Install / Usage
 

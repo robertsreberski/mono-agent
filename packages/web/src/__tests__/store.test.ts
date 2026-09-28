@@ -2807,6 +2807,41 @@ describe("WebStore", () => {
     reopened.close();
   });
 
+  it("reads future or malformed persisted job token usage without relaxing ingest", async () => {
+    const base = await temporaryRoot(); cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const raw = new DatabaseSync(store.paths.database);
+    try {
+      const insert = raw.prepare(`INSERT INTO messages
+        (id, thread_id, role, parts_json, created_at, updated_at, status)
+        VALUES (?, ?, 'assistant', ?, ?, ?, 'complete')`);
+      const usage = { input: 8, output: 2, cacheRead: 1, cacheWrite: 0 };
+      for (const [index, sample] of [
+        { ...usage, future: 17 }, { ...usage, input: -4 },
+      ].entries()) {
+        const id = `${index + 1}${index + 1}${index + 1}${index + 1}${index + 1}${index + 1}${index + 1}${index + 1}-1111-4111-8111-111111111111`;
+        const job = { ...fakeProcessJob({ conversationId: `web:${thread.id}`, jobId: id }),
+          tool: "Agent", kind: "internal", instanceId: "helper", childStillBusy: false,
+          subagentProgress: { revision: 1, profile: "helper", toolCalls: 0, failedCalls: 0, recent: [], usage: sample } };
+        if (index === 0) expect(() => store.upsertProcessJobCard({ sourceId: "agent-one", threadId: thread.id,
+          processJob: job as unknown as ProcessJobProjection, deliveryKey: job.wake.deliveryKey })).toThrow();
+        insert.run(`persisted-job-${index}`, thread.id, JSON.stringify([{ type: "process-job", job }]),
+          `2026-07-21T09:00:0${index}Z`, `2026-07-21T09:00:0${index}Z`);
+      }
+      const cards = store.getThreadDetail(thread.id)!.messages.flatMap((message) => message.parts)
+        .filter((part) => part.type === "process-job");
+      expect(cards).toHaveLength(2);
+      const progress = (part: (typeof cards)[number] | undefined) => part?.job.kind === "internal"
+        ? part.job.subagentProgress : undefined;
+      expect(progress(cards[0])?.usage).toEqual(usage);
+      expect(progress(cards[1])).not.toHaveProperty("usage");
+      const aggregate = await store.threadUsage(thread.id);
+      expect(aggregate.subagents).toMatchObject({ runs: 2, runsWithTokens: 1, tokensPartial: true });
+    } finally { raw.close(); store.close(); }
+  });
+
   it("orders terminal jobs by completion instead of card creation or wake retries", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);

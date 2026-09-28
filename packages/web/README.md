@@ -941,9 +941,15 @@ and marks token or cost lower bounds when telemetry is incomplete. Synchronous
 subagents report their measured token share; older or unmeasured runs keep the
 sub-line partial, while detached progress carries measured per-job token counts
 from upgraded agents. Older jobs without counts keep the totals as lower bounds.
-Assistant
-parts are scanned on demand and memoized by message row identity and sequence; no
-additional storage table is required.
+Assistant parts are scanned on demand and memoized by message row identity and
+sequence; no additional storage table is required.
+
+**Rollout and rollback.** Deploy the #1107 console readers before agents send
+usage-bearing detached job cards. An older console rejects the entire web job
+notification with HTTP 400, losing the card update and parent wake. Once those
+cards exist, do not roll consoles or agents back before #1107: older consoles
+cannot open the affected conversations and older agents cannot open their
+process-job store.
 
 ### Start here
 

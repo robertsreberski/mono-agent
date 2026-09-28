@@ -75,8 +75,9 @@ function processJobSettlement(service: ProcessJobsServiceHandle, jobId: string):
   return settlement;
 }
 
-async function managedFixture(retireSession: (id: string, root: string) => Promise<unknown> = async () => {}, overrides = {}, realOwner = false, writeRegistry?: typeof writeJsonAtomic) {
-  const f = await fixture({ maxConcurrent: 1, maxQueued: 0, ...overrides }, retireSession, undefined, realOwner);
+async function managedFixture(retireSession: (id: string, root: string) => Promise<unknown> = async () => {}, overrides = {}, realOwner = false, writeRegistry?: typeof writeJsonAtomic,
+  surfaceUpdate?: (job: ProcessJobProjection) => Promise<void>) {
+  const f = await fixture({ maxConcurrent: 1, maxQueued: 0, ...overrides }, retireSession, surfaceUpdate, realOwner);
   const registry = createSubagentInstanceRegistry({ root: resolve(f.root, "children"), retireSession, ...(writeRegistry ? { writeRegistry } : {}),
     ...createSubagentRecoveryAccess({ service: f.service, privateRoots: async () => [resolve(f.root, "jobs"), resolve(f.root, "children")],
       hostAccess: () => ({ workspace: f.root, readableRoots: [], sandboxPolicy: createSandboxPolicy({ root: f.root }) }) }),
@@ -1185,6 +1186,36 @@ describe("managed detached production execution", () => {
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(releasedConfirmAttempts).toBe(1);
     } finally { gate.resolve(); }
+  }, 30_000);
+
+  it.each([
+    { scenario: "token-only unpriced", price: 0, existingCost: undefined },
+    { scenario: "price already present", price: 0.08, existingCost: 0.03 },
+  ])("backfills $scenario tokens without overwriting cost", async ({ price, existingCost }) => {
+    const surfaceUpdate = vi.fn(async (_job: ProcessJobProjection) => {});
+    const f = await managedFixture(undefined, {}, false, undefined, surfaceUpdate);
+    const gate = deferred<any>();
+    const run = vi.fn(() => gate.promise);
+    const { agent } = tools(f, run, { timeoutMs: 1500 });
+    const receipt = await agent.execute("late-tokens", { persist: true, background: true, id: "helper", prompt: "work" });
+    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce(), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+    await vi.waitFor(async () => expect((await f.service.get(receipt.details.jobId))?.wake.state).toBe("delivered"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+    if (existingCost !== undefined) await f.store.mutate((records) => {
+      const record = records.get(receipt.details.jobId)!;
+      record.subagentProgress = { ...record.subagentProgress!, costUsd: existingCost };
+    });
+    const before = (await f.store.get(receipt.details.jobId))!.subagentProgress!;
+    expect(before).not.toHaveProperty("usage");
+    gate.resolve({ text: "late", usage: { input_tokens: 9 }, cost: { total: price } });
+    await vi.waitFor(async () => expect((await f.store.get(receipt.details.jobId))?.subagentProgress?.usage?.input).toBe(9),
+      { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+    const after = (await f.store.get(receipt.details.jobId))!.subagentProgress!;
+    expect(after.revision).toBe(before.revision + 1);
+    if (existingCost === undefined) expect(after).not.toHaveProperty("costUsd");
+    else expect(after.costUsd).toBe(existingCost);
+    await vi.waitFor(() => expect(surfaceUpdate.mock.calls.some(([job]) =>
+      job.kind === "internal" && job.subagentProgress?.usage?.input === 9)).toBe(true),
+    { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
   }, 30_000);
 
   it("reports a timeout fence once and releases only after the true late provider settles", async () => {

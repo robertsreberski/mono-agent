@@ -9117,20 +9117,16 @@ function canonicalizePersistedPartHistory(value: unknown): unknown {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
   const part = value as Record<string, unknown>;
   if (part.type === "tool-call") return canonicalizePersistedHistoryRecord(part);
+  if (part.type === "process-job") return canonicalizePersistedProcessJobUsage(part);
   if (part.type !== "subagent") return value;
   const canonicalPart = canonicalizePersistedObjectHistory(part);
   const { attribution: _rawAttribution, usage: _rawUsage, ...withoutOptional } = canonicalPart;
   const attribution = canonicalRunAttribution(part.attribution);
   const rawUsage = part.usage;
-  // Old consoles may read newer optional subagent fields. Preserve the known
-  // sample and ignore extensions; drop malformed usage, never the whole message.
-  const candidate = typeof rawUsage === "object" && rawUsage !== null && !Array.isArray(rawUsage)
-    ? rawUsage as Record<string, unknown> : undefined;
-  const selected = candidate === undefined ? undefined : {
-    input: candidate.input, output: candidate.output,
-    cacheRead: candidate.cacheRead, cacheWrite: candidate.cacheWrite,
-  };
-  const usage = validSubagentUsage(selected) ? selected : undefined;
+  // Old consoles may read newer optional subagent fields. Drop invalid usage,
+  // not the message. Canonicalization also runs before writes, so an extension
+  // discarded here will not survive a later rewrite by this older console.
+  const usage = canonicalizePersistedSubagentUsage(rawUsage);
   return {
     ...withoutOptional,
     ...(attribution === undefined ? {} : { attribution }),
@@ -9139,6 +9135,31 @@ function canonicalizePersistedPartHistory(value: unknown): unknown {
       ? { calls: part.calls.map((call) => canonicalizePersistedHistoryRecord(call)) }
       : {}),
   };
+}
+
+function canonicalizePersistedSubagentUsage(raw: unknown): WebUsageTokens | undefined {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const candidate = raw as Record<string, unknown>;
+  const known = { input: candidate.input, output: candidate.output,
+    cacheRead: candidate.cacheRead, cacheWrite: candidate.cacheWrite };
+  return validSubagentUsage(known) ? known : undefined;
+}
+
+function canonicalizePersistedProcessJobUsage(part: Record<string, unknown>): Record<string, unknown> {
+  const job = part.job;
+  if (typeof job !== "object" || job === null || Array.isArray(job)) return part;
+  const projection = job as Record<string, unknown>;
+  const progress = projection.subagentProgress;
+  if (typeof progress !== "object" || progress === null || Array.isArray(progress)
+    || !Object.hasOwn(progress, "usage")) return part;
+  const { usage: rawUsage, ...withoutUsage } = progress as Record<string, unknown>;
+  // Only persisted card reads are tolerant. Ingress and agent durable records
+  // still use the strict shared progress parser; no other field is relaxed.
+  // If this older console later rewrites the card, extra usage fields are lost.
+  const usage = canonicalizePersistedSubagentUsage(rawUsage);
+  return { ...part, job: { ...projection, subagentProgress: {
+    ...withoutUsage, ...(usage === undefined ? {} : { usage }),
+  } } };
 }
 
 function canonicalizePersistedHistoryRecord(value: unknown): unknown {
