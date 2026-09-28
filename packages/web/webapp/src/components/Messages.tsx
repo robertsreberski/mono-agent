@@ -896,13 +896,13 @@ function ContextCompactionDisplay({ payload, isMessageRunning = false }: { reado
   const before = finiteCount(payload.tokensBefore);
   const after = finiteCount(payload.tokensAfter);
   const count = (tokens: number) => `${payload.tokenCountsExact === true ? "" : "≈"}${formatTokenCount(tokens)}`;
-  const counts = before !== undefined && after !== undefined
+  const counts = status === "succeeded" && before !== undefined && after !== undefined
     ? `${formatTokenCount(before)} → ${count(after)} tokens`
-    : before !== undefined ? `${count(before)} tokens before`
-      : after !== undefined ? `${count(after)} tokens after` : undefined;
-  const detail = status === "skipped" && payload.reason === "model_changed"
-    ? "Switch back to this conversation's model to compact this session."
-    : status === "skipped" ? "Nothing to compact yet." : undefined;
+    : status === "succeeded" && before !== undefined ? `${count(before)} tokens before`
+      : status === "succeeded" && after !== undefined ? `${count(after)} tokens after` : undefined;
+  const detail = status === "succeeded" ? undefined
+    : payload.reason === "model_changed" ? "Model changed."
+      : payload.reason === "nothing_to_compact" ? "Nothing to compact yet." : undefined;
 
   return <div className={`context-compaction-row is-${status}`} role="note"
     aria-label={[label, counts, detail, triggerLabel].filter(Boolean).join(" · ")}>

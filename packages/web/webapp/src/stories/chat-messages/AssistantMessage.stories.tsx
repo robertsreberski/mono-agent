@@ -29,7 +29,7 @@ export const ManualCompacted: Story = { render: () => <Transcript messages={comp
 }))} /> };
 export const AutomaticRunning: Story = { render: () => <Transcript messages={compactionMessages(compaction("running", "automatic"), "running")} /> };
 export const AutomaticFailed: Story = { render: () => <Transcript messages={compactionMessages(compaction("failed", "overflow"))} /> };
-export const ManualSkipped: Story = { render: () => <Transcript messages={compactionMessages(compaction("skipped", "manual"))} /> };
+export const ManualSkipped: Story = { render: () => <Transcript messages={compactionMessages(compaction("skipped", "manual", { reason: "nothing_to_compact" }))} /> };
 export const ManualCompactedPhone: Story = { ...ManualCompacted, globals: { viewport: { value: "phone" } } };
 export const ManualCompactionPending: Story = { render: () => <>
   <Transcript messages={compactionMessages(compaction("succeeded", "automatic"))} />

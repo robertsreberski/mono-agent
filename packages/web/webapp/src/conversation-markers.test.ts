@@ -8,5 +8,7 @@ describe("compaction marker validation", () => {
     expect(isConversationMarker({ ...marker, status: "running" })).toBe(false);
     expect(isConversationMarker({ ...marker, kind: "future" })).toBe(false);
     expect(isConversationMarker({ ...marker, tokensBefore: Number.NaN })).toBe(false);
+    expect(isConversationMarker({ ...marker, reason: "nothing_to_compact" })).toBe(true);
+    expect(isConversationMarker({ ...marker, reason: "private provider error" })).toBe(false);
   });
 });

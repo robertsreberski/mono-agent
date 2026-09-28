@@ -3597,6 +3597,8 @@ export class WebStore {
       ...(value.tokensBefore === undefined ? {} : { tokensBefore: value.tokensBefore }),
       ...(value.tokensAfter === undefined ? {} : { tokensAfter: value.tokensAfter }),
       ...(value.tokenCountsExact === undefined ? {} : { tokenCountsExact: value.tokenCountsExact }),
+      ...(value.status !== "succeeded" && (value.reason === "model_changed" || value.reason === "nothing_to_compact")
+        ? { reason: value.reason } : {}),
     };
     if (!isConversationMarker(marker) || marker.kind !== "compaction") return; // Untrusted stream data never enters marker storage.
     const existing = this.database.prepare(`SELECT 1 FROM messages WHERE thread_id = ?

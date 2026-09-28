@@ -9,9 +9,9 @@ describe("persisted compaction marker divider", () => {
   it("renders the established outcome copy for manual and automatic outcomes", () => {
     const { rerender } = render(<CompactionMarkerRow marker={marker} />);
     expect(screen.getByRole("note", { name: "Context compacted · 183.4k → ≈41.3k tokens · manual" })).toBeVisible();
-    rerender(<CompactionMarkerRow marker={{ ...marker, status: "skipped", trigger: "automatic" }} />);
-    expect(screen.getByRole("note", { name: /Context compaction skipped.*automatic/u })).toBeVisible();
+    rerender(<CompactionMarkerRow marker={{ ...marker, status: "skipped", trigger: "automatic", reason: "model_changed" }} />);
+    expect(screen.getByRole("note", { name: "Context compaction skipped · Model changed. · automatic" })).toBeVisible();
     rerender(<CompactionMarkerRow marker={{ ...marker, status: "failed" }} />);
-    expect(screen.getByRole("note", { name: /Context compaction failed.*manual/u })).toBeVisible();
+    expect(screen.getByRole("note", { name: "Context compaction failed · manual" })).toBeVisible();
   });
 });

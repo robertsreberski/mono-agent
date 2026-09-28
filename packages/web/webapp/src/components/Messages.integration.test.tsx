@@ -1011,18 +1011,21 @@ describe("AssistantMessage grouped parts", () => {
       { ...assistantMessage("complete"), id: "auto-skipped", parts: [
         { type: "text", text: "Before." }, telemetry("skipped", "automatic"), { type: "text", text: "After." },
       ] },
-      { ...assistantMessage("complete"), id: "auto-failed", parts: [telemetry("failed", "overflow")] },
+      { ...assistantMessage("complete"), id: "auto-failed", parts: [telemetry("failed", "overflow", "synthetic-provider-detail")] },
       { ...assistantMessage("complete"), id: "model-changed", parts: [telemetry("skipped", "manual", "model_changed")] },
     ]} />);
     const rows = screen.getAllByRole("note");
     expect(rows).toHaveLength(4);
     expect(rows[0]).toHaveTextContent("Context compacted · 183.4k → ≈41.3k tokens · manual");
     expect(screen.getByText("The answer is ready.").compareDocumentPosition(rows[0]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(rows[1]).toHaveTextContent("Context compaction skipped · 183.4k → ≈41.3k tokens · Nothing to compact yet. · automatic");
+    expect(rows[1]).toHaveTextContent("Context compaction skipped · automatic");
     expect(screen.getByText("After.").compareDocumentPosition(rows[1]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     // Settled turns put compaction after the answer; running turns retain part order.
-    expect(rows[2]).toHaveTextContent("Context compaction failed");
-    expect(rows[3]).toHaveTextContent("Switch back to this conversation's model to compact this session.");
+    expect(rows[2]).toHaveTextContent("Context compaction failed · automatic");
+    expect(rows[2]).not.toHaveTextContent("tokens");
+    expect(rows[2]).not.toHaveTextContent("synthetic-provider-detail");
+    expect(rows[3]).toHaveTextContent("Context compaction skipped · Model changed. · manual");
+    expect(rows[3]).not.toHaveTextContent("tokens");
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
