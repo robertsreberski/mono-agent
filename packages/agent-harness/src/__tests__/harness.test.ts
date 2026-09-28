@@ -2460,6 +2460,36 @@ describe("AgentHarness", () => {
     expect(history.find((message) => message.role === "assistant")?.name).toBeUndefined();
   });
 
+  it("decorates only the prompt copy of the user message with host standing context", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const historyStore = createInMemoryHistoryStore();
+    const fake = createFakeRuntime(async () => ({ text: "booked" }));
+    await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      historyStore,
+      runtimeOptionsForRequest: () => ({
+        decorateUserMessage: (message) => `<project_context name="Trips › Flights">\nPrefer aisle seats.\n</project_context>\n\n${message}`,
+      }),
+    }).run({
+      conversationId: "telegram:-1001:77",
+      userMessage: "book the flight",
+      sender: { id: "7", displayName: "Alice" },
+      abortSignal: new AbortController().signal,
+    });
+
+    const prompt = fake.calls[0]!.options.messages.at(-1)!.content as string;
+    expect(prompt.match(/Prefer aisle seats\./gu)).toHaveLength(1);
+    // The standing context precedes the speaker-wrapped words.
+    expect(prompt.indexOf("<project_context")).toBeLessThan(prompt.indexOf("book the flight"));
+    const history = await historyStore.load("telegram:-1001:77");
+    expect(history.find((message) => message.role === "user")?.content).toBe("book the flight");
+    expect(JSON.stringify(history)).not.toContain("Prefer aisle seats");
+  });
+
   it("omits history name entirely for a whitespace-only display name", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
