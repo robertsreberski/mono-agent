@@ -80,13 +80,16 @@ export function windowUsage(detail: ThreadDetail): WebThreadUsage {
   if (detail.messagesNextCursor === undefined) return usage;
   // Unseen pages may contain settled turns even when this window has none.
   const { settledAssistantTurns: _windowOnly, ...partial } = usage;
+  let partialSubagents: WebThreadUsage["subagents"];
+  if (usage.subagents !== undefined) {
+    const { runsWithTokens: _windowRuns, ...windowSubagents } = usage.subagents;
+    partialSubagents = { ...windowSubagents, tokensPartial: true, costPartial: true };
+  }
   return {
     ...partial,
     total: { ...usage.total, tokensPartial: true, costPartial: true },
     byModel: usage.byModel.map((model) => ({ ...model, costPartial: true as const, tokensPartial: true as const })),
-    ...(usage.subagents === undefined ? {} : { subagents: {
-      ...usage.subagents, tokensPartial: true as const, costPartial: true as const,
-    } }),
+    ...(partialSubagents === undefined ? {} : { subagents: partialSubagents }),
   };
 }
 

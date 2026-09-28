@@ -73,6 +73,10 @@ describe("ContextDisplay", () => {
     expect(row()).toHaveTextContent("≥13");
     expect(row().querySelector("td")?.title).toBe("At least. 2 of 3 subagent runs didn't report tokens.");
     rerender(<ContextDisplay context={context} totals={{ ...typical,
+      subagents: { runs: 3, tokens, tokensPartial: true } }} />);
+    expect(row().querySelector("td")?.title).toContain("Older messages or some subagent runs may lack token reports.");
+    expect(row().querySelector("td")?.title).not.toContain("0 of 3");
+    rerender(<ContextDisplay context={context} totals={{ ...typical,
       subagents: { runs: 3, runsWithTokens: 0, tokensPartial: true } }} />);
     expect(row()).toHaveTextContent("not reported");
   });

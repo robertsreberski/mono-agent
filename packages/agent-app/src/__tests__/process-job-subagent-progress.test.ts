@@ -33,9 +33,10 @@ describe("private subagent job progress", () => {
     progress.report({ type: "started", profile: "😀".repeat(200), label: "token=hidden" });
     progress.report({ type: "tool_started", id: "1", toolName: "Bash", argsSummary: 'echo --password="correct horse battery staple" a private credential' });
     const answer = "Report\na private credential\nBearer forbidden\n" + "😀 ".repeat(5_000);
-    const snapshot = progress.finish(answer, 0.0042);
+    const snapshot = progress.finish(answer, { costUsd: 0.0042, input: 12, output: 3, cacheRead: 2, cacheWrite: 1 });
     expect(JSON.stringify(snapshot)).not.toMatch(/private credential|correct horse|forbidden|hidden/u);
-    expect(snapshot).toMatchObject({ failedCalls: 1, costUsd: 0.0042, answerTruncated: true });
+    expect(snapshot).toMatchObject({ failedCalls: 1, costUsd: 0.0042,
+      usage: { input: 12, output: 3, cacheRead: 2, cacheWrite: 1 }, answerTruncated: true });
     expect(snapshot.recent[0]?.status).toBe("failed");
     expect(snapshot.answerHead).toContain("Report\n");
     expect(Buffer.byteLength(snapshot.answerHead!)).toBeLessThanOrEqual(8_000);
@@ -50,10 +51,21 @@ describe("private subagent job progress", () => {
     "omits an unpriced or malformed finish cost %#",
     (costUsd) => {
       const progress = new SubagentJobProgress([]);
-      expect(progress.finish(undefined, costUsd)).not.toHaveProperty("costUsd");
+      expect(progress.finish(undefined, costUsd === undefined ? undefined : { costUsd })).not.toHaveProperty("costUsd");
       expect(isProcessJobSubagentProgress(progress.snapshot())).toBe(true);
     },
   );
+
+  it.each([
+    { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 },
+    { input: -1, output: 2, cacheRead: 0, cacheWrite: 0, costUsd: 0.01 },
+    { input: 0.5, output: 2, cacheRead: 0, cacheWrite: 0, costUsd: 0.01 },
+    { input: Number.MAX_SAFE_INTEGER + 1, output: 2, cacheRead: 0, cacheWrite: 0, costUsd: 0.01 },
+  ])("omits zero or malformed child token samples from progress %j", (usage) => {
+    const snapshot = new SubagentJobProgress([]).finish(undefined, usage);
+    expect(snapshot).not.toHaveProperty("usage");
+    expect(isProcessJobSubagentProgress(snapshot)).toBe(true);
+  });
 
   it("retains requested and settled route identifiers while rejecting invalid updates", () => {
     const progress = new SubagentJobProgress([]);

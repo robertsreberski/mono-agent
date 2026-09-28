@@ -11,7 +11,7 @@ import { isSubagentUuid, sameSubagentOwner, type SubagentOwnerIdentity, type Sub
 import { reconcileSubagentExecutionOwnership } from "./subagent-ownership-recovery.js";
 import type { SubagentKnownOwner } from "./subagent-registry-ownership.js";
 import { hasPendingSubagentPublication, hasPendingSubagentReleaseReceipt, hasSubagentObligation, hasUnresolvedSubagentOwnership } from "./subagent-execution-ownership.js";
-import { pricedSubagentCostUsd, SubagentJobProgress, type SubagentProgressEvent } from "./process-job-subagent-progress.js";
+import { subagentProgressUsage, SubagentJobProgress, type SubagentProgressEvent } from "./process-job-subagent-progress.js";
 import { launchInternalProcessJob, type InternalProcessJobRequest, type InternalProcessJobsController, type InternalProcessJobResult } from "./process-jobs-internal.js";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
@@ -808,7 +808,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         const settlement = await this.withManagedLock(async () => await this.storeMutate("subagent.true_settlement", (records) => {
           const record = requireRecord(records, jobId);
           const owner = record.subagentOwnership!;
-          if (owner.owner.settlement === "settled") return { progressCostAdded: false, parentStopRequested: owner.parentStopRequested };
+          if (owner.owner.settlement === "settled") return { progressUsageAdded: false, parentStopRequested: owner.parentStopRequested };
           owner.owner.settlement = "settled"; owner.revoked = true;
           // Publish the same-turn native timeout certificate WITH true settlement.
           // A concurrent inspection can schedule publication immediately after
@@ -821,23 +821,27 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
             owner.disposition = { status: "timeout", reason: "timeout", continuity: "retained", certifiedTimeout: true };
           }
           if (outcome?.usage) owner.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, ...outcome.usage };
-          const costUsd = pricedSubagentCostUsd(owner.usage?.costUsd);
-          // A child may outlive the process-job cancellation grace. Its terminal
-          // card initially has no settled price; enrich that same durable snapshot
-          // only when the true provider promise eventually reports real usage.
+          // A child may outlive the cancellation grace. Backfill only this job's
+          // eventual child-turn usage, never the instance's accumulated lifetime.
+          const reported = subagentProgressUsage(owner.usage);
           const progress = record.subagentProgress;
-          let progressCostAdded = false;
-          if (isTerminalProcessJobState(record.state) && progress !== undefined
-            && progress.costUsd === undefined && costUsd !== undefined) {
-            record.subagentProgress = { ...progress, revision: progress.revision + 1, costUsd };
-            progressCostAdded = true;
+          let progressUsageAdded = false;
+          if (isTerminalProcessJobState(record.state) && progress !== undefined) {
+            const missingCost = progress.costUsd === undefined ? reported.costUsd : undefined;
+            const missingTokens = progress.usage === undefined ? reported.usage : undefined;
+            if (missingCost !== undefined || missingTokens !== undefined) {
+              record.subagentProgress = { ...progress, revision: progress.revision + 1,
+                ...(missingCost === undefined ? {} : { costUsd: missingCost }),
+                ...(missingTokens === undefined ? {} : { usage: missingTokens }) };
+              progressUsageAdded = true;
+            }
           }
           if (owner.disposition) { owner.publication.sequence++; owner.publication.state = "pending"; }
-          return { progressCostAdded, parentStopRequested: owner.parentStopRequested };
+          return { progressUsageAdded, parentStopRequested: owner.parentStopRequested };
         }));
         if (outcome && settlement.parentStopRequested) await this.reportManaged(jobId, outcome);
         else await this.publishManaged(jobId, outcome);
-        if (settlement.progressCostAdded) this.scheduleSurfaceUpdate(jobId);
+        if (settlement.progressUsageAdded) this.scheduleSurfaceUpdate(jobId);
       },
       report: async (outcome) => { commands.revoke(); await this.reportManaged(jobId, outcome); },
     };
@@ -1499,9 +1503,9 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       clearTimeout(active.progressTimer);
       // Managed ownership stores this exact child turn's settled usage before its
       // reporting result returns. The instance registry accumulates separately;
-      // never label that cumulative total as this job's price.
-      const costUsd = this.recordSnapshot.get(jobId)?.subagentOwnership?.usage?.costUsd;
-      const finalProgress = active.progress?.finish(result.answer, costUsd);
+      // never label that cumulative total as this job's cost or token count.
+      const turnUsage = this.recordSnapshot.get(jobId)?.subagentOwnership?.usage;
+      const finalProgress = active.progress?.finish(result.answer, turnUsage);
       const finalTail = active.outputTail.finalize();
       let cleanupError: unknown;
       if (result.groupExitConfirmed === false) {

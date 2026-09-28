@@ -104,6 +104,16 @@ describe("messageUsageRollup", () => {
     expect(sumThreadUsage([messageUsageRollup({ parts: [subagent(0), usage(0)] })]).total.costUsd).toBe(0);
     expect(sumThreadUsage([messageUsageRollup({ parts: [subagent(0)] })]).total.costUsd).toBe(0);
   });
+  it("drops the total lower bound once every detached job reports tokens", () => {
+    const card = { type: "process-job", job: { subagentProgress: { costUsd: 0.25,
+      usage: { input: 4, output: 1, cacheRead: 0, cacheWrite: 0 } } } } as unknown as CostTelemetryPart;
+    const accounted = sumThreadUsage([messageUsageRollup({ parts: [usage(1), card] })]);
+    expect(accounted.total).toMatchObject({ tokens: { input: 54, output: 11 }, costUsd: 1.25 });
+    expect(accounted.total.tokensPartial).toBeUndefined();
+    expect(accounted.subagents).toMatchObject({ runs: 1, runsWithTokens: 1, tokens: { input: 4 } });
+    const oldCard = { type: "process-job", job: { subagentProgress: { costUsd: 0.25 } } } as unknown as CostTelemetryPart;
+    expect(sumThreadUsage([messageUsageRollup({ parts: [usage(1), oldCard] })]).total.tokensPartial).toBe(true);
+  });
   it("drops malformed token samples without disabling the conversation aggregate", () => {
     const bad = messageUsageRollup({ parts: [telemetry("usage_update", {
       model: "atlas/standard", cumulativeUsd: 0.25, tokens: { input: -1, output: 3.2 },
@@ -127,6 +137,11 @@ describe("messageUsageRollup", () => {
     expect(sumThreadUsage([rolled]).total).toMatchObject({ tokensPartial: true, costUsd: 0.5 });
     const unpriced = messageUsageRollup({ parts: [usage(0.25), telemetry("usage_update", { tokens: { input: -2 } })] });
     expect(unpriced.main.tokensPartial).toBe(true);
+    const recovered = messageUsageRollup({ parts: [telemetry("usage_update", {
+      cumulativeUsd: 0.1, tokens: { input: -2 },
+    }), usage(0.5)] });
+    expect(recovered.main.tokens).toMatchObject({ input: 50 });
+    expect(recovered.main.tokensPartial).toBeUndefined();
   });
   it("counts reported child tokens, retains mixed gaps and keeps sync tokens out of model rows", () => {
     const sample = { input: 8, output: 2, cacheRead: 3, cacheWrite: 1 };
@@ -141,6 +156,20 @@ describe("messageUsageRollup", () => {
     const complete = sumThreadUsage([messageUsageRollup({ parts: [usage(2), { ...subagent(0.5), usage: sample }] })]);
     expect(complete.subagents).toMatchObject({ runs: 1, runsWithTokens: 1 });
     expect(complete.subagents?.tokensPartial).toBeUndefined();
+  });
+  it("guards the main token total against late synchronous child reports per field", () => {
+    const child = { ...subagent(0.25), usage: { input: 12, output: 4, cacheRead: 3, cacheWrite: 2 } };
+    const underreported = messageUsageRollup({ parts: [telemetry("usage_update", {
+      cumulativeUsd: 0.5, tokens: { input: 5, output: 9, cacheRead: 1, cacheWrite: 0 },
+    }), child] });
+    expect(underreported.main.tokens).toEqual({ input: 12, output: 9, cacheRead: 3, cacheWrite: 2 });
+    expect(underreported.main.tokensPartial).toBe(true);
+    const onlyChild = messageUsageRollup({ parts: [child] });
+    expect(onlyChild.main.tokens).toEqual(child.usage);
+    expect(onlyChild.main.tokensPartial).toBe(true);
+    expect(sumThreadUsage([onlyChild]).total).toMatchObject({ tokens: child.usage, tokensPartial: true });
+    const complete = messageUsageRollup({ parts: [usage(0.5), child] });
+    expect(complete.main.tokensPartial).toBeUndefined();
   });
   it("marks cost partial only for token telemetry without a cost observation", async () => {
     const { messageUsageRollup } = await import("../message-cost.js");

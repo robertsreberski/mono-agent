@@ -1,7 +1,8 @@
 import { homedir } from "node:os";
 import { isDeepStrictEqual } from "node:util";
 
-import { isProcessJobSubagentRoute, type ProcessJobSubagentProgress } from "@mono-agent/agent-contracts";
+import { isProcessJobSubagentRoute, normalizeProcessJobSubagentUsage, type ProcessJobSubagentProgress } from "@mono-agent/agent-contracts";
+import type { InstanceUsage } from "./subagent-instances.js";
 import { redactProcessOutput, redactProcessOutputLine } from "./process-output-redaction.js";
 import { redactSecrets } from "./redact-secrets.js";
 
@@ -188,6 +189,15 @@ export function pricedSubagentCostUsd(value: unknown): number | undefined {
     : undefined;
 }
 
+/** Read only the settled child turn, never the persistent instance's cumulative totals. */
+export function subagentProgressUsage(value?: Partial<InstanceUsage>): Pick<ProcessJobSubagentProgress, "costUsd" | "usage"> {
+  const costUsd = pricedSubagentCostUsd(value?.costUsd);
+  const usage = normalizeProcessJobSubagentUsage(value === undefined ? undefined : {
+    input: value.input, output: value.output, cacheRead: value.cacheRead, cacheWrite: value.cacheWrite,
+  });
+  return { ...(costUsd === undefined ? {} : { costUsd }), ...(usage === undefined ? {} : { usage }) };
+}
+
 /** Keeps only safe snapshots. The child collector owns exactly-once call events. */
 export class SubagentJobProgress {
   private value: ProcessJobSubagentProgress = { revision: 0, profile: "Subagent", toolCalls: 0, failedCalls: 0, recent: [] };
@@ -245,16 +255,16 @@ export class SubagentJobProgress {
     return true;
   }
 
-  finish(answer?: string, costUsd?: number): ProcessJobSubagentProgress {
+  finish(answer?: string, usage?: Partial<InstanceUsage>): ProcessJobSubagentProgress {
     if (!this.sealed) {
       this.sealed = true;
       const open = this.value.recent.filter((call) => call.status === "running").length;
       const answerHead = answer === undefined ? undefined : this.safe(answer, 8_000, true);
-      const pricedCost = pricedSubagentCostUsd(costUsd);
+      const pricedUsage = subagentProgressUsage(usage);
       this.value = { ...this.value, revision: this.value.revision + 1,
         failedCalls: Math.min(this.value.toolCalls, this.value.failedCalls + open),
         recent: this.value.recent.map((call) => call.status === "running" ? { ...call, status: "failed" } : call),
-        ...(pricedCost === undefined ? {} : { costUsd: pricedCost }),
+        ...pricedUsage,
         ...(answerHead === undefined ? {} : { answerHead, answerTruncated: Buffer.byteLength(answer!) > 8_000 }) };
     }
     return this.snapshot();

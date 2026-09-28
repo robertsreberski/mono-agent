@@ -3036,6 +3036,8 @@ export class WebStore {
     const fetch = this.database.prepare("SELECT id, parts_json FROM messages WHERE id IN (SELECT value FROM json_each(?))");
     // A same-run cron re-insert can reuse both the deterministic id and created_at.
     // The SQLite row identity distinguishes it even when seq restarts at zero.
+    // SQLite can reuse the highest deleted rowid, but cron retention deletes a
+    // same-run card before a usage read could memoize its discarded row.
     const memoKey = (row: (typeof rows)[number]) => `${row.id}:${row.rowid}:${row.seq}`;
     let misses = 0;
     let parsedBytes = 0;
@@ -9115,17 +9117,49 @@ function canonicalizePersistedPartHistory(value: unknown): unknown {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
   const part = value as Record<string, unknown>;
   if (part.type === "tool-call") return canonicalizePersistedHistoryRecord(part);
+  if (part.type === "process-job") return canonicalizePersistedProcessJobUsage(part);
   if (part.type !== "subagent") return value;
   const canonicalPart = canonicalizePersistedObjectHistory(part);
-  const { attribution: _rawAttribution, ...withoutAttribution } = canonicalPart;
+  const { attribution: _rawAttribution, usage: _rawUsage, ...withoutOptional } = canonicalPart;
   const attribution = canonicalRunAttribution(part.attribution);
+  const rawUsage = part.usage;
+  // Old consoles may read newer optional subagent fields. Drop invalid usage,
+  // not the message. Canonicalization also runs before writes, so an extension
+  // discarded here will not survive a later rewrite by this older console.
+  const usage = canonicalizePersistedSubagentUsage(rawUsage);
   return {
-    ...withoutAttribution,
+    ...withoutOptional,
     ...(attribution === undefined ? {} : { attribution }),
+    ...(usage === undefined ? {} : { usage }),
     ...(Array.isArray(part.calls)
       ? { calls: part.calls.map((call) => canonicalizePersistedHistoryRecord(call)) }
       : {}),
   };
+}
+
+function canonicalizePersistedSubagentUsage(raw: unknown): WebUsageTokens | undefined {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const candidate = raw as Record<string, unknown>;
+  const known = { input: candidate.input, output: candidate.output,
+    cacheRead: candidate.cacheRead, cacheWrite: candidate.cacheWrite };
+  return validSubagentUsage(known) ? known : undefined;
+}
+
+function canonicalizePersistedProcessJobUsage(part: Record<string, unknown>): Record<string, unknown> {
+  const job = part.job;
+  if (typeof job !== "object" || job === null || Array.isArray(job)) return part;
+  const projection = job as Record<string, unknown>;
+  const progress = projection.subagentProgress;
+  if (typeof progress !== "object" || progress === null || Array.isArray(progress)
+    || !Object.hasOwn(progress, "usage")) return part;
+  const { usage: rawUsage, ...withoutUsage } = progress as Record<string, unknown>;
+  // Only persisted card reads are tolerant. Ingress and agent durable records
+  // still use the strict shared progress parser; no other field is relaxed.
+  // If this older console later rewrites the card, extra usage fields are lost.
+  const usage = canonicalizePersistedSubagentUsage(rawUsage);
+  return { ...part, job: { ...projection, subagentProgress: {
+    ...withoutUsage, ...(usage === undefined ? {} : { usage }),
+  } } };
 }
 
 function canonicalizePersistedHistoryRecord(value: unknown): unknown {

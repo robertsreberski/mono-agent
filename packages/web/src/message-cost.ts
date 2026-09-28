@@ -275,7 +275,7 @@ export function messageUsageRollup(message: {
     if (observation.cost !== undefined) aggregate = observation;
     // A cost-only update must not erase the most recent aggregate token sample.
     const observed = tokenObservation(part.data);
-    if (observed !== undefined) tokens = observed;
+    if (observed !== undefined) { tokens = observed; rejectedTokens = false; }
     else if (hasTokenFields(part.data)) rejectedTokens = true;
   }
   const subagents: Array<MessageUsageSlice & { readonly detached: boolean }> = [];
@@ -307,6 +307,16 @@ export function messageUsageRollup(message: {
     }
   }
   const syncCost = subagents.reduce((sum, child) => sum + (child.detached ? 0 : child.costUsd ?? 0), 0);
+  const syncTokens = subagents.filter((child) => !child.detached && child.tokens !== undefined)
+    .map((child) => child.tokens!);
+  const fields = ["input", "output", "cacheRead", "cacheWrite"] as const;
+  const syncTotals = Object.fromEntries(fields.map((field) => [field,
+    syncTokens.reduce((sum, child) => sum + child[field], 0)])) as Record<(typeof fields)[number], number>;
+  const guardedTokens = tokens === undefined && syncTokens.length === 0 ? undefined
+    : Object.fromEntries(fields.map((field) => [field,
+      Math.min(Number.MAX_SAFE_INTEGER, Math.max(tokens?.[field] ?? 0, syncTotals[field]))])) as MessageUsageSlice["tokens"];
+  const tokenGuardPartial = fields.some((field) => syncTotals[field] > Number.MAX_SAFE_INTEGER
+    || (tokens !== undefined && syncTotals[field] > tokens[field]));
   const reportedCost = latestMessageCostUsd(message.parts);
   const syncObserved = subagents.some((child) => !child.detached && child.costUsd !== undefined);
   const costUsd = reportedCost === undefined
@@ -318,10 +328,11 @@ export function messageUsageRollup(message: {
   return {
     main: {
       ...(model === undefined ? {} : { model }),
-      ...(tokens === undefined ? {} : { tokens }),
+      ...(guardedTokens === undefined ? {} : { tokens: guardedTokens }),
       ...(costUsd === undefined ? {} : { costUsd }),
-      ...(tokens !== undefined && reportedCost === undefined ? { costPartial: true as const } : {}),
-      ...(rejectedTokens ? { tokensPartial: true as const } : {}),
+      ...(guardedTokens !== undefined && reportedCost === undefined ? { costPartial: true as const } : {}),
+      ...(rejectedTokens || tokenGuardPartial || (tokens === undefined && syncTokens.length > 0)
+        ? { tokensPartial: true as const } : {}),
     },
     subagents,
   };
