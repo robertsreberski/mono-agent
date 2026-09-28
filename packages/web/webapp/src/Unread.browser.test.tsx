@@ -214,9 +214,6 @@ describe("real route writers under mounted App settings", () => {
     act(() => currentStore!.selectAgent("alpha"));
     await waitFor(() => expect(currentStore?.selectedAgent?.sourceId).toBe("alpha"));
     expect(getSettingsDraft("alpha")).toEqual({ model: "provider/other", effort: "" });
-    screen.getByRole("button", { name: "Alpha settings" }).click();
-    await waitFor(() => expect(screen.getByRole("navigation", { name: "Agent settings sections" })).toBeVisible());
-    screen.getByRole("button", { name: /New conversations/ }).click();
     expect(await screen.findByRole("button", { name: "Save for new conversations" })).toBeVisible();
   });
   it("reverts a rejected pin and displays the one real store-owned toast (A17a)", async () => {
@@ -240,7 +237,7 @@ describe("real route writers under mounted App settings", () => {
     renderApp();
     await waitFor(() => expect(currentStore?.selectedAgent?.sourceId).toBe("alpha"));
     act(() => window.dispatchEvent(new CustomEvent("mono-agent:agent-settings", { detail: { section: "agent" } })));
-    await screen.findByRole("heading", { name: "Agent", level: 2 });
+    await screen.findByRole("heading", { name: "Restart", level: 2 });
     act(() => currentStore!.selectAgent("beta"));
     await waitFor(() => expect(currentStore?.selectedAgent?.sourceId).toBe("beta"));
     expect(screen.getByText("Pin Beta first")).toBeVisible();
@@ -259,7 +256,7 @@ describe("real route writers under mounted App settings", () => {
     renderApp();
     await waitFor(() => expect(currentStore?.selectedAgent?.sourceId).toBe("alpha"));
     act(() => window.dispatchEvent(new CustomEvent("mono-agent:agent-settings", { detail: { section: "agent" } })));
-    await screen.findByRole("heading", { name: "Agent", level: 2 });
+    await screen.findByRole("heading", { name: "Restart", level: 2 });
     await page.viewport(1200, 800);
     await waitFor(() => expect(screen.getByRole("button", { name: "Close agent settings" })).toBeVisible());
     act(() => currentStore!.selectAgent("beta"));
@@ -306,12 +303,12 @@ describe.each([
     }
     await waitFor(() => expect(currentStore?.selectedThread?.id).toBe(selected.id));
     act(() => window.dispatchEvent(new CustomEvent("mono-agent:agent-settings")));
-    await screen.findByRole("navigation", { name: "Agent settings sections" });
+    await screen.findByRole("heading", { name: "Providers", level: 2 });
     await waitFor(() => expect(document.querySelector(".chat-region")!.hasAttribute("inert")).toBe(true));
     act(() => SyntheticEventSource.changed({ ...selected, revision: 2 }));
     await waitFor(() => expect(currentStore?.unreadThreadIds.has(selected.id)).toBe(true));
     expect(currentStore?.selectedThread?.id).toBe(selected.id);
-    const close = screen.getByRole("button", { name: label === "phone" ? "Close settings" : "Close agent settings" });
+    const close = screen.getByRole("button", { name: label === "phone" ? "Back from agent settings" : "Close agent settings" });
     await act(async () => { close.click(); });
     await waitFor(() => expect(document.querySelector(".chat-region")!.hasAttribute("inert")).toBe(false));
     await waitFor(() => expect(currentStore?.unreadThreadIds.has(selected.id)).toBe(false));

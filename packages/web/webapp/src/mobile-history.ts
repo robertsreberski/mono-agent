@@ -33,7 +33,7 @@ export const mobileHistoryEntry = (state: unknown): MobileHistoryEntry | null =>
   }
   if (entry.surface === "settings" && (entry.section === null || entry.section === "new-conversations" || entry.section === "providers" || entry.section === "agent")
     && (entry.depth === 1 || entry.depth === 2) && href === window.location.href
-    && ((entry.depth === 1 && entry.section === null) || (entry.depth === 2 && entry.section !== null))) {
+    && (entry.depth === 1 || entry.section !== null)) {
     return { version: 1, surface: "settings", section: entry.section, depth: entry.depth, href };
   }
   return null;
@@ -53,8 +53,8 @@ export const routeWriteState = (state: unknown, nextUrl: string | URL, mode: "pu
   const marker = typeof raw === "object" && raw !== null ? raw as Record<string, unknown> : null;
   const current = marker?.version === 1 && marker.surface === "settings"
     && (marker.depth === 1 || marker.depth === 2)
-    && ((marker.depth === 1 && marker.section === null)
-      || marker.depth === 2 && (marker.section === "new-conversations" || marker.section === "providers" || marker.section === "agent"))
+    && (marker.section === null || marker.section === "new-conversations" || marker.section === "providers" || marker.section === "agent")
+    && (marker.depth === 1 || marker.section !== null)
     ? marker : null;
   // Only the entry at the current URL is ours to rewrite. In particular, a
   // replace must not re-own a stale marker copied from an earlier route.

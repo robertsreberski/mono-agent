@@ -15,8 +15,7 @@ export const stripSettingsParam = (href: string): string => {
 
 export const pushSettingsEntries = (section: SettingsSection | null): void => {
   if (ownedSettingsEntry() !== null) return;
-  pushMobileHistoryEntry({ version: 1, surface: "settings", section: null, depth: 1 });
-  if (section !== null) pushMobileHistoryEntry({ version: 1, surface: "settings", section, depth: 2 });
+  pushMobileHistoryEntry({ version: 1, surface: "settings", section, depth: 1 });
 };
 
 export const closeSettingsHistory = (): void => {

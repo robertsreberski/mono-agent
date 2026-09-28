@@ -29,7 +29,7 @@ export function Preview({ variant, section, layout }: { readonly variant: Varian
   const [pinError, setPinError] = useState(false);
   select(variant, () => setPinError(true));
   useEffect(() => () => { discardSettingsDraft(`atlas-story-settings-${variant}`); Object.assign(storyStore, { selectedAgent: atlas, selectedAgentId: atlas.sourceId, setAgentRunDefaults: defaultSave, setAgentPinned: defaultPin, catalogByProvider: {} }); }, [variant]);
-  return <div className="app-shell is-settings-open"><div className="dashboard-panel" aria-hidden={layout === "stacked" || undefined} inert={layout === "stacked"}><Dashboard /></div><div className="chat-region" aria-hidden="true" inert /><div className="settings-region"><AgentSettingsScreen section={section} layout={layout} onSection={() => undefined} onBack={() => undefined} onClose={() => undefined} onNotice={() => undefined} /></div>{pinError && <div className="toast" role="alert">Example pin unavailable</div>}</div>;
+  return <div className="app-shell is-settings-open"><div className="dashboard-panel" aria-hidden={layout === "stacked" || undefined} inert={layout === "stacked"}><Dashboard /></div><div className="chat-region" aria-hidden="true" inert /><div className="settings-region"><AgentSettingsScreen section={section} layout={layout} onClose={() => undefined} onNotice={() => undefined} /></div>{pinError && <div className="toast" role="alert">Example pin unavailable</div>}</div>;
 }
 export async function waitForEnabledButton(root: HTMLElement, label: string): Promise<HTMLButtonElement> {
   for (let attempt = 0; attempt < 40; attempt++) {

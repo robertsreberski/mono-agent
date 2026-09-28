@@ -394,7 +394,7 @@ export function App() {
   const [screen, setScreen] = useState<MobileScreen>(initialMobileScreen);
   const [mobile, setMobile] = useState(isMobileViewport);
   const [palette, setPalette] = useState(false);
-  const [settings, setSettings] = useState<{ readonly section: SettingsSection | null } | null>(() => {
+  const [settings, setSettings] = useState<{ readonly section: SettingsSection | null; readonly intent?: number } | null>(() => {
     const owned = ownedSettingsEntry();
     if (owned !== null) return { section: owned.section };
     const requested = parseSettingsParam(window.location.href);
@@ -469,18 +469,6 @@ export function App() {
       if (document.activeElement !== invoker || invoker === document.body) dashboardRef.current?.focus();
     }, 0);
   }, []);
-  const showSettingsSection = useCallback((section: SettingsSection) => {
-    if (isMobileViewport() && ownedSettingsEntry()?.depth === 1) {
-      pushMobileHistoryEntry({ version: 1, surface: "settings", section, depth: 2 });
-    }
-    setSettings({ section });
-  }, []);
-  const settingsBack = useCallback(() => {
-    const entry = ownedSettingsEntry();
-    if (isMobileViewport() && entry?.depth === 2) window.history.back();
-    else if (isMobileViewport() && settings?.section !== null) setSettings({ section: null });
-    else closeAgentSettings();
-  }, [closeAgentSettings, settings?.section]);
   const closeProjectSettings = useCallback(() => setProjectSettings(null), []);
   const togglePalette = useCallback(() => setPalette((current) => !current), []);
 
@@ -653,10 +641,10 @@ export function App() {
     if (!isMobileDrawerSwipe(start, end, "right")) return;
 
     event.preventDefault();
-    if (start.intent === "settings-back") settingsBack();
+    if (start.intent === "settings-back") closeAgentSettings();
     else if (start.intent === "close-project") closeMobileProject();
     else showDashboard();
-  }, [closeMobileProject, settingsBack, showDashboard]);
+  }, [closeMobileProject, closeAgentSettings, showDashboard]);
 
   const cancelDrawerGesture = useCallback(() => {
     drawerGestureRef.current = null;
@@ -696,10 +684,15 @@ export function App() {
     const onAgentSettings = (event: Event) => {
       const requested = (event as CustomEvent<{ section?: SettingsSection }>).detail?.section;
       const section = requested === "providers" || requested === "agent" || requested === "new-conversations" ? requested : null;
-      if (document.activeElement instanceof HTMLElement) settingsInvokerRef.current = document.activeElement;
+      if (settings === null && document.activeElement instanceof HTMLElement) settingsInvokerRef.current = document.activeElement;
       setPalette(false);
       if (!isMobileViewport() && settings !== null && requested === undefined) {
         closeAgentSettings();
+        return;
+      }
+      if (settings !== null) {
+        // A second intent for the same section is still an explicit navigation.
+        setSettings((current) => ({ section, intent: (current?.intent ?? 0) + 1 }));
         return;
       }
       if (isMobileViewport()) pushSettingsEntries(section);
@@ -974,7 +967,7 @@ export function App() {
         </div>
       )}
       <CommandPalette open={palette} onClose={closePalette} />
-      {settings !== null && <div className="settings-region"><AgentSettingsScreen section={settings.section} layout={mobile ? "stacked" : "split"} onSection={showSettingsSection} onBack={settingsBack} onClose={closeAgentSettings} onNotice={setNotice} /></div>}
+      {settings !== null && <div className="settings-region"><AgentSettingsScreen section={settings.section} intent={settings.intent ?? 0} layout={mobile ? "stacked" : "split"} onClose={closeAgentSettings} onNotice={setNotice} /></div>}
       <TagSettingsSheet sheet={tagSettings} onClose={closeTagSettings} dialogRef={tagSettingsRef} />
       <ProjectSettingsSheet sheet={projectSettings} onClose={closeProjectSettings} dialogRef={projectSettingsRef} />
       {(notice || actionError) && (
