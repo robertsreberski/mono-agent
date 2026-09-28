@@ -124,6 +124,14 @@ describe("settings screen navigation", () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Agent settings gear" }));
     expect(screen.getByRole("heading", { name: "Atlas", level: 1 })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /Agent Not pinned/ }));
+    await waitFor(() => expect(document.querySelectorAll(".settings-agent-fact-row .settings-row-value")).toHaveLength(3));
+    const factValues = [...document.querySelectorAll<HTMLElement>(".settings-agent-fact-row .settings-row-value")];
+    const valueColumns = factValues.map((value) => Math.round(value.getBoundingClientRect().left));
+    expect(new Set(valueColumns).size).toBe(1);
+    expect(valueColumns[0]).toBeGreaterThan(document.querySelector<HTMLElement>(".settings-agent-fact-row .settings-row-title")!.getBoundingClientRect().left + 100);
+    expect(getComputedStyle(factValues[0]!).fontSize).toBe("12px");
+    expect(getComputedStyle(factValues[2]!).fontFamily).toContain("mono");
     expect(screen.getAllByRole("main")).toHaveLength(1);
     expect(document.querySelector(".dashboard-panel")!.hasAttribute("inert")).toBe(false);
     expect(document.querySelector(".chat-region")!.hasAttribute("inert")).toBe(true);

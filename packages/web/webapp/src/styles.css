@@ -2247,6 +2247,10 @@ textarea.wake-text { min-height: calc(3lh + 24px); max-height: calc(12lh + 24px)
 .settings-row-note { margin: 0; color: var(--text-muted); font-size: 10.5px; line-height: 1.45; }
 .settings-row-note.is-warning { color: var(--warning); }
 .settings-row-note.is-danger { color: var(--danger); }
+/* Align the Agent facts to the same second column as the read-only About value. */
+.settings-agent-fact-row .settings-row-copy { flex: 0 0 118px; }
+.settings-agent-fact-row .settings-row-value { min-width: 0; flex: 1; color: var(--text); font-size: 12px; font-weight: 600; text-align: left; overflow-wrap: anywhere; }
+.settings-agent-fact-row code.settings-row-value { font-family: var(--font-mono); font-size: 10px; }
 .settings-row-note code, .settings-kv code { color: var(--text-soft); font-family: var(--font-mono); font-size: 10px; }
 
 /* Agent config vs console override: always both visible. */
