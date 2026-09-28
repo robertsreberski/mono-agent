@@ -5,9 +5,10 @@ import { useProcessJobPresentation } from "../process-job-presentation";
 import type { ProcessJobProjection } from "../types";
 import { Icon } from "./Icon";
 import { ProcessJobCard, mergeProcessJobProjection } from "./ProcessJob";
-import { ProcessJobGlyph, ProcessJobStatusMark } from "./ProcessJobGlyph";
+import { ProcessJobGlyph, ProcessJobSpinner } from "./ProcessJobGlyph";
 import { ProcessJobClockProvider, useProcessJobShelfClock } from "./process-job-clock";
 import {
+  processJobActiveMark,
   processJobCountWords,
   processJobDisplayState,
   processJobDisplayTitle,
@@ -17,6 +18,14 @@ import {
   processJobStackCounts,
   processJobStackSummaryParts,
 } from "./process-job-display";
+
+/**
+ * Live projections are keyed by thread AND job: the shelf can outlive a thread
+ * switch for a moment (its viewport remounts once the runtime follows the
+ * selection), and two conversations may carry the same job id. A projection
+ * from one thread must never stand in for another's.
+ */
+const liveKey = (thread: string | null, jobId: string): string => `${thread ?? ""}\u0000${jobId}`;
 
 /** Hidden by an ancestor's `hidden` attribute, detached, or laid out as nothing. */
 const isHidden = (element: HTMLElement): boolean =>
@@ -49,37 +58,36 @@ export function ProcessJobStack() {
   const historyRef = useRef<HTMLButtonElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const [liveByJobId, setLiveByJobId] = useState<ReadonlyMap<string, ProcessJobProjection>>(
-    () => new Map(jobs.map(({ part }) => [part.job.jobId, part.job])),
+    () => new Map(jobs.map(({ part }) => [liveKey(threadId, part.job.jobId), part.job])),
   );
 
   useEffect(() => {
     setLiveByJobId((current) => {
       const next = new Map<string, ProcessJobProjection>();
       for (const { part } of jobs) {
-        const live = current.get(part.job.jobId);
-        next.set(
-          part.job.jobId,
-          live === undefined ? part.job : mergeProcessJobProjection(live, part.job),
-        );
+        const key = liveKey(threadId, part.job.jobId);
+        const live = current.get(key);
+        next.set(key, live === undefined ? part.job : mergeProcessJobProjection(live, part.job));
       }
       return next;
     });
-  }, [jobs]);
+  }, [jobs, threadId]);
 
   const onProjectionChange = useCallback((projection: ProcessJobProjection) => {
+    const key = liveKey(threadId, projection.jobId);
     setLiveByJobId((current) => {
-      const previous = current.get(projection.jobId);
+      const previous = current.get(key);
       const merged = previous === undefined ? projection : mergeProcessJobProjection(previous, projection);
       if (merged === previous) return current;
       const next = new Map(current);
-      next.set(projection.jobId, merged);
+      next.set(key, merged);
       return next;
     });
-  }, []);
+  }, [threadId]);
 
   const projections = useMemo(
-    () => jobs.map(({ part }) => liveByJobId.get(part.job.jobId) ?? part.job),
-    [jobs, liveByJobId],
+    () => jobs.map(({ part }) => liveByJobId.get(liveKey(threadId, part.job.jobId)) ?? part.job),
+    [jobs, liveByJobId, threadId],
   );
   const now = useProcessJobShelfClock(projections, visible);
 
@@ -201,8 +209,8 @@ export function ProcessJobStack() {
 
   // The closed bar: marked counts are always paired with a readable number,
   // the words live in the button's accessible name and in the open shelf.
-  const chip = (key: string, tone: string, mark: ReactNode, value: number, words: string, animated = false) => (
-    <span key={key} className={`process-job-chip is-${tone}${animated ? " has-animation" : ""}`} title={words}>
+  const chip = (key: string, tone: string, mark: ReactNode, value: number, words: string) => (
+    <span key={key} className={`process-job-chip is-${tone}`} title={words}>
       <span className="process-job-chip-mark" aria-hidden="true">{mark}</span>
       <span className="process-job-chip-count" aria-hidden="true">{value}</span>
       <span className="sr-only">{words}</span>
@@ -215,10 +223,13 @@ export function ProcessJobStack() {
   const singleSaysQuestion = singleState?.tone === "question";
   const chips: ReactNode[] = [];
   if (single === undefined && counts.active > 0) {
-    chips.push(chip("active", "running", <ProcessJobStatusMark mark="ring" animated />, counts.active, processJobCountWords.active(counts.active)));
+    // The bar's one spinner turns while any of these jobs is in progress.
+    const active = processJobActiveMark(projections, now);
+    chips.push(chip("active", active.tone, active.spinning ? <ProcessJobSpinner /> : <ProcessJobGlyph small tone={active.tone} mark={active.mark} />,
+      counts.active, processJobCountWords.active(counts.active)));
   }
   if (!singleSaysQuestion && counts.questions > 0) {
-    chips.push(chip("questions", "question", <ProcessJobStatusMark mark="question" />, counts.questions, processJobCountWords.questions(counts.questions)));
+    chips.push(chip("questions", "question", <ProcessJobGlyph small tone="question" mark="question" />, counts.questions, processJobCountWords.questions(counts.questions)));
   }
   if (counts.issues > 0) {
     chips.push(chip("issues", "danger", <Icon name="alert" size={12} strokeWidth={2.2} />, counts.issues, processJobCountWords.issues(counts.issues)));
@@ -247,14 +258,16 @@ export function ProcessJobStack() {
           <span id={labelId} className="process-job-stack-title">Background jobs</span>
           {single !== undefined && singleState !== undefined ? (
             <span className="process-job-stack-single">
-              <ProcessJobGlyph
-                small
-                kind={processJobKind(single)}
-                tone={singleState.tone}
-                mark={singleState.mark}
-                animated={singleState.mark === "ring"}
+              {singleState.mark === "half"
+                ? <ProcessJobSpinner />
+                : <ProcessJobGlyph small tone={singleState.tone} mark={singleState.mark} />}
+              {/* Kind at a glance, as on the row's status line: a terminal or an agent. */}
+              <Icon
+                className={`process-job-stack-kind is-${processJobKind(single)}`}
+                name={processJobKind(single) === "agent" ? "agent" : "terminal"}
+                size={14}
               />
-              {/* The glyph's kind and state, in words: "Running Bash job:". */}
+              {/* The glyph's state and the icon's kind, in words: "Running Bash job:". */}
               <span className="sr-only">{`${[singleState.word, ...(singleState.pending === undefined ? [] : [singleState.pending])].join(", ")} ${single.tool} job:`}</span>
               <span className="process-job-stack-purpose" title={single.summary}>{processJobDisplayTitle(single)}</span>
             </span>

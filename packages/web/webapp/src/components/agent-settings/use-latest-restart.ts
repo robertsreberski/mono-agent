@@ -5,6 +5,7 @@ import type { RestartOperation } from "../../types";
 export function useLatestRestart(sourceId: string) {
   const [initialOperation, setInitialOperation] = useState<RestartOperation | null>(null);
   const [readState, setReadState] = useState<"loading" | "ready" | "error">("loading");
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     const controller = new AbortController();
     setReadState("loading");
@@ -16,6 +17,6 @@ export function useLatestRestart(sourceId: string) {
       if (!controller.signal.aborted) setReadState("error");
     });
     return () => controller.abort();
-  }, [sourceId]);
-  return { initialOperation, readState };
+  }, [sourceId, attempt]);
+  return { initialOperation, readState, retry: () => setAttempt((previous) => previous + 1) };
 }

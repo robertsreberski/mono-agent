@@ -142,23 +142,102 @@ describe("the background jobs shelf in Chromium", () => {
     expect(chip.getBoundingClientRect().right).toBeLessThanOrEqual(toggle.getBoundingClientRect().right + 1);
   });
 
-  it("stops the running cue after a few turns and never animates under reduced motion", async () => {
+  it("spins only the closed bar's indicator, for as long as work runs, and nothing under reduced motion", async () => {
     await page.viewport(1280, 850);
-    const view = render(shelf([running("one"), running("two")]));
-    const ring = view.container.querySelector<HTMLElement>(".process-job-chip .process-job-ring")!;
-    const style = getComputedStyle(ring);
-    expect(style.animationName).toBe("process-job-spin");
-    expect(style.animationIterationCount).toBe("4");
-    // Rows never spin: only the one bar cue does.
+    const pair = [running("one"), running("two")];
+    const view = render(shelf(pair));
+    const stack = view.container.querySelector<HTMLElement>(".process-job-stack")!;
+    const spinner = view.container.querySelector<HTMLElement>(".process-job-chip .process-job-glyph.is-spinner")!;
+    const style = getComputedStyle(spinner);
+    expect(style.animationName).toBe("spin");
+    // Continuous while work runs: never a bounded start-up cue that stops after
+    // a few seconds (the computed count says so without waiting 5 s).
+    expect(style.animationIterationCount).toBe("infinite");
+    const [animation] = spinner.getAnimations();
+    expect(animation).toBeDefined();
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    const before = Number(animation!.currentTime);
+    // A poll hands the shelf new projection objects: the same element keeps
+    // the same running animation, never restarted from zero.
+    view.rerender(shelf(pair.map((job) => JSON.parse(JSON.stringify(job)) as ProcessJobProjection)));
+    expect(view.container.querySelector(".process-job-chip .is-spinner")).toBe(spinner);
+    expect(spinner.getAnimations()[0]).toBe(animation);
+    expect(Number(animation!.currentTime)).toBeGreaterThanOrEqual(before);
+
+    // Rows never spin: each shows a still, half-filled ring.
     fireEvent.click(view.container.querySelector(".process-job-stack-toggle")!);
-    for (const rowRing of view.container.querySelectorAll(".process-job-card .process-job-ring")) {
-      expect(getComputedStyle(rowRing).animationName).toBe("none");
+    const rows = [...view.container.querySelectorAll<SVGElement>(".process-job-card .process-job-glyph")];
+    expect(rows).toHaveLength(2);
+    for (const glyph of rows) {
+      expect(glyph).toHaveClass("is-half");
+      expect(getComputedStyle(glyph).animationName).toBe("none");
+      expect(glyph.getAnimations({ subtree: true })).toHaveLength(0);
     }
+    // The one animation in the whole shelf is the bar's spinner (the chevron
+    // only eases through its transition).
+    expect(stack.getAnimations({ subtree: true }).filter((moving) => moving instanceof CSSAnimation)).toEqual([animation]);
+    cleanup();
+
+    // One current job: its own bar glyph is the spinner.
+    const single = render(shelf([running("solo")]));
+    const solo = single.container.querySelector<HTMLElement>(".process-job-stack-single .process-job-glyph")!;
+    expect(solo).toHaveClass("is-spinner");
+    expect(getComputedStyle(solo).animationName).toBe("spin");
+    expect(getComputedStyle(solo).animationIterationCount).toBe("infinite");
     cleanup();
 
     await commands.emulateReducedMotion("reduce");
     const reduced = render(shelf([running("one"), running("two")]));
-    expect(getComputedStyle(reduced.container.querySelector(".process-job-chip .process-job-ring")!).animationName).toBe("none");
+    const still = reduced.container.querySelector<HTMLElement>(".process-job-chip .is-spinner")!;
+    expect(getComputedStyle(still).animationName).toBe("none");
+    // At rest it is the rows' half-filled ring, never a frozen arc.
+    expect(getComputedStyle(still.querySelector(".process-job-spinner-arc")!).display).toBe("none");
+    expect(getComputedStyle(still.querySelector(".process-job-spinner-rest")!).display).not.toBe("none");
+    expect(getComputedStyle(still.querySelector(".process-job-spinner-track")!).opacity).toBe("1");
+    fireEvent.click(reduced.container.querySelector(".process-job-stack-toggle")!);
+    expect(reduced.container.querySelector(".process-job-stack")!.getAnimations({ subtree: true })
+      .filter((moving) => moving instanceof CSSAnimation)).toHaveLength(0);
+  });
+
+  it("keeps in progress yellow and done green in every console theme, never the accent", async () => {
+    await page.viewport(1280, 850);
+    const colours = (theme: string | undefined) => {
+      if (theme === undefined) delete document.documentElement.dataset.consoleTheme;
+      else document.documentElement.dataset.consoleTheme = theme;
+      const view = render(shelf([running("one"), processJob({ jobId: "done" })]));
+      fireEvent.click(view.container.querySelector(".process-job-stack-toggle")!);
+      fireEvent.click(screen.getByRole("button", { name: "Background job history" }));
+      const card = (state: string) => view.container.querySelector<HTMLElement>(`.process-job-card[data-state='${state}']`)!;
+      const read = (element: Element) => getComputedStyle(element).color;
+      const result = {
+        progressGlyph: read(card("running").querySelector(".process-job-glyph")!),
+        progressWord: read(card("running").querySelector(".process-job-state")!),
+        doneGlyph: read(card("succeeded").querySelector(".process-job-glyph")!),
+        doneWord: read(card("succeeded").querySelector(".process-job-state")!),
+        accent: getComputedStyle(view.container.querySelector(".process-job-stack")!).getPropertyValue("--accent").trim(),
+      };
+      cleanup();
+      return result;
+    };
+    try {
+      for (const scheme of ["light", "dark"] as const) {
+        await commands.emulateColorScheme(scheme);
+        const evergreen = colours(undefined);
+        const probe = document.createElement("i");
+        probe.style.color = "var(--success)";
+        document.body.append(probe);
+        const success = getComputedStyle(probe).color;
+        probe.remove();
+        expect(evergreen.doneGlyph).toBe(success);
+        for (const theme of ["ocean", "plum", "terracotta"]) {
+          const themed = colours(theme);
+          expect(themed.accent).not.toBe(evergreen.accent);
+          expect({ ...themed, accent: "" }).toEqual({ ...evergreen, accent: "" });
+        }
+      }
+    } finally {
+      delete document.documentElement.dataset.consoleTheme;
+    }
   });
 
   it("scrolls only the shelf body, never the page, when a row opens", async () => {

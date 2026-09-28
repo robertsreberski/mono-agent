@@ -108,7 +108,7 @@ import {
 import { conversationTitleFromFrame } from "./conversation-title.js";
 import { parseCronReplyContext } from "./cron-reply-context.js";
 import type { WebTag, CreateWebTagInput, PatchWebTagInput, WebTagChangedPayload } from "./contracts.js";
-import { formatQuotedTurn, withProjectContext, type ProjectContextSource } from "./project-context.js";
+import { formatQuotedTurn, neutraliseProjectContext, withProjectContext, type ProjectContextSource } from "./project-context.js";
 import {
   advertisedEffortLevels,
   effectiveModelForAgent,
@@ -2640,6 +2640,7 @@ export class WebService {
     hostWakeDeliveryKey?: string,
     onAdmitted?: () => void,
     scheduledWake = false,
+    ownerText?: string,
   ): Promise<void> {
     const coalescer = new StreamFrameCoalescer(
       async (frames) => {
@@ -2675,6 +2676,9 @@ export class WebService {
           web: {
             threadId: started.thread.id,
             turnId: started.turnId,
+            // Host-only unprefixed owner text for memory; the dispatched text
+            // still includes project context, tags and conversation markers.
+            ...(!scheduledWake && hostWakeDeliveryKey === undefined && ownerText !== undefined ? { ownerText } : {}),
             ...modelMetadata,
             ...(consoleTools ? { consoleProjects: { schema: 1 } } : {}),
             ...(!scheduledWake && hostWakeDeliveryKey === undefined && this.store.canApplyAgentTitle(started.thread.id)
@@ -2763,7 +2767,9 @@ export class WebService {
     hostWakeDeliveryKey?: string,
     scheduledWake = false,
   ): { readonly completion: Promise<void>; readonly admitted: Promise<boolean> } {
+    const rawOwnerText = operatorText;
     operatorText = withProjectContext(operatorText, this.projectContextForThread(started.thread.id), this.store.conversationMarkersForTurn(started.turnId));
+    const ownerText = operatorText === rawOwnerText ? rawOwnerText : neutraliseProjectContext(rawOwnerText);
     const threadId = started.thread.id;
     const controller = new AbortController();
     let resolveAdmitted!: (admitted: boolean) => void;
@@ -2776,6 +2782,7 @@ export class WebService {
       hostWakeDeliveryKey,
       () => { resolveAdmitted(true); },
       scheduledWake,
+      ownerText,
     ).finally(() => {
       // Inert once admission already resolved; the turn settled without the
       // operator ever returning a stream when it did not.
@@ -2885,9 +2892,11 @@ export class WebService {
     try {
       // The stored text stays unprefixed; the prefix is resolved anew here, at
       // dispatch, so a context edited while the input waited still applies.
+      const dispatchedText = this.withProjectPrefix(threadId, input.text);
       const result = await client.liveInput({
         ...input,
-        text: this.withProjectPrefix(threadId, input.text),
+        text: dispatchedText,
+        ownerText: dispatchedText === input.text ? input.text : neutraliseProjectContext(input.text),
         signal: controller.signal,
       });
       if (result.status === "applied") {

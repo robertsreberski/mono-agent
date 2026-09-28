@@ -22,10 +22,39 @@ export type ProcessJobKind = "command" | "agent";
 export const processJobKind = (job: ProcessJobProjection): ProcessJobKind =>
   job.tool === "Exec" || job.tool === "Bash" ? "command" : "agent";
 
-/** Colour role of a status; the glyph's inner mark carries the same meaning by shape. */
+/**
+ * Colour role of a status, the same in every console theme (never the accent):
+ * in progress is yellow, done green, a question amber, a failure the danger
+ * colour, and waiting, stopping and cancelled stay neutral. The glyph's shape
+ * carries the same meaning without the colour.
+ */
 export type ProcessJobTone = "waiting" | "running" | "stopping" | "question" | "success" | "danger" | "neutral";
-/** Inner status mark, drawn inside the kind-shaped container. */
-export type ProcessJobMark = "clock" | "ring" | "stop" | "question" | "check" | "close";
+/**
+ * The status glyph, one circle per status family. An outlined ring is work that
+ * is still current; a solid disc is a settled outcome. The shape inside names
+ * the family, so every status reads without its colour.
+ */
+export type ProcessJobMark =
+  /** Queued: an empty ring, nothing started yet. */
+  | "empty"
+  /** Starting or running: a ring half filled. Static; only the bar's spinner moves. */
+  | "half"
+  /** A stop was asked for and the job is still winding down: a square in a ring. */
+  | "stop"
+  /** A peer question is waiting: a question mark in a ring. */
+  | "question"
+  /** Succeeded: a check cut out of a solid disc. */
+  | "check"
+  /** Failed, failed to start or interrupted: a cross cut out of a solid disc. */
+  | "cross"
+  /** Timed out or expired in queue: clock hands cut out of a solid disc. */
+  | "clock"
+  /** Cancelled: a square cut out of a solid disc. */
+  | "stopped";
+
+/** Outlined marks are current work; the rest are solid, settled outcomes. */
+export const processJobMarkIsSettled = (mark: ProcessJobMark): boolean =>
+  mark !== "empty" && mark !== "half" && mark !== "stop" && mark !== "question";
 
 export interface ProcessJobDisplayState {
   readonly tone: ProcessJobTone;
@@ -44,16 +73,18 @@ export interface ProcessJobDisplayState {
 }
 
 const STATES: Readonly<Record<ProcessJobState, readonly [ProcessJobTone, ProcessJobMark, string]>> = {
-  queued: ["waiting", "clock", "Queued"],
-  starting: ["running", "ring", "Starting"],
-  running: ["running", "ring", "Running"],
+  queued: ["waiting", "empty", "Queued"],
+  // A job being spawned is already in progress; a quarter fill would read as
+  // a measured 25 %, which the host never reports, so it shares the half mark.
+  starting: ["running", "half", "Starting"],
+  running: ["running", "half", "Running"],
   succeeded: ["success", "check", "Done"],
-  failed: ["danger", "close", "Failed"],
+  failed: ["danger", "cross", "Failed"],
   timed_out: ["danger", "clock", "Timed out"],
-  spawn_failed: ["danger", "close", "Failed to start"],
+  spawn_failed: ["danger", "cross", "Failed to start"],
   queue_expired: ["danger", "clock", "Expired in queue"],
-  interrupted: ["danger", "close", "Interrupted"],
-  cancelled: ["neutral", "stop", "Cancelled"],
+  interrupted: ["danger", "cross", "Interrupted"],
+  cancelled: ["neutral", "stopped", "Cancelled"],
 };
 
 /**
@@ -201,6 +232,25 @@ export const processJobStackCounts = (jobs: readonly ProcessJobProjection[], now
   issues: jobs.filter(processJobIsIssue).length,
   questions: jobs.filter((job) => pendingPeerQuestion(job, now)).length,
 });
+
+export interface ProcessJobActiveMark {
+  readonly tone: ProcessJobTone;
+  readonly mark: ProcessJobMark;
+  /** The bar's one spinner: only while a job is actually starting or running. */
+  readonly spinning: boolean;
+}
+
+/**
+ * The closed bar's mark for its active count. It spins while any active job is
+ * in progress; active jobs that are only queued or stopping show that state's
+ * still mark instead of claiming work that is not happening.
+ */
+export const processJobActiveMark = (jobs: readonly ProcessJobProjection[], now: number): ProcessJobActiveMark => {
+  const marks = jobs.filter((job) => !processJobIsTerminal(job)).map((job) => processJobDisplayState(job, now).mark);
+  if (marks.includes("half")) return { tone: "running", mark: "half", spinning: true };
+  if (marks.includes("stop")) return { tone: "stopping", mark: "stop", spinning: false };
+  return { tone: "waiting", mark: "empty", spinning: false };
+};
 
 const plural = (count: number, one: string, many: string): string =>
   `${String(count)} ${count === 1 ? one : many}`;

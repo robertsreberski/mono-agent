@@ -281,7 +281,7 @@ describe("MemoryRetrievalService", () => {
       }];
     };
     const service = new MemoryRetrievalService(store);
-    const query = "What is Avery's service port?";
+    const query = "What is Avery's current service port for Maple?";
 
     const block = await service.load("private:conversation-a", query, { turnId: "turn-attributed", ownerTurn: true });
     const hits = await service.recallForTurn("turn-attributed", query.toLowerCase());
@@ -291,6 +291,30 @@ describe("MemoryRetrievalService", () => {
     expect(hits.map((hit) => hit.record.text)).toEqual(["Avery reports that their service port is 8443."]);
     expect(store.queries).toEqual([query.toLowerCase()]);
     expect(store.accesses).toEqual([["attributed-port"]]);
+  });
+
+  it("suppresses short owner inputs in two scripts without disabling explicit recall or longer queries", async () => {
+    const store = fakeStore();
+    const service = new MemoryRetrievalService(store);
+    for (const [index, query] of ["  Go  ", "  行こう  "].entries()) {
+      const turnId = `short-${index}`;
+      expect(await service.load("web:maple", query, { turnId, ownerTurn: true })).toBeUndefined();
+      expect(await service.recallOriginalOutcomeForTurn(turnId))
+        .toMatchObject({ available: true, query: query.trim() });
+    }
+    expect(store.queries).toEqual(["go", "行こう"]);
+    expect(store.accesses).toEqual([]);
+    for (const [index, query] of ["\u2003abcdefghijklmnop\u2003", "😀".repeat(16), "e\u0301".repeat(16)].entries()) {
+      expect((await service.load("web:maple", query, { turnId: `boundary-${index}`, ownerTurn: true }))?.content ?? "")
+        .not.toContain("## Memory (possibly relevant");
+    }
+    for (const [index, query] of ["abcdefghijklmnopq", "😀".repeat(17)].entries()) {
+      expect((await service.load("web:maple", query, { turnId: `above-${index}`, ownerTurn: true }))?.content)
+        .toContain("## Memory (possibly relevant");
+    }
+    const long = "What launch color did Morgan select for Maple project?";
+    expect((await service.load("web:maple", long, { turnId: "long", ownerTurn: true }))?.content)
+      .toContain("Morgan selected cobalt as the launch color.");
   });
 
   it("abstains from automatic injection below the confidence floor", async () => {
@@ -417,11 +441,11 @@ describe("MemoryRetrievalService", () => {
         type: "event", status: "open", dueAt: "2026-09-24T23:30:00-05:00" } },
     ];
     const memory = new MemoryRetrievalService(store);
-    const block = await memory.load("conversation", "Maple meetings", { turnId: "local-date", ownerTurn: true,
+    const block = await memory.load("conversation", "Which Maple club meetings are scheduled on the local day?", { turnId: "local-date", ownerTurn: true,
       hostDate: "2026-09-25", hostLocalDate: "2026-09-24", hostInstant: "2026-09-25T03:00:00Z" });
     expect(block?.content).toContain("local day. (current)");
     expect(block?.content).toContain("offset meeting. (current)");
-    const later = await memory.load("conversation", "Maple meetings", { turnId: "later", ownerTurn: true,
+    const later = await memory.load("conversation", "Which Maple club meetings are scheduled on the local day?", { turnId: "later", ownerTurn: true,
       hostDate: "2026-09-25", hostLocalDate: "2026-09-25", hostInstant: "2026-09-25T05:00:00Z" });
     expect(later?.content).toContain("ended 2026-09-24");
     expect(later?.content).toContain("ended 2026-09-24T23:30:00-05:00");

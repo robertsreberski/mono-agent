@@ -682,7 +682,7 @@ export function ProcessJobCard({
           else if (cardRef.current !== null) onOpen?.(cardRef.current);
         }}
       >
-        <ProcessJobGlyph kind={kind} tone={display.tone} mark={display.mark} />
+        <ProcessJobGlyph tone={display.tone} mark={display.mark} />
         <span id={titleId} className="process-job-title" title={live.summary}>{processJobDisplayTitle(live)}</span>
         <Icon className="process-job-chevron" name="chevron-down" size={14} />
         <span id={metaId} className="process-job-meta">

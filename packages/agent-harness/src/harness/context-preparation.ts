@@ -14,7 +14,7 @@ import type { SkillsCache } from "../skills/index.js";
 import { AgentHarnessError } from "./error.js";
 import { representedContinuityToolRecordIds } from "./turn-continuity.js";
 import { sessionContextBlock } from "./session-context.js";
-import { memorySenderToken } from "./memory-persistence.js";
+import { memorySenderToken, memoryUserText } from "./memory-persistence.js";
 import { runSourceFromRequest } from "./request-routing.js";
 import { errorMessageText } from "./value-utils.js";
 import { buildToolHistoryProjection } from "../tool-history-projection.js";
@@ -26,6 +26,7 @@ export async function prepareHarnessContext(
   contextOptions: {
     readonly historyMode: "messages" | "omitted";
     readonly turnId: string;
+    readonly originalUserMessage?: string;
     /** Canonical history captured under the store's conversation lease. */
     readonly historyOverride?: readonly HistoryMessage[];
   },
@@ -46,7 +47,7 @@ export async function prepareHarnessContext(
     // Recall rides on the current user message on every turn. It remains outside
     // stable system instructions and never enters canonical history replay.
     const memory = request.continuation === undefined
-      ? await loadHarnessMemory(options, request, contextOptions.turnId, emit)
+      ? await loadHarnessMemory(options, request, contextOptions.turnId, contextOptions.originalUserMessage, emit)
       : undefined;
     const selectedSkills = await loadHarnessSkills(options, skillsCache);
     const peerCaller = await options.verifiedPeerCallerFor?.({ request });
@@ -244,6 +245,7 @@ async function loadHarnessMemory(
   options: AgentHarnessOptions,
   request: AgentHarnessRequest,
   turnId: string,
+  originalUserMessage?: string,
   emit?: (event: RuntimeEventLike) => void,
 ): Promise<ContextBlockInput | undefined> {
     let block;
@@ -258,7 +260,11 @@ async function loadHarnessMemory(
         || request.metadata?.source === "tui" || request.metadata?.source === "acp");
       const observedAt = options.now?.() ?? new Date();
       const localDate = `${observedAt.getFullYear()}-${String(observedAt.getMonth() + 1).padStart(2, "0")}-${String(observedAt.getDate()).padStart(2, "0")}`;
-      block = await options.memory?.load(request.conversationId, request.userMessage, {
+      const base = originalUserMessage ?? request.userMessage;
+      const query = request.userMessage.startsWith(base)
+        ? memoryUserText({ ...request, userMessage: base }) + request.userMessage.slice(base.length)
+        : request.userMessage;
+      block = await options.memory?.load(request.conversationId, query, {
         turnId,
         hostDate: observedAt.toISOString().slice(0, 10),
         hostLocalDate: localDate,

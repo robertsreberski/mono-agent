@@ -14,6 +14,14 @@
   that finds the topic deleted marks it gone, and deleting a project detaches
   the topic without touching Telegram. Existing configs are unchanged.
 
+- Fix web memory recall and capture using host-generated project, tag, or
+  conversation-marker text instead of the bound, model-visible owner message,
+  including attachment context and live follow-ups.
+
+- Keep owner turns of at most 16 Unicode code points on web, TUI and ACP from
+  injecting unsolicited relevant lines while retaining person cards, labelled
+  background, explicit `MemoryRecall`, and capture.
+
 - Give each Telegram forum topic its own conversation, history, queue,
   `/cancel`, `/new`, and `/model`/`/effort` selection, and send replies,
   activity, questions, status lines, files, and background-job cards back to
@@ -31,6 +39,10 @@
 - Let `memory.capture.focus` guide the review of extracted assistant memory
   lines as well as extraction, without changing unfocused capture or allowing
   review to drop owner-stated lines.
+
+- Let the web console open agent settings in the conversation column on desktop
+  and as a pushed list and detail on phones. Keep per-agent new-conversation
+  drafts until Save or Discard, and group pinning, restart and agent details.
 
 - Keep the web composer's input focused and its caret after inserting a skill
   from the browser, including on touch devices where focus must retain the
@@ -54,6 +66,15 @@
   preview, and keeps finished jobs behind History. Command and agent jobs get
   distinct glyphs, stopping and pending-question states are shown, cancelled
   jobs no longer read as failures, and nothing opens by itself.
+
+- Give the web Background jobs shelf one set of circular status glyphs:
+  outlined rings for current work (empty for queued, half-filled for in
+  progress, a square for stopping, `?` for a question) and solid discs for
+  outcomes (a check for done, a cross for failures, a clock for timeouts, a
+  square for cancelled). In progress is yellow and done is green in every
+  console theme. Only the closed bar's indicator spins, continuously while a
+  job runs and never under reduced motion; open rows stay still, and the bar
+  shows an agent or terminal icon beside a single job's purpose.
 
 - Fix the web Context usage phone sheet's dark overlay and show manual and
   automatic compaction outcomes as visible conversation dividers. Keep a running

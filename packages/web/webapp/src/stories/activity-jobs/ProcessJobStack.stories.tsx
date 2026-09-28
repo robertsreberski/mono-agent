@@ -50,6 +50,8 @@ export const GlanceIdleWithIssue: Story = { render: () => stack(J.idleWithIssueT
 export const GlanceQuestionOnly: Story = { render: () => stack(J.questionOnlyThread) };
 export const GlanceAgentsAndCommands: Story = { render: () => stack(J.agentsAndCommandsThread) };
 export const GlanceMany: Story = { render: () => stack(J.manyThread) };
+// Active but nothing in progress: the count holds still instead of spinning.
+export const GlanceQueued: Story = { render: () => stack([J.succeeded, J.queued, J.activeJob("job-queued-2", "queued", "Purpose: Resize the seed-packet photos", 12, { tool: "Bash" })]) };
 export const GlanceBounded: Story = { render: () => stack([J.succeeded, J.failed], true) };
 
 // Inspect: the open shelf.
@@ -63,6 +65,7 @@ export const IssuesAndQuestions: Story = {
 export const AllStates: Story = { render: () => stack(J.allStatesThread), play: open({ history: true }) };
 export const Many: Story = { render: () => stack(J.manyThread), play: open() };
 export const NothingActive: Story = { render: () => stack(J.idleThread), play: open() };
+export const FinishedHistory: Story = { render: () => stack(J.finishedThread), play: open({ history: true }) };
 export const Bounded: Story = { render: () => stack([J.runningSilent, J.succeeded], true), play: open({ history: true }) };
 export const Stopping: Story = { render: () => stack([J.stopping, J.runningTail]), play: open() };
 
