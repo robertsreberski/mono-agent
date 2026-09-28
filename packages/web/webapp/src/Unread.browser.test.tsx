@@ -83,6 +83,8 @@ const selected = thread("current-conversation", "alpha", {
 const background = thread("background-report", "alpha", {
   title: "Background report", messageCount: 1, runState: { status: "complete" },
 });
+const betaCron = thread("beta-cron", "beta", { title: "Beta schedule", trigger: { kind: "cron", jobId: "fictional-cron", configured: true } });
+const alphaCron = thread("alpha-cron", "alpha", { title: "Alpha schedule", trigger: { kind: "cron", jobId: "fictional-cron", configured: true } });
 const persistence = createThreadPersistence();
 type Store = ReturnType<typeof useConsoleStore>;
 let currentStore: Store | null = null;
@@ -136,6 +138,76 @@ afterEach(async () => {
   await persistence.clearAll();
   localStorage.clear();
   window.history.replaceState(null, "", "/");
+});
+
+const prepareRouteFixture = () => {
+  vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+    [agent("alpha", { label: "Alpha" }), agent("beta", { label: "Beta" })],
+    [selected, betaCron, alphaCron], selected.id,
+  ));
+  vi.mocked(api.threads).mockResolvedValue({ threads: [selected, betaCron, alphaCron] });
+  vi.mocked(api.thread).mockImplementation(async (id) => ({
+    thread: id === betaCron.id ? betaCron : id === alphaCron.id ? alphaCron : selected,
+    messages: [],
+  }));
+};
+
+describe("real route writers under mounted App settings", () => {
+  it("re-scopes desktop settings on the real agent switch and Back/Forward never copy a settings marker (N13)", async () => {
+    await page.viewport(1200, 800);
+    prepareRouteFixture();
+    renderApp();
+    await waitFor(() => expect(currentStore?.selectedAgent?.sourceId).toBe("alpha"));
+    act(() => window.dispatchEvent(new CustomEvent("mono-agent:agent-settings", { detail: { section: "agent" } })));
+    await screen.findByRole("heading", { name: "Agent", level: 2 });
+    act(() => currentStore!.selectAgent("beta"));
+    await waitFor(() => expect(currentStore?.selectedAgent?.sourceId).toBe("beta"));
+    expect(screen.getByText("Pin Beta first")).toBeVisible();
+    expect(window.location.pathname).toBe("/agents/beta/cron/fictional-cron");
+    expect(window.history.state?.monoAgentMobileNavigation?.surface).not.toBe("settings");
+    window.history.back();
+    await waitFor(() => expect(window.location.pathname).toBe("/"));
+    expect(screen.queryByRole("button", { name: "Close agent settings" })).toBeNull();
+    window.history.forward();
+    await waitFor(() => expect(window.location.pathname).toBe("/agents/beta/cron/fictional-cron"));
+    expect(screen.queryByRole("button", { name: "Close agent settings" })).toBeNull();
+  });
+  it("does not use copied depth to close after a real phone-to-desktop agent switch (N18/N19)", async () => {
+    await page.viewport(390, 844);
+    prepareRouteFixture();
+    renderApp();
+    await waitFor(() => expect(currentStore?.selectedAgent?.sourceId).toBe("alpha"));
+    act(() => window.dispatchEvent(new CustomEvent("mono-agent:agent-settings", { detail: { section: "agent" } })));
+    await screen.findByRole("heading", { name: "Agent", level: 2 });
+    await page.viewport(1200, 800);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Close agent settings" })).toBeVisible());
+    act(() => currentStore!.selectAgent("beta"));
+    await waitFor(() => expect(screen.getByText("Pin Beta first")).toBeVisible());
+    expect(window.history.state.monoAgentMobileNavigation.surface).toBe("conversation");
+    const destination = window.location.href;
+    screen.getByRole("button", { name: "Close agent settings" }).click();
+    expect(window.location.href).toBe(destination);
+    window.history.back();
+    await waitFor(() => expect(screen.getByText("Pin Beta first")).toBeVisible());
+    expect(window.history.state.monoAgentMobileNavigation.section).toBe("agent");
+    window.history.forward();
+    await waitFor(() => expect(window.location.href).toBe(destination));
+    expect(screen.queryByRole("button", { name: "Close agent settings" })).toBeNull();
+  });
+  it("returns to the phone settings section after the real cron route writer (N20)", async () => {
+    await page.viewport(390, 844);
+    prepareRouteFixture();
+    renderApp();
+    await waitFor(() => expect(currentStore?.selectedAgent?.sourceId).toBe("alpha"));
+    act(() => window.dispatchEvent(new CustomEvent("mono-agent:agent-settings", { detail: { section: "providers" } })));
+    await screen.findByRole("heading", { name: "Providers", level: 2 });
+    act(() => currentStore!.selectCronJob("alpha", "fictional-cron", alphaCron.id));
+    await waitFor(() => expect(window.location.pathname).toBe("/agents/alpha/cron/fictional-cron"));
+    expect(window.history.state.monoAgentMobileNavigation.surface).toBe("conversation");
+    window.history.back();
+    await waitFor(() => expect(window.history.state.monoAgentMobileNavigation.section).toBe("providers"));
+    expect(screen.getByRole("heading", { name: "Providers", level: 2 })).toBeVisible();
+  });
 });
 
 describe.each([
