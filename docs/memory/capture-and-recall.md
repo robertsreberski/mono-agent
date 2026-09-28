@@ -390,34 +390,36 @@ On web turns, recall and capture use the model-visible owner's unprefixed text r
 
 Automatic recall at the start of a turn shows a small **possibly relevant** block. The main agent model decides what matters; the block never claims to answer:
 
-  ```text
-  ## Memory (possibly relevant — may be unrelated; verify before relying)
+```text
+## Memory (possibly relevant — may be unrelated; verify before relying)
 
-  - – Morgan joined the Maple book club. (recorded 2026-03-01; superseded)
-  - – Morgan prefers green tea. (recorded 2026-05-01; current; you said)
-  ```
+- – Morgan joined the Maple book club. (recorded 2026-03-01; superseded)
+- – Morgan prefers green tea. (recorded 2026-05-01; current; you said)
+```
 
-  Selection uses scores only, with no question grammar or word lists, so it works the same way in any language:
-  - the strongest hybrid (embedding-first) hit must reach `0.62`;
-  - further lines must score within `0.04` of it;
-  - at most three lines are shown, and identical text appears once;
-  - tasks remain historical context without a live `[ ]` marker; current lines say `task/plan recorded`, while closed lines keep their ended or superseded status, attribution and insight marker. Use a task tracker for current status;
-  - current lines come before superseded or ended ones (date-only `validTo` or event `dueAt` before the host's local day; timestamps before the host instant). Events without a structured date are not inferred from prose;
-  - the chosen lines are listed oldest first, so the latest statement reads last.
+Selection uses scores only, with no question grammar or word lists, so it works the same way in any language:
+- the strongest hybrid (embedding-first) hit must reach `0.62`;
+- further lines must score within `0.04` of it;
+- at most three lines are shown, and identical text appears once;
+- tasks remain historical context without a live `[ ]` marker; current lines say `task/plan recorded`, while closed lines keep their ended or superseded status, attribution and insight marker. Use a task tracker for current status;
+- current lines come before superseded or ended ones (date-only `validTo` or event `dueAt` before the host's local day; timestamps before the host instant). Events without a structured date are not inferred from prose;
+- the chosen lines are listed oldest first, so the latest statement reads last.
 
-  Each line shows when it was recorded and whether it is `current`, `superseded` or `ended <date>`. When every label on the line agrees, it also shows who said it: `you said`, `assistant noted` or `from a document`.
+Each line shows when it was recorded and whether it is `current`, `superseded` or `ended <date>`. When every label on the line agrees, it also shows who said it: `you said`, `assistant noted` or `from a document`.
 
-  The block has a 1.5 KB budget. Each line's text is capped at 360 bytes, and a line that doesn't fit is left out. The whole automatic context, including the background card below, stays under about 2.5 KB. Opposite statements can appear together; the model weighs them.
+The block has a 1.5 KB budget. Each line's text is capped at 360 bytes, and a line that doesn't fit is left out. The whole automatic context, including the background card below, stays under about 2.5 KB. Opposite statements can appear together; the model weighs them.
 
-  Two cases show nothing automatically:
-  - Lexical-only (degraded) results. The host warns instead.
-  - Turns that are not host-verified owner turns: group chats, other senders, cron triggers, and peers. Host-owned process-job completion wakes suppress both the possibly-relevant block and the automatic memory background card even when routed through an authenticated web channel, without changing capture attribution. This is a privacy default; these turns can still use `MemoryRecall` deliberately.
+Automatic **possibly relevant** lines are suppressed when host-verified owner text on web, TUI or ACP is at most 16 Unicode code points after NFC normalization and trimming. The person card and labelled background remain available. The backend lookup remains available through explicit `MemoryRecall`; this structural gate uses no word lists and does not apply to standalone `BujoMemoryStore.load()`. Dense scripts can convey more in fewer code points.
 
-  The floor, window and line count were measured on three real stores that use `nomic-embed-text:v1.5`, with English, Polish and Spanish questions. They were chosen to keep the answer present as often as possible while negative and near-miss probes average at most two lines.
+Two cases show nothing automatically:
+- Lexical-only (degraded) results. The host warns instead.
+- Turns that are not host-verified owner turns: group chats, other senders, cron triggers, and peers. Host-owned process-job completion wakes suppress both the possibly-relevant block and the automatic memory background card even when routed through an authenticated web channel, without changing capture attribution. This is a privacy default; these turns can still use `MemoryRecall` deliberately.
 
-  Retrieval quality still limits other languages. With an English-centred embedding model and English memory text, Polish or Spanish questions often don't retrieve the answer at all. A multilingual embedding model is the lever for that.
+The floor, window and line count were measured on three real stores that use `nomic-embed-text:v1.5`, with English, Polish and Spanish questions. They were chosen to keep the answer present as often as possible while negative and near-miss probes average at most two lines.
 
-  Programmatic `BujoMemoryStore.load()` now uses the same hybrid-only, score-based selector and three-line bound. It lacks the app's verified-owner privacy gate and richer attribution; standalone callers must gate injection by audience themselves. Lite and degraded lexical-only stores return no automatic block; use `recallWithOutcome()` for deliberate retrieval.
+Retrieval quality still limits other languages. With an English-centred embedding model and English memory text, Polish or Spanish questions often don't retrieve the answer at all. A multilingual embedding model is the lever for that.
+
+Programmatic `BujoMemoryStore.load()` now uses the same hybrid-only, score-based selector and three-line bound. It lacks the app's verified-owner privacy gate and richer attribution; standalone callers must gate injection by audience themselves. Lite and degraded lexical-only stores return no automatic block; use `recallWithOutcome()` for deliberate retrieval.
 
 Labelled background stays language-neutral too. Preferences and verified lessons in the turn's scopes join when their memory ranks among the top retrieved hits and clearly leads the candidate median. Opposite advice is shown together. A person card appears when the message contains an exact person name or `person:` id, such as `Morgan`, `¿Dónde trabaja Morgan?` or `Gdzie pracuje Morgan?`. The card shows that person's current user-stated or document facts with the recording date, in the form `home town: Maple Harbor (you said, recorded 2026-09-06)`, plus age for a birth date. It does not filter keys by the question's wording. Two or more current distinct values for one key show as `conflicting values — ask`. First-person wording no longer selects the owner's card. Keys drop the `other:` namespace and values render as text, not JSON, in both the automatic card and the explicit `MemoryRecall` fact sheet.
 

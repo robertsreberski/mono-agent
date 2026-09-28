@@ -209,7 +209,10 @@ keeps any such line, not only structured attribute facts. Unset leaves capture u
 explicit `Remember` writes are unaffected. Tool outcomes exposed to extraction contain only bounded fixed categories,
 never arguments, outputs, paths, URLs or raw error messages. App-owned automatic
 recall can append up to three relevant, scoped live preferences/verified lessons
-and up to three exact-name person cards as a separate background block. Project
+and up to three exact-name person cards as a separate background block. On web,
+TUI and ACP owner turns of at most 16 NFC-normalized, trimmed Unicode code points,
+only the unsolicited possibly-relevant lines are suppressed; the person card and
+labelled background remain available. Project
 scope is not injected until the host supplies a verified active project. Global
 agent preferences require a host-confirmed owner/operator turn; other identified
 speakers get user scope. Person cards show attribution/recorded date, omit

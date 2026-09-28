@@ -59,6 +59,9 @@ export interface SharedRecallStore extends MemoryStore, RecallCapableStore, Labe
   supportsRemember?(): boolean;
 }
 
+// Short context-free replies cannot reliably select unsolicited cross-conversation lines.
+const SHORT_OWNER_QUERY_MAX_CODEPOINTS = 16;
+
 export interface MemoryRetrievalServiceOptions {
   readonly maxBytes?: number;
   readonly source?: string;
@@ -201,7 +204,11 @@ export class MemoryRetrievalService implements MemoryStore {
         .find((value) => value !== undefined && /^\d{4}-\d{2}-\d{2}$/u.test(value));
       const now = options.hostInstant !== undefined && Number.isFinite(Date.parse(options.hostInstant))
         ? options.hostInstant : undefined;
-      const hits = selectPossiblyRelevantRecallHits(outcome.hits, {
+      // Preserve exact-name cards and labelled background on short owner turns;
+      // suppress only unsolicited similarity-selected lines.
+      const shortOwnerQuery = query !== undefined
+        && Array.from(query.normalize("NFC").trim()).length <= SHORT_OWNER_QUERY_MAX_CODEPOINTS;
+      const hits = shortOwnerQuery ? [] : selectPossiblyRelevantRecallHits(outcome.hits, {
         ...(asOf === undefined ? {} : { asOf }), ...(now === undefined ? {} : { now }),
       });
       const budget = Math.min(this.maxBytes, POSSIBLY_RELEVANT_MAX_BYTES);

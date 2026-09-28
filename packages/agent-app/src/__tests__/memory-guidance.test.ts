@@ -160,6 +160,22 @@ describe("automatic labelled background", () => {
     expect(owned?.content).toContain(POSSIBLY_RELEVANT_HEADING);
   });
 
+  it("keeps a person card and labelled guidance on a short owner name query without unsolicited lines", async () => {
+    const remote: SharedRecallStore = {
+      ...store([preference("agent", "Keep Maple plans concise.", "pref")], [fact("birth", "1990-05-17")]),
+      async load() { return undefined; }, async close() {},
+      async recall() { return [{ score: 0.95, record: { id: "pref", text: "Keep Maple plans concise." } },
+        ...[1, 2, 3, 4].map((id) => ({ score: 0.6, record: { id: `filler-${id}`, text: "Unrelated note." } }))]; },
+    };
+    const block = await new MemoryRetrievalService(remote).load("current", "Morgan", {
+      hostDate: "2026-09-24", ownerTurn: true,
+    });
+    expect(block?.content).toContain("Person card:");
+    expect(block?.content).toContain("age 36");
+    expect(block?.content).toContain("Working preferences & lessons");
+    expect(block?.content).not.toContain(POSSIBLY_RELEVANT_HEADING);
+  });
+
   it("shows a named person's whole card whatever the question's language or wording", () => {
     const person = store([], [fact("birth", "1990-05-17"), labelled("other:home-town", "Maple Harbor", "town"),
       labelled("other:employer", "Zorbel Labs", "job")]);
