@@ -91,39 +91,55 @@ describe("settings provider density", () => {
     }
   });
 
-  it("holds an initial Restart target through a delayed dense provider response without stealing user scroll", async () => {
+  const denseStatus = () => ({ schema: "mono-agent.provider-auth.v1", generatedAt: new Date().toISOString(), providers: Array.from({ length: 9 }, (_, index) => ({ providerId: `fixture-${index}`, label: `Provider ${index}`, state: "missing", verification: "not_verified", methods: [] })) });
+  const denseUsage = () => ({ schema: "mono-agent.provider-usage.v1", providers: Array.from({ length: 9 }, (_, index) => ({ providerId: `fixture-${index}`, label: `Provider ${index}`, fetchedAt: new Date().toISOString(), stale: false, windows: [{ kind: "weekly", label: "Weekly", usedPercent: 25, periodMs: 604800000, resetsAt: new Date(Date.now() + 300000000).toISOString() }] })) });
+  it("holds a clamped Restart target while delayed auth and usage expand above it with native anchoring off", async () => {
     await page.viewport(390, 720);
-    let resolve!: (value: unknown) => void;
-    mocks.providerAuthStatus.mockReturnValueOnce(new Promise((done) => { resolve = done; }));
-    store.selectedAgent = agent("atlas", { label: "Atlas", supportsProviderAuth: true, restart: { supported: true } });
-    render(<AgentSettingsScreen section="agent" layout="stacked" onClose={() => undefined} onNotice={() => undefined} />);
+    let resolveAuth!: (value: unknown) => void;
+    let resolveUsage!: (value: unknown) => void;
+    store.selectedAgent = agent("atlas", { label: "Atlas", supportsProviderAuth: true, supportsProviderUsage: true, restart: { supported: true } });
+    mocks.providerAuthStatus.mockReturnValueOnce(new Promise((done) => { resolveAuth = done; })).mockResolvedValue(denseStatus());
+    mocks.providerUsage.mockReturnValueOnce(new Promise((done) => { resolveUsage = done; }));
+    render(<div style={{ height: "100dvh", width: "100vw" }}><AgentSettingsScreen section="agent" layout="stacked" onClose={() => undefined} onNotice={() => undefined} /></div>);
     const scroller = document.querySelector<HTMLElement>(".settings-content")!;
+    scroller.style.overflowAnchor = "none";
     const restart = screen.getByRole("region", { name: "Restart" });
+    const viewport = scroller.getBoundingClientRect();
     expect(document.activeElement).toBe(restart);
     await waitFor(() => expect(mocks.providerAuthStatus).toHaveBeenCalled());
-    await act(async () => resolve({ schema: "mono-agent.provider-auth.v1", generatedAt: new Date().toISOString(), providers: Array.from({ length: 9 }, (_, index) => ({ providerId: `fixture-${index}`, label: `Provider ${index}`, state: "missing", verification: "not_verified", methods: [] })) }));
+    await waitFor(() => expect(mocks.providerUsage).toHaveBeenCalled());
+    expect(screen.getByText("Loading provider status…")).toBeTruthy();
+    expect(scroller.scrollTop).toBeGreaterThan(0);
+    const initialTop = restart.getBoundingClientRect().top;
+    expect(initialTop).toBeGreaterThan(viewport.top);
+    await act(async () => resolveAuth(denseStatus()));
     await screen.findByText("Provider 8");
-    expect(restart.getBoundingClientRect().top).toBeGreaterThanOrEqual(scroller.getBoundingClientRect().top - 16);
-    expect(restart.getBoundingClientRect().top).toBeLessThan(scroller.getBoundingClientRect().bottom);
-    scroller.scrollTop = 0;
-    fireEvent.wheel(scroller);
-    mocks.providerAuthStatus.mockResolvedValue({ schema: "mono-agent.provider-auth.v1", generatedAt: new Date().toISOString(), providers: [] });
-    expect(scroller.scrollTop).toBe(0);
+    expect(restart.getBoundingClientRect().top).toBeLessThan(viewport.bottom - 48);
+    await act(async () => resolveUsage(denseUsage()));
+    await screen.findAllByText("Weekly");
+    await waitFor(() => expect(restart.getBoundingClientRect().top).toBeLessThan(viewport.bottom - 48));
+    expect(restart.getBoundingClientRect().top).toBeGreaterThanOrEqual(viewport.top - 16);
+    const action = screen.getByRole("button", { name: "Restart Atlas" }).getBoundingClientRect();
+    expect(action.top).toBeLessThan(viewport.bottom);
+    expect(action.bottom).toBeGreaterThan(viewport.top);
   });
-
-  it("does not re-scroll after the user moves while providers are pending", async () => {
+  it.each(["wheel", "scrollbar", "dashboard"])('does not re-scroll after %s interaction while providers are pending', async (interaction) => {
     await page.viewport(390, 720);
     let resolve!: (value: unknown) => void;
     store.selectedAgent = agent("atlas", { label: "Atlas", supportsProviderAuth: true, restart: { supported: true } });
     mocks.providerAuthStatus.mockReturnValueOnce(new Promise((done) => { resolve = done; }));
-    render(<AgentSettingsScreen section="agent" layout="stacked" onClose={() => undefined} onNotice={() => undefined} />);
+    render(<><button type="button">Dashboard search</button><div style={{ height: "100dvh", width: "100vw" }}><AgentSettingsScreen section="agent" layout="stacked" onClose={() => undefined} onNotice={() => undefined} /></div></>);
     const scroller = document.querySelector<HTMLElement>(".settings-content")!;
+    scroller.style.overflowAnchor = "none";
     await waitFor(() => expect(mocks.providerAuthStatus).toHaveBeenCalled());
     scroller.scrollTop = 0;
-    fireEvent.wheel(scroller);
-    await act(async () => resolve({ schema: "mono-agent.provider-auth.v1", generatedAt: new Date().toISOString(), providers: Array.from({ length: 9 }, (_, index) => ({ providerId: `fixture-${index}`, label: `Provider ${index}`, state: "missing", verification: "not_verified", methods: [] })) }));
+    if (interaction === "wheel") fireEvent.wheel(scroller);
+    if (interaction === "scrollbar") fireEvent.pointerDown(scroller, { clientX: scroller.getBoundingClientRect().right - 2 });
+    if (interaction === "dashboard") screen.getByRole("button", { name: "Dashboard search" }).focus();
+    await act(async () => resolve(denseStatus()));
     await screen.findByText("Provider 8");
     expect(scroller.scrollTop).toBe(0);
+    if (interaction === "dashboard") expect(document.activeElement).toBe(screen.getByRole("button", { name: "Dashboard search" }));
   });
 
 });

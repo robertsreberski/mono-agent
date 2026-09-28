@@ -523,6 +523,24 @@ describe("settings screen navigation", () => {
     window.history.forward();
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("region", { name: "Providers" })));
   });
+  it("repeats the same section intent after a user scrolls away without pushing history", async () => {
+    await page.viewport(390, 844);
+    render(<App />);
+    const start = position();
+    const request = () => window.dispatchEvent(new CustomEvent("mono-agent:agent-settings", { detail: { section: "providers" } }));
+    request();
+    const target = await screen.findByRole("region", { name: "Providers" });
+    await waitFor(() => expect(document.activeElement).toBe(target));
+    const scroller = document.querySelector<HTMLElement>(".settings-content")!;
+    scroller.scrollTop = 0;
+    fireEvent.wheel(scroller);
+    expect(scroller.scrollTop).toBe(0);
+    request();
+    await waitFor(() => expect(document.activeElement).toBe(target));
+    await waitFor(() => expect(scroller.scrollTop).toBeGreaterThan(0));
+    expect(position()).toBe(start + 1);
+    expect(window.history.state.monoAgentMobileNavigation.section).toBe("providers");
+  });
   it("closes legacy depth-two entries without reopening the old index", async () => {
     await page.viewport(390, 844);
     render(<App />);

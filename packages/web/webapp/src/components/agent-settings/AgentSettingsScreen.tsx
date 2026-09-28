@@ -31,8 +31,9 @@ const RestartOwnerBridge = memo(function RestartOwnerBridge({ agent, onChange }:
   return null;
 });
 
-export function AgentSettingsScreen({ section, layout, onClose, onNotice }: {
+export function AgentSettingsScreen({ section, intent = 0, layout, onClose, onNotice }: {
   readonly section: SettingsSection | null;
+  readonly intent?: number;
   readonly layout: "split" | "stacked";
   readonly onClose: () => void;
   readonly onNotice: (message: string) => void;
@@ -56,12 +57,12 @@ export function AgentSettingsScreen({ section, layout, onClose, onNotice }: {
   return <>
     <RestartOwnerBridge key={agent.sourceId} agent={agent} onChange={onRestartChange} />
     <ProvidersOwnerBridge key={providerKey} agent={agent} onChange={onProviderChange} />
-    <SettingsContent agent={agent} section={section} layout={layout} provider={providerOwner?.key === providerKey ? providerOwner.state : null} restart={restartOwner?.key === agent.sourceId ? restartOwner.state : null} onClose={onClose} onNotice={onNotice} runningCount={agent.status === "offline" ? undefined : runningCountFor(agent, store.activeThreads)} />
+    <SettingsContent agent={agent} section={section} intent={intent} layout={layout} provider={providerOwner?.key === providerKey ? providerOwner.state : null} restart={restartOwner?.key === agent.sourceId ? restartOwner.state : null} onClose={onClose} onNotice={onNotice} runningCount={agent.status === "offline" ? undefined : runningCountFor(agent, store.activeThreads)} />
   </>;
 }
 
-function SettingsContent({ agent, section, layout, provider, restart, onClose, onNotice, runningCount }: {
-  readonly agent: AgentSummary; readonly section: SettingsSection | null; readonly layout: "split" | "stacked";
+function SettingsContent({ agent, section, intent, layout, provider, restart, onClose, onNotice, runningCount }: {
+  readonly agent: AgentSummary; readonly section: SettingsSection | null; readonly intent: number; readonly layout: "split" | "stacked";
   readonly provider: ProviderState | null; readonly restart: RestartState | null;
   readonly onClose: () => void; readonly onNotice: (message: string) => void; readonly runningCount: number | undefined;
 }) {
@@ -70,9 +71,26 @@ function SettingsContent({ agent, section, layout, provider, restart, onClose, o
   const titleRef = useRef<HTMLHeadingElement>(null);
   const scrollRef = useRef<HTMLElement>(null);
   const sourceRef = useRef<string | null>(null);
-  const targetRef = useRef<SettingsSection | null | undefined>(undefined);
+  const targetRef = useRef<{ section: SettingsSection | null; intent: number } | null>(null);
+  const generationRef = useRef<string | null>(null);
   const userMovedRef = useRef(false);
-  const providerReadyRef = useRef(false);
+  const settlingRef = useRef(false);
+  const programmedScrollRef = useRef(false);
+  const settleObserverRef = useRef<ResizeObserver | null>(null);
+  const stopSettling = () => { settlingRef.current = false; settleObserverRef.current?.disconnect(); settleObserverRef.current = null; };
+  const markUserMoved = () => { userMovedRef.current = true; stopSettling(); };
+  const revealRestart = () => {
+    if (!settlingRef.current || userMovedRef.current || !scrollRef.current) return;
+    const scroller = scrollRef.current;
+    const target = scroller.querySelector<HTMLElement>('[data-settings-target="agent"]');
+    if (!target) return;
+    const viewport = scroller.getBoundingClientRect();
+    const heading = target.getBoundingClientRect();
+    if (heading.top >= viewport.top + 8 && heading.top <= viewport.bottom - 96) return;
+    programmedScrollRef.current = true;
+    scroller.scrollTop += heading.top - viewport.top - 12;
+    requestAnimationFrame(() => { programmedScrollRef.current = false; });
+  };
   const [announcement, setAnnouncement] = useState("");
   const eventState = { usageRefreshing: provider?.usageRefreshing, usageFeedback: provider?.usageFeedback,
     check: provider?.check, session: provider?.session, restartStage: restart?.progressStage,
@@ -91,34 +109,69 @@ function SettingsContent({ agent, section, layout, provider, restart, onClose, o
     else if (eventState.usageFeedback && eventState.usageFeedback !== previous.usageFeedback) setAnnouncement(/fail|unavailable|error/i.test(eventState.usageFeedback) ? "Subscription limits could not be refreshed." : "Subscription limits refreshed.");
     else if (eventState.usageRefreshing && !previous.usageRefreshing) setAnnouncement("Usage refresh started.");
   }, [provider?.usageRefreshing, provider?.usageFeedback, provider?.check, provider?.session, restart?.progressStage, restart?.outcome, restart?.requestUnknown]);
-  // Only an opening or an explicit section intent moves focus. Async owner updates
-  // and process-generation refreshes must not steal focus from the Dashboard.
+  // Only opening or an explicit intent moves focus. Source/generation updates
+  // must not pull focus out of the live Dashboard or a provider control.
   useLayoutEffect(() => {
     if (sourceRef.current !== agent.sourceId) {
-      if (sourceRef.current !== null) (scrollRef.current!.scrollTop = 0);
-      providerReadyRef.current = false;
+      const switching = sourceRef.current !== null;
       sourceRef.current = agent.sourceId;
-      if (targetRef.current !== undefined) { targetRef.current = section; return; }
+      stopSettling();
+      if (switching) {
+        if (scrollRef.current) scrollRef.current.scrollTop = 0;
+        targetRef.current = { section, intent };
+        return;
+      }
     }
-    if (targetRef.current === section) return;
-    targetRef.current = section;
+    if (targetRef.current?.section === section && targetRef.current.intent === intent) return;
+    targetRef.current = { section, intent };
     userMovedRef.current = false;
-    const target = section === null ? titleRef.current : scrollRef.current?.querySelector<HTMLElement>(`[data-settings-target="${section}"]`);
+    stopSettling();
+    const scroller = scrollRef.current;
+    const target = section === null ? titleRef.current : scroller?.querySelector<HTMLElement>(`[data-settings-target="${section}"]`);
     target?.focus({ preventScroll: true });
-    if (section !== null && target && scrollRef.current) scrollRef.current.scrollTop = target.getBoundingClientRect().top - scrollRef.current.getBoundingClientRect().top + scrollRef.current.scrollTop - 12;
-    else if (section === null) (scrollRef.current!.scrollTop = 0);
-  }, [agent.sourceId, section]);
-  // A late provider response can expand the content above Restart. Reposition
-  // once, only while the initial target is still active and untouched by the user.
+    programmedScrollRef.current = true;
+    if (section !== null && target && scroller) scroller.scrollTop += target.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 12;
+    else if (section === null && scroller) scroller.scrollTop = 0;
+    requestAnimationFrame(() => { programmedScrollRef.current = false; });
+    settlingRef.current = section === "agent";
+  }, [agent.sourceId, section, intent]);
+  // Only the first targeted layout can settle. Observe size changes above the
+  // Restart heading, including usage arriving AFTER auth's initial status=null.
+  // Stop on user input, source/generation changes, completed reads or timeout.
   useLayoutEffect(() => {
-    const ready = provider !== null;
-    if (ready && !providerReadyRef.current && section === "agent" && !userMovedRef.current) {
-      const scroller = scrollRef.current;
-      const target = scroller?.querySelector<HTMLElement>('[data-settings-target="agent"]');
-      if (scroller && target) scroller.scrollTop = target.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop - 12;
+    const generation = `${agent.sourceId}:${agent.generation ?? "unknown"}`;
+    if (generationRef.current !== null && generationRef.current !== generation) stopSettling();
+    generationRef.current = generation;
+  }, [agent.sourceId, agent.generation]);
+  useLayoutEffect(() => {
+    if (!settlingRef.current || section !== "agent" || typeof ResizeObserver === "undefined") return;
+    const scroller = scrollRef.current;
+    const above = scroller?.querySelector<HTMLElement>('[data-settings-target="providers"]');
+    if (!above) return;
+    const observer = new ResizeObserver(() => revealRestart());
+    observer.observe(above);
+    settleObserverRef.current = observer;
+    const timeout = window.setTimeout(stopSettling, 12_000);
+    return () => { window.clearTimeout(timeout); observer.disconnect(); if (settleObserverRef.current === observer) settleObserverRef.current = null; };
+  }, [agent.sourceId, agent.generation, section, intent]);
+  useLayoutEffect(() => {
+    if (!settlingRef.current || section !== "agent") return;
+    revealRestart();
+    const authDone = agent.status === "offline" || agent.supportsProviderAuth !== true || provider?.status != null || provider?.authError != null;
+    const usageDone = agent.status === "offline" || agent.supportsProviderUsage !== true || provider?.usageLoading === false;
+    if (authDone && usageDone) {
+      // One final frame lets the meters finish laying out before disconnecting.
+      const frame = requestAnimationFrame(() => { revealRestart(); stopSettling(); });
+      return () => cancelAnimationFrame(frame);
     }
-    providerReadyRef.current = ready;
-  }, [provider !== null, section]);
+  }, [agent.sourceId, agent.generation, section, intent, provider?.status, provider?.authError, provider?.usageLoading, provider?.usage]);
+  useEffect(() => {
+    const onFocus = (event: FocusEvent) => {
+      if (settlingRef.current && event.target !== scrollRef.current?.querySelector('[data-settings-target="agent"]')) markUserMoved();
+    };
+    document.addEventListener("focusin", onFocus);
+    return () => document.removeEventListener("focusin", onFocus);
+  }, []);
   return <div className="settings-screen" data-modal-surface="settings" data-section={section ?? "index"}>
     <div className="sr-only" role="status" aria-atomic="true">{announcement}</div>
     <header className="settings-header">
@@ -127,7 +180,7 @@ function SettingsContent({ agent, section, layout, provider, restart, onClose, o
       <span className={`chat-status is-${agent.status === "online" ? "ready" : agent.status}`}><i aria-hidden="true" />{agent.status}</span>
       {layout === "split" && <span className="settings-header-actions"><button type="button" className="icon-button" aria-label="Close agent settings" onClick={onClose}><Icon name="close" size={16} /></button></span>}
     </header>
-    <main className="settings-content" ref={scrollRef} onWheel={() => { userMovedRef.current = true; }} onTouchMove={() => { userMovedRef.current = true; }} onKeyDown={() => { userMovedRef.current = true; }}>
+    <main className="settings-content" ref={scrollRef} onPointerDown={markUserMoved} onWheel={markUserMoved} onTouchMove={markUserMoved} onKeyDown={markUserMoved} onScroll={(event) => { if (event.nativeEvent.isTrusted && !programmedScrollRef.current) markUserMoved(); }}>
       <div className="settings-pane">
         {agent.status === "offline" && <div className="settings-notice">{agent.label} is offline. Changes that need the agent are paused. Using the agent config still works.</div>}
         <AgentPinRow key={agent.sourceId} agent={agent} />

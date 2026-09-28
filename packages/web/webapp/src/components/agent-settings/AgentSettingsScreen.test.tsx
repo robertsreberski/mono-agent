@@ -144,6 +144,34 @@ describe("agent settings screen", () => {
     expect(props.onClose).not.toHaveBeenCalled();
     expect(getSettingsDraft("fictional")).toBeNull();
   });
+  it("does not steal focus from Providers after a deferred save resolves", async () => {
+    let settle!: () => void;
+    store.setAgentRunDefaults.mockReturnValueOnce(new Promise<void>((resolve) => { settle = resolve; }));
+    setSettingsDraft("fictional", { model: "grove/fast", effort: "low" });
+    render(<AgentSettingsScreen {...props} section="new-conversations" />);
+    fireEvent.click(screen.getByRole("button", { name: "Save for new conversations" }));
+    const providers = screen.getByRole("region", { name: "Providers" });
+    providers.focus();
+    await act(async () => settle());
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(document.activeElement).toBe(providers);
+    expect(getSettingsDraft("fictional")).toBeNull();
+  });
+  it("does not focus the next agent's picker when an old agent save completes", async () => {
+    let settle!: () => void;
+    store.setAgentRunDefaults.mockReturnValueOnce(new Promise<void>((resolve) => { settle = resolve; }));
+    setSettingsDraft("fictional", { model: "grove/fast", effort: "low" });
+    const view = render(<AgentSettingsScreen {...props} section="new-conversations" />);
+    fireEvent.click(screen.getByRole("button", { name: "Save for new conversations" }));
+    store.selectedAgent = agent("grove-fictional", { label: "Grove" });
+    view.rerender(<AgentSettingsScreen {...props} section="new-conversations" />);
+    const providers = screen.getByRole("region", { name: "Providers" });
+    providers.focus();
+    await act(async () => settle());
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(document.activeElement).toBe(providers);
+    expect(props.onNotice).not.toHaveBeenCalled();
+  });
   it("clears a draft when a server update catches up to it without losing a newer draft", async () => {
     setSettingsDraft("fictional", { model: "grove/fast", effort: "low" });
     const view = render(<AgentSettingsScreen {...props} section="new-conversations" />);

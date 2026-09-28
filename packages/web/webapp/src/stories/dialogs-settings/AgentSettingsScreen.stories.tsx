@@ -3,7 +3,7 @@ import { Preview, waitForButton } from "./AgentSettingsStoryFixture";
 
 export default { title: "Dialogs & Settings/AgentSettingsScreen", component: Preview, tags: ["autodocs"], parameters: { layout: "fullscreen" } } satisfies Meta<typeof Preview>;
 type Story = StoryObj<typeof Preview>;
-const desktop = { args: { variant: "base" as const, section: "new-conversations" as const, layout: "split" as const } };
+const desktop = { args: { variant: "base" as const, section: null, layout: "split" as const } };
 const phone = { args: { variant: "base" as const, section: null, layout: "stacked" as const }, globals: { viewport: { value: "phone" } } };
 export const Desktop: Story = desktop;
 export const DesktopProvidersDense: Story = { args: { ...desktop.args, variant: "dense", section: "providers" } };

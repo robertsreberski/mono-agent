@@ -8,7 +8,7 @@ export function useProviderAuth(agent: AgentSummary) {
   const [status, setStatus] = useState<ProviderAuthStatusSnapshot | null>(null);
   const [session, setSession] = useState<ProviderAuthSessionSnapshot | null>(null);
   const [check, setCheck] = useState<ProviderAuthCheckSessionSnapshot | null>(null);
-  const { snapshot: usage, refreshing: usageRefreshing, feedback: usageFeedback, refresh: refreshUsage } = useProviderUsage(agent, session?.state === "succeeded" ? session.id : undefined);
+  const { snapshot: usage, loading: usageLoading, refreshing: usageRefreshing, feedback: usageFeedback, refresh: refreshUsage } = useProviderUsage(agent, session?.state === "succeeded" ? session.id : undefined);
   const [sessionProvider, setSessionProvider] = useState<ProviderAuthProviderStatus | null>(null);
   const [methodProvider, setMethodProvider] = useState<ProviderAuthProviderStatus | null>(null);
   const [inputValue, setInputValue] = useState("");
@@ -344,5 +344,5 @@ export function useProviderAuth(agent: AgentSummary) {
   };
 
   const checkActive = check !== null && !checkTerminal(check.state);
-  return { status, session, check, usage, usageRefreshing, usageFeedback, refreshUsage, sessionProvider, methodProvider, inputValue, setInputValue, busy, restarting, authError, inputRef, adoptSession, setSessionProvider, setMethodProvider, start, startCheck, cancelCheck, openFlow, submit, cancel, checkActive };
+  return { status, session, check, usage, usageLoading, usageRefreshing, usageFeedback, refreshUsage, sessionProvider, methodProvider, inputValue, setInputValue, busy, restarting, authError, inputRef, adoptSession, setSessionProvider, setMethodProvider, start, startCheck, cancelCheck, openFlow, submit, cancel, checkActive };
 }

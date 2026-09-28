@@ -394,7 +394,7 @@ export function App() {
   const [screen, setScreen] = useState<MobileScreen>(initialMobileScreen);
   const [mobile, setMobile] = useState(isMobileViewport);
   const [palette, setPalette] = useState(false);
-  const [settings, setSettings] = useState<{ readonly section: SettingsSection | null } | null>(() => {
+  const [settings, setSettings] = useState<{ readonly section: SettingsSection | null; readonly intent?: number } | null>(() => {
     const owned = ownedSettingsEntry();
     if (owned !== null) return { section: owned.section };
     const requested = parseSettingsParam(window.location.href);
@@ -691,7 +691,8 @@ export function App() {
         return;
       }
       if (settings !== null) {
-        setSettings({ section });
+        // A second intent for the same section is still an explicit navigation.
+        setSettings((current) => ({ section, intent: (current?.intent ?? 0) + 1 }));
         return;
       }
       if (isMobileViewport()) pushSettingsEntries(section);
@@ -966,7 +967,7 @@ export function App() {
         </div>
       )}
       <CommandPalette open={palette} onClose={closePalette} />
-      {settings !== null && <div className="settings-region"><AgentSettingsScreen section={settings.section} layout={mobile ? "stacked" : "split"} onClose={closeAgentSettings} onNotice={setNotice} /></div>}
+      {settings !== null && <div className="settings-region"><AgentSettingsScreen section={settings.section} intent={settings.intent ?? 0} layout={mobile ? "stacked" : "split"} onClose={closeAgentSettings} onNotice={setNotice} /></div>}
       <TagSettingsSheet sheet={tagSettings} onClose={closeTagSettings} dialogRef={tagSettingsRef} />
       <ProjectSettingsSheet sheet={projectSettings} onClose={closeProjectSettings} dialogRef={projectSettingsRef} />
       {(notice || actionError) && (
