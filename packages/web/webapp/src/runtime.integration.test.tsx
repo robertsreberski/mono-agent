@@ -835,11 +835,12 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     expect(screen.queryByRole("option", { name: /private/u })).not.toBeInTheDocument();
     const focus = vi.spyOn(input, "focus");
     fireEvent.click(available);
+    expect(focus).toHaveBeenCalledWith();
 
     await waitFor(() => expect(runtime.thread.composer.getState().text).toBe("Draft $research "));
     expect(sendTurn).not.toHaveBeenCalled();
     await waitFor(() => expect(document.activeElement).toBe(input));
-    expect(focus).toHaveBeenLastCalledWith();
+    expect(input.selectionStart).toBe("Draft $research ".length);
   });
 
   it.each([

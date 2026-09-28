@@ -188,12 +188,11 @@ export function Composer({ runSettings, notice }: {
     savedBrowseSelection.current = next;
   }, []);
 
-  const restoreSelection = useCallback((start: number, end: number, revealInput = false) => {
+  const restoreSelection = useCallback((start: number, end: number) => {
     window.requestAnimationFrame(() => {
       const input = inputRef.current;
       if (input === null) return;
-      if (revealInput) input.focus();
-      else input.focus({ preventScroll: true });
+      if (document.activeElement !== input) input.focus({ preventScroll: true });
       input.setSelectionRange(start, end);
       setSelection({ start, end });
       savedBrowseSelection.current = { start, end };
@@ -227,11 +226,14 @@ export function Composer({ runSettings, notice }: {
       skill.reference,
     );
     composer.setText(inserted.text);
-    // Browse opens a modal above the composer. Once it closes, let the native
-    // focus scroll reveal the input as the software keyboard resizes the visual
-    // viewport. Autocomplete is already adjacent to a focused input and should
-    // keep its current scroll position.
-    restoreSelection(inserted.selectionStart, inserted.selectionEnd, source === "browse");
+    if (source === "browse") {
+      // WebKit only raises/retains the software keyboard when focus() runs in
+      // the selection's user-activation handler, not in requestAnimationFrame.
+      inputRef.current?.focus();
+    }
+    // The controlled textarea receives the new text on React's next commit;
+    // restore its caret then, without deferring the browse focus until that frame.
+    restoreSelection(inserted.selectionStart, inserted.selectionEnd);
   }, [composer, restoreSelection, selection.end, selection.start, store.skillRegistry]);
 
   return (
@@ -301,6 +303,7 @@ export function Composer({ runSettings, notice }: {
                 agentLabel={selectedAgent?.label}
                 registry={store.skillRegistry}
                 onBeforeOpen={() => captureSelection()}
+                composerInputRef={inputRef}
                 onSelect={(name) => insertSkill(name, "browse")}
               />
             </div>

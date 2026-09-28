@@ -6,7 +6,8 @@ import {
   type Unstable_TriggerItem,
 } from "@assistant-ui/react";
 import { Command } from "cmdk";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { flushSync } from "react-dom";
 
 import { isUsableSkill, rankSkills } from "../../skill-discovery";
 import type { SkillInfo, SkillRegistryState } from "../../types";
@@ -23,6 +24,7 @@ export interface SkillBrowserProps {
   readonly agentLabel: string | undefined;
   readonly registry: SkillRegistryState;
   readonly onBeforeOpen: () => void;
+  readonly composerInputRef: RefObject<HTMLTextAreaElement | null>;
   readonly onSelect: (name: string) => void;
 }
 
@@ -161,9 +163,11 @@ export function SkillBrowser({
   agentLabel,
   registry,
   onBeforeOpen,
+  composerInputRef,
   onSelect,
 }: SkillBrowserProps) {
   const [open, setOpen] = useState(false);
+  const selectedRef = useRef(false);
   const [query, setQuery] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
   const visible = useMemo(() => rankSkills(registry.items, query, {
@@ -184,7 +188,10 @@ export function SkillBrowser({
         aria-label="Browse skills"
         title="Browse skills"
         disabled={agentLabel === undefined}
-        onClick={onBeforeOpen}
+        onClick={() => {
+          selectedRef.current = false;
+          onBeforeOpen();
+        }}
       >
         <Icon name="book" size={17} />
       </Dialog.Trigger>
@@ -193,6 +200,9 @@ export function SkillBrowser({
         <Dialog.Popup
           className="skill-browser-popup"
           initialFocus={(interaction) => interaction === "keyboard" ? searchRef.current : null}
+          // Only a selection returns to the composer; Escape, close and backdrop
+          // retain Base UI's normal return to the book trigger.
+          finalFocus={() => selectedRef.current ? composerInputRef.current : true}
         >
           <header className="skill-browser-header">
             <span>
@@ -234,7 +244,10 @@ export function SkillBrowser({
                     aria-label={`${skill.reference ?? skill.name}, ${statusLabel(skill)}. ${skill.description}`}
                     onSelect={() => {
                       if (!selectable) return;
-                      setOpen(false);
+                      selectedRef.current = true;
+                      // Commit the close before focusing outside the modal trap.
+                      // Keep insertion/focus in this activation task, not a later rAF.
+                      flushSync(() => setOpen(false));
                       onSelect(skill.name);
                     }}
                   >

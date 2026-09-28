@@ -328,3 +328,87 @@ describe.each([
     } finally { platformSpy.mockRestore(); }
   });
 });
+
+describe.each([
+  { method: "pointer", width: 390, height: 844 },
+  { method: "keyboard", width: 1440, height: 900 },
+])("skill browser $method selection", ({ method, width, height }) => {
+  it("focuses the composer during selection and keeps the inserted caret after close", async () => {
+    await page.viewport(width, height);
+    const send = vi.fn<SendSubmission>().mockResolvedValue(undefined);
+    storeMock.current = {
+      ...store(send),
+      skillRegistry: { status: "ready", items: [{
+        name: "research", description: "Find primary sources",
+        availability: "on-demand", reference: "$research",
+      }], total: 1 },
+    };
+    render(<WebRuntimeProvider><Composer /></WebRuntimeProvider>);
+    const input = screen.getByRole("combobox", { name: "Message" }) as HTMLTextAreaElement;
+    const browse = screen.getByRole("button", { name: "Browse skills" });
+    await userEvent.fill(input, "Before after");
+    input.setSelectionRange(7, 7);
+    input.dispatchEvent(new Event("select", { bubbles: true }));
+    await userEvent.click(browse);
+    const dialog = await screen.findByRole("dialog", { name: "Skills" });
+    expect(dialog).toBeVisible();
+    const option = screen.getByRole("option", { name: /\$research, On demand/u });
+    let focusedInSelectionEvent = false;
+    let focusedEffectivelyInSelectionEvent = false;
+    let triggerFocusedAfterSelection = false;
+    const nativeFocus = input.focus.bind(input);
+    const focus = vi.spyOn(input, "focus").mockImplementation((...args) => {
+      const inSelectionEvent = window.event?.type === (method === "pointer" ? "click" : "keydown");
+      if (inSelectionEvent) focusedInSelectionEvent = true;
+      nativeFocus(...args);
+      // The gesture-bound focus must actually land; a later non-gesture focus
+      // (e.g. dialog final focus) would not raise the WebKit keyboard.
+      if (inSelectionEvent && document.activeElement === input) focusedEffectivelyInSelectionEvent = true;
+    });
+    const nativeTriggerFocus = browse.focus.bind(browse);
+    const triggerFocus = vi.spyOn(browse, "focus").mockImplementation((...args) => {
+      triggerFocusedAfterSelection = true;
+      nativeTriggerFocus(...args);
+    });
+    try {
+      if (method === "pointer") {
+        await userEvent.click(option);
+      } else {
+        await userEvent.click(screen.getByRole("combobox", { name: "Search skills" }));
+        await userEvent.keyboard("{Enter}");
+      }
+      await waitFor(() => expect(input).toHaveValue("Before $research after"));
+      if (method === "pointer") {
+        expect(focusedInSelectionEvent).toBe(true);
+        expect(focusedEffectivelyInSelectionEvent).toBe(true);
+      }
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: "Skills" })).not.toBeInTheDocument());
+      // Base UI's final-focus cleanup runs after close; it must not steal focus
+      // back to the trigger even after the controlled textarea's caret update.
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      expect(document.activeElement).toBe(input);
+      expect(input.selectionStart).toBe("Before $research ".length);
+      expect(input.selectionEnd).toBe(input.selectionStart);
+      expect(triggerFocusedAfterSelection).toBe(false);
+      expect(send).not.toHaveBeenCalled();
+    } finally {
+      focus.mockRestore();
+      triggerFocus.mockRestore();
+    }
+  });
+});
+
+it.each(["close button", "Escape"])("returns focus to the book trigger when dismissing skills via %s", async (dismissal) => {
+  storeMock.current = store(vi.fn<SendSubmission>().mockResolvedValue(undefined));
+  render(<WebRuntimeProvider><Composer /></WebRuntimeProvider>);
+  const browse = screen.getByRole("button", { name: "Browse skills" });
+  await userEvent.click(browse);
+  expect(await screen.findByRole("dialog", { name: "Skills" })).toBeVisible();
+  if (dismissal === "Escape") {
+    await userEvent.keyboard("{Escape}");
+  } else {
+    await userEvent.click(screen.getByRole("button", { name: "Close skills" }));
+  }
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Skills" })).not.toBeInTheDocument());
+  expect(document.activeElement).toBe(browse);
+});
