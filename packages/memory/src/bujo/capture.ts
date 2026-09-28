@@ -83,6 +83,7 @@ async function captureTurnUnlocked(
       ...(deps.captureSpeakerKind === undefined ? {} : { captureSpeakerKind: deps.captureSpeakerKind }),
       ...(deps.captureEvidence === undefined ? {} : { captureEvidence: deps.captureEvidence }),
       ...(deps.conversationId === undefined ? {} : { conversationId: deps.conversationId }),
+      ...(deps.captureSettings?.focus === undefined ? {} : { focus: deps.captureSettings.focus }),
       isFinalCaptureAttempt: deps.isFinalCaptureAttempt === true,
     },
   );

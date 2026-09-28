@@ -16,6 +16,10 @@
   answers only when mentioned or replied to, but its next answer sees the
   unaddressed messages since it last spoke as bounded background context.
 
+- Let `memory.capture.focus` guide the review of extracted assistant memory
+  lines as well as extraction, without changing unfocused capture or allowing
+  review to drop owner-stated lines.
+
 - Keep the web composer's input focused and its caret after inserting a skill
   from the browser, including on touch devices where focus must retain the
   software keyboard.
