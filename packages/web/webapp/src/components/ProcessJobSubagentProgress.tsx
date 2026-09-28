@@ -76,6 +76,7 @@ export function ProcessJobMetaLine({ progress, status, supplements = [] }: {
  */
 export function ProcessJobSubagentProgress({ progress, open }: {
   readonly progress?: Progress;
+  /** Open AND on screen: a rail behind a closed shelf follows again on reveal. */
   readonly open: boolean;
 }) {
   const region = useRef<HTMLDivElement>(null);
@@ -87,6 +88,8 @@ export function ProcessJobSubagentProgress({ progress, open }: {
     <div ref={region} className="process-job-subagent-progress" role="region" aria-label="Subagent progress" tabIndex={0}
       onScroll={(event) => {
         const target = event.currentTarget;
+        // A hidden rail reports zero sizes; that is not the reader leaving.
+        if (target.clientHeight === 0) return;
         follow.current = target.scrollHeight - target.scrollTop - target.clientHeight <= 24;
       }}>
       {progress === undefined
@@ -113,7 +116,7 @@ export function ProcessJobSubagentProgress({ progress, open }: {
             const summary = currentPreview?.command ? currentPreview.preview : clusterSummary(previews);
             const mobileSummary = currentPreview?.command
               ? formatToolPreview(current.toolName, current.argsSummary, current.workdir, 34)?.preview : summary;
-            return <ActivityStep key={first.id} toolName={calls.length > 1 ? `${first.toolName} ×${calls.length}` : first.toolName}
+            return <ActivityStep key={first.id} running={running} toolName={calls.length > 1 ? `${first.toolName} ×${calls.length}` : first.toolName}
               summary={summary === undefined ? undefined : <span className="process-job-command-summary" title={currentPreview?.location}>
                 <span className="process-job-command-preview" title={currentPreview?.location ?? currentPreview?.full}>{summary}</span>
                 {currentPreview?.command && <span className="process-job-command-preview-mobile"

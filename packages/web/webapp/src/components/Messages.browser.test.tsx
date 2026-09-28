@@ -711,6 +711,9 @@ describe("synthetic detached subagent evidence", () => {
       <SyntheticJobStack job={job} />
     </main>;
     const stack = render(frame(backgroundSubagentJob()));
+    // Nothing opens by itself: the operator opens the shelf, then the row.
+    fireEvent.click(await screen.findByRole("button", { name: /^Background jobs/u }));
+    fireEvent.click(screen.getByRole("group", { name: "Agent background job running" }).querySelector("summary")!);
     const region = await screen.findByRole("region", { name: "Subagent progress" });
     await waitFor(() => expect(region).toBeVisible());
     const runningMeta = document.querySelector(".process-job-live-meta")!;
@@ -720,7 +723,7 @@ describe("synthetic detached subagent evidence", () => {
     expect(runningMeta.querySelector("dt")).toBeNull();
     expect(runningMeta.querySelector(".effort-signal")).toHaveAttribute("data-levels", "3");
     expect(runningMeta.querySelector(".effort-signal")).toHaveAttribute("data-filled", "3");
-    const card = region.closest<HTMLElement>(".activity-row.is-job")!;
+    const card = region.closest<HTMLElement>(".process-job-card")!;
     const steps = region.querySelector<HTMLElement>(".activity-steps")!;
     const stepSummary = steps.querySelector<HTMLElement>(".activity-step > summary")!;
     const cardRect = card.getBoundingClientRect();
@@ -778,6 +781,10 @@ describe("synthetic detached subagent evidence", () => {
     fireEvent.scroll(region);
     const report = screen.getByRole("region", { name: "Subagent report" });
     expect(report.getBoundingClientRect().bottom).toBeLessThanOrEqual(region.getBoundingClientRect().bottom + 1);
+    // The shelf body is the one scroller around the rail: scrolled to its end,
+    // the whole rail sits inside the shelf rather than escaping it.
+    const shelfBody = document.querySelector<HTMLElement>(".process-job-stack-body")!;
+    shelfBody.scrollTop = shelfBody.scrollHeight;
     expect(region.getBoundingClientRect().bottom).toBeLessThanOrEqual(document.querySelector(".process-job-stack")!.getBoundingClientRect().bottom);
     await shot("finished");
     stack.unmount();

@@ -460,6 +460,9 @@ interface ProcessJobPresentationContextValue {
   readonly historyIsBounded: boolean;
   readonly historyOpen: boolean;
   readonly setHistoryOpen: (open: boolean) => void;
+  /** Whether the jobs shelf is open for this thread; closed until the operator opens it. */
+  readonly shelfOpen: boolean;
+  readonly setShelfOpen: (open: boolean) => void;
 }
 
 const EMPTY_PRESENTATION: ProcessJobPresentationContextValue = {
@@ -469,6 +472,8 @@ const EMPTY_PRESENTATION: ProcessJobPresentationContextValue = {
   historyIsBounded: false,
   historyOpen: false,
   setHistoryOpen: () => undefined,
+  shelfOpen: false,
+  setShelfOpen: () => undefined,
 };
 
 const ProcessJobPresentationContext = createContext<ProcessJobPresentationContextValue>(EMPTY_PRESENTATION);
@@ -484,17 +489,31 @@ export function ProcessJobPresentationProvider({
   readonly threadId: string | null;
   readonly historyIsBounded: boolean;
 }) {
-  // This provider sits above Chat's thread-keyed viewport. Only this disclosure
-  // preference survives A -> B -> A; every card and poller still remounts with
-  // the selected viewport and therefore keeps thread/job lifecycle isolation.
+  // This provider sits above Chat's thread-keyed viewport. Only these two
+  // disclosure preferences (the shelf and its history) survive A -> B -> A;
+  // every card and poller still remounts with the selected viewport and
+  // therefore keeps thread/job lifecycle isolation.
   const [disclosures, setDisclosures] = useState<ReadonlyMap<string, boolean>>(
     () => new Map(),
   );
+  const [shelves, setShelves] = useState<ReadonlyMap<string, boolean>>(
+    () => new Map(),
+  );
   const historyOpen = threadId === null ? false : disclosures.get(threadId) ?? false;
+  const shelfOpen = threadId === null ? false : shelves.get(threadId) ?? false;
 
   const setHistoryOpen = useCallback((open: boolean) => {
     if (threadId === null) return;
     setDisclosures((current) => {
+      const next = new Map(current);
+      next.set(threadId, open);
+      return next;
+    });
+  }, [threadId]);
+
+  const setShelfOpen = useCallback((open: boolean) => {
+    if (threadId === null) return;
+    setShelves((current) => {
       const next = new Map(current);
       next.set(threadId, open);
       return next;
@@ -508,7 +527,9 @@ export function ProcessJobPresentationProvider({
     historyIsBounded,
     historyOpen,
     setHistoryOpen,
-  }), [historyIsBounded, historyOpen, jobs, messages, setHistoryOpen, threadId]);
+    shelfOpen,
+    setShelfOpen,
+  }), [historyIsBounded, historyOpen, jobs, messages, setHistoryOpen, setShelfOpen, shelfOpen, threadId]);
 
   return (
     <ProcessJobPresentationContext.Provider value={value}>

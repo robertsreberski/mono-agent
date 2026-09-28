@@ -203,6 +203,12 @@ describe("compaction marker row and inline divider", () => {
   });
 });
 
+/** The jobs shelf is closed by default; its toggle's name starts with its visible title. */
+const openJobShelf = (): void => {
+  const toggle = screen.getByRole("button", { name: /^Background jobs/u });
+  if (toggle.getAttribute("aria-expanded") !== "true") fireEvent.click(toggle);
+};
+
 describe("AssistantMessage grouped parts", () => {
   it("mounts restart proposals immediately after answer text, not inside the Activity band", () => {
     const { container } = render(<MessageHarness message={{ ...assistantMessage("complete"), parts: [
@@ -642,7 +648,7 @@ describe("AssistantMessage grouped parts", () => {
 
     expect(rendered.container.querySelectorAll(".message-assistant")).toHaveLength(2);
     expect(rendered.container.querySelectorAll(".activity-root")).toHaveLength(2);
-    expect(rendered.container.querySelectorAll(".activity-row.is-job")).toHaveLength(1);
+    expect(rendered.container.querySelectorAll(".process-job-card")).toHaveLength(1);
     expect(rendered.container.querySelectorAll(".message-actions")).toHaveLength(2);
     const stack = rendered.container.querySelector(".process-job-stack")!;
     const lastMessage = rendered.container.querySelectorAll(".message-assistant").item(1);
@@ -1294,21 +1300,23 @@ describe("message actions", () => {
     expect(document.querySelectorAll(".message-assistant")).toHaveLength(1);
     expect(document.querySelectorAll(".message-actions")).toHaveLength(1);
     expect(screen.getByText("The background report is ready.")).toBeVisible();
-    expect(screen.getByText("1 job · 0 active · 1 history")).toBeVisible();
+    expect(screen.getByText("Background jobs: No active jobs, 1 finished.")).toBeInTheDocument();
+    openJobShelf();
     const stackToggle = screen.getByRole("button", { name: "Background job history" });
     expect(stackToggle).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(stackToggle);
     const row = screen.getByRole("group", { name: "Exec background job succeeded" });
-    expect(row).toHaveClass("activity-row", "is-job", "is-complete");
-    expect(within(row).getByText("Exec job")).toBeVisible();
+    expect(row).toHaveClass("process-job-card", "is-complete");
     expect(within(row).getByText("node worker.js --safe-summary")).toBeVisible();
-    expect(row.querySelector(".activity-row-time")).toHaveTextContent("succeeded · 2s · exit 0");
+    expect(within(row).getByText("Exec")).toBeVisible();
+    expect(row.querySelector(".process-job-state")).toHaveTextContent("Done");
+    expect(row.querySelector(".process-job-time")).toHaveTextContent("2s");
     expect(row).not.toHaveAttribute("open");
     expect(screen.getByText("Completed normally.")).not.toBeVisible();
 
     fireEvent.click(row.querySelector("summary")!);
     expect(screen.getByText("Completed normally.")).toBeVisible();
-    expect(screen.getByText("done")).toBeVisible();
+    expect(row.querySelector(".process-job-output")).toHaveTextContent("done");
     // Host-local spool paths are not part of the preview.
     expect(screen.queryByText(/stdout\.log/u)).toBeNull();
 
@@ -1360,7 +1368,7 @@ describe("message actions", () => {
     expect(document.querySelectorAll(".message-assistant")).toHaveLength(1);
     expect(document.querySelectorAll(".message-actions")).toHaveLength(1);
     expect(screen.getByText("The report is ready.")).toBeVisible();
-    expect(screen.getByText("1 job · 0 active · 1 history")).toBeVisible();
+    expect(screen.getByText("Background jobs: No active jobs, 1 finished.")).toBeInTheDocument();
     expect(screen.queryByRole("group", { name: "Exec background job succeeded" })).toBeNull();
     // The surviving start row carries the launch arguments behind its disclosure.
     fireEvent.click(started.querySelector("summary")!);
@@ -1410,7 +1418,7 @@ describe("message actions", () => {
     expect(document.querySelectorAll(".message-assistant")).toHaveLength(1);
     expect(document.querySelectorAll(".message-actions")).toHaveLength(1);
     expect(screen.getByText("The report is ready.")).toBeVisible();
-    expect(screen.getByText("1 job · 0 active · 1 history")).toBeVisible();
+    expect(screen.getByText("Background jobs: No active jobs, 1 finished.")).toBeInTheDocument();
     expect(screen.queryByRole("group", { name: `${tool} background job succeeded` })).toBeNull();
     // A wall of prompt text folds into the start row instead of doubling it.
     fireEvent.click(started.querySelector("summary")!);
@@ -1560,7 +1568,7 @@ describe("message actions", () => {
     expect(rendered.container.querySelectorAll(".message-assistant")).toHaveLength(1);
     expect(rendered.container.querySelectorAll(".message-actions")).toHaveLength(1);
     expect(screen.getByText("Fallback: provider:primary → provider:fallback · overloaded")).toBeVisible();
-    expect(rendered.container.querySelectorAll(".activity-row.is-job")).toHaveLength(1);
+    expect(rendered.container.querySelectorAll(".process-job-card")).toHaveLength(1);
   });
 
   it("polls one running job every second and stops after the terminal projection", async () => {
@@ -1585,6 +1593,7 @@ describe("message actions", () => {
     await act(async () => { await Promise.resolve(); });
     expect(threadJob).toHaveBeenCalledTimes(1);
     expect(threadJob).toHaveBeenLastCalledWith("thread", running.jobId, expect.any(AbortSignal));
+    openJobShelf();
     expect(screen.getByRole("group", { name: "Exec background job running" })).toHaveClass("is-running");
     await act(async () => {
       vi.advanceTimersByTime(1_000);
@@ -1629,7 +1638,7 @@ describe("message actions", () => {
     const rendered = render(<MessagesHarness messages={[first, second]} />);
     await act(async () => { await Promise.resolve(); });
 
-    expect(rendered.container.querySelectorAll(".activity-row.is-job")).toHaveLength(1);
+    expect(rendered.container.querySelectorAll(".process-job-card")).toHaveLength(1);
     expect(rendered.container.querySelectorAll(".message-assistant")).toHaveLength(0);
     expect(threadJob).toHaveBeenCalledTimes(1);
   });
@@ -1770,17 +1779,19 @@ describe("message actions", () => {
       ...assistantMessage("running"),
       parts: [{ type: "process-job", job: running }],
     }} />);
+    openJobShelf();
     expect(screen.getByRole("group", { name: "Exec background job running" })).toHaveClass("is-running");
 
     rerender(<MessageHarness message={{
       ...assistantMessage("complete"),
       parts: [{ type: "process-job", job: complete, responseText: "Completed normally." }],
     }} />);
-    await waitFor(() => expect(screen.getByText("1 job · 0 active · 1 history")).toBeVisible());
+    await waitFor(() => expect(screen.getByText("Background jobs: No active jobs, 1 finished.")).toBeInTheDocument());
     expect(screen.queryByRole("group", { name: "Exec background job succeeded" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Background job history" }));
     const settled = await screen.findByRole("group", { name: "Exec background job succeeded" });
-    expect(settled.querySelector(".activity-row-time")).toHaveTextContent("succeeded · 2s · exit 0");
+    expect(settled.querySelector(".process-job-state")).toHaveTextContent("Done");
+    expect(settled.querySelector(".process-job-time")).toHaveTextContent("2s");
   });
 
   it("uses a running process-job row as the turn's only progress affordance", () => {
@@ -1798,12 +1809,12 @@ describe("message actions", () => {
       parts: [{ type: "process-job", job: running }],
     }} />);
 
-    expect(screen.getByRole("group", { name: "Exec background job running" })).toHaveClass(
-      "activity-row",
-      "is-job",
+    // The row lives in the closed shelf: mounted and polling, but not shown.
+    expect(screen.getByRole("group", { name: "Exec background job running", hidden: true })).toHaveClass(
+      "process-job-card",
       "is-running",
     );
-    expect(container.querySelectorAll(".activity-job-icon")).toHaveLength(1);
+    expect(container.querySelectorAll(".process-job-card .process-job-glyph")).toHaveLength(1);
     expect(container.querySelectorAll(".activity-dot")).toHaveLength(0);
     expect(container.querySelectorAll(".thinking-indicator")).toHaveLength(0);
   });

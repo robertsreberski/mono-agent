@@ -10,6 +10,8 @@ import { useEffect } from "react";
 import { RecentFixtures } from "../screen-fixtures";
 import { waitForOverlay } from "../overlay-play";
 import { installWakeStoryApi, wakeFixtures, wakeSummary } from "../wake-api";
+import { ProcessJobPresentationProvider } from "../../process-job-presentation";
+import * as J from "../job-fixtures";
 
 const streamingMessages: readonly ThreadMessageLike[] = [sampleMessages[0]!, {
   role: "assistant", status: { type: "running" }, content: [
@@ -18,7 +20,7 @@ const streamingMessages: readonly ThreadMessageLike[] = [sampleMessages[0]!, {
   ],
 }];
 
-function ConsoleShell({ children, phone = false, streaming = false, compacting = false }: { readonly children: React.ReactNode; readonly phone?: boolean; readonly streaming?: boolean; readonly compacting?: boolean }) {
+function ConsoleShell({ children, phone = false, streaming = false, compacting = false, jobs }: { readonly children: React.ReactNode; readonly phone?: boolean; readonly streaming?: boolean; readonly compacting?: boolean; readonly jobs?: readonly J.Job[] }) {
   if (streaming) Object.assign(storyStore, { selectedThread: { ...runningThread, title: gardenThread.title }, selectedThreadId: runningThread.id });
   if (compacting) Object.assign(storyStore, { selectedThread: { ...gardenThread, compaction: { status: "running", trigger: "manual", startedAt: "2026-09-28T10:00:00Z" } }, selectedThreadId: gardenThread.id });
   useEffect(() => () => { if (streaming || compacting) Object.assign(storyStore, { selectedThread: gardenThread, selectedThreadId: gardenThread.id }); }, [streaming, compacting]);
@@ -26,13 +28,16 @@ function ConsoleShell({ children, phone = false, streaming = false, compacting =
     <div className="dashboard-panel" role="navigation" aria-label="Dashboard" aria-hidden={phone || undefined}>
       <Dashboard highlightSelected={!phone} /><RecentFixtures />
     </div>
-    <div className="chat-region is-open">{children}</div>
+    <div className="chat-region is-open">{jobs === undefined ? children : (
+      // The real app mounts this provider in its runtime; here it carries fictional jobs.
+      <ProcessJobPresentationProvider threadId={gardenThread.id} messages={[]} jobs={jobs.map(J.entry)} historyIsBounded={false}>{children}</ProcessJobPresentationProvider>
+    )}</div>
   </div></StoryRuntime>;
 }
 export default {
   title: "Screens/Chat", component: Chat, tags: ["autodocs"],
   parameters: { layout: "fullscreen" },
-  decorators: [(Story, context) => <ConsoleShell phone={context.globals.viewport?.value === "phone"} streaming={context.parameters.streaming === true} compacting={context.parameters.compacting === true}><Story /></ConsoleShell>],
+  decorators: [(Story, context) => <ConsoleShell phone={context.globals.viewport?.value === "phone"} streaming={context.parameters.streaming === true} compacting={context.parameters.compacting === true} jobs={context.parameters.jobs as readonly J.Job[] | undefined}><Story /></ConsoleShell>],
 } satisfies Meta<typeof Chat>;
 type Story = StoryObj<typeof Chat>;
 export const Desktop: Story = { args: { onBack: () => {} } };
@@ -79,3 +84,22 @@ export const WakeMenu: Story = { ...wakeStory, args: Desktop.args, play: openAct
 export const WakeMenuPhone: Story = { ...wakeStory, args: Phone.args, globals: Phone.globals, play: openActions };
 export const WakeEditorOpen: Story = { ...wakeStory, args: Desktop.args, play: openWakeEditor };
 export const WakeEditorOpenPhone: Story = { ...wakeStory, args: Phone.args, globals: Phone.globals, play: openWakeEditor };
+
+// The background-jobs shelf in its real slot above the composer.
+const openShelf: NonNullable<Story["play"]> = async ({ canvasElement }) => {
+  const toggle = canvasElement.querySelector<HTMLElement>(".process-job-stack-toggle");
+  if (!toggle) throw new Error("Background jobs shelf missing");
+  await userEvent.click(toggle);
+};
+const openRow: NonNullable<Story["play"]> = async (context) => {
+  await openShelf(context);
+  const summary = context.canvasElement.querySelector<HTMLElement>(".process-job-stack-item:not([hidden]) .process-job-card[data-state='running'] > summary");
+  if (!summary) throw new Error("Running job row missing");
+  await userEvent.click(summary);
+};
+export const WithBackgroundJobs: Story = { args: Desktop.args, parameters: { jobs: J.busyThread } };
+export const WithBackgroundJobsOpen: Story = { args: Desktop.args, parameters: { jobs: J.busyThread }, play: openShelf };
+export const WithBackgroundJobsRow: Story = { args: Desktop.args, parameters: { jobs: J.busyThread }, play: openRow };
+export const WithBackgroundJobsIdle: Story = { args: Desktop.args, parameters: { jobs: J.idleThread } };
+export const WithBackgroundJobsPhone: Story = { args: Phone.args, globals: Phone.globals, parameters: { jobs: J.busyThread } };
+export const WithBackgroundJobsPhoneOpen: Story = { args: Phone.args, globals: Phone.globals, parameters: { jobs: J.busyThread }, play: openShelf };

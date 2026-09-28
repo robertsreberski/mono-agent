@@ -135,6 +135,13 @@ beforeEach(() => {
   resizeObserverCallbacks.clear();
 });
 
+
+/** The jobs shelf is closed by default; its toggle's name starts with its visible title. */
+const openJobShelf = (): void => {
+  const toggle = screen.getByRole("button", { name: /^Background jobs/u });
+  if (toggle.getAttribute("aria-expanded") !== "true") fireEvent.click(toggle);
+};
+
 describe("ConnectionBanner", () => {
   it("suppresses brief reconnects, clears on recovery, and shows offline immediately", () => {
     vi.useFakeTimers();
@@ -317,7 +324,8 @@ describe("Chat conversation viewport", () => {
     expect(column).not.toContainElement(stack);
     expect(stack.parentElement).toBe(footer);
     expect(stack.querySelector(".message-actions")).toBeNull();
-    expect(screen.getByText("1 loaded · 0 active · 1 history")).toBeVisible();
+    expect(screen.getByText("Background jobs: No active jobs, 1 finished shown.")).toBeInTheDocument();
+    openJobShelf();
     expect(screen.getByRole("button", { name: "Background job history" }))
       .toHaveAttribute("aria-pressed", "false");
   });
@@ -351,6 +359,7 @@ describe("Chat conversation viewport", () => {
     });
 
     const view = render(chatTree());
+    openJobShelf();
     fireEvent.click(screen.getByRole("button", { name: "Background job history" }));
     expect(screen.getByRole("button", { name: "Background job history" }))
       .toHaveAttribute("aria-pressed", "true");
@@ -368,8 +377,11 @@ describe("Chat conversation viewport", () => {
       }])],
     });
     view.rerender(chatTree());
-    await waitFor(() => expect(screen.getByRole("button", { name: "Background job history" }))
-      .toHaveAttribute("aria-pressed", "false"));
+    // Thread B keeps its own (closed) shelf and history preferences.
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Background jobs/u }))
+      .toHaveAttribute("aria-expanded", "false"));
+    openJobShelf();
+    expect(screen.getByRole("button", { name: "Background job history" })).toHaveAttribute("aria-pressed", "false");
     expect(screen.queryByRole("group", { name: "Exec background job succeeded" })).toBeNull();
 
     storeMock.current = chatStore(first, {

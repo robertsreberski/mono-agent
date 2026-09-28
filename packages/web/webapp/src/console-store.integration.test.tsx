@@ -1690,9 +1690,11 @@ describe("ConsoleStoreProvider integration", () => {
       </ConsoleStoreProvider>,
     );
 
+    // The shelf is closed by default; its History control is inside it.
+    fireEvent.click(await screen.findByRole("button", { name: /^Background jobs/u }));
     expect(await screen.findByRole("button", { name: "Background job history" }))
       .toHaveAttribute("aria-pressed", "false");
-    expect(await screen.findByText("1 loaded · 0 active · 1 history")).toBeVisible();
+    expect(await screen.findByText("Background jobs: No active jobs, 1 finished shown.")).toBeInTheDocument();
     expect(api.cronRuns).toHaveBeenCalled();
   });
 
@@ -5586,10 +5588,11 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.detail?.thread.runState.status).toBe("complete");
       expect(store.current.detail?.messages.find((message) => message.id === jobMessage.id))
         .toMatchObject({ status: "running", parts: [{ type: "process-job", job: { state: "running" } }] });
-      expect(screen.getByRole("group", { name: "Exec background job running" }))
+      // The running row lives in the closed jobs shelf: mounted, not shown.
+      expect(screen.getByRole("group", { name: "Exec background job running", hidden: true }))
         .toHaveClass("is-running");
       expect(view.container.querySelectorAll(".thinking-indicator")).toHaveLength(0);
-      expect(view.container.querySelectorAll(".activity-job-icon")).toHaveLength(1);
+      expect(view.container.querySelectorAll(".process-job-card .process-job-glyph")).toHaveLength(1);
       expect(view.container.querySelectorAll(".activity-dot")).toHaveLength(0);
       expect(screen.queryByRole("button", { name: "Stop response" })).not.toBeInTheDocument();
       expect(screen.getByRole("combobox", { name: "Message" }))
