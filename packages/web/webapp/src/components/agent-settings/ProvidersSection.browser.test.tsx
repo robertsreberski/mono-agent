@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { page } from "@vitest/browser/context";
 import { beforeEach, describe, expect, inject, it, vi } from "vitest";
 import { agent } from "../../test/fixtures";
@@ -27,7 +27,7 @@ describe("settings provider density", () => {
   it("keeps 28px compact visuals within 44px touch slots and labels stale usage", async () => {
     const width = touch ? 390 : 1200;
     await page.viewport(width, 844);
-    render(<AgentSettingsScreen section="providers" layout={touch ? "stacked" : "split"} onSection={() => undefined} onBack={() => undefined} onClose={() => undefined} onNotice={() => undefined} />);
+    render(<AgentSettingsScreen section="providers" layout={touch ? "stacked" : "split"} onClose={() => undefined} onNotice={() => undefined} />);
     await screen.findByRole("progressbar", { name: /Codex Weekly used/ });
     expect(screen.getByText(/Last known ·/)).toBeVisible();
     expect(screen.getByText("Check access may use quota")).toBeVisible();
@@ -51,7 +51,7 @@ describe("settings provider density", () => {
           expect(button.closest(".settings-hit")!.contains(document.elementFromPoint(cx + dx, cy + dy))).toBe(true);
         }
       }
-      const close = screen.getByRole("button", { name: /Atlas settings/ });
+      const close = screen.getByRole("button", { name: "Back from agent settings" });
       expect(close.getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
       await page.viewport(320, 720);
       document.documentElement.style.fontSize = "125%";
@@ -63,8 +63,8 @@ describe("settings provider density", () => {
     await page.viewport(360, 780);
     setSettingsDraft("atlas", { model: "grove/fast", effort: "low" });
     try {
-      render(<AgentSettingsScreen section="new-conversations" layout="stacked" onSection={() => undefined} onBack={() => undefined} onClose={() => undefined} onNotice={() => undefined} />);
-      for (const button of [screen.getByRole("button", { name: "Discard" }), screen.getByRole("button", { name: "Save for new conversations" }), screen.getByRole("button", { name: /Atlas settings/ })]) {
+      render(<AgentSettingsScreen section="new-conversations" layout="stacked" onClose={() => undefined} onNotice={() => undefined} />);
+      for (const button of [screen.getByRole("button", { name: "Discard" }), screen.getByRole("button", { name: "Save for new conversations" }), screen.getByRole("button", { name: "Back from agent settings" })]) {
         const bounds = button.getBoundingClientRect();
         expect(bounds.height).toBeGreaterThanOrEqual(44);
         expect(bounds.width).toBeGreaterThanOrEqual(44);
@@ -77,7 +77,7 @@ describe("settings provider density", () => {
   it("stacks phone Agent fact labels above left-aligned values without changing desktop rows", async () => {
     await page.viewport(touch ? 360 : 1200, 780);
     store.selectedAgent = agent("atlas", { label: "Atlas", restart: { supported: true } });
-    render(<AgentSettingsScreen section="agent" layout={touch ? "stacked" : "split"} onSection={() => undefined} onBack={() => undefined} onClose={() => undefined} onNotice={() => undefined} />);
+    render(<AgentSettingsScreen section="agent" layout={touch ? "stacked" : "split"} onClose={() => undefined} onNotice={() => undefined} />);
     await screen.findByText("No recent restart");
     const rows = [...document.querySelectorAll(".settings-agent-fact-row")];
     expect(rows).toHaveLength(3);
@@ -89,6 +89,41 @@ describe("settings provider density", () => {
         expect(Math.abs(label.left - value.left)).toBeLessThanOrEqual(1);
       } else expect(Math.abs((label.top + label.bottom) / 2 - (value.top + value.bottom) / 2)).toBeLessThanOrEqual(2);
     }
+  });
+
+  it("holds an initial Restart target through a delayed dense provider response without stealing user scroll", async () => {
+    await page.viewport(390, 720);
+    let resolve!: (value: unknown) => void;
+    mocks.providerAuthStatus.mockReturnValueOnce(new Promise((done) => { resolve = done; }));
+    store.selectedAgent = agent("atlas", { label: "Atlas", supportsProviderAuth: true, restart: { supported: true } });
+    render(<AgentSettingsScreen section="agent" layout="stacked" onClose={() => undefined} onNotice={() => undefined} />);
+    const scroller = document.querySelector<HTMLElement>(".settings-content")!;
+    const restart = screen.getByRole("region", { name: "Restart" });
+    expect(document.activeElement).toBe(restart);
+    await waitFor(() => expect(mocks.providerAuthStatus).toHaveBeenCalled());
+    await act(async () => resolve({ schema: "mono-agent.provider-auth.v1", generatedAt: new Date().toISOString(), providers: Array.from({ length: 9 }, (_, index) => ({ providerId: `fixture-${index}`, label: `Provider ${index}`, state: "missing", verification: "not_verified", methods: [] })) }));
+    await screen.findByText("Provider 8");
+    expect(restart.getBoundingClientRect().top).toBeGreaterThanOrEqual(scroller.getBoundingClientRect().top - 16);
+    expect(restart.getBoundingClientRect().top).toBeLessThan(scroller.getBoundingClientRect().bottom);
+    scroller.scrollTop = 0;
+    fireEvent.wheel(scroller);
+    mocks.providerAuthStatus.mockResolvedValue({ schema: "mono-agent.provider-auth.v1", generatedAt: new Date().toISOString(), providers: [] });
+    expect(scroller.scrollTop).toBe(0);
+  });
+
+  it("does not re-scroll after the user moves while providers are pending", async () => {
+    await page.viewport(390, 720);
+    let resolve!: (value: unknown) => void;
+    store.selectedAgent = agent("atlas", { label: "Atlas", supportsProviderAuth: true, restart: { supported: true } });
+    mocks.providerAuthStatus.mockReturnValueOnce(new Promise((done) => { resolve = done; }));
+    render(<AgentSettingsScreen section="agent" layout="stacked" onClose={() => undefined} onNotice={() => undefined} />);
+    const scroller = document.querySelector<HTMLElement>(".settings-content")!;
+    await waitFor(() => expect(mocks.providerAuthStatus).toHaveBeenCalled());
+    scroller.scrollTop = 0;
+    fireEvent.wheel(scroller);
+    await act(async () => resolve({ schema: "mono-agent.provider-auth.v1", generatedAt: new Date().toISOString(), providers: Array.from({ length: 9 }, (_, index) => ({ providerId: `fixture-${index}`, label: `Provider ${index}`, state: "missing", verification: "not_verified", methods: [] })) }));
+    await screen.findByText("Provider 8");
+    expect(scroller.scrollTop).toBe(0);
   });
 
 });

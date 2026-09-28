@@ -7,7 +7,7 @@ describe("settings history ownership", () => {
   it("recognizes only a settings entry at its own absolute URL", () => {
     window.history.replaceState({ anotherOwner: 1 }, "", "/");
     pushSettingsEntries("providers");
-    expect(ownedSettingsEntry()).toMatchObject({ surface: "settings", section: "providers", depth: 2, href: window.location.href });
+    expect(ownedSettingsEntry()).toMatchObject({ surface: "settings", section: "providers", depth: 1, href: window.location.href });
     expect(window.history.state.anotherOwner).toBe(1);
     window.history.replaceState(window.history.state, "", "/other");
     expect(mobileHistoryEntry(window.history.state)).toBeNull();
@@ -42,7 +42,7 @@ describe("settings history ownership", () => {
       closeSettingsHistory();
       window.history.replaceState(window.history.state, "", "/other");
       closeSettingsHistory();
-      expect(calls).toEqual([-2]);
+      expect(calls).toEqual([-1]);
     } finally { window.history.go = go; }
   });
 });

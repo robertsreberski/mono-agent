@@ -52,7 +52,7 @@ function SettingsHarness({ open, onClose, section = "providers", layout = "split
   readonly open: boolean; readonly onClose: () => void;
   readonly section?: SettingsSection; readonly layout?: "split" | "stacked"; readonly onNotice?: (message: string) => void;
 }) {
-  return open ? <AgentSettingsScreen layout={layout} section={section} onSection={() => undefined} onBack={onClose} onClose={onClose} onNotice={onNotice} /> : null;
+  return open ? <AgentSettingsScreen layout={layout} section={section} onClose={onClose} onNotice={onNotice} /> : null;
 }
 
 const expectSettingsTypography = (element: Element, size: "9px" | "10px" | "11px" | "12px" | "12.5px") => {
@@ -278,7 +278,7 @@ describe("SettingsHarness", () => {
     render(<SettingsHarness open onClose={vi.fn()} />);
     await act(async () => { await Promise.resolve(); });
     expect(apiMock.providerUsage).toHaveBeenCalled();
-    expect(screen.getAllByText("Loading provider status…")).toHaveLength(2);
+    expect(screen.getAllByText("Loading provider status…")).toHaveLength(1);
     expect(screen.queryByText("GitHub Copilot")).toBeNull();
     expect(screen.queryByRole("progressbar")).toBeNull();
     await act(async () => status.resolve(providerAuthStatusSnapshot("not_verified")));

@@ -109,15 +109,14 @@ describe("settings screen navigation", () => {
     expect(document.querySelector(".dashboard-panel")!.hasAttribute("inert")).toBe(true);
     expect(document.querySelector(".chat-region")!.hasAttribute("inert")).toBe(true);
     expect(surface.contains(document.elementFromPoint(8, 400))).toBe(true);
-    const back = screen.getByRole("button", { name: "Close settings" }).getBoundingClientRect();
-    const eyebrow = document.querySelector(".settings-phone-index-title .eyebrow")!.getBoundingClientRect();
+    const back = screen.getByRole("button", { name: "Back from agent settings" }).getBoundingClientRect();
     const title = screen.getByRole("heading", { name: "Atlas", level: 1 }).getBoundingClientRect();
-    const facts = document.querySelector(".settings-facts-card")!.getBoundingClientRect();
-    expect(back.bottom).toBeLessThan(eyebrow.top);
-    expect(eyebrow.bottom).toBeLessThanOrEqual(title.top);
-    expect(title.bottom).toBeLessThan(facts.top);
-    expect(title.left).toBeLessThan(30);
-    expect(document.querySelector(".settings-phone-index-header .settings-agent-tile")).toBeNull();
+    const pin = screen.getByRole("switch", { name: "Pin Atlas first" }).getBoundingClientRect();
+    expect(back.width).toBeGreaterThanOrEqual(44);
+    expect(title.top).toBeLessThan(pin.top);
+    expect(pin.bottom).toBeLessThan(780);
+    expect(document.querySelectorAll(".settings-content")).toHaveLength(1);
+
   });
   it("keeps a desktop list-row focus when navigating without settings open (R1)", async () => {
     await page.viewport(1200, 800);
@@ -134,7 +133,6 @@ describe("settings screen navigation", () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Agent settings gear" }));
     expect(screen.getByRole("heading", { name: "Atlas", level: 1 })).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: /Agent Not pinned/ }));
     await waitFor(() => expect(document.querySelectorAll(".settings-agent-fact-row .settings-row-value")).toHaveLength(3));
     const factValues = [...document.querySelectorAll<HTMLElement>(".settings-agent-fact-row .settings-row-value")];
     const valueColumns = factValues.map((value) => Math.round(value.getBoundingClientRect().left));
@@ -148,7 +146,7 @@ describe("settings screen navigation", () => {
     expect(position()).toBe(start);
     await waitFor(() => expect(storeMock.setConversationVisible).toHaveBeenLastCalledWith(false));
     fireEvent.keyDown(window, { key: "Escape" });
-    expect(screen.queryByText("New conversations", { selector: ".settings-rail-label" })).toBeNull();
+    expect(document.querySelector(".settings-screen")).toBeNull();
     expect(position()).toBe(start);
     await waitFor(() => expect(storeMock.setConversationVisible).toHaveBeenLastCalledWith(true));
   });
@@ -189,59 +187,50 @@ describe("settings screen navigation", () => {
     fireEvent.keyDown(window, { key: "Escape" });
     expect(screen.queryByRole("button", { name: "Close agent settings" })).toBeNull();
   });
-  it("pushes index and detail on a phone, then Back and Forward restore the section", async () => {
+  it("pushes one page on a phone, then Back and Forward restore it", async () => {
     await page.viewport(390, 844);
     const start = position();
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Agent settings gear" }));
-    expect(screen.getByRole("navigation", { name: "Agent settings sections" })).toBeVisible();
-    expect(screen.getAllByRole("main")).toHaveLength(1);
-    expect(document.querySelector(".dashboard-panel")!.hasAttribute("inert")).toBe(true);
-    expect(document.querySelector(".chat-region")!.hasAttribute("inert")).toBe(true);
+    expect(screen.getByRole("heading", { name: "Providers", level: 2 })).toBeVisible();
     expect(position()).toBe(start + 1);
-    fireEvent.click(screen.getByRole("button", { name: /Providers/ }));
-    expect(screen.getByRole("heading", { name: "Providers", level: 2 })).toBeVisible();
-    expect(position()).toBe(start + 2);
     window.history.back();
-    await waitFor(() => expect(position()).toBe(start + 1));
-    expect(screen.getByRole("navigation", { name: "Agent settings sections" })).toBeVisible();
+    await waitFor(() => expect(document.querySelector(".settings-screen")).toBeNull());
     window.history.forward();
-    await waitFor(() => expect(position()).toBe(start + 2));
-    expect(screen.getByRole("heading", { name: "Providers", level: 2 })).toBeVisible();
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Providers", level: 2 })).toBeVisible());
+    expect(position()).toBe(start + 1);
   });
-  it("uses tabs through 1100px and a rail at 1101px without horizontal overflow", async () => {
+  it("shows one scroller and no rail at desktop and tablet widths", async () => {
     await page.viewport(1200, 800);
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Agent settings gear" }));
-    for (const width of [901, 1059, 1060, 1100, 1101]) {
+    for (const width of [901, 1100, 1101, 1440]) {
       await page.viewport(width, 800);
-      await waitFor(() => expect(getComputedStyle(document.querySelector(".settings-rail")!).flexDirection).toBe(width <= 1100 ? "row" : "column"));
+      expect(document.querySelectorAll(".settings-content")).toHaveLength(1);
+      expect(document.querySelector(".settings-rail")).toBeNull();
       expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
     }
   });
-  it("establishes an index and detail on a desktop-to-phone resize (N16)", async () => {
+  it("establishes one owned entry on desktop-to-phone resize", async () => {
     await page.viewport(1200, 800);
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Agent settings gear" }));
-    fireEvent.click(screen.getByRole("button", { name: /Providers/ }));
     const before = position();
     await page.viewport(390, 844);
-    await waitFor(() => expect(position()).toBe(before + 2));
+    await waitFor(() => expect(position()).toBe(before + 1));
     expect(screen.getByRole("heading", { name: "Providers", level: 2 })).toBeVisible();
     window.history.back();
-    await waitFor(() => expect(position()).toBe(before + 1));
-    expect(screen.getByRole("navigation", { name: "Agent settings sections" })).toBeVisible();
+    await waitFor(() => expect(document.querySelector(".settings-screen")).toBeNull());
   });
   it("keeps a replaced settings marker owned at its new URL (N21)", async () => {
     await page.viewport(390, 844);
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Agent settings gear" }));
-    fireEvent.click(screen.getByRole("button", { name: /Providers/ }));
     const url = "/agents/atlas/cron/fictional";
     window.history.replaceState(routeWriteState(window.history.state, url, "replace"), "", url);
     expect(window.history.state.monoAgentMobileNavigation.href).toBe(window.location.href);
     window.history.back();
-    await waitFor(() => expect(screen.getByRole("navigation", { name: "Agent settings sections" })).toBeVisible());
+    await waitFor(() => expect(document.querySelector(".settings-screen")).toBeNull());
   });
   it("keeps the project entry beneath settings when the screen remounts (N22)", async () => {
     await page.viewport(390, 844);
@@ -251,14 +240,12 @@ describe("settings screen navigation", () => {
     await waitFor(() => expect(window.history.state.monoAgentMobileNavigation.surface).toBe("project"));
     const projectPosition = position();
     fireEvent.click(screen.getByRole("button", { name: "Agent settings gear" }));
-    fireEvent.click(screen.getByRole("button", { name: /Providers/ }));
-    const detailPosition = position();
+    const settingsPosition = position();
+    expect(settingsPosition).toBe(projectPosition + 1);
     view.unmount();
     render(<App />);
-    expect(position()).toBe(detailPosition);
+    expect(position()).toBe(settingsPosition);
     expect(screen.getByRole("heading", { name: "Providers", level: 2 })).toBeVisible();
-    window.history.back();
-    await waitFor(() => expect(position()).toBe(projectPosition + 1));
     window.history.back();
     await waitFor(() => expect(position()).toBe(projectPosition));
     expect(window.history.state.monoAgentMobileNavigation.surface).toBe("project");
@@ -267,7 +254,6 @@ describe("settings screen navigation", () => {
     await page.viewport(390, 844);
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Agent settings gear" }));
-    fireEvent.click(screen.getByRole("button", { name: /Agent Not pinned/ }));
     await page.viewport(1200, 800);
     await waitFor(() => expect(screen.getByRole("button", { name: "Close agent settings" })).toBeVisible());
     const url = "/agents/atlas/cron/fictional";
@@ -277,7 +263,7 @@ describe("settings screen navigation", () => {
     expect(position()).toBe(index);
     expect(window.history.state.monoAgentMobileNavigation.surface).toBe("conversation");
     window.history.back();
-    await waitFor(() => expect(screen.getByRole("heading", { name: "Agent", level: 2 })).toBeVisible());
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Restart", level: 2 })).toBeVisible());
     window.history.forward();
     await waitFor(() => expect(position()).toBe(index));
     expect(screen.queryByRole("button", { name: "Close agent settings" })).toBeNull();
@@ -287,54 +273,43 @@ describe("settings screen navigation", () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Agent settings gear" }));
     await waitFor(() => expect(storeMock.setConversationVisible).toHaveBeenLastCalledWith(false));
-    fireEvent.click(screen.getByRole("button", { name: /Providers/ }));
-    expect(storeMock.setConversationVisible).toHaveBeenLastCalledWith(false);
     window.history.back();
-    await waitFor(() => expect(screen.getByRole("navigation", { name: "Agent settings sections" })).toBeVisible());
-    window.history.back();
-    await waitFor(() => expect(screen.queryByRole("navigation", { name: "Agent settings sections" })).toBeNull());
+    await waitFor(() => expect(document.querySelector(".settings-screen")).toBeNull());
     expect(storeMock.setConversationVisible).toHaveBeenLastCalledWith(false);
     fireEvent.click(screen.getByRole("button", { name: "Open a conversation" }));
     await waitFor(() => expect(storeMock.setConversationVisible).toHaveBeenLastCalledWith(true));
   });
-  it("restores the Providers row focus after Back, then closes the index without an extra entry (N1/N2)", async () => {
+  it("closes in one Back and restores the page with Forward", async () => {
     await page.viewport(390, 844);
     const start = position();
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Agent settings gear" }));
-    fireEvent.click(screen.getByRole("button", { name: /Providers/ }));
-    window.history.back();
-    await waitFor(() => expect(position()).toBe(start + 1));
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: /Providers/ })));
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Atlas", level: 1 }));
     window.history.back();
     await waitFor(() => expect(position()).toBe(start));
-    expect(screen.queryByRole("navigation", { name: "Agent settings sections" })).toBeNull();
+    expect(document.querySelector(".settings-screen")).toBeNull();
     window.history.forward();
-    await waitFor(() => expect(screen.getByRole("navigation", { name: "Agent settings sections" })).toBeVisible());
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Providers", level: 2 })).toBeVisible());
     expect(position()).toBe(start + 1);
   });
-  it("handles Escape and right swipe one level at a time (N3)", async () => {
+  it("closes with Escape and right swipe in one step", async () => {
     await page.viewport(390, 844);
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Agent settings gear" }));
-    fireEvent.click(screen.getByRole("button", { name: /Providers/ }));
     fireEvent.keyDown(window, { key: "Escape" });
-    await waitFor(() => expect(screen.getByRole("navigation", { name: "Agent settings sections" })).toBeVisible());
-    fireEvent.click(screen.getByRole("button", { name: /Providers/ }));
-    const scroll = document.querySelector(".settings-scroll")!;
+    await waitFor(() => expect(document.querySelector(".settings-screen")).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Agent settings gear" }));
+    const scroll = document.querySelector(".settings-content")!;
     const startTouch = new Touch({ identifier: 1, target: scroll, clientX: 20, clientY: 250 });
     const endTouch = new Touch({ identifier: 1, target: scroll, clientX: 200, clientY: 251 });
     fireEvent.touchStart(scroll, { touches: [startTouch] });
     fireEvent.touchEnd(scroll, { touches: [], changedTouches: [endTouch] });
-    await waitFor(() => expect(screen.getByRole("navigation", { name: "Agent settings sections" })).toBeVisible());
-    fireEvent.keyDown(window, { key: "Escape" });
-    await waitFor(() => expect(screen.queryByRole("navigation", { name: "Agent settings sections" })).toBeNull());
+    await waitFor(() => expect(document.querySelector(".settings-screen")).toBeNull());
   });
   it("restores a detail on remount without adding an entry (N5)", async () => {
     await page.viewport(390, 844);
     const view = render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Agent settings gear" }));
-    fireEvent.click(screen.getByRole("button", { name: /Providers/ }));
     const detail = position();
     view.unmount();
     render(<App />);
@@ -343,18 +318,19 @@ describe("settings screen navigation", () => {
     window.history.back();
     await waitFor(() => expect(position()).toBe(detail - 1));
   });
-  it("normalizes a phone cold link exactly once under StrictMode (N6)", async () => {
+  it("normalizes a phone cold link to one owned section entry", async () => {
     await page.viewport(390, 844);
     window.history.replaceState(null, "", "/?settings=providers");
     const start = position();
     render(<App />);
     await waitFor(() => expect(screen.getByRole("heading", { name: "Providers", level: 2 })).toBeVisible());
-    expect(position()).toBe(start + 2);
+    expect(position()).toBe(start + 1);
+    expect(window.history.state.monoAgentMobileNavigation.section).toBe("providers");
     expect(location.search).toBe("");
-    expect(JSON.stringify(window.history.state)).not.toContain("settings=providers");
     window.history.back();
-    await waitFor(() => expect(position()).toBe(start + 1));
-    expect(screen.getByRole("navigation", { name: "Agent settings sections" })).toBeVisible();
+    await waitFor(() => expect(document.querySelector(".settings-screen")).toBeNull());
+    window.history.forward();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("region", { name: "Providers" })));
   });
   it("opens a desktop cold link without pushing and removes its URL parameter (N15)", async () => {
     await page.viewport(1200, 800);
@@ -373,8 +349,7 @@ describe("settings screen navigation", () => {
     const start = position();
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Agent settings gear" }));
-    fireEvent.click(screen.getByRole("button", { name: /Providers/ }));
-    expect(position()).toBe(start + 2);
+    expect(position()).toBe(start + 1);
     await page.viewport(1200, 800);
     await waitFor(() => expect(screen.getByRole("button", { name: "Close agent settings" })).toBeVisible());
     fireEvent.click(screen.getByRole("button", { name: "Close agent settings" }));
@@ -383,17 +358,14 @@ describe("settings screen navigation", () => {
     expect(window.history.state.monoAgentMobileNavigation.surface).toBe("dashboard");
   });
 
-  it("opens a cron-route cold link once and preserves the cron entry beneath settings (N7)", async () => {
+  it("opens a cron-route cold link once and preserves the cron entry beneath settings", async () => {
     await page.viewport(390, 844);
     window.history.replaceState(null, "", "/agents/atlas/cron/garden-daily?settings=agent");
     const start = position();
     render(<App />);
-    await waitFor(() => expect(screen.getByRole("heading", { name: "Agent", level: 2 })).toBeVisible());
-    expect(position()).toBe(start + 3);
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Restart", level: 2 })).toBeVisible());
+    expect(position()).toBe(start + 2);
     expect(location.search).toBe("");
-    window.history.back();
-    await waitFor(() => expect(position()).toBe(start + 2));
-    expect(screen.getByRole("navigation", { name: "Agent settings sections" })).toBeVisible();
     window.history.back();
     await waitFor(() => expect(position()).toBe(start + 1));
     expect(window.history.state.monoAgentMobileNavigation.surface).toBe("conversation");
@@ -405,7 +377,6 @@ describe("settings screen navigation", () => {
     await page.viewport(390, 844);
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Agent settings gear" }));
-    fireEvent.click(screen.getByRole("button", { name: /Providers/ }));
     const detail = position();
     window.dispatchEvent(new Event("mono-agent:open-conversation"));
     await waitFor(() => expect(position()).toBe(detail + 1));
@@ -419,7 +390,6 @@ describe("settings screen navigation", () => {
     await page.viewport(390, 844);
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Agent settings gear" }));
-    fireEvent.click(screen.getByRole("button", { name: /Providers/ }));
     const detail = position();
     const url = "/agents/atlas/cron/garden-daily";
     window.history.pushState(routeWriteState(window.history.state, url, "push"), "", url);
@@ -435,7 +405,6 @@ describe("settings screen navigation", () => {
     storeMock.setAgentPinned.mockImplementationOnce(async () => { storeMock.actionError = "Example pin unavailable"; throw new Error("Example pin unavailable"); });
     const view = render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Agent settings gear" }));
-    fireEvent.click(screen.getByRole("button", { name: /Agent Not pinned/ }));
     const pin = screen.getByRole("switch", { name: "Pin Atlas first" });
     fireEvent.click(pin);
     await waitFor(() => expect(storeMock.setAgentPinned).toHaveBeenCalledExactlyOnceWith("atlas", true));
@@ -457,7 +426,6 @@ describe("settings screen navigation", () => {
     await page.viewport(390, 844);
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Agent settings gear" }));
-    fireEvent.click(screen.getByRole("button", { name: /New conversations/ }));
     fireEvent.click(screen.getByRole("button", { name: "Model and reasoning effort" }));
     const picker = await waitFor(() => {
       const element = document.querySelector('[data-slot="model-selector-content"]');
@@ -477,11 +445,11 @@ describe("settings screen navigation", () => {
     const conversation = position();
     window.dispatchEvent(new Event("mono-agent:command"));
     fireEvent.click(await screen.findByRole("option", { name: /Agent settings · Atlas/ }));
-    await waitFor(() => expect(screen.getByRole("navigation", { name: "Agent settings sections" })).toBeVisible());
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Providers", level: 2 })).toBeVisible());
     expect(position()).toBe(conversation + 1);
     window.history.back();
     await waitFor(() => expect(position()).toBe(conversation));
-    expect(screen.queryByRole("navigation", { name: "Agent settings sections" })).toBeNull();
+    expect(document.querySelector(".settings-screen")).toBeNull();
     expect(window.history.state.monoAgentMobileNavigation.surface).toBe("conversation");
     window.history.back();
     await waitFor(() => expect(position()).toBe(conversation - 1));
@@ -510,7 +478,6 @@ describe("settings screen navigation", () => {
     const original = position();
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Agent settings gear" }));
-    fireEvent.click(screen.getByRole("button", { name: /Providers/ }));
     await page.viewport(1200, 800);
     await waitFor(() => expect(screen.getByRole("button", { name: "Close agent settings" })).toBeVisible());
     fireEvent.click(screen.getByRole("button", { name: "Close agent settings" }));
@@ -520,7 +487,7 @@ describe("settings screen navigation", () => {
     await waitFor(() => expect(position()).toBe(original - 1));
     expect(screen.queryByRole("button", { name: "Close agent settings" })).toBeNull();
   });
-  it("restores a project entry through breakpoint changes and Forward (N22/N23)", async () => {
+  it("restores a project entry through breakpoint changes and Forward", async () => {
     await page.viewport(390, 844);
     const view = render(<App />);
     storeMock.openProjectId = "fictional-project";
@@ -528,20 +495,57 @@ describe("settings screen navigation", () => {
     await waitFor(() => expect(window.history.state.monoAgentMobileNavigation.surface).toBe("project"));
     const project = position();
     fireEvent.click(screen.getByRole("button", { name: "Agent settings gear" }));
-    fireEvent.click(screen.getByRole("button", { name: /Providers/ }));
     await page.viewport(1200, 800);
     await waitFor(() => expect(screen.getByRole("button", { name: "Close agent settings" })).toBeVisible());
     await page.viewport(390, 844);
-    await waitFor(() => expect(screen.getByRole("heading", { name: "Providers", level: 2 })).toBeVisible());
-    expect(position()).toBe(project + 2);
-    window.history.back();
-    await waitFor(() => expect(position()).toBe(project + 1));
+    expect(position()).toBe(project + 1);
     window.history.back();
     await waitFor(() => expect(position()).toBe(project));
     expect(window.history.state.monoAgentMobileNavigation.surface).toBe("project");
     window.history.forward();
     await waitFor(() => expect(position()).toBe(project + 1));
-    expect(screen.getByRole("navigation", { name: "Agent settings sections" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Providers", level: 2 })).toBeVisible();
+  });
+
+  it("targets an open section without adding history and keeps the initial section on Forward", async () => {
+    await page.viewport(390, 844);
+    render(<App />);
+    const start = position();
+    window.dispatchEvent(new CustomEvent("mono-agent:agent-settings", { detail: { section: "providers" } }));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("region", { name: "Providers" })));
+    expect(position()).toBe(start + 1);
+    expect(window.history.state.monoAgentMobileNavigation.section).toBe("providers");
+    window.dispatchEvent(new CustomEvent("mono-agent:agent-settings", { detail: { section: "agent" } }));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("region", { name: "Restart" })));
+    expect(position()).toBe(start + 1);
+    window.history.back();
+    await waitFor(() => expect(document.querySelector(".settings-screen")).toBeNull());
+    window.history.forward();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("region", { name: "Providers" })));
+  });
+  it("closes legacy depth-two entries without reopening the old index", async () => {
+    await page.viewport(390, 844);
+    render(<App />);
+    const start = position();
+    window.history.pushState({ monoAgentMobileNavigation: { version: 1, surface: "settings", section: null, depth: 1, href: location.href } }, "", location.href);
+    window.history.pushState({ monoAgentMobileNavigation: { version: 1, surface: "settings", section: "agent", depth: 2, href: location.href } }, "", location.href);
+    window.dispatchEvent(new PopStateEvent("popstate", { state: window.history.state }));
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Restart", level: 2 })).toBeVisible());
+    fireEvent.click(screen.getByRole("button", { name: "Back from agent settings" }));
+    await waitFor(() => expect(position()).toBe(start));
+    expect(document.querySelector(".settings-screen")).toBeNull();
+  });
+  it("keeps long identity and Pin usable at 320px with 125% text", async () => {
+    await page.viewport(320, 720);
+    document.documentElement.style.fontSize = "125%";
+    storeMock.selectedAgent = agent("atlas", { label: "An extraordinarily long fictional assistant identity across the room", restart: { supported: true } }) as never;
+    try {
+      render(<App />);
+      fireEvent.click(screen.getByRole("button", { name: "Agent settings gear" }));
+      expect(screen.getByRole("heading", { level: 1 }).getBoundingClientRect().right).toBeLessThan(screen.getByText("online", { selector: ".settings-header .chat-status" }).getBoundingClientRect().left);
+      expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(320);
+      expect(screen.getByRole("switch", { name: /Pin An extraordinarily long/ }).getBoundingClientRect().bottom).toBeLessThan(720);
+    } finally { document.documentElement.style.fontSize = ""; }
   });
 
 });

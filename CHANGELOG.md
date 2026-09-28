@@ -6,6 +6,9 @@
   chips as in its rows: issues show a red cross and finished jobs a green
   check, replacing the warning triangle and history arrow.
 
+- Show agent settings as one scrolling page with a persistent agent header,
+  immediately available Pin control, and inline new-conversation save actions.
+
 - Fix web memory recall and capture using host-generated project, tag, or
   conversation-marker text instead of the bound, model-visible owner message,
   including attachment context and live follow-ups.

@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import { createPortal } from "react-dom";
 import type { AgentSummary } from "../../types";
 import { useConsoleStore } from "../../console-store";
 import { clearSettingsDraftIfEqual, discardSettingsDraft, setSettingsDraft, useSettingsDraft } from "../../settings-drafts";
@@ -7,7 +6,7 @@ import { ModelSelector } from "../assistant-ui/ModelSelector";
 import { buildSelectorModels, effectiveModelForAgent, effortLevelsForAgentModel, findCatalogModel, providerOfModel } from "../model-catalog";
 import { settingsEffortName, settingsModelName } from "./settings-labels";
 
-export function NewConversationsSection({ agent, onNotice, onSaveError, footerNode }: { readonly agent: AgentSummary; readonly onNotice: (message: string) => void; readonly onSaveError?: (message: string) => void; readonly footerNode?: HTMLElement | null }) {
+export function NewConversationsSection({ agent, onNotice, onSaveError }: { readonly agent: AgentSummary; readonly onNotice: (message: string) => void; readonly onSaveError?: (message: string) => void }) {
   const store = useConsoleStore();
   const draft = useSettingsDraft(agent.sourceId);
   const saved = { model: agent.runSettings.override?.model ?? "", effort: agent.runSettings.override?.effort ?? "" };
@@ -63,6 +62,6 @@ export function NewConversationsSection({ agent, onNotice, onSaveError, footerNo
       </div>
     </div>
     <p className="settings-field-note">A fallback or model mismatch is shown on the run it affected.</p>
-    {dirty && (footerNode === undefined ? saveBar : footerNode ? createPortal(saveBar, footerNode) : null)}
+    {dirty && saveBar}
   </>;
 }

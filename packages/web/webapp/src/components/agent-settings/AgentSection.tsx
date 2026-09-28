@@ -2,10 +2,12 @@ import { useEffect, useState } from "react";
 import { Switch } from "@base-ui/react/switch";
 import type { AgentSummary } from "../../types";
 import { useConsoleStore } from "../../console-store";
+import { Icon } from "../Icon";
 import { relativeTime } from "../time";
 import type { useRestartOwner } from "./RestartOwner";
 
-export function AgentSection({ agent, runningCount, restart }: { readonly agent: AgentSummary; readonly runningCount: number | undefined; readonly restart: ReturnType<typeof useRestartOwner> }) {
+// Independent of the restart owner: pin is usable while restart status loads.
+export function AgentPinRow({ agent }: { readonly agent: AgentSummary }) {
   const store = useConsoleStore();
   const [requestedPin, setRequestedPin] = useState<boolean | null>(null);
   const [pinPending, setPinPending] = useState(false);
@@ -16,6 +18,14 @@ export function AgentSection({ agent, runningCount, restart }: { readonly agent:
     setRequestedPin(next); setPinPending(true);
     void Promise.resolve().then(() => store.setAgentPinned(agent.sourceId, next)).catch(() => undefined).finally(() => { setPinPending(false); setRequestedPin(null); });
   };
+  return <div className="settings-group settings-pin"><label className="settings-row settings-switch-row">
+    <Icon name="star" size={18} />
+    <span className="settings-row-copy"><span id="settings-pin-label" className="settings-row-title">Pin {agent.label} first</span><span className="settings-row-note">Pinned agents sort first on the agent strip.</span></span>
+    <Switch.Root className="settings-switch" aria-labelledby="settings-pin-label" checked={requestedPin ?? Boolean(agent.pinned)} disabled={pinPending} aria-busy={pinPending} onCheckedChange={togglePin}><Switch.Thumb className="settings-switch-thumb" /></Switch.Root>
+  </label></div>;
+}
+
+export function AgentSection({ agent, runningCount, restart }: { readonly agent: AgentSummary; readonly runningCount: number | undefined; readonly restart: ReturnType<typeof useRestartOwner> }) {
   const inProgress = restart.operationId !== undefined && restart.outcome === undefined;
   // An in-flight operation is not a past outcome, even when it was restored
   // from the latest-operation endpoint after reopening the screen.
@@ -25,17 +35,7 @@ export function AgentSection({ agent, runningCount, restart }: { readonly agent:
   const lastWhen = lastAge === "now" ? "just now" : `${lastAge} ago`;
   const successfulNow = restart.restartedThisVisit && restart.outcome === "success";
   const stage = restart.progressStage;
-  const capabilities = [
-    [agent.supportsAttachments, "Attachments"], [agent.supportsManualCompaction, "Manual compaction"],
-    [agent.cron?.read, "Automations"], [agent.supportsProviderAuth, "Provider sign-in"],
-    [agent.supportsProviderUsage, "Usage limits"], [agent.restart?.supported, "Console restart"],
-  ] as const;
   return <>
-    <div className="settings-group"><label className="settings-row settings-switch-row">
-      <span className="settings-row-copy"><span id="settings-pin-label" className="settings-row-title">Pin {agent.label} first</span><span className="settings-row-note">Pinned agents sort first on the agent strip.</span></span>
-      <Switch.Root className="settings-switch" aria-labelledby="settings-pin-label" checked={requestedPin ?? Boolean(agent.pinned)} disabled={pinPending} aria-busy={pinPending} onCheckedChange={togglePin}><Switch.Thumb className="settings-switch-thumb" /></Switch.Root>
-    </label></div>
-    <div className="dashboard-section-label">RESTART</div>
     <div className="settings-group">
       {restart.readState === "loading" && <div className="settings-row">Checking restart status…</div>}
       {restart.readState === "error" && <div className="settings-row"><span className="settings-row-copy"><b className="settings-row-title">Couldn't read restart status</b></span><button className="settings-button" type="button" onClick={restart.retry}>Retry</button></div>}
@@ -54,7 +54,16 @@ export function AgentSection({ agent, runningCount, restart }: { readonly agent:
       <div className="settings-row settings-agent-fact-row"><span className="settings-row-copy"><b className="settings-row-title">Running now</b></span><span className="settings-row-value">{runningCount === undefined ? "—" : runningCount === 0 ? "None" : `${runningCount} conversation${runningCount === 1 ? "" : "s"}`}</span></div>
       {restart.readState === "ready" && !successfulNow && (!inProgress || last !== null) && <div className="settings-row settings-agent-fact-row"><span className="settings-row-copy"><b className="settings-row-title">Last restart</b></span><span className="settings-row-value" title={last?.requestedAt}>{last ? `${last.outcome === "failure" ? "Failed" : last.outcome === "success" ? "Back online" : "Not confirmed"} · ${lastWhen}${last.outcome === "failure" && last.reason ? ` · ${last.reason}` : ""}` : "No recent restart"}</span></div>}
     </div>
-    <div className="dashboard-section-label">ABOUT</div>
+  </>;
+}
+
+export function AgentAbout({ agent }: { readonly agent: AgentSummary }) {
+  const capabilities = [
+    [agent.supportsAttachments, "Attachments"], [agent.supportsManualCompaction, "Manual compaction"],
+    [agent.cron?.read, "Automations"], [agent.supportsProviderAuth, "Provider sign-in"],
+    [agent.supportsProviderUsage, "Usage limits"], [agent.restart?.supported, "Console restart"],
+  ] as const;
+  return <>
     <div className="settings-group"><div className="settings-row settings-agent-fact-row"><span className="settings-row-copy"><b className="settings-row-title">Source</b></span><code className="settings-row-value">{agent.sourceId}</code></div><div className="settings-row"><span className="settings-row-copy"><b className="settings-row-title">Supports</b></span><span className="settings-chips">{capabilities.filter(([available]) => available === true).map(([, label]) => <span className="settings-chip" key={label}>{label}</span>)}</span></div></div>
   </>;
 }

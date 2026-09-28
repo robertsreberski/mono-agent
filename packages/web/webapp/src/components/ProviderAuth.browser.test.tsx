@@ -33,7 +33,7 @@ vi.mock("./assistant-ui/ModelSelector", () => ({ ModelSelector: () => null }));
 
 import { AgentSettingsScreen } from "./agent-settings/AgentSettingsScreen";
 function SettingsHarness({ open }: { readonly open: boolean; readonly onClose?: () => void; readonly dialogRef?: ReturnType<typeof createRef<HTMLElement>> }) {
-  return open ? <AgentSettingsScreen layout={window.matchMedia("(max-width: 900px)").matches ? "stacked" : "split"} section="providers" onSection={() => undefined} onBack={() => undefined} onClose={() => undefined} onNotice={() => undefined} /> : null;
+  return open ? <AgentSettingsScreen layout={window.matchMedia("(max-width: 900px)").matches ? "stacked" : "split"} section="providers" onClose={() => undefined} onNotice={() => undefined} /> : null;
 }
 
 const providers = [
