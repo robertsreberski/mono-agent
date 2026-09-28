@@ -131,6 +131,19 @@ describe("Compaction marker and unknown context visual states", () => {
     document.documentElement.removeAttribute("data-console-theme");
     if (shotDirectory) await page.screenshot({ path: `${shotDirectory}/dash-${scheme}.png` });
   });
+  it("mutes even a stale percent while context is loading", () => {
+    render(<ContextDisplay contextLoading context={{ status: "current", usage: { total: 10_000, contextWindow: 20_000 } }}
+      totals={{ total: {}, byModel: [], computedAt: "2026-01-15T10:00:00Z" }} />);
+    const trigger = screen.getByRole("button", { name: /Context usage: loading/u });
+    expect(trigger).toHaveAttribute("data-unknown");
+    const percent = trigger.querySelector<HTMLElement>(".context-display-trigger-percent")!;
+    expect(percent.textContent).not.toBe("—");
+    const reference = document.createElement("span");
+    reference.style.color = "var(--text-muted)";
+    document.body.append(reference);
+    expect(getComputedStyle(percent).color).toBe(getComputedStyle(reference).color);
+    reference.remove();
+  });
   it("shows compaction next to a model change in a transcript", async () => {
     await page.viewport(1440, 900);
     render(<div className="thread-root"><div className="thread-viewport"><div className="message-column">
