@@ -1,3 +1,4 @@
+import { routeWriteState } from "./mobile-history";
 import type { TagSummary, TagColor } from "./types";
 import type { ProjectColor } from "./types";
 import {
@@ -578,13 +579,13 @@ const threadRoute = (thread: ThreadSummary | undefined): string =>
 const updateThreadRoute = (thread: ThreadSummary | undefined, replace = false): void => {
   const path = threadRoute(thread);
   if (window.location.pathname === path) return;
-  window.history[replace ? "replaceState" : "pushState"](window.history.state, "", path);
+  window.history[replace ? "replaceState" : "pushState"](routeWriteState(window.history.state, path, replace ? "replace" : "push"), "", path);
 };
 
 const updateCronRoute = (sourceId: string, jobId: string): void => {
   const path = cronChannelPath(sourceId, jobId);
   if (window.location.pathname === path) return;
-  window.history.pushState(window.history.state, "", path);
+  window.history.pushState(routeWriteState(window.history.state, path, "push"), "", path);
 };
 
 const cronReplyKey = (sourceId: string, jobId: string, runId: string): string =>

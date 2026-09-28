@@ -1,4 +1,4 @@
-import type { ProviderAuthCheckResult, ProviderAuthCheckSessionSnapshot, ProviderAuthProviderStatus, ProviderAuthSessionSnapshot } from "../../types";
+import type { ProviderAuthCheckResult, ProviderAuthCheckSessionSnapshot, ProviderAuthProviderStatus, ProviderAuthSessionSnapshot, ProviderAuthStatusSnapshot } from "../../types";
 
 export function terminal(state: ProviderAuthSessionSnapshot["state"]): boolean {
   return state === "succeeded" || state === "failed" || state === "cancelled";
@@ -66,4 +66,14 @@ export function providerAuthResourceAbsent(error: unknown): boolean {
     && "code" in error
     && (error as { readonly status?: unknown }).status === 404
     && (error as { readonly code?: unknown }).code === "provider_auth_not_found";
+}
+
+/** A summary of auth evidence, not a claim that a connection was tested. */
+export function providersSummary(status: ProviderAuthStatusSnapshot | null): string {
+  if (status === null) return "Loading provider status…";
+  const needsAction = status.providers.filter((provider) => providerAuthPresentation(provider).label === "Needs action").length;
+  if (needsAction > 0) return `${needsAction} needs action`;
+  const notVerified = status.providers.filter((provider) => providerAuthPresentation(provider).label === "Not verified").length;
+  if (notVerified > 0) return `${notVerified} not verified`;
+  return "No action needed";
 }

@@ -73,7 +73,7 @@ function CronDialog({
     <div className="dialog-layer" role="presentation" onMouseDown={onClose}>
       <section
         ref={dialogRef}
-        className="agent-settings-dialog cron-dialog"
+        className="cron-dialog"
         role="dialog"
         aria-modal="true"
         aria-label={label}

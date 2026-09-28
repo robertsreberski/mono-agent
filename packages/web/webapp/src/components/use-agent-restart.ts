@@ -128,5 +128,5 @@ export function useAgentRestart({ sourceId, proposal, initialOperation, unavaila
     setPollWarning(null);
     setConfirming(true);
   };
-  return { confirming, setConfirming, requesting, requestUnknown, pollWarning, operationId, disabled, submit, outcome, outcomeReason, progressStage, restartAgain };
+  return { confirming, setConfirming, requesting, requestUnknown, pollWarning, operationId, currentOperation, disabled, submit, outcome, outcomeReason, progressStage, restartAgain };
 }

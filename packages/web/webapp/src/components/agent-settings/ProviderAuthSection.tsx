@@ -5,7 +5,12 @@ import { providerAuthPresentation, providerAuthCheckPresentation, providerAuthCh
 import { useProviderAuth } from "./use-provider-auth";
 
 export function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
-  const { status, session, check, usage, usageRefreshing, usageFeedback, refreshUsage, sessionProvider, methodProvider, inputValue, setInputValue, busy, restarting, authError, inputRef, adoptSession, setSessionProvider, setMethodProvider, start, startCheck, cancelCheck, openFlow, submit, cancel, checkActive } = useProviderAuth(agent);
+  const controller = useProviderAuth(agent);
+  return <ProvidersSection agent={agent} controller={controller} />;
+}
+
+export function ProvidersSection({ agent, controller }: { readonly agent: AgentSummary; readonly controller: ReturnType<typeof useProviderAuth> }) {
+  const { status, session, check, usage, usageRefreshing, usageFeedback, refreshUsage, sessionProvider, methodProvider, inputValue, setInputValue, busy, restarting, authError, inputRef, adoptSession, setSessionProvider, setMethodProvider, start, startCheck, cancelCheck, openFlow, submit, cancel, checkActive } = controller;
   if (agent.supportsProviderAuth !== true && agent.supportsProviderUsage !== true) {
     return (
       <section className="provider-auth-section">

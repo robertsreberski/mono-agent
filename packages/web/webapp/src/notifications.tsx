@@ -1,3 +1,4 @@
+import { routeWriteState } from "./mobile-history";
 import { webPushPreview } from "../../src/push-preview";
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "./api";
@@ -355,7 +356,7 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
     handledDeepLink.current = threadId;
     openNotificationConversation(store.selectThread, threadId);
     url.searchParams.delete("thread");
-    window.history.replaceState(window.history.state, "", url);
+    window.history.replaceState(routeWriteState(window.history.state, url, "replace"), "", url);
   }, [store]);
 
   // Keep the existing page-derived response path only as a compatibility

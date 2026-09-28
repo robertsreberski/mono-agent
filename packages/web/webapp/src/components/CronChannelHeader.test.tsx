@@ -212,7 +212,7 @@ describe("CronChannelHeader", () => {
     fireEvent.click(screen.getByRole("button", { name: "View config" }));
 
     const configDialog = await screen.findByRole("dialog", { name: "Cron configuration" });
-    expect(configDialog).toHaveClass("agent-settings-dialog", "cron-dialog");
+    expect(configDialog).toHaveClass("cron-dialog", "cron-dialog");
     expect(configDialog.querySelector(".cron-config-fields")?.tagName).toBe("DL");
     await waitFor(() => expect(configDialog).toHaveFocus());
     expect(screen.getByText("[redacted]")).toBeInTheDocument();
