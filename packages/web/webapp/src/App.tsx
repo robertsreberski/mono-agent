@@ -977,7 +977,7 @@ export function App() {
       <TagSettingsSheet sheet={tagSettings} onClose={closeTagSettings} dialogRef={tagSettingsRef} />
       <ProjectSettingsSheet sheet={projectSettings} onClose={closeProjectSettings} dialogRef={projectSettingsRef} />
       {(notice || actionError) && (
-        <div className="toast" role={actionError ? "alert" : settingsOpen ? undefined : "status"}>
+        <div className="toast" role={settingsOpen && !actionError ? undefined : "alert"}>
           <span>{notice ?? actionError}</span>
           <button
             type="button"

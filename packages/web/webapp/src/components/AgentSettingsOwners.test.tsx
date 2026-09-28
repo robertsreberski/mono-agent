@@ -929,7 +929,7 @@ describe("SettingsHarness", () => {
     expect(await screen.findByText("Check passed")).toBeVisible();
     expect(screen.getByText("Auth failed")).toBeVisible();
     expect(screen.getByText("Checks complete: 1 of 2 passed.")).not.toHaveAttribute("aria-live");
-    expect(screen.getByRole("status")).toHaveTextContent("Provider access checks finished.");
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Provider access checks finished."));
   });
 
   it("keeps the post-auth status when an older completed-check refresh resolves late", async () => {

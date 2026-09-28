@@ -86,7 +86,7 @@ function SettingsContent({ agent, section, layout, provider, restart, onSection,
     else if (eventState.restartStage && previous.restartStage !== eventState.restartStage) setAnnouncement(`Restart: ${eventState.restartStage.replace("_", " ")}.`);
     else if (eventState.check && (eventState.check.id !== previous.check?.id || eventState.check.state !== previous.check?.state)) setAnnouncement(checkTerminal(eventState.check.state) ? "Provider access checks finished." : "Provider access checks started.");
     else if (eventState.session && (eventState.session.id !== previous.session?.id || eventState.session.state !== previous.session?.state)) setAnnouncement(`Sign-in ${eventState.session.state.replaceAll("_", " ")}.`);
-    else if (eventState.usageFeedback && eventState.usageFeedback !== previous.usageFeedback) setAnnouncement(`Usage: ${eventState.usageFeedback}`);
+    else if (eventState.usageFeedback && eventState.usageFeedback !== previous.usageFeedback) setAnnouncement(/fail|unavailable|error/i.test(eventState.usageFeedback) ? "Subscription limits could not be refreshed." : "Subscription limits refreshed.");
     else if (eventState.usageRefreshing && !previous.usageRefreshing) setAnnouncement("Usage refresh started.");
   }, [provider.usageRefreshing, provider.usageFeedback, provider.check, provider.session, restart.progressStage, restart.outcome, restart.requestUnknown]);
   useEffect(() => {

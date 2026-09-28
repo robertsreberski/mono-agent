@@ -5,7 +5,7 @@ import { discardSettingsDraft, getSettingsDraft, setSettingsDraft } from "../../
 import type { AgentSummary } from "../../types";
 
 const store = vi.hoisted(() => ({ selectedAgent: null as AgentSummary | null, activeThreads: null, catalogByProvider: {}, ensureProviderCatalog: vi.fn(), setAgentPinned: vi.fn(), setAgentRunDefaults: vi.fn(), clearAgentRunDefaults: vi.fn() }));
-const mockApi = vi.hoisted(() => ({ latestAgentRestart: vi.fn(), providerAuthStatus: vi.fn(), providerUsage: vi.fn() }));
+const mockApi = vi.hoisted(() => ({ latestAgentRestart: vi.fn(), providerAuthStatus: vi.fn(), providerUsage: vi.fn(), restartStatus: vi.fn() }));
 vi.mock("../../console-store", () => ({ useConsoleStore: () => store }));
 vi.mock("../../api", async (original) => ({ ...await original<typeof import("../../api")>(), api: mockApi }));
 import { AgentSettingsScreen } from "./AgentSettingsScreen";
@@ -147,14 +147,25 @@ describe("agent settings screen", () => {
     { outcome: "success", summary: /Pinned · restarted/, warning: false },
   ])("prioritizes the retained $outcome outcome in the Agent summary (A17b)", async ({ outcome, summary, warning }) => {
     store.selectedAgent = agent("fictional", { label: "Atlas", pinned: true, restart: { supported: true }, supportsAttachments: true });
-    mockApi.latestAgentRestart.mockResolvedValue({ id: "example-op", sourceId: "fictional", stage: "back_online", outcome, requestedAt: new Date(Date.now() - 120_000).toISOString() });
+    mockApi.latestAgentRestart.mockResolvedValue({ id: "example-op", sourceId: "fictional", stage: "back_online", outcome, reason: outcome === "failure" ? "Example process unavailable" : undefined, requestedAt: new Date(Date.now() - 120_000).toISOString() });
     render(<AgentSettingsScreen {...props} section="agent" />);
     const nav = screen.getByRole("navigation", { name: "Agent settings sections" });
     await waitFor(() => expect(nav.querySelector('[data-settings-section="agent"] .settings-rail-summary')).toHaveTextContent(summary));
     expect(nav.querySelector('[data-settings-section="agent"] .settings-rail-summary')?.classList.contains("is-warning")).toBe(warning);
+    if (outcome === "failure") expect(screen.getByText(/Example process unavailable/)).toBeTruthy();
     expect(screen.getByText("fictional", { selector: "code" })).toBeTruthy();
     expect(screen.getByText("Attachments", { selector: ".settings-chip" })).toBeTruthy();
     expect(screen.queryByText("Manual compaction", { selector: ".settings-chip" })).toBeNull();
+  });
+  it("does not describe an in-flight restart as not confirmed or as a past restart (A17)", async () => {
+    store.selectedAgent = agent("fictional", { label: "Atlas", restart: { supported: true } });
+    mockApi.latestAgentRestart.mockResolvedValue({ id: "example-running", sourceId: "fictional", stage: "restarting", requestedAt: new Date().toISOString() });
+    mockApi.restartStatus.mockReturnValue(new Promise(() => undefined));
+    render(<AgentSettingsScreen {...props} section="agent" />);
+    await waitFor(() => expect(screen.getByRole("list", { name: "Restart progress" })).toBeTruthy());
+    expect(screen.queryByText(/Not confirmed/)).toBeNull();
+    expect(screen.queryByText("Last restart")).toBeNull();
+    expect(screen.getByRole("navigation", { name: "Agent settings sections" }).querySelector('[data-settings-section="agent"] .settings-rail-summary')).toHaveTextContent("Restarting…");
   });
   it("shows read failure in the Agent summary instead of claiming no recent restart (A17b)", async () => {
     mockApi.latestAgentRestart.mockRejectedValue(new Error("Example read unavailable"));
