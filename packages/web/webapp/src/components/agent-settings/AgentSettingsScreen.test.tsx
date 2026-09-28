@@ -5,7 +5,7 @@ import { discardSettingsDraft, getSettingsDraft, setSettingsDraft } from "../../
 import type { AgentSummary } from "../../types";
 
 const store = vi.hoisted(() => ({ selectedAgent: null as AgentSummary | null, activeThreads: null as { runningCounts: Record<string, number> } | null, catalogByProvider: {}, ensureProviderCatalog: vi.fn(), setAgentPinned: vi.fn(), setAgentRunDefaults: vi.fn(), clearAgentRunDefaults: vi.fn() }));
-const mockApi = vi.hoisted(() => ({ latestAgentRestart: vi.fn(), providerAuthStatus: vi.fn(), providerUsage: vi.fn(), restartStatus: vi.fn() }));
+const mockApi = vi.hoisted(() => ({ latestAgentRestart: vi.fn(), providerAuthStatus: vi.fn(), providerUsage: vi.fn(), restartStatus: vi.fn(), requestAgentRestart: vi.fn() }));
 vi.mock("../../console-store", () => ({ useConsoleStore: () => store }));
 vi.mock("../../api", async (original) => ({ ...await original<typeof import("../../api")>(), api: mockApi }));
 import { AgentSettingsScreen } from "./AgentSettingsScreen";
@@ -35,6 +35,16 @@ describe("agent settings screen", () => {
     fireEvent.click(screen.getByRole("button", { name: /Providers/ }));
     expect(props.onSection).toHaveBeenCalledWith("providers");
     await waitFor(() => expect(mockApi.providerAuthStatus).toHaveBeenCalledTimes(1));
+  });
+  it("lets Escape close the missing-agent screen on desktop and go Back on phone (R3)", () => {
+    store.selectedAgent = null;
+    const view = render(<AgentSettingsScreen {...props} section="agent" />);
+    expect(screen.getByText("This agent is no longer available.")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(props.onClose).toHaveBeenCalledOnce();
+    view.rerender(<AgentSettingsScreen {...props} section="agent" layout="stacked" />);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(props.onBack).toHaveBeenCalledOnce();
   });
   it("retains an agent-scoped draft across section switches and close, then discards only on demand", () => {
     setSettingsDraft("fictional", { model: "atlas/example", effort: "low" });
@@ -166,6 +176,19 @@ describe("agent settings screen", () => {
     expect(screen.getByText("Attachments", { selector: ".settings-chip" })).toBeTruthy();
     expect(screen.queryByText("Manual compaction", { selector: ".settings-chip" })).toBeNull();
   });
+  it("replaces an old success in the summary when the in-visit restart fails (R6)", async () => {
+    store.selectedAgent = agent("fictional", { label: "Atlas", restart: { supported: true } });
+    mockApi.latestAgentRestart.mockResolvedValue({ id: "previous", sourceId: "fictional", stage: "back_online", outcome: "success", requestedAt: new Date(Date.now() - 7_200_000).toISOString() });
+    mockApi.requestAgentRestart.mockResolvedValue({ id: "current", sourceId: "fictional", stage: "back_online", outcome: "failure", reason: "Example refusal", requestedAt: new Date().toISOString() });
+    render(<AgentSettingsScreen {...props} section="agent" />);
+    await waitFor(() => expect(screen.getByRole("navigation", { name: "Agent settings sections" }).querySelector('[data-settings-section="agent"] .settings-rail-summary')).toHaveTextContent(/restarted/));
+    fireEvent.click(screen.getByRole("button", { name: "Restart Atlas" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm restart" }));
+    const summary = screen.getByRole("navigation", { name: "Agent settings sections" }).querySelector('[data-settings-section="agent"] .settings-rail-summary');
+    await waitFor(() => expect(summary).toHaveTextContent("Last restart failed · just now"));
+    expect(summary).toHaveClass("is-warning");
+    expect(screen.getByText(/Failed · just now · Example refusal/)).toBeTruthy();
+  });
   it("does not describe an in-flight restart as not confirmed or as a past restart (A17)", async () => {
     store.selectedAgent = agent("fictional", { label: "Atlas", restart: { supported: true } });
     mockApi.latestAgentRestart.mockResolvedValue({ id: "example-running", sourceId: "fictional", stage: "restarting", requestedAt: new Date().toISOString() });
@@ -175,6 +198,13 @@ describe("agent settings screen", () => {
     expect(screen.queryByText(/Not confirmed/)).toBeNull();
     expect(screen.queryByText("Last restart")).toBeNull();
     expect(screen.getByRole("navigation", { name: "Agent settings sections" }).querySelector('[data-settings-section="agent"] .settings-rail-summary')).toHaveTextContent("Restarting…");
+  });
+  it("shows provider status failure rather than indefinite loading in the rail (R9)", async () => {
+    mockApi.providerAuthStatus.mockRejectedValue(new Error("Example provider read failed"));
+    render(<AgentSettingsScreen {...props} section="providers" />);
+    const summary = screen.getByRole("navigation", { name: "Agent settings sections" }).querySelector('[data-settings-section="providers"] .settings-rail-summary');
+    await waitFor(() => expect(summary).toHaveTextContent("Provider status unavailable"));
+    expect(summary).toHaveClass("is-warning");
   });
   it("shows read failure in the Agent summary instead of claiming no recent restart (A17b)", async () => {
     mockApi.latestAgentRestart.mockRejectedValue(new Error("Example read unavailable"));

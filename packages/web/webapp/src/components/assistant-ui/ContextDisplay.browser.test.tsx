@@ -56,6 +56,24 @@ describe("Context usage layout", () => {
     const shots = import.meta.env.VITE_CONTEXT_FOLLOWUP_SHOTS as string | undefined;
     if (shots) await page.screenshot({ path: `${shots}/context-sheet-${theme}-dark-phone.png` });
   });
+  it("preserves the main-branch provider plan pill styling in the ContextDisplay popover (R7)", async () => {
+    await page.viewport(1200, 800);
+    const { region } = await show();
+    const pill = within(region).getByText("Go", { selector: ".provider-usage-plan" });
+    const before = document.createElement("style");
+    // Exact unscoped selector and declarations from main's old dialog stylesheet.
+    before.textContent = '.agent-settings-sheet .provider-auth-state, .provider-usage-plan { display: inline-flex; align-items: center; gap: 3px; padding: 1px 6px; font-size: 10px; font-weight: 600; line-height: 1.5; letter-spacing: 0; text-transform: none; border-radius: 10px; }';
+    document.head.append(before);
+    const read = () => { const s = getComputedStyle(pill); return [s.display, s.alignItems, s.gap, s.padding, s.fontSize, s.fontWeight, s.lineHeight, s.letterSpacing, s.textTransform, s.borderRadius]; };
+    const main = read();
+    const shots = import.meta.env.VITE_REVIEW6_SHOTS as string | undefined;
+    if (shots) await page.screenshot({ path: `${shots}/context-plan-main-rule.png` });
+    before.remove();
+    const restored = read();
+    if (shots) await page.screenshot({ path: `${shots}/context-plan-restored.png` });
+    expect(restored).toEqual(main);
+    expect(restored[9]).toBe("10px");
+  });
   it("renders three bounded single-column provider rows and fits the 390 × 844 sheet", async () => {
     await page.viewport(390, 844);
     const { dialog, region } = await show();

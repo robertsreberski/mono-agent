@@ -23,8 +23,12 @@ describe("settings history ownership", () => {
     expect(pushed.monoAgentMobileNavigation).toEqual({ version: 1, surface: "conversation", href: new URL("/agents/atlas/cron/example", window.location.href).href });
     expect(pushed.other).toEqual({ value: 1 });
     window.history.replaceState(window.history.state, "", "/other");
-    const stalePush = routeWriteState(window.history.state, "/", "push") as Record<string, unknown>;
-    expect((stalePush.monoAgentMobileNavigation as { surface: string }).surface).toBe("conversation");
+    const stale = window.history.state;
+    const stalePush = routeWriteState(stale, "/", "push");
+    const staleReplace = routeWriteState(stale, "/", "replace");
+    expect(stalePush).toBe(stale);
+    expect(staleReplace).toBe(stale);
+    expect((staleReplace as { monoAgentMobileNavigation: { href: string } }).monoAgentMobileNavigation.href).not.toBe(window.location.href);
   });
   it("closes only owned entries, and parses the legacy restart link", () => {
     expect(parseSettingsParam("http://localhost/?settings=restart")).toBe("agent");

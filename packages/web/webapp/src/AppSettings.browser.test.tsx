@@ -67,6 +67,7 @@ vi.mock("./components/dashboard/Dashboard", () => ({
     readonly onCloseProject?: () => void;
   }) => (
     <div data-testid="dashboard">
+      <input aria-label="Search conversations" />
       <button type="button" onClick={() => window.dispatchEvent(new CustomEvent("mono-agent:agent-settings"))}>Agent settings gear</button>
       <button type="button" onClick={onNavigate}>Open a conversation</button>
       <button type="button" onClick={onNavigate}>Open a running card</button>
@@ -118,6 +119,15 @@ describe("settings screen navigation", () => {
     expect(title.left).toBeLessThan(30);
     expect(document.querySelector(".settings-phone-index-header .settings-agent-tile")).toBeNull();
   });
+  it("keeps a desktop list-row focus when navigating without settings open (R1)", async () => {
+    await page.viewport(1200, 800);
+    render(<App />);
+    const row = screen.getByRole("button", { name: "Open a conversation" });
+    row.focus();
+    row.click();
+    await new Promise((resolve) => window.setTimeout(resolve, 20));
+    expect(document.activeElement).toBe(row);
+  });
   it("opens on desktop without writing history, closes on Escape and gates read marking", async () => {
     await page.viewport(1200, 800);
     const start = position();
@@ -141,6 +151,31 @@ describe("settings screen navigation", () => {
     expect(screen.queryByText("New conversations", { selector: ".settings-rail-label" })).toBeNull();
     expect(position()).toBe(start);
     await waitFor(() => expect(storeMock.setConversationVisible).toHaveBeenLastCalledWith(true));
+  });
+  it("keeps live Dashboard search focus across a provider generation remount (R2)", async () => {
+    await page.viewport(1200, 800);
+    const view = render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Agent settings gear" }));
+    const search = screen.getByRole("textbox", { name: "Search conversations" });
+    search.focus();
+    expect(document.activeElement).toBe(search);
+    storeMock.selectedAgent = agent("atlas", { label: "Atlas", restart: { supported: true }, generation: "next-generation" }) as never;
+    view.rerender(<App />);
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Atlas", level: 1 })).toBeVisible());
+    expect(document.activeElement).toBe(search);
+    expect(document.querySelectorAll('.settings-screen [role="status"]')).toHaveLength(1);
+  });
+  it("keeps a model picker open when only the provider owner generation changes (R2)", async () => {
+    await page.viewport(1200, 800);
+    const view = render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Agent settings gear" }));
+    fireEvent.click(screen.getByRole("button", { name: "Model and reasoning effort" }));
+    await waitFor(() => expect(document.querySelector('[data-slot="model-selector-content"]')).not.toBeNull());
+    const picker = document.querySelector('[data-slot="model-selector-content"]');
+    storeMock.selectedAgent = agent("atlas", { label: "Atlas", restart: { supported: true }, generation: "picker-next" }) as never;
+    view.rerender(<App />);
+    expect(picker?.isConnected).toBe(true);
+    expect(document.querySelector('[data-slot="model-selector-content"]')).toBe(picker);
   });
   it("lets a nested picker consume Escape before closing the screen (A18)", async () => {
     await page.viewport(1200, 800);

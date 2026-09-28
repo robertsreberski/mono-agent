@@ -64,7 +64,7 @@ try {
   // Keep dependency and browser downloads within this disposable fixture too.
   run(["install", "--frozen-lockfile", "--store-dir", join(fixture, ".store")]);
   run(["exec", "playwright", "install", "chromium"]);
-  run(["test", "src/shared-sources.test.ts", "src/api.test.ts", "src/components/ProviderUsageMeters.test.tsx", "src/components/AgentSettingsDialog.test.tsx"]);
+  run(["test", "src/shared-sources.test.ts", "src/api.test.ts", "src/components/ProviderUsageMeters.test.tsx", "src/components/AgentSettingsOwners.test.tsx"]);
   run(["run", "typecheck"]);
   run(["run", "build"]);
   run(["run", "test:browser"]);

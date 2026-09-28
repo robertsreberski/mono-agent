@@ -56,7 +56,9 @@ export const routeWriteState = (state: unknown, nextUrl: string | URL, mode: "pu
     && ((marker.depth === 1 && marker.section === null)
       || marker.depth === 2 && (marker.section === "new-conversations" || marker.section === "providers" || marker.section === "agent"))
     ? marker : null;
-  if (current === null) return state;
+  // Only the entry at the current URL is ours to rewrite. In particular, a
+  // replace must not re-own a stale marker copied from an earlier route.
+  if (current === null || current.href !== window.location.href) return state;
   const href = new URL(nextUrl, window.location.href).href;
   const fields = typeof state === "object" && state !== null && !Array.isArray(state)
     ? state as Record<string, unknown> : {};

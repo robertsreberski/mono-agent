@@ -2,6 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agent } from "../test/fixtures";
+import { ApiError } from "../api";
 import type { ProviderUsageSnapshot, RestartOperation } from "../types";
 import "../styles.css";
 
@@ -152,6 +153,26 @@ describe("SettingsHarness", () => {
     fireEvent.click(screen.getByRole("button", { name: "Confirm restart" }));
     await act(async () => { await Promise.resolve(); });
     expect(apiMock.requestAgentRestart).toHaveBeenCalledExactlyOnceWith("alpha");
+    expect(screen.getByRole("list", { name: "Restart progress" })).toBeVisible();
+  });
+
+  it("shows a definitive restart refusal without an operation id (R5)", async () => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", restart: { supported: true } });
+    apiMock.requestAgentRestart.mockRejectedValue(new ApiError("Fictional refusal", 403, "restart_denied"));
+    render(<SettingsHarness section="agent" open onClose={vi.fn()} />);
+    await screen.findByRole("button", { name: "Restart Alpha" });
+    fireEvent.click(screen.getByRole("button", { name: "Restart Alpha" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm restart" }));
+    expect(await screen.findByText("Restart failed: Fictional refusal")).toBeVisible();
+    expect(screen.queryByRole("list", { name: "Restart progress" })).toBeNull();
+  });
+
+  it("keeps an in-flight restart visible when its status poll fails (R5)", async () => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", restart: { supported: true } });
+    apiMock.latestAgentRestart.mockResolvedValue(restartOperation("requesting"));
+    apiMock.restartStatus.mockRejectedValue(new Error("Temporary network failure"));
+    render(<SettingsHarness section="agent" open onClose={vi.fn()} />);
+    expect(await screen.findByText("Restart status is temporarily unavailable.")).toBeVisible();
     expect(screen.getByRole("list", { name: "Restart progress" })).toBeVisible();
   });
 
@@ -478,6 +499,21 @@ describe("SettingsHarness", () => {
     });
     expect(close).not.toHaveBeenCalled();
     expect(screen.getByRole("heading", { name: "New conversations" })).toBeVisible();
+  });
+
+  it("labels a partial model override's effective effort from agent config (R10)", () => {
+    storeMock.selectedAgent = agent("alpha", {
+      label: "Alpha", runSettings: {
+        config: { model: "provider/model", effort: "high" },
+        override: { model: "provider/other" },
+        effective: { model: "provider/other", modelSource: "override", effort: "high", effortSource: "config" },
+      },
+    });
+    render(<SettingsHarness section="new-conversations" open onClose={vi.fn()} />);
+    const override = screen.getByText("Console override").closest(".settings-kv")!;
+    expect(override).toHaveTextContent("High");
+    expect(override).toHaveTextContent("agent config: high");
+    expect(override).not.toHaveTextContent("provider default");
   });
 
   it("pins the selected agent from a switch row", async () => {

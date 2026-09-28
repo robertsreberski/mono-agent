@@ -1791,7 +1791,7 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
   .cron-run-details { flex-basis: 100%; }
   .cron-run-details-body { width: 100%; }
   .dialog-layer { padding: max(12px, env(safe-area-inset-top)) 8px 8px; align-items: flex-start; }
-  .cron-dialog { max-height: min(720px, calc(100dvh - max(12px, env(safe-area-inset-top)) - 8px)); }
+  .cron-dialog { max-height: min(720px, calc(100dvh - max(12px, env(safe-area-inset-top)) - 8px)); border-radius: 13px; }
   .command-palette { border-radius: 13px; }
   .command-palette footer { display: none; }
   .toast { right: max(8px, env(safe-area-inset-right)); bottom: max(8px, env(safe-area-inset-bottom)); max-width: calc(100vw - 16px); }
@@ -1965,7 +1965,7 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 
 .provider-usage { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); column-gap: 10px; row-gap: 6px; padding-top: 6px; }
 .provider-usage-meta { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 10px; }
-.provider-usage-plan { color: var(--accent); background: var(--accent-soft); }
+.provider-usage-plan { display: inline-flex; align-items: center; gap: 3px; padding: 1px 6px; color: var(--accent); background: var(--accent-soft); border-radius: 10px; font-size: 10px; font-weight: 600; line-height: 1.5; letter-spacing: 0; text-transform: none; }
 .provider-usage-window { min-width: 0; display: flex; flex-direction: column; gap: 4px; font-size: 10.5px; font-variant-numeric: tabular-nums; }
 .provider-usage-label { display: flex; justify-content: space-between; gap: 4px; }
 .provider-usage-window time { color: var(--text-muted); font-size: 9px; }

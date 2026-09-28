@@ -430,6 +430,7 @@ export function App() {
   }, [conversationOpen, documentVisible, mobile, settingsOpen, setConversationVisible]);
 
   const openConversation = useCallback(() => {
+    const wasSettingsOpen = settings !== null;
     setSettings(null);
     if (isMobileViewport()) {
       const current = mobileHistoryEntry(window.history.state);
@@ -446,8 +447,8 @@ export function App() {
       }
     }
     setScreen("conversation");
-    if (!isMobileViewport()) window.setTimeout(() => chatRef.current?.focus(), 0);
-  }, []);
+    if (!isMobileViewport() && wasSettingsOpen) window.setTimeout(() => chatRef.current?.focus(), 0);
+  }, [settings]);
   const showDashboard = useCallback(() => {
     if (isMobileViewport() && mobileHistoryEntry(window.history.state)?.surface === "conversation") {
       setScreen("dashboard");
