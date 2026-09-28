@@ -49,8 +49,8 @@ window.fetch = (input, init) => {
     if (usage[1] === "pending") return new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
     const mixed = usage[1] === "mixed";
     return Promise.resolve(Response.json({ usage: {
-      total: { tokens: mixed ? { input: 89000, cacheRead: 72000, cacheWrite: 3000, output: 22000 }
-        : { input: 68000, cacheRead: 45000, cacheWrite: 2000, output: 11000 },
+      total: { tokens: mixed ? { input: 22000, cacheRead: 76000, cacheWrite: 2000, output: 22000 }
+        : { input: 16000, cacheRead: 82000, cacheWrite: 2000, output: 11000 },
         costUsd: mixed ? 4.18 : 2.24, ...(mixed ? { tokensPartial: true } : {}) },
       ...(mixed ? { subagents: { runs: 3, costUsd: 1.12, tokensPartial: true } } : {}),
       byModel: mixed ? [{ model: "atlas/standard", costUsd: 3.06 }, { model: "grove/fast", costUsd: 1.12 }]

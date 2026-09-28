@@ -60,6 +60,18 @@ describe("createThreadPersistence", () => {
     await deleteDatabase();
   });
 
+  it("does not write a transient manual compaction hint to device cache", async () => {
+    const active = thread("alpha-thread", "alpha", { compaction: {
+      status: "running", trigger: "manual", startedAt: "2026-09-28T10:00:00Z",
+    } });
+    const writer = createThreadPersistence();
+    await writer.save({ entries: [entry(active.id, { thread: active })], snapshot: snapshot(),
+      bucket: { key: "alpha\0active", threads: [active], nextCursor: null } });
+    const restored = await createThreadPersistence().hydrate();
+    expect(restored?.threads[0]?.thread.compaction).toBeUndefined();
+    expect(restored?.buckets[0]?.threads[0]?.compaction).toBeUndefined();
+  });
+
   it("takes over a database a previous build wrote at version 1", async () => {
     // The upgrade is the one path no other case exercises: every other test
     // starts from an empty database and creates version 2 outright. A phone

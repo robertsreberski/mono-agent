@@ -17,9 +17,10 @@ const streamingMessages: readonly ThreadMessageLike[] = [sampleMessages[0]!, {
   ],
 }];
 
-function ConsoleShell({ children, phone = false, streaming = false }: { readonly children: React.ReactNode; readonly phone?: boolean; readonly streaming?: boolean }) {
+function ConsoleShell({ children, phone = false, streaming = false, compacting = false }: { readonly children: React.ReactNode; readonly phone?: boolean; readonly streaming?: boolean; readonly compacting?: boolean }) {
   if (streaming) Object.assign(storyStore, { selectedThread: { ...runningThread, title: gardenThread.title }, selectedThreadId: runningThread.id });
-  useEffect(() => () => { if (streaming) Object.assign(storyStore, { selectedThread: gardenThread, selectedThreadId: gardenThread.id }); }, [streaming]);
+  if (compacting) Object.assign(storyStore, { selectedThread: { ...gardenThread, compaction: { status: "running", trigger: "manual", startedAt: "2026-09-28T10:00:00Z" } }, selectedThreadId: gardenThread.id });
+  useEffect(() => () => { if (streaming || compacting) Object.assign(storyStore, { selectedThread: gardenThread, selectedThreadId: gardenThread.id }); }, [streaming, compacting]);
   return <StoryRuntime messages={streaming ? streamingMessages : undefined}><div className="app-shell">
     <div className="dashboard-panel" role="navigation" aria-label="Dashboard" aria-hidden={phone || undefined}>
       <Dashboard highlightSelected={!phone} /><RecentFixtures />
@@ -30,13 +31,15 @@ function ConsoleShell({ children, phone = false, streaming = false }: { readonly
 export default {
   title: "Screens/Chat", component: Chat, tags: ["autodocs"],
   parameters: { layout: "fullscreen" },
-  decorators: [(Story, context) => <ConsoleShell phone={context.globals.viewport?.value === "phone"} streaming={context.parameters.streaming === true}><Story /></ConsoleShell>],
+  decorators: [(Story, context) => <ConsoleShell phone={context.globals.viewport?.value === "phone"} streaming={context.parameters.streaming === true} compacting={context.parameters.compacting === true}><Story /></ConsoleShell>],
 } satisfies Meta<typeof Chat>;
 type Story = StoryObj<typeof Chat>;
 export const Desktop: Story = { args: { onBack: () => {} } };
 export const Phone: Story = { args: { onBack: () => {} }, globals: { viewport: { value: "phone" } } };
 export const Streaming: Story = { args: { onBack: () => {} }, parameters: { streaming: true } };
 export const StreamingPhone: Story = { args: { onBack: () => {} }, parameters: { streaming: true }, globals: { viewport: { value: "phone" } } };
+export const ManualCompactingClosed: Story = { args: Desktop.args, parameters: { compacting: true } };
+export const ManualCompactingPhone: Story = { args: Phone.args, parameters: { compacting: true }, globals: Phone.globals };
 const openActions: NonNullable<Story["play"]> = async ({ canvasElement }) => {
   const button = canvasElement.querySelector<HTMLElement>('button[aria-label="Conversation actions"]');
   if (!button) throw new Error("Conversation actions trigger missing");

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { thread } from "./test/fixtures";
 import type { MessagePart, RunStatus, ThreadDetail, WebMessage } from "./types";
-import { contextLevel, conversationConsoleUsage, windowUsage } from "./usage";
+import { contextLevel, conversationCacheHitPercent, conversationConsoleUsage, windowUsage } from "./usage";
 
 const message = (
   id: string,
@@ -55,6 +55,23 @@ const compactionPart = (
     kind: "context_compaction",
     data: { operationId: "compact-1", status, timestamp },
   },
+});
+
+describe("conversation-wide cache hit", () => {
+  const tokens = { input: 16_000, cacheWrite: 2_000, cacheRead: 82_000, output: 9_000 };
+  it("uses the reported aggregate, weighted by prompt tokens rather than runs", () => {
+    expect(conversationCacheHitPercent({ tokens })).toBe("82%");
+    expect(conversationCacheHitPercent({ tokens, tokensPartial: true })).toBe("82%");
+  });
+  it("omits missing tokens and zero prompt denominators", () => {
+    expect(conversationCacheHitPercent(undefined)).toBeUndefined();
+    expect(conversationCacheHitPercent({})).toBeUndefined();
+    expect(conversationCacheHitPercent({ tokens: { input: 0, cacheWrite: 0, cacheRead: 0, output: 9 } })).toBeUndefined();
+  });
+  it("retains a tiny positive hit instead of rounding it to zero", () => {
+    expect(conversationCacheHitPercent({ tokens: { input: 999, cacheWrite: 0, cacheRead: 1, output: 0 } })).toBe("<1%");
+    expect(conversationCacheHitPercent({ tokens: { input: 1_000, cacheWrite: 0, cacheRead: 0, output: 0 } })).toBe("0%");
+  });
 });
 
 describe("conversationConsoleUsage", () => {

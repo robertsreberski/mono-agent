@@ -256,6 +256,11 @@ export const stripCapabilityUrls = (
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+const withoutTransientCompaction = (thread: ThreadSummary): ThreadSummary => {
+  const { compaction: _transient, ...stored } = thread;
+  return stored;
+};
+
 /**
  * A summary the sidebar and the header can actually draw.
  *
@@ -303,7 +308,7 @@ const readThreadRow = (value: unknown): PersistedThread | undefined => {
   const sanitized = sanitizeCronTranscript(value.thread, value.messages as readonly WebMessage[]);
   return {
     id: value.id,
-    thread: sanitized.thread,
+    thread: withoutTransientCompaction(sanitized.thread),
     messages: sanitized.messages,
     ...(typeof value.messagesNextCursor === "string"
       ? { messagesNextCursor: value.messagesNextCursor }
@@ -321,7 +326,7 @@ const readBucketRow = (value: unknown): PersistedBucket | undefined => {
   if (!Array.isArray(value.threads) || !value.threads.every(isSummary)) return undefined;
   return {
     key: value.key,
-    threads: value.threads,
+    threads: value.threads.map(withoutTransientCompaction),
     nextCursor: typeof value.nextCursor === "string" ? value.nextCursor : null,
     savedAt: typeof value.savedAt === "number" ? value.savedAt : 0,
   };
@@ -609,7 +614,7 @@ export const createThreadPersistence = (
     const transcript = stripCapabilityUrls(entry.messages);
     return {
       id: entry.thread.id,
-      thread: entry.thread,
+      thread: withoutTransientCompaction(entry.thread),
       messages: transcript.messages,
       ...(entry.messagesNextCursor === undefined
         ? {}
@@ -847,7 +852,8 @@ export const createThreadPersistence = (
           decide();
         };
         if (state.bucket !== undefined) {
-          transaction.objectStore(BUCKET_STORE).put({ ...state.bucket, savedAt });
+          transaction.objectStore(BUCKET_STORE).put({ ...state.bucket,
+            threads: state.bucket.threads.map(withoutTransientCompaction), savedAt });
         }
         if (state.snapshot !== undefined) {
           const meta = transaction.objectStore(META_STORE);

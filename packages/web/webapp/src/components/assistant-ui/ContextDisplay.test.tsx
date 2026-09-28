@@ -28,6 +28,20 @@ const plan = { agent: agent("alpha", { supportsProviderUsage: true }), providerI
 afterEach(() => { vi.clearAllMocks(); });
 
 describe("ContextDisplay", () => {
+  it("restores busy badge and dialog from the thread hint after a remount", async () => {
+    const { unmount } = render(<ContextDisplay context={context} totals={typical} compactThreadId="thread-one" manualCompacting />);
+    const badge = screen.getByRole("button", { name: /Context usage:.*compacting/u });
+    expect(badge).toHaveAttribute("data-busy");
+    expect(badge).toHaveAttribute("data-muted");
+    unmount();
+    render(<ContextDisplay context={context} totals={typical} compactThreadId="thread-one" manualCompacting />);
+    const popup = await open();
+    expect(popup.querySelector(".context-display-compact-status")).toHaveTextContent("Summarizing earlier turns…");
+    const button = within(popup).getByRole("button", { name: "Compacting…" });
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(apiMock.compactThread).not.toHaveBeenCalled();
+  });
   it("renders ordered named sections, a token table and a cost definition list without old diagnostics", async () => {
     render(<ContextDisplay context={context} totals={typical} compactThreadId="thread-one" />);
     const popup = await open();
@@ -39,6 +53,33 @@ describe("ContextDisplay", () => {
     expect(within(popup).queryByText("incl. subagents")).not.toBeInTheDocument();
     expect(within(popup).queryByText("atlas/standard")).not.toBeInTheDocument();
     expect(within(popup).getByText("Summarizes earlier turns to free space.")).toBeVisible();
+  });
+  it("shows aggregate cache hit alongside Tokens processed without implying a lower bound", async () => {
+    const { rerender } = render(<ContextDisplay context={context} totals={typical} />);
+    let popup = await open();
+    let hit = within(popup).getByLabelText("Cache hit 29 percent");
+    expect(hit).toHaveTextContent("29% cache hit");
+    expect(hit).toHaveAttribute("title", "Share of prompt tokens read from the provider's prompt cache across this conversation.");
+    fireEvent.click(screen.getByRole("button", { name: /^Context usage:/u }));
+    rerender(<ContextDisplay context={context} totals={mixed} />);
+    popup = await open();
+    hit = within(popup).getByLabelText("Cache hit 31 percent");
+    expect(hit).toHaveTextContent("31% cache hit");
+    expect(hit).not.toHaveTextContent("≥");
+    expect(hit).toHaveAttribute("title", "Share of prompt tokens read from the provider's prompt cache across this conversation. Based on the token counts that were reported.");
+  });
+  it("omits cache hit without prompt tokens and describes tiny positive hits accessibly", async () => {
+    const { rerender } = render(<ContextDisplay context={context} totals={{ ...typical, total: { tokens: {
+      input: 0, cacheWrite: 0, cacheRead: 0, output: 50,
+    } } }} />);
+    let popup = await open();
+    expect(within(popup).queryByText(/cache hit/u)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Context usage:/u }));
+    rerender(<ContextDisplay context={context} totals={{ ...typical, total: { tokens: {
+      input: 999, cacheWrite: 0, cacheRead: 1, output: 50,
+    } } }} />);
+    popup = await open();
+    expect(within(popup).getByLabelText("Cache hit less than 1 percent")).toHaveTextContent("<1% cache hit");
   });
   it("uses the full-thread endpoint rather than the loaded message page", async () => {
     apiMock.threadUsage.mockResolvedValue({ total: { costUsd: 0.9, tokens: { input: 900, cacheWrite: 0, cacheRead: 0, output: 90 } },

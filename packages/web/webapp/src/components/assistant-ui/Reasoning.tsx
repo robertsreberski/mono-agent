@@ -48,7 +48,7 @@ const ACTIVITY_GROUP_BY_TYPE = groupPartByType({
  * not the answer, so it belongs in the log with the rows it narrates.
  */
 export const ACTIVITY_DATA_PARTS: ReadonlySet<string> = new Set(
-  ["context-compaction", "subagent", "note", "tool-cluster", "process-job-event"],
+  ["subagent", "note", "tool-cluster", "process-job-event"],
 );
 
 /**

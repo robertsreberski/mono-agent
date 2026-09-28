@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "./api";
 import { notifyThreadUsageChanged } from "./thread-usage-events";
 import { useThreadUsage } from "./use-thread-usage";
+import { conversationCacheHitPercent } from "./usage";
 
 const response = { total: { costUsd: 2 }, byModel: [{ model: "atlas/standard", costUsd: 2 }], computedAt: "2026-01-01T00:00:00.000Z" };
 afterEach(() => vi.restoreAllMocks());
@@ -37,12 +38,13 @@ describe("useThreadUsage", () => {
   it("falls back to the loaded window after endpoint failure and keeps a cursor lower bound", async () => {
     vi.spyOn(api, "threadUsage").mockRejectedValue(new Error("offline"));
     const detail = { messages: [{ role: "assistant", parts: [{ type: "telemetry", event: "usage_update", data: {
-      cumulativeUsd: 0, tokens: { input: 2, output: 1 },
+      cumulativeUsd: 0, tokens: { input: 2, output: 1, cacheRead: 8 },
     } }] }], messagesNextCursor: "older" } as unknown as Parameters<typeof useThreadUsage>[3];
     const { result, rerender } = renderHook(({ current }) => useThreadUsage("fresh-thread-two", true, false, current),
       { initialProps: { current: detail } });
     await waitFor(() => expect(result.current.error).toBe(true));
     expect(result.current.usage?.total).toMatchObject({ costUsd: 0, costPartial: true, tokensPartial: true });
+    expect(conversationCacheHitPercent(result.current.usage?.total)).toBe("80%");
     const next = { ...detail!, messages: [{ role: "assistant", parts: [{ type: "telemetry", event: "usage_update",
       data: { cumulativeUsd: 1, tokens: { input: 5, output: 2 } } }] }] } as unknown as typeof detail;
     rerender({ current: next });

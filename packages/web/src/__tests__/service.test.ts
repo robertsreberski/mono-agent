@@ -593,15 +593,60 @@ describe("WebService", () => {
       const turn = service.store.beginTurn({ threadId: thread.id, text: "hello", attachmentIds: [] });
       service.store.completeTurn(turn.turnId, "hello back");
       expect((await service.bootstrap()).agents[0]?.supportsManualCompaction).toBe(true);
+      const transitions: WebEvent[] = [];
+      const unsubscribe = service.subscribe((event) => {
+        if (event.type === "thread.changed" && event.threadId === thread.id) transitions.push(event);
+      });
       const pending = service.compactThread(thread.id);
       await admitted;
+      expect(service.thread(thread.id).thread.compaction).toMatchObject({ status: "running", trigger: "manual" });
+      expect(service.threadsPage({ sourceId: thread.sourceId, archived: false }).threads[0]?.compaction?.status).toBe("running");
+      expect((await service.bootstrap()).threads[0]?.compaction?.status).toBe("running");
+      const renamed = service.patchThread(thread.id, { title: "Fictional garden" });
+      expect(renamed.compaction?.status).toBe("running");
+      expect(transitions.at(-1)?.payload).toMatchObject({ thread: { title: "Fictional garden",
+        compaction: { status: "running" } } });
+      const notApplied = service.patchThread(thread.id, { model: null, ifRunConfigUnset: true });
+      expect(notApplied.compaction?.status).toBe("running");
       await expect(service.compactThread(thread.id)).rejects.toMatchObject({ code: "compaction_busy" });
       await expect(service.startTurn(thread.id, { text: "wait" })).rejects.toMatchObject({ code: "compaction_busy" });
       release();
       await expect(pending).resolves.toMatchObject({ status: "succeeded", tokensAfter: 200 });
       expect(compacted).toEqual([`web:${thread.id}`]);
+      expect(service.thread(thread.id).thread.compaction).toBeUndefined();
+      expect((transitions[0]?.payload as { thread?: { compaction?: unknown } })?.thread?.compaction).toBeDefined();
+      expect((transitions.at(-1)?.payload as { thread?: { compaction?: unknown } })?.thread?.compaction).toBeUndefined();
+      unsubscribe();
       expect(JSON.stringify(service.store.getThreadDetail(thread.id)?.messages.at(-1)?.parts))
         .toContain('"operationId":"manual-1"');
+    } finally {
+      release();
+      await service.stop();
+    }
+  });
+
+  it("clears the in-memory compaction flag and emits a thread update on failure", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const service = await createService({ fetchImpl: operatorFetch({ supportsManualCompaction: true,
+      onCompact: async () => { await gate; throw new Error("fictional failure"); },
+    }) });
+    try {
+      await service.refreshAgents();
+      const thread = service.createThread("agent-one");
+      const events: WebEvent[] = [];
+      const unsubscribe = service.subscribe((event) => {
+        if (event.type === "thread.changed" && event.threadId === thread.id) events.push(event);
+      });
+      const pending = service.compactThread(thread.id);
+      expect(service.thread(thread.id).thread.compaction?.status).toBe("running");
+      release();
+      await expect(pending).rejects.toThrow();
+      expect(service.thread(thread.id).thread.compaction).toBeUndefined();
+      expect(events).toHaveLength(2);
+      expect((events[0]?.payload as { thread?: { compaction?: unknown } })?.thread?.compaction).toBeDefined();
+      expect((events[1]?.payload as { thread?: { compaction?: unknown } })?.thread?.compaction).toBeUndefined();
+      unsubscribe();
     } finally {
       release();
       await service.stop();

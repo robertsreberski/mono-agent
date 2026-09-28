@@ -370,11 +370,15 @@ it is disabled while running and reports approximate before/after tokens,
 no useful reduction, or an error. It also works after a cold restart by
 resuming or seeding the agent's provider session. The next exact context
 percentage awaits a fresh provider measurement; this action does not change
-automatic compaction thresholds.
-Structured reasoning, routine tools, process-job lifecycle evidence, and one
-update-in-place row per compaction share the stream-aware Activity disclosure,
-which collapses at every terminal message state without reordering answer
-parts. Receipt-bearing job launches fold their launch call into one start row,
+automatic compaction thresholds. An in-memory `WebThread.compaction` hint
+appears in list/detail projections and thread-change events while manual
+compaction runs; it survives closing the dialog or switching conversations,
+but not a web service restart. The composer blocks sends until it clears; externally queued live inputs
+still drain afterward. The
+transcript shows a transient running divider and then the persisted result.
+Structured reasoning, routine tools, and process-job lifecycle evidence share
+the stream-aware Activity disclosure, which collapses at every terminal
+message state without reordering answer parts. Receipt-bearing job launches fold their launch call into one start row,
 which carries the launch arguments behind its disclosure alongside the job
 facts. Their terminal row follows the consumed wake chronologically, with
 launch-adjacent placement only as a fallback when no wake marker was retained;

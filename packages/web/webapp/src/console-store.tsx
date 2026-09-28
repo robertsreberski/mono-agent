@@ -32,6 +32,8 @@ import {
   type CronReplyRecoveryReference,
 } from "./cron-reply-recovery";
 import { currentDataMode } from "./data-mode";
+import { createManualCompactionOrder, manualCompactionResultTimestamp } from "./manual-compaction-order";
+import { runningManualCompaction } from "./manual-compaction";
 import { recordDataUsage } from "./data-usage";
 import { recordServerTime } from "./server-clock";
 import {
@@ -76,6 +78,7 @@ import type {
   ThreadDetail,
   ThreadSummary,
   WebEvent,
+  WebMessage,
 } from "./types";
 import {
   effectiveModelForAgent,
@@ -2012,6 +2015,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       return next;
     });
   }, []);
+  const compactionOrderRef = useRef(createManualCompactionOrder());
   const threadCacheRef = useRef<ThreadCache>(createThreadCache(
     THREAD_CACHE_ENTRIES,
     undefined,
@@ -2418,7 +2422,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * BEFORE that event, so without the fence it walks an older set of cards --
    * and older per-agent counts -- back over the newer ones.
    */
-  const acceptActiveThreads = useCallback((next: ActiveThreads | undefined, seq: number) => {
+  const acceptActiveThreads = useCallback((incoming: ActiveThreads | undefined, seq: number) => {
+    const next = incoming === undefined ? undefined : { ...incoming,
+      threads: incoming.threads.map((row) => compactionOrderRef.current.accept(row)),
+    };
     // A server that predates this listing has no opinion about what is running.
     // Keeping the last known answer is honest; replacing it with nothing is
     // an authoritative zero this console was never given.
@@ -2779,6 +2786,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     // conversations, and letting it fire would write them straight back.
     cancelPersist();
     threadCacheRef.current.clear();
+    compactionOrderRef.current.reset();
     noteHeldRunStateRef.current();
     selectedThreadRef.current = null;
     setDetail(null);
@@ -2887,7 +2895,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     // one on every SSE event, including the one the delete itself produced.
     const next: Bootstrap = {
       ...rawNext,
-      threads: admitThreads(removedThreadsRef.current, rawNext.threads, issuedAt),
+      threads: admitThreads(removedThreadsRef.current,
+        rawNext.threads.map((row) => compactionOrderRef.current.accept(row)), issuedAt),
+      ...(rawNext.activeThreads === undefined ? {} : { activeThreads: { ...rawNext.activeThreads,
+        threads: rawNext.activeThreads.threads.map((row) => compactionOrderRef.current.accept(row)) } }),
     };
     // REPLACED, not added to. A bootstrap answers with one bucket and the
     // projection it lands in is a wholesale replacement, so every other bucket
@@ -3165,7 +3176,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         (signal) => api.threads(sourceId, archived, before, signal, threadPageLimit()),
         THREAD_READ_TIMEOUT_MS,
       );
-      const admitted = admitThreads(removedThreadsRef.current, page.threads, issuedAt);
+      const admitted = admitThreads(removedThreadsRef.current,
+        page.threads.map((row) => compactionOrderRef.current.accept(row)), issuedAt);
       // A page is a server summary for every row in it, exactly as a bootstrap's
       // listing is -- and a bootstrap carries ONE bucket, so a conversation held
       // for any other agent is confirmed by nothing until that agent's bucket is
@@ -3402,6 +3414,19 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     if (reconcileListing && entry !== undefined) reconcileSelectedListing(entry);
   }, [reconcileSelectedListing]);
 
+  const noteManualCompactionResult = useCallback((threadId: string, messages: readonly WebMessage[]) => {
+    const timestamps = messages.map(manualCompactionResultTimestamp)
+      .filter((value): value is number => value !== undefined);
+    if (!timestamps.some((at) => compactionOrderRef.current.clear(threadId, at))) return;
+    const held = threadCacheRef.current.get(threadId);
+    if (held !== undefined && threadCacheRef.current.patchThread(threadId,
+      compactionOrderRef.current.accept(held.thread))) publishDetail(threadId);
+    setBootstrap((current) => current === null ? current : { ...current,
+      threads: current.threads.map((row) => row.id === threadId
+        ? compactionOrderRef.current.accept(row) : row),
+    });
+  }, [publishDetail]);
+
   /**
    * Apply one admitted read of the selected conversation.
    *
@@ -3416,7 +3441,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     reconcileListing: boolean,
   ) => {
     if (selectedThreadRef.current !== next.thread.id) return;
-    const entry = threadCacheRef.current.upsertFull(next, {
+    noteManualCompactionResult(next.thread.id, next.messages);
+    const entry = threadCacheRef.current.upsertFull({ ...next,
+      thread: compactionOrderRef.current.accept(next.thread) }, {
       reset: true,
       issuedAt: observedAt,
       ...(next.etag === undefined ? {} : { etag: next.etag }),
@@ -3428,7 +3455,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
     if (!reconcileListing || entry === undefined) return;
     reconcileSelectedListing(entry);
-  }, [publishDetail, reconcileSelectedListing]);
+  }, [noteManualCompactionResult, publishDetail, reconcileSelectedListing]);
 
   /**
    * Read one conversation in full and put it into the cache.
@@ -3922,6 +3949,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
             cache.markStale(threadId);
             return;
           }
+          noteManualCompactionResult(threadId, [message]);
           if (cache.upsertMessage(threadId, message)) publishDetail(threadId);
           const landedSeq = message.seq ?? Number.NEGATIVE_INFINITY;
           if (!pending.dirty && pending.wantedSeq <= landedSeq) return;
@@ -3944,7 +3972,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     })();
     messageRepairsRef.current.set(key, pending);
     return pending.promise;
-  }, [publishDetail, refreshSelectedThread]);
+  }, [noteManualCompactionResult, publishDetail, refreshSelectedThread]);
 
   /**
    * Publishes what the batched deltas have already written into the cache.
@@ -4033,7 +4061,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
   }, [flushDeltaPublishes, noteTranscriptWrite, publishDetail, repairMessage]);
 
-  const applyThreadUpdate = useCallback((nextThread: ThreadSummary, issuedAt: number) => {
+  const applyThreadUpdate = useCallback((incoming: ThreadSummary, issuedAt: number) => {
+    const nextThread = compactionOrderRef.current.accept(incoming);
     // A response can outlive the conversation it describes: the migration's
     // read, an optimistic rollback, any write already in flight when the
     // operator deleted the thread. `mergeThreads` would re-add it, so the
@@ -4257,7 +4286,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       if (projectMembersGenerationRef.current !== generation
         || openProjectIdRef.current !== projectId) return;
       const issuedAt = removedThreadsRef.current.epoch();
-      const admitted = admitThreads(removedThreadsRef.current, page.threads, issuedAt);
+      const admitted = admitThreads(removedThreadsRef.current,
+        page.threads.map((row) => compactionOrderRef.current.accept(row)), issuedAt);
       for (const row of admitted) {
         reconcileCronRevision(row);
         threadCacheRef.current.confirmListed(row.id, row);
@@ -7174,6 +7204,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         const rejection = applySubmissionReceipt(receipt);
         if (rejection !== undefined) throw new Error(rejection);
       } catch (submissionError) {
+        // The server owns admission. A missed busy event, or a stale busy hint
+        // after a different rejection, needs an authoritative thread re-read.
+        if ((submissionError instanceof ApiError && submissionError.code === "compaction_busy")
+          || (selectedThread?.id === threadId && runningManualCompaction(selectedThread))) {
+          scheduleRefreshRef.current({ detail: true, bootstrap: true });
+        }
         if (selectedThreadRef.current === threadId) setActionError(errorMessage(submissionError));
         throw submissionError;
       } finally {

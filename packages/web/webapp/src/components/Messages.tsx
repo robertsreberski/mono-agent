@@ -27,6 +27,7 @@ import { api } from "../api";
 import { useConsoleStore } from "../console-store";
 import { currentDataMode, useDataMode } from "../data-mode";
 import { useDocumentVisible } from "../document-visibility";
+import { formatTokenCount } from "../usage";
 import type {
   AskAnswer,
   AskSnapshot,
@@ -847,12 +848,6 @@ type CompactionDisplayStatus = "running" | "succeeded" | "skipped" | "failed" | 
 const finiteCount = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 
-const compactTokenCount = (tokens: number): string => {
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1).replace(/\.0$/u, "")}M`;
-  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1).replace(/\.0$/u, "")}k`;
-  return String(Math.round(tokens));
-};
-
 const compactionPayload = (value: unknown): Record<string, unknown> => {
   let current = value;
   let best: Record<string, unknown> = {};
@@ -876,12 +871,15 @@ function ScheduledWakePart({ data }: DataMessagePartProps) {
   </section>;
 }
 
-function ContextCompactionPart({ data, status: messageStatus }: DataMessagePartProps) {
+function ContextCompactionPart({ data }: DataMessagePartProps) {
+  // A part followed by more prose is complete even while the whole turn runs.
+  // Compaction remains running until the message itself settles.
+  const isMessageRunning = useAuiState((state) => state.message.status?.type === "running");
   const payload = compactionPayload(data);
   const reported = ["running", "succeeded", "skipped", "failed"].includes(String(payload.status))
     ? payload.status as Exclude<CompactionDisplayStatus, "interrupted">
     : "failed";
-  const status: CompactionDisplayStatus = reported === "running" && messageStatus.type !== "running"
+  const status: CompactionDisplayStatus = reported === "running" && !isMessageRunning
     ? "interrupted"
     : reported;
   const label = {
@@ -891,38 +889,27 @@ function ContextCompactionPart({ data, status: messageStatus }: DataMessagePartP
     failed: "Context compaction failed",
     interrupted: "Context compaction interrupted",
   }[status];
-  const trigger = typeof payload.trigger === "string" ? payload.trigger : undefined;
-  const triggerLabel = trigger === "overflow"
-    ? "after overflow"
-    : trigger === "proactive"
-      ? "proactive"
-      : trigger === "manual"
-        ? "manual"
-        : undefined;
+  const triggerLabel = payload.trigger === "manual" ? "manual" : "automatic";
   const before = finiteCount(payload.tokensBefore);
   const after = finiteCount(payload.tokensAfter);
-  const approximate = payload.tokenCountsExact !== true;
-  const formatMeasuredCount = (tokens: number) => `${approximate ? "~" : ""}${compactTokenCount(tokens)}`;
+  const count = (tokens: number) => `${payload.tokenCountsExact === true ? "" : "≈"}${formatTokenCount(tokens)}`;
   const counts = before !== undefined && after !== undefined
-    ? `${formatMeasuredCount(before)} → ${formatMeasuredCount(after)} tokens`
-    : before !== undefined
-      ? `${formatMeasuredCount(before)} tokens before`
-      : after !== undefined
-        ? `${formatMeasuredCount(after)} tokens after`
-        : undefined;
+    ? `${formatTokenCount(before)} → ${count(after)} tokens`
+    : before !== undefined ? `${count(before)} tokens before`
+      : after !== undefined ? `${count(after)} tokens after` : undefined;
+  const detail = status === "skipped" && payload.reason === "model_changed"
+    ? "Switch back to this conversation's model to compact this session."
+    : status === "skipped" ? "Nothing to compact yet." : undefined;
 
-  return (
-    <div
-      className={`context-compaction-row is-${status}`}
-      role="status"
-      aria-label={[label.replace("…", ""), triggerLabel, counts].filter(Boolean).join(", ")}
-    >
-      <span className="context-compaction-status" aria-hidden="true" />
+  return <div className={`context-compaction-row is-${status}`} role="note"
+    aria-label={[label, counts, detail, triggerLabel].filter(Boolean).join(" · ")}>
+    <span className="context-compaction-content">
       <span className="context-compaction-label">{label}</span>
-      {triggerLabel !== undefined && <span className="context-compaction-trigger">{triggerLabel}</span>}
-      {counts !== undefined && <span className="context-compaction-counts">{counts}</span>}
-    </div>
-  );
+      {counts !== undefined && <span className="context-compaction-counts"> · {counts}</span>}
+      {detail !== undefined && <span className="context-compaction-detail"> · {detail}</span>}
+      <span className="context-compaction-trigger"> · {triggerLabel}</span>
+    </span>
+  </div>;
 }
 
 export function CronRunPart({ data }: DataMessagePartProps) {
@@ -1271,8 +1258,8 @@ function ToolClusterPart({ data }: DataMessagePartProps) {
 }
 
 // Runtime/provider telemetry remains attached to the message so the context
-// display can summarize it. Compaction alone is promoted into Activity; other
-// transport diagnostics remain out of the transcript UI.
+// display can summarize it. Compaction alone becomes an inline transcript
+// divider; other transport diagnostics remain out of the transcript UI.
 function ErrorPart({ data }: DataMessagePartProps) {
   const payload = data as { code?: unknown; message?: unknown };
   return (
