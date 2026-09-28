@@ -354,11 +354,16 @@ describe.each([
     expect(dialog).toBeVisible();
     const option = screen.getByRole("option", { name: /\$research, On demand/u });
     let focusedInSelectionEvent = false;
+    let focusedEffectivelyInSelectionEvent = false;
     let triggerFocusedAfterSelection = false;
     const nativeFocus = input.focus.bind(input);
     const focus = vi.spyOn(input, "focus").mockImplementation((...args) => {
-      if (window.event?.type === (method === "pointer" ? "click" : "keydown")) focusedInSelectionEvent = true;
+      const inSelectionEvent = window.event?.type === (method === "pointer" ? "click" : "keydown");
+      if (inSelectionEvent) focusedInSelectionEvent = true;
       nativeFocus(...args);
+      // The gesture-bound focus must actually land; a later non-gesture focus
+      // (e.g. dialog final focus) would not raise the WebKit keyboard.
+      if (inSelectionEvent && document.activeElement === input) focusedEffectivelyInSelectionEvent = true;
     });
     const nativeTriggerFocus = browse.focus.bind(browse);
     const triggerFocus = vi.spyOn(browse, "focus").mockImplementation((...args) => {
@@ -373,7 +378,10 @@ describe.each([
         await userEvent.keyboard("{Enter}");
       }
       await waitFor(() => expect(input).toHaveValue("Before $research after"));
-      if (method === "pointer") expect(focusedInSelectionEvent).toBe(true);
+      if (method === "pointer") {
+        expect(focusedInSelectionEvent).toBe(true);
+        expect(focusedEffectivelyInSelectionEvent).toBe(true);
+      }
       await waitFor(() => expect(screen.queryByRole("dialog", { name: "Skills" })).not.toBeInTheDocument());
       // Base UI's final-focus cleanup runs after close; it must not steal focus
       // back to the trigger even after the controlled textarea's caret update.
