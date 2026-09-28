@@ -405,6 +405,8 @@ export interface WebWakeSchedule {
 }
 
 export interface WebThread {
+  /** Transient service-owned operation; not part of the stored thread or revision. */
+  readonly compaction?: { readonly status: "running"; readonly trigger: "manual"; readonly startedAt: string };
   readonly wakeSchedule?: Pick<WebWakeSchedule, "state" | "revision" | "nextFireAt"> & { readonly kind: WebWakeScheduleDefinition["kind"] };
   readonly id: string;
   readonly sourceId: string;

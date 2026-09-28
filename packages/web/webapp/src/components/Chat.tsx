@@ -6,6 +6,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { type ConnectionState, useConsoleStore } from "../console-store";
 import { composerDraftKey } from "../composer-draft";
 import { ContextDisplay } from "./assistant-ui/ContextDisplay";
+import { ManualCompactionMarker } from "./ManualCompactionMarker";
 import { ModelSelector } from "./assistant-ui/ModelSelector";
 import { SelectionToolbar } from "./assistant-ui/Quote";
 import {
@@ -238,7 +239,7 @@ function ConversationTitle() {
 
 export function ModelControls() {
   const {
-    usage, providerUsage, compactThreadId, compactBlocked, threadId, detail, running, contextLoading, selectorModels, model, effort, setModel, setEffort,
+    usage, providerUsage, compactThreadId, compactBlocked, manualCompacting, threadId, detail, running, contextLoading, selectorModels, model, effort, setModel, setEffort,
     agentDefaultModel, hasRunOverride, resetRunOverride, disabled, hasSettings,
     catalogStatusByProvider, openCatalog, requestProvider, agentProviders,
     showModelChangeHint,
@@ -276,6 +277,7 @@ export function ModelControls() {
           contextLoading={contextLoading}
           compactThreadId={compactThreadId}
           compactBlocked={compactBlocked}
+          manualCompacting={manualCompacting}
           context={usage.context}
           providerUsage={providerUsage}
         />
@@ -677,6 +679,7 @@ export function Chat({ onBack }: { readonly onBack: () => void }) {
                     SystemMessage,
                   }}
                 />
+                <ManualCompactionMarker thread={selectedThread} detail={detail} />
               </div>
               {/* The dock: what the operator acts on lives with the input, not
                   at the end of the transcript. Background jobs are the surface

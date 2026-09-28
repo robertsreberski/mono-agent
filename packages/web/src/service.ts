@@ -635,6 +635,7 @@ export class WebService {
   private readonly activeTurns = new Map<string, ActiveTurn>();
   /** Threads with an in-flight manual compaction; wakes wait on the promise. */
   private readonly activeCompactions = new Map<string, Promise<unknown>>();
+  private readonly manualCompactionStartedAt = new Map<string, string>();
   private readonly activeLiveInputs = new Map<string, ActiveLiveInput>();
   private readonly drainingLiveInputThreads = new Set<string>();
   private readonly activeUploads = new Map<string, number>();
@@ -824,7 +825,7 @@ export class WebService {
         serviceWorkerVersion: WEB_PUSH_SERVICE_WORKER_VERSION,
       },
       agents,
-      threads: page.threads,
+      threads: page.threads.map((thread) => this.projectThread(thread)),
       threadsSourceId,
       threadsNextCursor: page.nextCursor ?? null,
       tags: projectsSourceId === null ? [] : this.store.listTags(projectsSourceId),
@@ -1066,7 +1067,8 @@ export class WebService {
     readonly projectId?: string;
     readonly tagId?: string;
   }): WebThreadPage {
-    return this.store.listThreadsPage(input);
+    const page = this.store.listThreadsPage(input);
+    return { ...page, threads: page.threads.map((thread) => this.projectThread(thread)) };
   }
 
   /**
@@ -2170,10 +2172,16 @@ export class WebService {
       return result;
     })();
     this.activeCompactions.set(threadId, operation.catch(() => undefined));
+    this.manualCompactionStartedAt.set(threadId, this.currentDate().toISOString());
+    this.emitStoredThread(threadId, ["thread.changed", "threads.changed"]);
     try {
       return await operation;
     } finally {
+      // Service restarts forget this in-memory flag. An in-flight agent request
+      // can finish without a result being recorded, just as before this hint.
       this.activeCompactions.delete(threadId);
+      this.manualCompactionStartedAt.delete(threadId);
+      this.emitStoredThread(threadId, ["thread.changed", "threads.changed"]);
       // Live input queued while compacting was held back; drain it now.
       if (!this.stopped) void this.drainQueuedLiveInputs(threadId);
       this.dispatchWake(threadId);
@@ -3859,7 +3867,15 @@ export class WebService {
    * apply the wrong row.
    */
   private emitThread(type: "thread.changed" | "threads.changed", payload: WebThreadChangedPayload): void {
-    this.emit(type, "thread" in payload ? payload.thread.id : payload.threadId, payload);
+    const projected = "thread" in payload ? { thread: this.projectThread(payload.thread) } : payload;
+    this.emit(type, "thread" in projected ? projected.thread.id : projected.threadId, projected);
+  }
+
+  private projectThread(thread: WebThread): WebThread {
+    const startedAt = this.manualCompactionStartedAt.get(thread.id);
+    return startedAt === undefined ? thread : {
+      ...thread, compaction: { status: "running", trigger: "manual", startedAt },
+    };
   }
 
   /**
@@ -4544,7 +4560,7 @@ export class WebService {
     // attempt failed or was interrupted. Idempotent and guarded, so repeated
     // reads of the same thread fetch each image at most once.
     void this.persistReplyImages(detail.thread.id, detail.messages);
-    return { ...detail, messages: this.shapeMessages(detail.messages, options) };
+    return { ...detail, thread: this.projectThread(detail.thread), messages: this.shapeMessages(detail.messages, options) };
   }
 
   /**

@@ -225,6 +225,27 @@ describe.each([
   });
 });
 
+describe.each([[1440, 900, "desktop"], [390, 844, "phone"]])("manual compaction composer at %ipx", (width, height, label) => {
+  it("shows the note and blocks new-turn submission without disabling text input", async () => {
+    await page.viewport(width, height);
+    const send = vi.fn<SendSubmission>().mockResolvedValue(undefined);
+    storeMock.current = { ...store(send), selectedThread: thread("thread", "agent", {
+      compaction: { status: "running", trigger: "manual", startedAt: "2026-09-28T10:00:00Z" },
+    }) };
+    render(<WebRuntimeProvider><Composer /></WebRuntimeProvider>);
+    expect(screen.getByText("Compacting context — you can send when it finishes.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+    const input = screen.getByRole("combobox", { name: "Message" });
+    expect(input).not.toBeDisabled();
+    await userEvent.fill(input, "A fictional follow-up");
+    await userEvent.type(input, "{Control>}{Enter}{/Control}");
+    expect(send).not.toHaveBeenCalled();
+    const shots = import.meta.env.VITE_CONTEXT_FOLLOWUP_SHOTS as string | undefined;
+    if (shots) await page.screenshot({ path: `${shots}/composer-compacting-${label}.png` });
+    expect(send).not.toHaveBeenCalled();
+  });
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();

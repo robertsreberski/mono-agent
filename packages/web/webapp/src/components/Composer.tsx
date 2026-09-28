@@ -12,6 +12,7 @@ import {
   writeComposerDraft,
 } from "../composer-draft";
 import { useConsoleStore } from "../console-store";
+import { runningManualCompaction } from "../manual-compaction";
 import {
   detectSkillQuery,
   insertSkillReference,
@@ -95,6 +96,9 @@ export function Composer({ runSettings, notice }: {
   const selectionUnavailable = store.selectionLoading || store.selectionError !== null;
   const canUpload = !selectionUnavailable
     && canUploadInConsole(connection, selectedAgent, selectedThread);
+  // A live input into an existing running turn remains queued by the service;
+  // only admission of a new turn is blocked by manual compaction.
+  const compacting = runningManualCompaction(selectedThread) && !isRunning;
   const canSend = useAuiState((state) => state.composer.canSend);
   const attachmentCount = useAuiState((state) => state.composer.attachments.length);
   const commands = useMemo(() => buildComposerCommands({
@@ -233,7 +237,9 @@ export function Composer({ runSettings, notice }: {
 
   return (
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
-      <ComposerPrimitive.Root className="composer-root">
+      <ComposerPrimitive.Root className="composer-root" onSubmitCapture={(event) => {
+        if (compacting) event.preventDefault();
+      }}>
         <ComposerTriggerPopover commands={commands} />
         {skillQuery !== null && autocompleteSkills.length > 0 && (
           <SkillAutocomplete
@@ -245,6 +251,7 @@ export function Composer({ runSettings, notice }: {
         )}
         <ComposerQuotePreview />
         {notice}
+        {compacting && <p className="composer-compaction-note">Compacting context — you can send when it finishes.</p>}
         <ComposerPrimitive.AttachmentDropzone
           className="composer-dropzone"
           disabled={!canUpload}
@@ -303,7 +310,7 @@ export function Composer({ runSettings, notice }: {
               <ComposerPrimitive.Send
                 className="composer-send"
                 aria-label="Send message"
-                disabled={!canSend}
+                disabled={!canSend || compacting}
               >
                 <Icon name="send" size={16} />
               </ComposerPrimitive.Send>

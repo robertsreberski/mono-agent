@@ -1,6 +1,7 @@
 import { isProviderUsageId } from "@mono-agent/agent-contracts/provider-usage";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useConsoleStore } from "../console-store";
+import { runningManualCompaction } from "../manual-compaction";
 import type { ProviderUsageId, ThreadDetail } from "../types";
 import { conversationConsoleUsage, type ConsoleContextProjection, type ConsoleUsage } from "../usage";
 import { sameModel } from "./model-comparison";
@@ -188,6 +189,7 @@ export function useRunControls() {
       && selectedAgent.status !== "offline" && selectedThread?.canSend === true
       && selectedThread.trigger?.kind !== "cron" ? selectedThread.id : undefined,
     compactBlocked: selectedThread?.runState.status === "running",
+    manualCompacting: runningManualCompaction(selectedThread),
     providerUsage: selectedAgent !== null && providerUsageId !== null
       ? { agent: selectedAgent, providerId: providerUsageId }
       : undefined,

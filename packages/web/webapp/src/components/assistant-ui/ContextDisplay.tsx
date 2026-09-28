@@ -17,6 +17,7 @@ export interface ContextDisplayProps {
   readonly detail?: ThreadDetail | null;
   readonly compactThreadId?: string;
   readonly compactBlocked?: boolean;
+  readonly manualCompacting?: boolean;
   readonly running?: boolean;
   readonly contextLoading?: boolean;
   readonly context: ConsoleContextProjection;
@@ -200,7 +201,7 @@ function CompactFooter({ id, compact, compacting, blocked, percent, result, erro
   </div>;
 }
 
-export function ContextDisplay({ threadId, detail, compactThreadId, compactBlocked = false, running = false,
+export function ContextDisplay({ threadId, detail, compactThreadId, compactBlocked = false, manualCompacting = false, running = false,
   contextLoading = false, context, totals: providedTotals, providerUsage, className }: ContextDisplayProps) {
   const [open, setOpen] = useState(false);
   const [compacting, setCompacting] = useState(false);
@@ -215,17 +216,18 @@ export function ContextDisplay({ threadId, detail, compactThreadId, compactBlock
   const size = windowSize(context.usage?.contextWindow);
   const percent = used === undefined || size === undefined ? undefined : Math.min(100, used / size * 100);
   const estimate = context.status === "awaiting_measurement" && context.compaction?.running !== true && used !== undefined;
-  const last = context.status === "last_measured" || context.compaction?.running === true;
+  const last = context.status === "last_measured" || context.compaction?.running === true || manualCompacting;
+  const busy = compacting || manualCompacting || context.compaction?.running === true;
   const badge = percent === undefined ? "—" : `${estimate ? "≈" : ""}${percentText(percent)}`;
   const label = contextLoading ? "loading" : used === undefined ? "context size not reported"
     : size === undefined ? `${exact(used)} tokens; context window size not reported`
       : `${estimate ? "about " : last ? "last measured " : ""}${exact(used)} of ${exact(size)} tokens (${estimate ? "about " : ""}${percentText(percent!)}${estimate ? ") after compaction" : ")"}${context.status === "updating" || running ? ", updating" : ""}`;
-  const ariaLabel = `Context usage: ${label}.${totals?.total.costUsd === undefined ? "" : ` Estimated cost ${formatUsd(totals.total.costUsd)}.`}`;
+  const ariaLabel = `Context usage: ${label}${busy ? ", compacting" : ""}.${totals?.total.costUsd === undefined ? "" : ` Estimated cost ${formatUsd(totals.total.costUsd)}.`}`;
   const availableProviderUsage = providerUsage !== undefined && providerUsage.agent.supportsProviderUsage === true
     && providerUsage.agent.status !== "offline" && isProviderUsageId(providerUsage.providerId)
     ? { agent: providerUsage.agent, providerId: providerUsage.providerId } : undefined;
   const compact = async () => {
-    if (compactThreadId === undefined || compacting || compactBlocked) return;
+    if (compactThreadId === undefined || busy || compactBlocked) return;
     setCompacting(true); setCompactError(null); setCompactResult(null);
     try { setCompactResult(await api.compactThread(compactThreadId)); }
     catch (error) { setCompactError(error instanceof ApiError ? error.message
@@ -242,7 +244,7 @@ export function ContextDisplay({ threadId, detail, compactThreadId, compactBlock
   return <Popover.Root open={open} onOpenChange={changeOpen}>
     <Popover.Trigger type="button" className={["context-display-trigger", className].filter(Boolean).join(" ")}
       data-slot="context-display-trigger" data-state={context.status} data-level={contextLevel(percent)}
-      data-estimate={estimate ? "" : undefined} data-muted={last ? "" : undefined} aria-label={ariaLabel}>
+      data-estimate={estimate ? "" : undefined} data-muted={last ? "" : undefined} data-busy={busy ? "" : undefined} aria-label={ariaLabel}>
       <ContextRing percent={percent} unknown={percent === undefined} />
       <span className="context-display-trigger-percent" data-slot="context-display-percent">{badge}</span>
     </Popover.Trigger>
@@ -266,7 +268,7 @@ export function ContextDisplay({ threadId, detail, compactThreadId, compactBlock
             key={`${availableProviderUsage.agent.sourceId}:${availableProviderUsage.agent.generation ?? "unknown"}:${availableProviderUsage.providerId}`}
             agent={availableProviderUsage.agent} providerId={availableProviderUsage.providerId} id={`${id}-plan`} />}
           {compactThreadId !== undefined && <CompactFooter id={`${id}-compact`} compact={() => { void compact(); }}
-            compacting={compacting} blocked={compactBlocked} percent={percent} result={compactResult} error={compactError} measuredModel={context.measuredModel ?? context.usage?.model} />}
+            compacting={compacting || manualCompacting} blocked={compactBlocked} percent={percent} result={compactResult} error={compactError} measuredModel={context.measuredModel ?? context.usage?.model} />}
         </Popover.Popup>
       </Popover.Positioner>
     </Popover.Portal>

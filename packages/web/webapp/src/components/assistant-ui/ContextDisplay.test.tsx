@@ -28,6 +28,20 @@ const plan = { agent: agent("alpha", { supportsProviderUsage: true }), providerI
 afterEach(() => { vi.clearAllMocks(); });
 
 describe("ContextDisplay", () => {
+  it("restores busy badge and dialog from the thread hint after a remount", async () => {
+    const { unmount } = render(<ContextDisplay context={context} totals={typical} compactThreadId="thread-one" manualCompacting />);
+    const badge = screen.getByRole("button", { name: /Context usage:.*compacting/u });
+    expect(badge).toHaveAttribute("data-busy");
+    expect(badge).toHaveAttribute("data-muted");
+    unmount();
+    render(<ContextDisplay context={context} totals={typical} compactThreadId="thread-one" manualCompacting />);
+    const popup = await open();
+    expect(popup.querySelector(".context-display-compact-status")).toHaveTextContent("Summarizing earlier turns…");
+    const button = within(popup).getByRole("button", { name: "Compacting…" });
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(apiMock.compactThread).not.toHaveBeenCalled();
+  });
   it("renders ordered named sections, a token table and a cost definition list without old diagnostics", async () => {
     render(<ContextDisplay context={context} totals={typical} compactThreadId="thread-one" />);
     const popup = await open();

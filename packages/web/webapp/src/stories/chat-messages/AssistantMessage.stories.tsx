@@ -1,6 +1,8 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import type { ThreadMessageLike } from "@assistant-ui/react";
 import { AssistantMessage } from "../../components/Messages";
+import { ManualCompactionMarker } from "../../components/ManualCompactionMarker";
+import { gardenThread } from "../fixtures";
 import { sampleMessages } from "../runtime";
 import { Transcript } from "../transcript";
 export default { title: "Chat & Messages/AssistantMessage", component: AssistantMessage, tags: ["autodocs"] } satisfies Meta<typeof AssistantMessage>;
@@ -29,3 +31,7 @@ export const AutomaticRunning: Story = { render: () => <Transcript messages={com
 export const AutomaticFailed: Story = { render: () => <Transcript messages={compactionMessages(compaction("failed", "overflow"))} /> };
 export const ManualSkipped: Story = { render: () => <Transcript messages={compactionMessages(compaction("skipped", "manual"))} /> };
 export const ManualCompactedPhone: Story = { ...ManualCompacted, globals: { viewport: { value: "phone" } } };
+export const ManualCompactionPending: Story = { render: () => <>
+  <Transcript messages={compactionMessages(compaction("succeeded", "automatic"))} />
+  <ManualCompactionMarker thread={{ ...gardenThread, compaction: { status: "running", trigger: "manual", startedAt: "2026-09-28T10:00:00Z" } }} detail={null} />
+</> };

@@ -9,6 +9,11 @@ import { defineConfig } from "vitest/config";
 
 type EmulatedColorScheme = "light" | "dark" | null;
 
+const emulateReducedMotion: BrowserCommand<["reduce" | "no-preference" | null]> = async (context, reducedMotion) => {
+  if (context.provider.name !== "playwright") throw new Error("emulateReducedMotion requires Playwright");
+  await context.page.emulateMedia({ reducedMotion });
+};
+
 const emulateColorScheme: BrowserCommand<[EmulatedColorScheme]> = async (context, colorScheme) => {
   if (context.provider.name !== "playwright") {
     throw new Error(`emulateColorScheme requires Playwright, received ${context.provider.name}`);
@@ -60,7 +65,7 @@ export default defineConfig({
           context: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true },
         },
       ],
-      commands: { emulateColorScheme },
+      commands: { emulateColorScheme, emulateReducedMotion },
     },
   },
 });
