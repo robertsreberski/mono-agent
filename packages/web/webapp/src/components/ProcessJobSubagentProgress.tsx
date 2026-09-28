@@ -113,7 +113,7 @@ export function ProcessJobSubagentProgress({ progress, open }: {
             const summary = currentPreview?.command ? currentPreview.preview : clusterSummary(previews);
             const mobileSummary = currentPreview?.command
               ? formatToolPreview(current.toolName, current.argsSummary, current.workdir, 34)?.preview : summary;
-            return <ActivityStep key={first.id} toolName={calls.length > 1 ? `${first.toolName} ×${calls.length}` : first.toolName}
+            return <ActivityStep key={first.id} running={running} toolName={calls.length > 1 ? `${first.toolName} ×${calls.length}` : first.toolName}
               summary={summary === undefined ? undefined : <span className="process-job-command-summary" title={currentPreview?.location}>
                 <span className="process-job-command-preview" title={currentPreview?.location ?? currentPreview?.full}>{summary}</span>
                 {currentPreview?.command && <span className="process-job-command-preview-mobile"

@@ -597,23 +597,29 @@ only while the controller and its owner bearer are present. List responses keep
 every queued, starting, and running projection and add a deterministic
 newest-terminal prefix within the 16 MiB response ceiling. The web console
 collects running and terminal jobs from the loaded transcript window into one
-stack after the conversation (tool, purpose, state and elapsed time on each
-card; output tail, wake state and the wake's response behind it, without the
-host-local artifact paths an operator cannot open from a browser). Queued,
-starting, and running work stays visible by default. Every terminal
-outcome remains mounted but hidden until the operator expands history; that
-choice is remembered per conversation for the browser session. The stack labels
-its active and history counts as loaded and points to **Load earlier messages**
-whenever older history is available. A running card polls its exact job once per
-second and opens when its first output arrives. Operators may collapse that
-card; later output and settlement preserve the choice, and the tail follows the
-bottom only until the operator scrolls upward. Queued/starting jobs and failed
-reads retain bounded backoff. Each nonterminal card polls only its
+compact shelf directly above the composer. Closed by default, the shelf is one
+line: its title, then either the one current job's purpose or marked counts of
+active jobs, questions awaiting the agent and issues (failed outcomes, wake
+problems, a child still busy). Opening it lists current work purpose-first,
+with state, elapsed time, tool, exit facts and a labelled output or step
+preview on each row; a row opens for its output tail, wake state and the
+wake's response, without the host-local artifact paths an operator cannot open
+from a browser. Command jobs use a rounded-square glyph and agent jobs a
+circle; the inner mark and the row's words give the status. Every terminal
+outcome remains mounted but hidden behind **History** inside the shelf, except
+a PeerAgent job whose question still awaits the agent's answer, which stays
+with current work until the question is answered or expires. The shelf and
+History choices are remembered per conversation for the browser session.
+Finished counts are scoped to loaded messages, and **History** points to **Load
+earlier messages** whenever older history is available. Nothing opens by
+itself: a running card polls its exact job once per second, and an opened tail
+follows the bottom only until the operator scrolls upward. Queued/starting jobs
+and failed reads retain bounded backoff. Each nonterminal card polls only its
 exact authenticated, source- and thread-bound
 `GET /api/v1/threads/:id/jobs/:jobId` proxy with bounded backoff; it does not
 clone or serialize the retained job list on every refresh.
 
-The stack remains the only live card and poller. Response Activity rows do not
+The shelf remains the only live card and poller. Response Activity rows do not
 poll, show output/artifacts/wake details, offer cancellation, or duplicate the
 completion response.
 
@@ -647,9 +653,10 @@ In the web console, detached launches keep their receipt in the parent's Activit
 which shows `Agent job started` / `Agent job succeeded` (or the actual terminal
 state); `AgentManage` uses the corresponding label. The child no longer streams
 foreground-style subagent rows into the parent response. Its Background jobs
-card uses the subagent glyph and a height-bounded scroll region with clustered
-tool calls, running/complete/failed status, durations, and a plain-text terminal
-report. State, Wake, and terminal facts remain on the card. Scrolling upward
+row uses the circular agent glyph, marks its last recorded tool calls as
+complete, failed or running while it works, and opens to a height-bounded scroll
+region with clustered tool calls, running/complete/failed status, durations, and
+a prose terminal report. State, Wake, and terminal facts remain on the card. Scrolling upward
 holds the reading position through later progress and report arrival.
 
 Progress is separate from stdout and from the parent's completion-wake output.

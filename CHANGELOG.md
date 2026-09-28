@@ -17,6 +17,14 @@
   conflicting change and an inline delete confirmation. Fix next wake-up times
   that were labelled with the schedule's timezone but shown in the device's.
 
+- Replace the web console's Background jobs dock with a compact shelf above the
+  composer. Closed, it is one line with the single job's purpose or marked counts
+  of active jobs, pending agent questions and issues; opened, it lists current
+  work purpose-first with state, elapsed time, tool and an output or step
+  preview, and keeps finished jobs behind History. Command and agent jobs get
+  distinct glyphs, stopping and pending-question states are shown, cancelled
+  jobs no longer read as failures, and nothing opens by itself.
+
 - Fix the web Context usage phone sheet's dark overlay and show manual and
   automatic compaction outcomes as visible conversation dividers. Keep a running
   manual compaction visible after closing the sheet, switching chats or reloading,

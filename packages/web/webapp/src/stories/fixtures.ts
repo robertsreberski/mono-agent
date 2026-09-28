@@ -7,14 +7,19 @@ export const grove = agent("grove", { label: "Grove", status: "offline", updated
 export const gardenThread = thread("garden-planner", "atlas", { title: "Garden planner", messageCount: 8, projectId: "garden", tagIds: [researchTag.id], createdAt: "2026-01-15T10:00:00Z", updatedAt: "2026-01-15T10:00:00Z" });
 export const runningThread = thread("seed-catalog", "atlas", { title: "Seed catalog", runState: { status: "running" }, messageCount: 3, createdAt: "2026-01-15T10:00:00Z", updatedAt: "2026-01-15T10:00:00Z" });
 export const gardenProject = project("garden", "atlas", { name: "Garden planner", color: "blue", conversationCount: 2, createdAt: "2026-01-15T10:00:00Z", updatedAt: "2026-01-15T10:00:00Z" });
+/** A state-correct fictional command job: active work carries no exit code or finish stamp. */
 export const sampleJob = (state: ProcessJobState, output = "Garden plan ready\n"): Extract<ProcessJobProjection, { tool: "Exec" | "Bash" }> => {
+  const active = state === "queued" || state === "starting" || state === "running";
+  const started = state !== "queued" && state !== "starting" && state !== "queue_expired" && state !== "spawn_failed";
   const baseline = processJob({
     state: state as "succeeded",
-    summary: "Generate garden planning notes",
+    summary: "Purpose: Generate garden planning notes",
     origin: { conversationId: "example", channel: "web", runId: "example-run", historyBoundary: "example", bucket: null },
     output: { stdoutBytes: output.length, stderrBytes: 0, truncated: false, preview: output, stdoutRef: "examples/stdout.log", stderrRef: "examples/stderr.log" },
-    timestamps: { admittedAt: "2026-01-15T10:00:00Z", startedAt: "2026-01-15T10:00:01Z", completedAt: "2026-01-15T10:00:03Z", queueDeadlineAt: "2026-01-15T10:05:00Z", runtimeDeadlineAt: "2026-01-15T10:30:00Z" },
-    wake: { state: "delivered", attempts: 1, deliveryKey: "example", lastAttemptAt: "2026-01-15T10:00:04Z" },
+    timestamps: { admittedAt: "2026-01-15T10:00:00Z", startedAt: started ? "2026-01-15T10:00:01Z" : null, completedAt: active ? null : "2026-01-15T10:00:03Z", queueDeadlineAt: "2026-01-15T10:05:00Z", runtimeDeadlineAt: state === "running" ? "2026-01-15T10:30:00Z" : null },
+    wake: active ? { state: "pending", attempts: 0, deliveryKey: "example", lastAttemptAt: null } : { state: "delivered", attempts: 1, deliveryKey: "example", lastAttemptAt: "2026-01-15T10:00:04Z" },
+    exitCode: active ? null : state === "succeeded" ? 0 : state === "failed" ? 1 : null,
+    durationMs: active || !started ? null : 2_000,
     lastError: null,
   });
   return baseline as Extract<ProcessJobProjection, { tool: "Exec" | "Bash" }>;
