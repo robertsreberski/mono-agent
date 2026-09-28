@@ -3047,7 +3047,8 @@
                 "enum": [
                   "inherit",
                   "any",
-                  "mention"
+                  "mention",
+                  "listen"
                 ]
               }
             }
@@ -3160,7 +3161,7 @@
           "default": false
         },
         "groupMode": {
-          "description": "Group-message trigger rule: `any` runs every allowed group message; `mention` runs only native @mentions of the bot and replies to its messages. Direct chats and commands are unaffected.",
+          "description": "Group-message trigger rule: `any` runs every allowed group message; `mention` runs only native @mentions of the bot and replies to its messages; `listen` triggers like `mention` but gives the next turn the unaddressed messages since the bot last answered as untrusted background context. Direct chats and commands are unaffected.",
           "examples": [
             "mention"
           ],
@@ -3168,7 +3169,8 @@
           "default": "any",
           "enum": [
             "any",
-            "mention"
+            "mention",
+            "listen"
           ]
         },
         "stripMentionText": {

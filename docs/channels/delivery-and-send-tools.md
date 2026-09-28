@@ -149,7 +149,9 @@ remaining the destination boundary.
   keyboard and starts a separate user turn that names the original message and
   selected label. Use `AskUser` instead when the current run must wait.
 - **`message_thread_id`** (optional on both tools) posts into a Telegram forum
-  topic; omit it for the chat's main conversation, including a forum's General
+  topic. When it is omitted, a send to the chat the current conversation is in
+  stays in the current topic (a reply follows the replied message instead), and
+  any other chat receives its main conversation, including a forum's General
   topic. A message sent into a topic is recorded in that topic's own history.
 - **`TelegramSendFile`** uploads and sends a file (`kind:"document"`) or an inline image (`kind:"photo"`) to an allowed chat. It accepts the bytes as base64 `data` (with a `filename`) **or** a workspace `path` (filename derived from the path), plus an optional `caption`. Uploads are bounded by the adapter's attachment size cap (~20 MB).
 

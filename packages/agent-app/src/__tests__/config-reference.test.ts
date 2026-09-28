@@ -433,7 +433,7 @@ describe("config reference", () => {
     expect(schemaNode(schema, "telegram", "groupMode")).toMatchObject({
       type: "string",
       default: "any",
-      enum: ["any", "mention"],
+      enum: ["any", "mention", "listen"],
     });
     expect(schemaNode(schema, "telegram", "stripMentionText")).toMatchObject({
       type: "boolean",

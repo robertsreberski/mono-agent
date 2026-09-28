@@ -6,6 +6,7 @@ import {
   decodeAgentAttachmentText,
   type AgentAttachment,
   type AgentMessageSender,
+  type AgentPrecedingMessage,
   type AgentRequestBase,
   type AgentResponder as SharedAgentResponder,
   type AgentResponse,
@@ -274,6 +275,7 @@ export function buildAgentRequest(
   resolvedAttachments?: readonly AgentAttachment[],
   /** Effective per-message budget for this chat, so the surface can state it. */
   maxMessageChars?: number,
+  context?: TelegramRequestContext,
 ): AgentRequest {
   const from = metadataFromUser(message.from);
   const telegramMetadata: TelegramRequestMetadata = {
@@ -302,10 +304,13 @@ export function buildAgentRequest(
     text: input.text,
     abortSignal,
     captureSpeakerKind: message.from?.id !== undefined && message.from.is_bot !== true ? "human-turn" : "unknown",
-    surface: surfaceFromTelegramChat(message.chat, maxMessageChars),
+    surface: surfaceFromTelegramChat(message.chat, maxMessageChars, context?.topicName),
     metadata: {
       telegram: telegramMetadata,
     },
+    ...(context?.precedingMessages === undefined || context.precedingMessages.length === 0
+      ? {}
+      : { precedingMessages: context.precedingMessages }),
   };
 
   if (resolvedAttachments !== undefined && resolvedAttachments.length > 0) {
@@ -328,9 +333,35 @@ export function buildAgentRequest(
   return request;
 }
 
+/** Optional per-turn context the bot knows beyond the message itself. */
+export interface TelegramRequestContext {
+  /** Learned name of the forum topic this turn is in; shown after the chat name. */
+  readonly topicName?: string;
+  /** Unaddressed messages since the bot's last turn in this conversation (listen mode). */
+  readonly precedingMessages?: readonly AgentPrecedingMessage[];
+}
+
+const TELEGRAM_PRECEDING_TEXT_MAX_CHARS = 4_096;
+
+/**
+ * One unaddressed message kept as background context for the next turn. The
+ * sender carries only name/handle for the model (id stays host-only) and the
+ * text is pre-bounded; the harness applies its own byte/count bounds again.
+ */
+export function telegramPrecedingMessage(message: TelegramMessage, text: string): AgentPrecedingMessage {
+  const sender = senderFromTelegramUser(message.from);
+  return {
+    ...(sender === undefined ? {} : { sender }),
+    text: Array.from(text).slice(0, TELEGRAM_PRECEDING_TEXT_MAX_CHARS).join(""),
+    ...(message.date === undefined ? {} : { timestamp: new Date(message.date * 1_000).toISOString() }),
+  };
+}
+
 /**
  * Model-visible surface identity for the turn: which chat this is, what kind it
- * is, and what a long answer will do here.
+ * is, and what a long answer will do here. In a forum topic whose name the bot
+ * has seen, the name reads `Chat › Topic`; the topic id is never shown, because
+ * the host owns where this turn's reply is delivered.
  *
  * Telegram states the kind outright on every update, so unlike Slack there is
  * nothing to infer and no extra API call. A private chat's `username` IS the
@@ -343,11 +374,15 @@ export function buildAgentRequest(
 function surfaceFromTelegramChat(
   chat: TelegramMessage["chat"],
   maxMessageChars: number | undefined,
+  topicName?: string,
 ): AgentSurface {
   const kind = TELEGRAM_SURFACE_KINDS[chat.type ?? ""] ?? "group";
-  const name = kind === "dm"
+  const chatName = kind === "dm"
     ? chat.username ?? joinNameParts(chat.first_name, chat.last_name)
     : chat.title ?? chat.username;
+  const name = topicName === undefined
+    ? chatName
+    : chatName === undefined ? topicName : `${chatName} › ${topicName}`;
   return {
     kind,
     ...(name === undefined ? {} : { name }),
@@ -500,6 +535,22 @@ function replyToMessageMetadata(
     ...(from === undefined ? {} : { from }),
     ...(quoteMetadata === undefined ? {} : { quote: quoteMetadata }),
   };
+}
+
+/**
+ * The plain body of one or more messages for background context: the first
+ * text/caption, else a summary of every attachment. Reply quotes are left out
+ * so a long quote cannot crowd the speaker's own words out of the bounded entry.
+ */
+export function telegramContextText(messages: readonly TelegramMessage[]): string {
+  for (const message of messages) {
+    if (message.animation !== undefined) continue;
+    const text = normalizeMessageText(message);
+    if (text.length > 0) return text;
+  }
+  const attachments = messages.flatMap((message) =>
+    message.animation === undefined ? [...extractTelegramAttachments(message)] : []);
+  return attachments.length === 0 ? "" : summarizeTelegramAttachments(attachments);
 }
 
 function normalizeMessageText(message: TelegramMessage): string {

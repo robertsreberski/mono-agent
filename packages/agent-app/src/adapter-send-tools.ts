@@ -1087,7 +1087,7 @@ function registerTelegramSendTool(
           .int()
           .positive()
           .optional()
-          .describe("Optional forum topic id to post into. Omit for the chat's main conversation (a forum's General topic)."),
+          .describe("Optional forum topic id to post into. When omitted, a send to the chat this conversation is in stays in the current topic; any other chat gets its main conversation (a forum's General topic)."),
         reply_to_message_id: z.number().int().optional().describe("Optional message id to reply to."),
         disable_web_page_preview: z.boolean().optional().describe("Disable Telegram link previews."),
         reply_options: z
@@ -1100,7 +1100,15 @@ function registerTelegramSendTool(
     },
     async (args, extra) => {
       assertTelegramChatAllowed(settings, args.chat_id, "TelegramSendMessage");
-      const messageThreadId = resolveTelegramThreadId(settings, args.message_thread_id, "TelegramSendMessage");
+      // A reply lands in the replied message's topic, so only a fresh post
+      // inherits the current topic by default.
+      const messageThreadId = resolveTelegramThreadId(
+        settings,
+        args.chat_id,
+        args.message_thread_id,
+        "TelegramSendMessage",
+        args.reply_to_message_id === undefined,
+      );
       const result: TelegramSentMessage = await client.sendMessage(
         {
           chat_id: args.chat_id,
@@ -1182,7 +1190,7 @@ function registerTelegramSendFileTool(
             .int()
             .positive()
             .optional()
-            .describe("Optional forum topic id to post into. Omit for the chat's main conversation (a forum's General topic)."),
+            .describe("Optional forum topic id to post into. When omitted, a send to the chat this conversation is in stays in the current topic; any other chat gets its main conversation (a forum's General topic)."),
         }),
     data: z.string().min(1).optional().describe("Base64-encoded file bytes. Provide this or `path`."),
     path: z.string().min(1).optional().describe("Path to a file to upload (resolved against the agent working dir). Provide this or `data`."),
@@ -1311,23 +1319,27 @@ function resolveTelegramSendFileDestination(
     throw new Error("TelegramSendFile: chat_id is required outside producing-conversation scope.");
   }
   assertTelegramChatAllowed(settings, requestedChatId, "TelegramSendFile");
-  return requestedThreadId === undefined
+  const messageThreadId = requestedThreadId ?? currentTopicFor(settings, requestedChatId);
+  return messageThreadId === undefined
     ? { chatId: requestedChatId }
-    : { chatId: requestedChatId, messageThreadId: requestedThreadId };
+    : { chatId: requestedChatId, messageThreadId };
 }
 
 /**
- * The forum topic a Telegram send targets. In producing-conversation scope the
- * send stays in the producing conversation: its topic is applied automatically
- * and a different explicit topic is rejected.
+ * The forum topic a Telegram send targets. An explicit topic wins; otherwise a
+ * send to the chat of the producing conversation stays in that conversation's
+ * topic, so a run in a topic never spills into General by omission. In
+ * producing-conversation scope a different explicit topic is rejected.
  */
 function resolveTelegramThreadId(
   settings: TelegramSendToolSettings,
+  chatId: TelegramChatId,
   requestedThreadId: number | undefined,
   toolName: TelegramSendToolName,
+  inheritCurrentTopic = true,
 ): number | undefined {
   if (settings.sendTools?.scope !== "producing-conversation") {
-    return requestedThreadId;
+    return requestedThreadId ?? (inheritCurrentTopic ? currentTopicFor(settings, chatId) : undefined);
   }
   const producing = producingTelegramTarget(settings);
   if (producing === undefined) {
@@ -1341,6 +1353,14 @@ function resolveTelegramThreadId(
 
 function producingTelegramTarget(settings: TelegramSendToolSettings): TelegramDestinationTarget | undefined {
   return telegramTargetFromConversation(settings.producingConversationId);
+}
+
+/** The producing conversation's topic when `chatId` is that conversation's chat. */
+function currentTopicFor(settings: TelegramSendToolSettings, chatId: TelegramChatId): number | undefined {
+  const producing = producingTelegramTarget(settings);
+  return producing !== undefined && String(producing.chatId) === String(chatId).trim()
+    ? producing.messageThreadId
+    : undefined;
 }
 
 function telegramSendFileResult(

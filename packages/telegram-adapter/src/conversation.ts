@@ -124,6 +124,50 @@ export function withoutImplicitTopicReply(message: TelegramMessage): TelegramMes
   return rest as TelegramMessage;
 }
 
+const TOPIC_NAME_MAX_CHARS = 128;
+
+/**
+ * A forum topic's name as revealed by one inbound message, if any. Telegram
+ * sends no topic name on ordinary messages; it appears on the topic's own
+ * creation/rename service messages and on the implicit reply to the topic's
+ * root that most typed messages carry. Names are user-chosen labels, bounded
+ * here and sanitized again wherever they become model-visible.
+ */
+export function telegramTopicNameFromMessage(
+  message: TelegramMessage,
+): { readonly messageThreadId: number; readonly name: string } | undefined {
+  const messageThreadId = telegramMessageThreadId(message);
+  if (messageThreadId === undefined) {
+    return undefined;
+  }
+  const reply = message.reply_to_message;
+  const rootReply = reply !== undefined && (reply.message_id === messageThreadId || reply.forum_topic_created !== undefined)
+    ? reply
+    : undefined;
+  const raw = message.forum_topic_edited?.name
+    ?? message.forum_topic_created?.name
+    ?? rootReply?.forum_topic_created?.name;
+  if (typeof raw !== "string") {
+    return undefined;
+  }
+  const name = Array.from(raw.replace(/\s+/gu, " ").trim()).slice(0, TOPIC_NAME_MAX_CHARS).join("");
+  return name.length === 0 ? undefined : { messageThreadId, name };
+}
+
+const FORUM_SERVICE_FIELDS = [
+  "forum_topic_created",
+  "forum_topic_edited",
+  "forum_topic_closed",
+  "forum_topic_reopened",
+  "general_forum_topic_hidden",
+  "general_forum_topic_unhidden",
+] as const;
+
+/** Topic lifecycle service messages carry no user content and never start a turn. */
+export function isTelegramForumServiceMessage(message: TelegramMessage): boolean {
+  return FORUM_SERVICE_FIELDS.some((field) => message[field] !== undefined);
+}
+
 /** Spread-ready `message_thread_id` for a Bot API send parameter object. */
 export function telegramThreadParams(
   target: TelegramConversationTarget,

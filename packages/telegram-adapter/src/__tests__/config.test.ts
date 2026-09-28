@@ -170,6 +170,12 @@ describe("loadTelegramAdapterConfig", () => {
       jsonPath: path,
     });
     expect(fromEnv).toMatchObject({ groupMode: "any", stripMentionText: false });
+
+    const listen = await loadTelegramAdapterConfig({
+      env: { MONO_AGENT_TELEGRAM_GROUP_MODE: "listen" },
+      jsonPath: path,
+    });
+    expect(listen).toMatchObject({ groupMode: "listen" });
   });
 
   it("rejects an unknown Telegram group trigger mode", async () => {
@@ -195,6 +201,7 @@ describe("loadTelegramAdapterConfig", () => {
           { chatId: -1001, topicId: 12, groupMode: "any" },
           { chatId: "-1001", topicId: 13 },
           { chatId: "-1001", topicId: 14, groupMode: "mention" },
+          { chatId: "-1001", topicId: 15, groupMode: "listen" },
         ],
       },
     }), "utf8");
@@ -204,8 +211,9 @@ describe("loadTelegramAdapterConfig", () => {
       { chatId: "-1001", topicId: 12, groupMode: "any" },
       { chatId: "-1001", topicId: 13, groupMode: "inherit" },
       { chatId: "-1001", topicId: 14, groupMode: "mention" },
+      { chatId: "-1001", topicId: 15, groupMode: "listen" },
     ]);
-    expect(redactTelegramAdapterConfig(config).topics).toEqual({ count: 3 });
+    expect(redactTelegramAdapterConfig(config).topics).toEqual({ count: 4 });
     expect(JSON.stringify(redactTelegramAdapterConfig(config))).not.toContain("-1001");
   });
 

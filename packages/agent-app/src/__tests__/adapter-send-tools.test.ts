@@ -2317,6 +2317,48 @@ describe("TelegramSendFile path upload", () => {
     expect(telegram.sendDocument.mock.calls.map(([params]) => params.chat_id)).toEqual(["42", "42"]);
   });
 
+  it("keeps unscoped sends to the current chat in the current forum topic by default", async () => {
+    const telegram = {
+      sendMessage: vi.fn(async (params: TelegramSendMessageParams) => ({ message_id: 1, chat: { id: params.chat_id } })),
+      sendDocument: vi.fn(async (params: { chat_id: string | number }) => ({ message_id: 2, chat: { id: params.chat_id } })),
+    };
+    const server = await createAdapterSendToolsServer({
+      telegram: {
+        botToken: "telegram-token",
+        allowedChatIds: ["-1001", "42"],
+        allowAllChats: false,
+        tools: { send: true, file: true },
+        producingConversationId: "telegram:-1001:7#2026-09-28",
+      },
+    }, { telegram });
+
+    await withMcpClient(server, async (client) => {
+      for (const args of [
+        { chat_id: -1001, text: "same chat" },
+        { chat_id: "-1001", message_thread_id: 9, text: "explicit topic" },
+        { chat_id: -1001, reply_to_message_id: 55, text: "reply" },
+        { chat_id: 42, text: "other chat" },
+      ]) {
+        const result = await client.callTool({ name: "TelegramSendMessage", arguments: args });
+        expect(result.isError).not.toBe(true);
+      }
+      const file = await client.callTool({
+        name: "TelegramSendFile",
+        arguments: { kind: "document", chat_id: -1001, data: Buffer.from("x").toString("base64"), filename: "x.txt" },
+      });
+      expect(file.isError).not.toBe(true);
+    });
+
+    expect(telegram.sendMessage.mock.calls.map(([params]) => [params.text, params.message_thread_id])).toEqual([
+      ["same chat", 7],
+      ["explicit topic", 9],
+      ["reply", undefined],
+      ["other chat", undefined],
+    ]);
+    expect(telegram.sendDocument.mock.calls.map(([params]) => params))
+      .toEqual([expect.objectContaining({ chat_id: -1001, message_thread_id: 7 })]);
+  });
+
   it("binds producing-conversation sends to the originating forum topic", async () => {
     const telegram = {
       sendMessage: vi.fn(async (params: TelegramSendMessageParams) => ({

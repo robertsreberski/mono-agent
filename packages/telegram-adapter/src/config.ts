@@ -20,14 +20,20 @@ import type {
 
 import type { TelegramTranscriptionConfig } from "./transcription.js";
 
-export type TelegramGroupTriggerMode = "any" | "mention";
+/**
+ * Group trigger rule. `any` runs every message; `mention` runs only native
+ * @mentions of the bot and replies to it; `listen` triggers like `mention` but
+ * hands the unaddressed messages since the bot's last turn to that next turn as
+ * untrusted background context.
+ */
+export type TelegramGroupTriggerMode = "any" | "mention" | "listen";
 
-const TELEGRAM_GROUP_TRIGGER_MODES = ["any", "mention"] as const satisfies readonly TelegramGroupTriggerMode[];
+const TELEGRAM_GROUP_TRIGGER_MODES = ["any", "mention", "listen"] as const satisfies readonly TelegramGroupTriggerMode[];
 
 /** Per-topic trigger rule: `inherit` follows the chat's `groupMode`. */
 export type TelegramTopicTriggerMode = TelegramGroupTriggerMode | "inherit";
 
-const TELEGRAM_TOPIC_TRIGGER_MODES = ["inherit", "any", "mention"] as const satisfies readonly TelegramTopicTriggerMode[];
+const TELEGRAM_TOPIC_TRIGGER_MODES = ["inherit", "any", "mention", "listen"] as const satisfies readonly TelegramTopicTriggerMode[];
 
 /**
  * Settings for one forum topic of an allowlisted chat. The General topic is
@@ -528,7 +534,7 @@ function readTelegramTopics(
       ? "inherit"
       : TELEGRAM_TOPIC_TRIGGER_MODES.find((mode) => mode === record.groupMode);
     if (groupMode === undefined) {
-      throw invalidConfig('telegram.topics groupMode must be "inherit", "any", or "mention".', { index });
+      throw invalidConfig('telegram.topics groupMode must be "inherit", "any", "mention", or "listen".', { index });
     }
     const key = `${chatId}:${String(topicId)}`;
     if (seen.has(key)) {

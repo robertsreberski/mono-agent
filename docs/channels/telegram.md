@@ -30,7 +30,7 @@ Add a `telegram` block to your `mono-agent.config.json`. The channel is opt-in: 
 | `botToken` | string | — | Bot token issued by [BotFather](https://t.me/BotFather). An effective value is required when enabled. Inline config remains accepted for compatibility; new source configs should set `MONO_AGENT_TELEGRAM_BOT_TOKEN` in `.env`. |
 | `allowedChatIds` | string[] | — | Chat IDs (as strings) permitted to talk to the agent. |
 | `allowAllChats` | boolean | `false` | When `true`, accept any chat; a simultaneous allowlist is retained but no longer restrictive. |
-| `groupMode` | `any` \| `mention` | `any` | Group trigger boundary. `mention` admits native @mentions of this bot and replies to its messages; direct chats and commands are unaffected. |
+| `groupMode` | `any` \| `mention` \| `listen` | `any` | Group trigger boundary. `mention` admits native @mentions of this bot and replies to its messages; `listen` triggers the same way but gives the next turn what was said since the bot last answered. Direct chats and commands are unaffected. |
 | `stripMentionText` | boolean | `true` | In `mention` mode, remove the matching native @mention before sending text to the agent. |
 | `topics` | object[] | `[]` | JSON-only per-forum-topic trigger overrides for allowlisted chats. See [Forum topics](#forum-topics). |
 | `apiRoot` | HTTP(S) URL | Telegram hosted API | Self-hosted Bot API root used for Bot API calls and downloads. |
@@ -111,6 +111,16 @@ messages starts a turn. Built-in and configured slash commands remain active.
 `groupMode: "any"` is the backward-compatible default and runs every message in
 an allowed group. Keep `allowedChatIds` narrow whichever trigger mode you use.
 
+`groupMode: "listen"` triggers exactly like `mention`, but the bot keeps the
+unaddressed messages since its last answer in that conversation and hands them
+to the next triggered turn as untrusted background context ("what other people
+said while you were not answering"). The bot can then answer "which option is
+better?" in light of the discussion before the ping. Up to the newest 30
+messages are kept per conversation; they are consumed by the next answer (or
+cleared by `/new`), are not written to the conversation history themselves, and
+are held in memory only, so a restart forgets them. Custom command prompts and
+reply-button taps see the same context; scheduled notifications do not.
+
 ### Forum topics
 
 In a supergroup with topics enabled, each topic is its own conversation. A
@@ -138,7 +148,7 @@ of the group stays mention-only (or the reverse), add a JSON-only override:
 }
 ```
 
-`groupMode` is `inherit` (the default), `any`, or `mention`. `chatId` must be in
+`groupMode` is `inherit` (the default), `any`, `mention`, or `listen`. `chatId` must be in
 `allowedChatIds` unless `allowAllChats` is set, and each chat topic may appear
 once. The General topic always follows the chat-wide `groupMode`. An override
 only changes which delivered messages start a turn; Telegram still needs the
@@ -151,6 +161,15 @@ ID the agent has already handled.
 Telegram attaches an implicit reply to the topic's opening message to every
 message typed in a topic. The adapter ignores that implicit reply, so it is not
 quoted into the turn and does not count as a reply to the bot in `mention` mode.
+
+The agent is told which topic it is in by name, for example `"Trips › Budapest"`.
+Telegram only reveals a topic's name on the topic's own messages, so after a
+restart the bot shows the group name alone until someone writes a new message
+in the topic (renames are picked up as they happen). The topic ID itself stays
+host-owned. When the agent sends its own message or file to the same group with
+`TelegramSendMessage` or `TelegramSendFile`, it stays in the current topic unless
+it names another `message_thread_id` or replies to a specific message. Topic
+created/renamed/closed service messages never start a turn.
 
 ### Smoke test
 

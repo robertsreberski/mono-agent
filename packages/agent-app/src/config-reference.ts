@@ -386,7 +386,7 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
     defaultLabel: "[]",
     defaultValue: [],
     example: [{ chatId: "-1001234567890", topicId: 12, groupMode: "any" }],
-    description: "Per-forum-topic trigger overrides for allowlisted chats: `groupMode` is `inherit` (default), `any`, or `mention`. The General topic follows `telegram.groupMode`; entries never widen the chat allowlist.",
+    description: "Per-forum-topic trigger overrides for allowlisted chats: `groupMode` is `inherit` (default), `any`, `mention`, or `listen`. The General topic follows `telegram.groupMode`; entries never widen the chat allowlist.",
   },
   {
     jsonPath: "telegram.reactions",
@@ -609,7 +609,7 @@ function setStructuredAppSchemas(root: Record<string, JsonSchema>): void {
       properties: {
         chatId: { oneOf: [{ type: "string", pattern: "^-?(0|[1-9][0-9]*)$" }, { type: "integer" }] },
         topicId: { type: "integer", minimum: 1 },
-        groupMode: { enum: ["inherit", "any", "mention"] },
+        groupMode: { enum: ["inherit", "any", "mention", "listen"] },
       },
     },
   });
@@ -1251,7 +1251,7 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
   } else if (field.jsonPath === "tools.web.fetch.render") {
     schema.enum = ["never", "auto"];
   } else if (field.jsonPath === "telegram.groupMode") {
-    schema.enum = ["any", "mention"];
+    schema.enum = ["any", "mention", "listen"];
   } else if (field.jsonPath === "telegram.sendTools.scope") {
     schema.enum = ["producing-conversation"];
   } else if (field.jsonPath === "telegram.sendTools.pathScope") {
@@ -1695,7 +1695,7 @@ function descriptionFor(id: string): string {
     return slackThreadContextDescriptions[id]!;
   }
   if (id === "telegram.groupMode") {
-    return "Group-message trigger rule: `any` runs every allowed group message; `mention` runs only native @mentions of the bot and replies to its messages. Direct chats and commands are unaffected.";
+    return "Group-message trigger rule: `any` runs every allowed group message; `mention` runs only native @mentions of the bot and replies to its messages; `listen` triggers like `mention` but gives the next turn the unaddressed messages since the bot last answered as untrusted background context. Direct chats and commands are unaffected.";
   }
   if (id === "telegram.stripMentionText") {
     return "Removes matching native @mentions from responder text in `mention` mode; replies without a mention are unchanged.";

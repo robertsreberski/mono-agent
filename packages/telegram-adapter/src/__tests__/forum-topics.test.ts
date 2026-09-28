@@ -95,6 +95,10 @@ function topicMessage(
     readonly rootCreatedByBot?: boolean;
     readonly mention?: boolean;
     readonly command?: boolean;
+    readonly topicName?: string;
+    /** An explicit reply to another message instead of the implicit topic-root reply. */
+    readonly replyToMessageId?: number;
+    readonly from?: { id: number; is_bot: boolean; first_name: string; username?: string };
   } = {},
 ): Update {
   const topic = options.topic ?? TOPIC;
@@ -112,19 +116,46 @@ function topicMessage(
       is_topic_message: true,
       date: 1234,
       chat,
-      from: { id: 7, is_bot: false, first_name: "Person A" },
+      from: options.from ?? { id: 7, is_bot: false, first_name: "Person A" },
       text,
       ...(entities === undefined ? {} : { entities }),
-      reply_to_message: {
-        message_id: topic,
-        message_thread_id: topic,
-        date: 1000,
-        chat,
-        from: options.rootCreatedByBot === true
-          ? BOT_INFO
-          : { id: 8, is_bot: false, first_name: "Topic Creator" },
-        forum_topic_created: { name: "Budapest", icon_color: 7322096 },
-      },
+      reply_to_message: options.replyToMessageId === undefined
+        ? {
+            message_id: topic,
+            message_thread_id: topic,
+            date: 1000,
+            chat,
+            from: options.rootCreatedByBot === true
+              ? BOT_INFO
+              : { id: 8, is_bot: false, first_name: "Topic Creator" },
+            forum_topic_created: { name: options.topicName ?? "Budapest", icon_color: 7322096 },
+          }
+        : {
+            message_id: options.replyToMessageId,
+            message_thread_id: topic,
+            is_topic_message: true,
+            date: 1100,
+            chat,
+            from: { id: 8, is_bot: false, first_name: "Other Person" },
+            text: "an earlier message",
+          },
+    },
+  } as unknown as Update;
+}
+
+/** A forum-topic lifecycle service message (e.g. a rename). */
+function topicServiceMessage(fields: Record<string, unknown>, options: { readonly updateId?: number; readonly topic?: number } = {}): Update {
+  const topic = options.topic ?? TOPIC;
+  return {
+    update_id: options.updateId ?? 1,
+    message: {
+      message_id: 990,
+      message_thread_id: topic,
+      is_topic_message: true,
+      date: 1234,
+      chat: FORUM_CHAT,
+      from: { id: 7, is_bot: false, first_name: "Person A" },
+      ...fields,
     },
   } as unknown as Update;
 }
@@ -518,5 +549,87 @@ describe("createTelegramBot forum topics", () => {
     const documents = sends(calls, "sendDocument");
     expect(documents).toHaveLength(1);
     expect(documents[0]?.payload.message_thread_id).toBe(TOPIC);
+  });
+
+  it("names the topic in the surface, remembers it across explicit replies, and follows renames", async () => {
+    const requests: AgentRequest[] = [];
+    const { bot, calls } = harness({ groupMode: "any", responder: recordingResponder(requests) });
+
+    await bot.handleUpdate(topicMessage("first", { topicName: "Budapest" }));
+    // An explicit reply carries no topic root, so the learned name is reused.
+    await bot.handleUpdate(topicMessage("second", { updateId: 2, messageId: 902, replyToMessageId: 850 }));
+    await bot.handleUpdate(topicServiceMessage({ forum_topic_edited: { name: "Budapest in May" } }, { updateId: 3 }));
+    await bot.handleUpdate(topicMessage("third", { updateId: 4, messageId: 903, replyToMessageId: 851 }));
+    await bot.handleUpdate(generalMessage("general", { updateId: 5 }));
+
+    expect(requests.map((request) => request.surface?.name)).toEqual([
+      "Trips › Budapest",
+      "Trips › Budapest",
+      "Trips › Budapest in May",
+      "Trips",
+    ]);
+    // The topic id stays host-owned: the model-visible surface id is the chat.
+    expect(requests.map((request) => request.surface?.id)).toEqual(["-1001", "-1001", "-1001", "-1001"]);
+    // The rename service message is neither a turn nor an "unsupported" reply.
+    expect(sends(calls).map((call) => call.payload.text)).not.toContain(
+      expect.stringContaining("I can handle text"),
+    );
+    expect(requests).toHaveLength(4);
+  });
+
+  it("in listen mode hands unaddressed topic chatter to the next ping, then starts fresh", async () => {
+    const requests: AgentRequest[] = [];
+    const { bot } = harness({
+      groupMode: "mention",
+      topics: [{ chatId: -1001, topicId: TOPIC, groupMode: "listen" }],
+      responder: recordingResponder(requests),
+    });
+    const fanni = { id: 9, is_bot: false, first_name: "Fanni" };
+
+    await bot.handleUpdate(topicMessage("Flights on the 12th look cheaper", { from: fanni }));
+    await bot.handleUpdate(topicMessage("But we land late", { updateId: 2, messageId: 901 }));
+    // General stays mention-only without listening.
+    await bot.handleUpdate(generalMessage("unrelated general chatter", { updateId: 3 }));
+    await bot.handleUpdate(topicMessage("@ExampleBot which option is better?", {
+      updateId: 4,
+      messageId: 902,
+      mention: true,
+    }));
+    await bot.handleUpdate(topicMessage("@ExampleBot and hotels?", { updateId: 5, messageId: 903, mention: true }));
+    await bot.handleUpdate(generalMessage("@ExampleBot hi", { updateId: 6, mention: true }));
+
+    expect(requests.map((request) => request.text)).toEqual(["which option is better?", "and hotels?", "hi"]);
+    expect(requests[0]?.precedingMessages?.map((entry) => [entry.sender?.displayName, entry.text])).toEqual([
+      ["Fanni", "Flights on the 12th look cheaper"],
+      ["Person A", "But we land late"],
+    ]);
+    expect(requests[0]?.precedingMessages?.[0]?.timestamp).toBe(new Date(1234 * 1000).toISOString());
+    // Consumed by the first ping; General never collected anything.
+    expect(requests[1]?.precedingMessages).toBeUndefined();
+    expect(requests[2]?.precedingMessages).toBeUndefined();
+  });
+
+  it("keeps at most the newest thirty listen-mode messages and clears them on /new", async () => {
+    const requests: AgentRequest[] = [];
+    const { bot } = harness({
+      groupMode: "listen",
+      responder: recordingResponder(requests),
+      startNewSession: async () => undefined,
+    });
+
+    for (let index = 0; index < 35; index += 1) {
+      await bot.handleUpdate(topicMessage(`chatter ${String(index)}`, { updateId: index + 1, messageId: 1000 + index }));
+    }
+    await bot.handleUpdate(topicMessage("@ExampleBot summarize", { updateId: 100, messageId: 2000, mention: true }));
+    const preceding = requests[0]?.precedingMessages ?? [];
+    expect(preceding).toHaveLength(30);
+    expect(preceding[0]?.text).toBe("chatter 5");
+    expect(preceding.at(-1)?.text).toBe("chatter 34");
+
+    await bot.handleUpdate(topicMessage("forget this", { updateId: 101, messageId: 2001 }));
+    await bot.handleUpdate(topicMessage("/new", { updateId: 102, messageId: 2002, command: true }));
+    await bot.handleUpdate(topicMessage("@ExampleBot fresh start", { updateId: 103, messageId: 2003, mention: true }));
+    expect(requests.at(-1)?.text).toBe("fresh start");
+    expect(requests.at(-1)?.precedingMessages).toBeUndefined();
   });
 });

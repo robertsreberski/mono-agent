@@ -66,8 +66,13 @@ so ordinary reply threads in non-forum supergroups stay in the chat
 conversation, and the implicit reply Telegram attaches to a topic's opening
 message is dropped before reply-context rendering and mention matching. The
 JSON-only `telegram.topics` list overrides the trigger rule per topic
-(`{ chatId, topicId, groupMode: "inherit" | "any" | "mention" }`); entries must
-name allowlisted chats and never widen the allowlist. Proactive `notify`,
+(`{ chatId, topicId, groupMode: "inherit" | "any" | "mention" | "listen" }`);
+entries must name allowlisted chats and never widen the allowlist. Topic names
+learned from the topic's service messages and implicit root replies appear in
+the model-visible surface as `Chat › Topic`; the topic id stays host-owned.
+`groupMode: "listen"` triggers like `mention` and passes the unaddressed
+messages since the bot's last turn (newest 30, in memory) to the next triggered
+turn as `precedingMessages`. Proactive `notify`,
 `presentAsk`, `postStatus`, and `updateProcessJob` accept either a bare chat id
 (the main conversation) or `{ chatId, messageThreadId }`.
 
