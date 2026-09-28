@@ -108,6 +108,9 @@ export const peerPending = settledJob("job-peer", "succeeded", "Ask the seed-ban
   peerQuestion: { state: "awaiting_answer", questionId: "3f6c9a2e-1b4d-4c8e-9a70-2d5e6f7a8b9c", peer: "seed-bank", thread: "spring-orders",
     message: "Before I place the spring order I need a decision.\nShould I reserve the heirloom tomato seeds now or wait for the member vote?",
     requestedSchema: peerForm, expiresAt: later(20 * 60) } });
+/** A peer job that failed or was cancelled while its question is still open. */
+export const peerFailedPending = { ...peerPending, jobId: "job-peer-failed", state: "failed" as const, exitCode: 1 } as ProcessJobProjection;
+export const peerCancelledPending = { ...peerPending, jobId: "job-peer-cancelled", state: "cancelled" as const, cancelRequested: true } as ProcessJobProjection;
 export const peerAnswered = settledJob("job-peer-answered", "succeeded", "Ask the seed-bank agent about bulb stock", 64_000, {
   kind: "internal", tool: "PeerAgent", instanceId: "seed-bank", childStillBusy: false, output: silent,
   peerQuestion: { state: "answered", questionId: "7a1d2c3b-4e5f-4a6b-8c7d-9e0f1a2b3c4d", peer: "seed-bank", thread: "autumn-orders",

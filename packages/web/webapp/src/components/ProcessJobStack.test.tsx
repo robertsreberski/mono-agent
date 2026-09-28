@@ -102,7 +102,7 @@ describe("ProcessJobStack", () => {
     const toggle = shelfToggle();
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     // One current job: the bar names it; the issue count still shows.
-    expect(toggle).toHaveAccessibleName("Background jobs Running: node worker.js --safe-summary 1 issue");
+    expect(toggle).toHaveAccessibleName("Background jobs Running Exec job: node worker.js --safe-summary 1 issue");
     expect(announcement(view.container)).toHaveTextContent("Background jobs: 1 active, 2 finished, 1 issue.");
     expect(screen.queryByRole("group", { name: "Exec background job running" })).toBeNull();
     expect(view.container.querySelectorAll(".process-job-card")).toHaveLength(3);
@@ -266,7 +266,8 @@ describe("ProcessJobStack", () => {
     render(<StackHarness threadId="thread" jobs={[entry(running), entry(processJob({ jobId: "done" }))]} />);
     const toggle = shelfToggle();
     expect(within(toggle).getByText("Water the north beds")).toBeInTheDocument();
-    expect(toggle).toHaveAccessibleName("Background jobs Running: Water the north beds");
+    // Kind (the glyph's container) and state are spoken with the purpose.
+    expect(toggle).toHaveAccessibleName("Background jobs Running Exec job: Water the north beds");
     expect(toggle.querySelector(".process-job-chip")).toBeNull();
   });
 
@@ -300,6 +301,31 @@ describe("ProcessJobStack", () => {
     for (let step = 0; step < 4; step += 1) act(() => { vi.advanceTimersByTime(30_000); });
     expect(announcement(view.container)).toHaveTextContent("Background jobs: 1 active, 1 finished.");
     expect(peer.closest(".process-job-stack-item")).toHaveAttribute("hidden");
+  });
+
+  it.each([
+    ["failed", "Failed"],
+    ["cancelled", "Cancelled"],
+  ] as const)("keeps a lone %s peer job's pending question visible in the closed bar", (state, word) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-17T10:00:00.000Z"));
+    render(<StackHarness threadId="thread" jobs={[entry(peerJob("2026-07-17T10:20:00.000Z", { state, exitCode: state === "failed" ? 1 : null }))]} />);
+    const toggle = shelfToggle();
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    // The row's word is its outcome, so the question keeps its own chip.
+    const question = toggle.querySelector(".process-job-chip.is-question");
+    expect(question).not.toBeNull();
+    expect(question?.querySelector(".process-job-chip-count")).toHaveTextContent("1");
+    expect(toggle).toHaveAccessibleName(new RegExp(`^Background jobs ${word}, Question pending PeerAgent job: Ask the seed-bank agent about heirloom stock 1 question awaiting the agent`, "u"));
+  });
+
+  it("does not repeat the question chip when the lone row's state already is the question", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-17T10:00:00.000Z"));
+    render(<StackHarness threadId="thread" jobs={[entry(peerJob("2026-07-17T10:20:00.000Z"))]} />);
+    const toggle = shelfToggle();
+    expect(toggle.querySelector(".process-job-chip.is-question")).toBeNull();
+    expect(toggle).toHaveAccessibleName("Background jobs Question pending PeerAgent job: Ask the seed-bank agent about heirloom stock");
   });
 
   it("keeps a failed peer job's outcome while its question is pending", () => {

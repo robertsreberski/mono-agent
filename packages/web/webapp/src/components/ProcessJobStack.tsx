@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type FocusEvent, type ReactNode, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { useDocumentVisible } from "../document-visibility";
 import { useProcessJobPresentation } from "../process-job-presentation";
@@ -17,6 +17,10 @@ import {
   processJobStackCounts,
   processJobStackSummaryParts,
 } from "./process-job-display";
+
+/** Hidden by an ancestor's `hidden` attribute, detached, or laid out as nothing. */
+const isHidden = (element: HTMLElement): boolean =>
+  !element.isConnected || element.closest("[hidden]") !== null;
 
 /**
  * The conversation's background jobs as a compact shelf above the composer.
@@ -99,15 +103,41 @@ export function ProcessJobStack() {
     });
   }, []);
 
-  // A row that settles while History is closed becomes hidden. If the
-  // operator's focus was in it, hand focus to the nearest visible control of
-  // this shelf. Focus anywhere else (the composer) is never touched.
+  /**
+   * The element inside this shelf that holds the operator's focus, tracked
+   * BEFORE anything hides it. Chromium drops focus from a node that becomes
+   * hidden to the page body, so by the time the shelf re-renders
+   * `document.activeElement` can no longer say whose focus it was.
+   */
+  const focusOwner = useRef<HTMLElement | null>(null);
+  const trackFocus = useCallback((event: FocusEvent<HTMLElement>) => {
+    if (event.target instanceof HTMLElement) focusOwner.current = event.target;
+  }, []);
+  const releaseFocus = useCallback((event: FocusEvent<HTMLElement>) => {
+    const leaving = event.target;
+    const next = event.relatedTarget;
+    // Focus moved somewhere else on purpose (the composer, the page): forget
+    // it. A blur caused by the node becoming hidden keeps its owner.
+    if (next instanceof Node && sectionRef.current?.contains(next)) return;
+    if (leaving instanceof HTMLElement && isHidden(leaving)) return;
+    focusOwner.current = null;
+  }, []);
+
+  // A row that settles, or whose question expires, while History is closed
+  // becomes hidden. If the operator's focus was in it, hand focus to the
+  // nearest visible control of this shelf. Focus that already moved elsewhere
+  // (the composer) is never touched.
   useLayoutEffect(() => {
-    const focused = document.activeElement;
+    const owner = focusOwner.current;
     const section = sectionRef.current;
-    if (!(focused instanceof HTMLElement) || section === null || !section.contains(focused)) return;
-    if (focused.closest("[hidden]") === null) return;
-    (historyRef.current ?? toggleRef.current)?.focus();
+    if (owner === null || section === null || !isHidden(owner)) return;
+    const focused = document.activeElement;
+    const lost = focused === owner || focused === null || focused === document.body || focused === document.documentElement;
+    if (!lost) return;
+    const target = historyRef.current !== null && !isHidden(historyRef.current) ? historyRef.current : toggleRef.current;
+    if (target === null) return;
+    focusOwner.current = target;
+    target.focus();
   });
 
   if (threadId === null || jobs.length === 0) return null;
@@ -129,7 +159,12 @@ export function ProcessJobStack() {
   const items: ReactNode[] = [];
   const row = ({ part }: (typeof entries)[number], hidden: boolean) => (
     <div key={`${threadId}:${part.job.jobId}`} className="process-job-stack-item" hidden={hidden}>
-      <ProcessJobCard part={part} onProjectionChange={onProjectionChange} onOpen={revealRow} />
+      <ProcessJobCard
+        part={part}
+        onProjectionChange={onProjectionChange}
+        onOpen={revealRow}
+        shown={shelfOpen && !hidden}
+      />
     </div>
   );
   for (const entry of current) items.push(row(entry, false));
@@ -173,11 +208,16 @@ export function ProcessJobStack() {
       <span className="sr-only">{words}</span>
     </span>
   );
+  const singleState = single === undefined ? undefined : processJobDisplayState(single, now);
+  // A lone current row names its own question only when its state word IS the
+  // question; a failed or cancelled peer with an open question keeps its
+  // outcome, so the question chip must still say it.
+  const singleSaysQuestion = singleState?.tone === "question";
   const chips: ReactNode[] = [];
   if (single === undefined && counts.active > 0) {
     chips.push(chip("active", "running", <ProcessJobStatusMark mark="ring" animated />, counts.active, processJobCountWords.active(counts.active)));
   }
-  if (single === undefined && counts.questions > 0) {
+  if (!singleSaysQuestion && counts.questions > 0) {
     chips.push(chip("questions", "question", <ProcessJobStatusMark mark="question" />, counts.questions, processJobCountWords.questions(counts.questions)));
   }
   if (counts.issues > 0) {
@@ -186,7 +226,6 @@ export function ProcessJobStack() {
   if (current.length === 0 && counts.finished > 0) {
     chips.push(chip("finished", "neutral", <Icon name="restore" size={12} strokeWidth={2} />, counts.finished, processJobCountWords.finished(counts.finished, historyIsBounded)));
   }
-  const singleState = single === undefined ? undefined : processJobDisplayState(single, now);
 
   return (
     <ProcessJobClockProvider value={now}>
@@ -194,6 +233,8 @@ export function ProcessJobStack() {
         ref={sectionRef}
         className={`process-job-stack${shelfOpen ? " is-open" : ""}${quiet ? " is-quiet" : ""}`}
         aria-labelledby={labelId}
+        onFocus={trackFocus}
+        onBlur={releaseFocus}
       >
         <button
           ref={toggleRef}
@@ -213,7 +254,8 @@ export function ProcessJobStack() {
                 mark={singleState.mark}
                 animated={singleState.mark === "ring"}
               />
-              <span className="sr-only">{`${singleState.word}:`}</span>
+              {/* The glyph's kind and state, in words: "Running Bash job:". */}
+              <span className="sr-only">{`${[singleState.word, ...(singleState.pending === undefined ? [] : [singleState.pending])].join(", ")} ${single.tool} job:`}</span>
               <span className="process-job-stack-purpose" title={single.summary}>{processJobDisplayTitle(single)}</span>
             </span>
           ) : null}

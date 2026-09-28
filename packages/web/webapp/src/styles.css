@@ -1417,6 +1417,10 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
    purpose-first; a row opens for its detail. Every card stays mounted in one
    keyed list while the shelf or History is closed, so polls and disclosure
    state survive. Only the body scrolls; the bar never moves. */
+/* Warning-toned small text needs more contrast than the shared --warning token
+   gives on light tinted surfaces: mix it toward the text colour (darker in
+   light schemes, lighter in dark ones). Icons and tints keep --warning. */
+.process-job-stack, .process-job-card, .peer-question { --process-job-warning-text: color-mix(in srgb, var(--warning) 72%, var(--text)); --process-job-success-text: color-mix(in srgb, var(--success) 85%, var(--text)); }
 .process-job-stack { --process-job-stack-bg: color-mix(in srgb, var(--panel) 55%, var(--surface)); width: min(100%, 820px); min-width: 0; max-height: min(40dvh, 360px); margin: 0 auto 6px; display: flex; flex-direction: column; overflow: hidden; background: var(--process-job-stack-bg); border: 1px solid var(--line-strong); border-radius: 14px; box-shadow: var(--shadow-sm); }
 .process-job-stack.is-open { border-radius: 16px; }
 /* Nothing current and nothing wrong: the bar stays as the History entry point
@@ -1429,7 +1433,9 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .process-job-stack-toggle:focus-visible, .process-job-stack-history-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 /* The title yields first at narrow widths: counts are the glance. */
 .process-job-stack-title { min-width: 0; flex: 0 1 auto; overflow: hidden; font-size: 12.5px; font-weight: 700; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
-.process-job-stack-single { min-width: 0; flex: 1 1 0; display: flex; align-items: center; gap: 7px; }
+/* The purpose yields before anything else, but never below its own glyph
+   (plus an agent's orbit ring), so the glyph cannot slide under a chip. */
+.process-job-stack-single { min-width: 24px; flex: 1 1 0; display: flex; align-items: center; gap: 7px; padding-left: 3px; }
 .process-job-stack-purpose { min-width: 0; overflow: hidden; color: var(--text-soft); font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .process-job-stack-chips { flex: none; display: inline-flex; align-items: center; gap: 5px; margin-left: auto; }
 .process-job-stack-single + .process-job-stack-chips { margin-left: 0; }
@@ -1441,7 +1447,7 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .process-job-chip { min-height: 22px; display: inline-flex; align-items: center; gap: 4px; padding: 0 7px 0 5px; border-radius: 999px; font-size: 12px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1; white-space: nowrap; }
 .process-job-chip-mark { width: 16px; height: 16px; display: grid; place-items: center; }
 .process-job-chip.is-running { color: var(--accent-strong); background: color-mix(in srgb, var(--accent) 12%, transparent); }
-.process-job-chip.is-question { color: var(--warning); background: color-mix(in srgb, var(--warning) 14%, transparent); }
+.process-job-chip.is-question { color: var(--process-job-warning-text); background: color-mix(in srgb, var(--warning) 14%, transparent); }
 .process-job-chip.is-danger { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
 .process-job-chip.is-neutral { color: var(--text-soft); background: color-mix(in srgb, var(--text) 7%, transparent); }
 .process-job-chip .process-job-ring { width: 12px; height: 12px; }
@@ -1469,10 +1475,13 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 
 /* One job: the OUTER container is its kind (rounded square = command, circle =
    agent), the INNER mark its status. Colour only reinforces both. */
-.process-job-glyph { width: 20px; height: 20px; flex: none; display: grid; place-items: center; color: var(--text-muted); background: color-mix(in srgb, var(--text) 8%, transparent); border-radius: 5px; box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 22%, transparent); }
-.process-job-glyph.is-agent { border-radius: 50%; }
-.process-job-glyph.is-small { width: 18px; height: 18px; border-radius: 4px; }
-.process-job-glyph.is-small.is-agent { border-radius: 50%; }
+/* Kind is the container: a command is a squared key with an inner edge (the
+   terminal family); an agent is a circle with a detached orbit ring. The two
+   silhouettes differ even when the status tint is the same. */
+.process-job-glyph { width: 20px; height: 20px; flex: none; display: grid; place-items: center; color: var(--text-muted); background: color-mix(in srgb, var(--text) 8%, transparent); border-radius: 4px; box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 32%, transparent); }
+.process-job-glyph.is-agent { border-radius: 50%; box-shadow: none; outline: 1.5px solid color-mix(in srgb, currentColor 55%, transparent); outline-offset: 1.5px; }
+.process-job-glyph.is-small { width: 18px; height: 18px; border-radius: 3.5px; }
+.process-job-glyph.is-small.is-agent { width: 16px; height: 16px; border-radius: 50%; }
 .process-job-glyph.is-running { color: var(--accent); background: color-mix(in srgb, var(--accent) 11%, transparent); }
 .process-job-glyph.is-success { color: var(--success); background: color-mix(in srgb, var(--success) 15%, transparent); }
 .process-job-glyph.is-danger { color: var(--danger); background: color-mix(in srgb, var(--danger) 14%, transparent); }
@@ -1504,11 +1513,16 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .process-job-state { font-weight: 650; }
 [data-tone="running"] .process-job-state { color: var(--accent-strong); }
 [data-tone="waiting"] .process-job-state, [data-tone="neutral"] .process-job-state { color: var(--text-soft); }
-[data-tone="stopping"] .process-job-state, [data-tone="question"] .process-job-state, .process-job-pending, .process-job-note { color: var(--warning); }
+[data-tone="stopping"] .process-job-state, [data-tone="question"] .process-job-state, .process-job-pending, .process-job-note { color: var(--process-job-warning-text); }
 .process-job-pending { font-weight: 650; }
-[data-tone="success"] .process-job-state { color: var(--success); }
+[data-tone="success"] .process-job-state { color: var(--process-job-success-text); }
 [data-tone="danger"] .process-job-state { color: var(--danger); }
 .process-job-time, .process-job-detail { font-family: var(--font-mono); font-size: 11px; font-variant-numeric: tabular-nums; }
+/* The tool says its kind in words and with the transcript's own kind icons;
+   agents take the delegation identity hue the transcript already uses. */
+.process-job-tool { display: inline-flex; align-items: center; gap: 3px; }
+.process-job-kind-icon { flex: none; }
+.process-job-card[data-kind="agent"] .process-job-tool { color: var(--cat-4); }
 /* Exact alert wording; it may wrap inside itself rather than clip or overflow. */
 .process-job-meta > .process-job-token:has(.process-job-alert), .process-job-meta > .process-job-token:has(.process-job-note) { flex: 0 1 auto; }
 .process-job-alert { min-width: 0; color: var(--danger); font-weight: 650; overflow-wrap: anywhere; }
@@ -1520,7 +1534,7 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 /* Recent call outcomes: dot = complete, × = failed, hollow ring = running. */
 .process-job-calls { display: inline-flex; align-items: center; gap: 3px; vertical-align: -1px; }
 .process-job-calls > i { position: relative; width: 8px; height: 8px; display: block; }
-.process-job-calls > i.is-complete::before { content: ""; position: absolute; inset: 2px; background: color-mix(in srgb, var(--text-muted) 70%, transparent); border-radius: 50%; }
+.process-job-calls > i.is-complete::before { content: ""; position: absolute; inset: 2px; background: var(--text-muted); border-radius: 50%; }
 .process-job-calls > i.is-running { border: 1.5px solid var(--accent); border-radius: 50%; }
 .process-job-calls > i.is-failed::before, .process-job-calls > i.is-failed::after { content: ""; position: absolute; top: 3.25px; left: 0; width: 8px; height: 1.5px; background: var(--danger); border-radius: 1px; transform: rotate(45deg); }
 .process-job-calls > i.is-failed::after { transform: rotate(-45deg); }
@@ -1590,8 +1604,8 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .peer-question { min-width: 0; display: grid; gap: 7px; padding: 10px 12px; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 10px; font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; user-select: text; }
 .peer-question p { margin: 0; }
 .peer-question-state { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; color: var(--text-muted); font-size: 11.5px; }
-.peer-question-state strong { color: var(--warning); font-weight: 650; }
-.peer-question.is-answered .peer-question-state strong, .peer-question.is-expired .peer-question-state strong, .peer-question.is-interrupted .peer-question-state strong, .peer-question.is-subagent-question .peer-question-state strong { color: var(--text-soft); }
+.peer-question-state strong { color: var(--process-job-warning-text); font-weight: 650; }
+.peer-question.is-overdue .peer-question-state strong, .peer-question.is-answered .peer-question-state strong, .peer-question.is-expired .peer-question-state strong, .peer-question.is-interrupted .peer-question-state strong, .peer-question.is-subagent-question .peer-question-state strong { color: var(--text-soft); }
 .peer-question-message { color: var(--text); white-space: pre-wrap; }
 .peer-question-fields { min-width: 0; display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
 .peer-question-field { min-width: 0; display: grid; gap: 2px; }

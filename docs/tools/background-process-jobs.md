@@ -604,11 +604,14 @@ problems, a child still busy). Opening it lists current work purpose-first,
 with state, elapsed time, tool, exit facts and a labelled output or step
 preview on each row; a row opens for its output tail, wake state and the
 wake's response, without the host-local artifact paths an operator cannot open
-from a browser. Command jobs use a rounded-square glyph and agent jobs a
-circle; the inner mark and the row's words give the status. Every terminal
+from a browser. Command jobs use a squared glyph and agent jobs a ringed
+circle, and each row names its tool beside the matching kind icon; the inner
+mark and the row's words give the status. Every terminal
 outcome remains mounted but hidden behind **History** inside the shelf, except
 a PeerAgent job whose question still awaits the agent's answer, which stays
-with current work until the question is answered or expires. The shelf and
+with current work (and keeps a question count in the closed shelf, even when
+the job itself failed or was cancelled) until the question is answered or
+expires. The shelf and
 History choices are remembered per conversation for the browser session.
 Finished counts are scoped to loaded messages, and **History** points to **Load
 earlier messages** whenever older history is available. Nothing opens by

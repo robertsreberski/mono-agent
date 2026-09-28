@@ -287,14 +287,23 @@ export function ProcessJobPeerQuestion({ question }: { readonly question: PeerQu
   const fields = describePeerQuestionForm(question.requestedSchema);
   const schema = JSON.stringify(question.requestedSchema, null, 2);
   const deadline = Date.parse(question.expiresAt);
+  // Past its deadline the shelf no longer counts it as pending, but the host has
+  // not said so yet: say both, without claiming the agent is still waiting.
+  const overdue = question.state === "awaiting_answer" && Number.isFinite(deadline) && deadline <= now;
   return (
-    <section role="region" aria-label="Peer question" className={`peer-question is-${question.state.replaceAll("_", "-")}`}>
+    <section
+      role="region"
+      aria-label="Peer question"
+      className={`peer-question is-${question.state.replaceAll("_", "-")}${overdue ? " is-overdue" : ""}`}
+    >
       <p className="peer-question-state">
-        <strong>{peerQuestionStateLabel(question.state)}</strong>
+        <strong>{overdue ? "Past expiry; awaiting host confirmation" : peerQuestionStateLabel(question.state)}</strong>
         <span>{question.peer} / {question.thread}</span>
         {question.state === "awaiting_answer" ? (
           <time dateTime={question.expiresAt} title={Number.isFinite(deadline) ? new Date(deadline).toLocaleString() : undefined}>
-            {peerQuestionExpiryLabel(question.expiresAt, now)}
+            {overdue
+              ? `expired ${new Date(deadline).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" })}`
+              : peerQuestionExpiryLabel(question.expiresAt, now)}
           </time>
         ) : null}
       </p>
@@ -466,6 +475,7 @@ export function ProcessJobCard({
   onProjectionChange,
   autoOpen = false,
   onOpen,
+  shown = true,
 }: {
   readonly part: ProcessJobPartValue;
   readonly onProjectionChange?: (projection: ProcessJobProjection) => void;
@@ -476,6 +486,11 @@ export function ProcessJobCard({
   readonly autoOpen?: boolean;
   /** The operator opened this card; the shelf may bring it into its own view. */
   readonly onOpen?: (card: HTMLElement) => void;
+  /**
+   * Whether the card is on screen at all. A closed shelf (or History) hides an
+   * open card; a tail that was following must catch up when it is revealed.
+   */
+  readonly shown?: boolean;
 }) {
   const initial = part.job;
   const [live, setLive] = useState(initial);
@@ -536,11 +551,15 @@ export function ProcessJobCard({
     if (!manuallyCollapsed.current) setOpen(true);
   }, [autoOpen, live?.output.preview, live?.state, progress?.toolCalls]);
 
+  // Follow the tail only while it can be measured: output that arrives behind a
+  // closed shelf is caught up on reveal, and a reader who scrolled up keeps
+  // their place (the browser retains the offset while the box is hidden).
+  const visibleOpen = open && shown;
   useLayoutEffect(() => {
     const output = outputRef.current;
-    if (!open || output === null || !followOutput.current) return;
+    if (!visibleOpen || output === null || !followOutput.current) return;
     output.scrollTop = output.scrollHeight;
-  }, [live?.output.preview, open]);
+  }, [live?.output.preview, visibleOpen]);
 
   useEffect(() => {
     // A hidden tab has nobody to show a state change to. The card keeps what it
@@ -670,7 +689,7 @@ export function ProcessJobCard({
           <span className="process-job-state">{display.word}</span>
           {display.pending === undefined ? null : token("pending", display.pending, "process-job-pending")}
           {showTime ? token("time", <ActivityElapsed timing={timing!} live={!terminal} />, "process-job-time") : null}
-          {token("tool", live.tool, "process-job-tool")}
+          {token("tool", <><Icon className="process-job-kind-icon" name={kind === "agent" ? "agent" : "terminal"} size={12} />{live.tool}</>, "process-job-tool")}
           {display.details.map((detail) => token(`detail-${detail}`, detail, "process-job-detail"))}
           {display.alerts.map((alert) => token(`alert-${alert}`, alert, "process-job-alert"))}
           {display.notes.map((note) => token(`note-${note}`, note, "process-job-note"))}
@@ -719,12 +738,14 @@ export function ProcessJobCard({
               tabIndex={0}
               onScroll={(event) => {
                 const target = event.currentTarget;
+                // A hidden box reports zero sizes; that is not the reader leaving.
+                if (target.clientHeight === 0) return;
                 followOutput.current = target.scrollHeight - target.scrollTop - target.clientHeight <= 24;
               }}
             >{live.output.preview}</pre>
           </>
         )) : isSubagentProcessJobTool(live.tool)
-          ? <ProcessJobSubagentProgress key={live.jobId} progress={progress} open={open} />
+          ? <ProcessJobSubagentProgress key={live.jobId} progress={progress} open={visibleOpen} />
           : null}
         {responseText !== undefined && (
           <>

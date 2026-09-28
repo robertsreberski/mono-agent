@@ -42,6 +42,9 @@ type Story = StoryObj<typeof ProcessJobStack>;
 // Glance: the closed bar.
 export const Glance: Story = { render: () => stack(J.busyThread) };
 export const GlanceSingle: Story = { render: () => stack(J.singleThread) };
+export const GlanceSingleAgent: Story = { render: () => stack([J.succeeded, J.subagentRunning]) };
+export const GlanceFailedPeerWithQuestion: Story = { render: () => stack([J.succeeded, J.peerFailedPending]) };
+export const GlanceCancelledPeerWithQuestion: Story = { render: () => stack([J.succeeded, J.peerCancelledPending]) };
 export const GlanceIdle: Story = { render: () => stack(J.idleThread) };
 export const GlanceIdleWithIssue: Story = { render: () => stack(J.idleWithIssueThread) };
 export const GlanceQuestionOnly: Story = { render: () => stack(J.questionOnlyThread) };
@@ -54,7 +57,7 @@ export const Inspect: Story = { render: () => stack(J.busyThread), play: open() 
 export const InspectWithHistory: Story = { render: () => stack(J.busyThread), play: open({ history: true }) };
 export const AgentsAndCommands: Story = { render: () => stack(J.agentsAndCommandsThread), play: open() };
 export const IssuesAndQuestions: Story = {
-  render: () => stack([J.runningTail, J.peerPending, J.failed, J.timedOut, J.cancelledWake, J.wakeFailed, J.childBusy, J.peerAnswered, J.subagentAsked]),
+  render: () => stack([J.runningTail, J.peerPending, J.peerFailedPending, J.failed, J.timedOut, J.cancelledWake, J.wakeFailed, J.childBusy, J.peerAnswered, J.subagentAsked]),
   play: open({ history: true }),
 };
 export const AllStates: Story = { render: () => stack(J.allStatesThread), play: open({ history: true }) };

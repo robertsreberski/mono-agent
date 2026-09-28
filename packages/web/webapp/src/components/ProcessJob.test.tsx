@@ -1034,7 +1034,7 @@ it("renders a pending PeerAgent question as untrusted text with its answer ident
       requestedSchema: { type: "object", required: ["question_1"], properties: {
         question_1: { type: "string", title: "Decision", oneOf: [{ const: "y", title: "Yes" }, { const: "n", title: "No" }] },
         question_1_other: { type: "string", title: "Other response" } } },
-      expiresAt: "2026-09-23T20:00:00.000Z" } });
+      expiresAt: "2099-09-23T20:00:00.000Z" } });
   const view = render(part({ type: "process-job", job }));
   fireEvent.click(view.container.querySelector("summary")!);
   const region = screen.getByRole("region", { name: "Peer question" });
@@ -1057,13 +1057,31 @@ it("renders a malformed peer enum without crashing and never coerces object valu
     peerQuestion: { state: "awaiting_answer", peer: "finance", thread: "portfolio",
       questionId: "11111111-1111-4111-8111-111111111111", message: "Proceed?",
       requestedSchema: { type: "object", properties: { q: { enum: [{ toString: "bad" }] }, r: "not-a-field" } },
-      expiresAt: "2026-09-23T20:00:00.000Z" } });
+      expiresAt: "2099-09-23T20:00:00.000Z" } });
   const view = render(part({ type: "process-job", job }));
   fireEvent.click(view.container.querySelector("summary")!);
   const region = screen.getByRole("region", { name: "Peer question" });
   expect(region).toHaveTextContent("Waiting for the agent's answer");
   expect(region.querySelectorAll(".peer-question-chip")).toHaveLength(0);
   expect(region.querySelector(".peer-question-schema pre")?.textContent).toContain("\"toString\": \"bad\"");
+});
+
+it("says an unanswered question past its deadline is awaiting host confirmation, not the agent", () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-07-17T10:30:00.000Z"));
+  const job = processJob({ tool: "PeerAgent", kind: "internal", instanceId: "finance", childStillBusy: false,
+    peerQuestion: { state: "awaiting_answer", peer: "finance", thread: "portfolio",
+      questionId: "11111111-1111-4111-8111-111111111111", message: "Proceed?",
+      requestedSchema: { type: "object", properties: {} }, expiresAt: "2026-07-17T10:20:00.000Z" } });
+  const view = render(part({ type: "process-job", job }));
+  fireEvent.click(view.container.querySelector("summary")!);
+  const region = screen.getByRole("region", { name: "Peer question" });
+  expect(region).toHaveTextContent("Past expiry; awaiting host confirmation");
+  expect(region).not.toHaveTextContent("Waiting for the agent's answer");
+  expect(region).not.toHaveTextContent("past its expiry time");
+  expect(region).toHaveClass("is-awaiting-answer", "is-overdue");
+  // The row no longer claims a pending question either.
+  expect(view.container.querySelector(".process-job-state")).toHaveTextContent("Done");
 });
 
 it("falls back to the raw form when a peer schema has no readable fields", () => {
