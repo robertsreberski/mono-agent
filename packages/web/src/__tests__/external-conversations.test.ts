@@ -42,6 +42,12 @@ function external(scope: Partial<ExternalConsoleToolScope> = {}): ExternalConsol
   return { kind: "external", sourceId: "agent-one", channel: "telegram", key: FLIGHTS, turnKey: "telegram-turn-0001", pid: 123, ...scope };
 }
 
+/** A DM or plain-group turn: no conversation of its own can be a project. */
+function dmScope(): ExternalConsoleToolScope {
+  const { key: _key, ...scope } = external();
+  return scope;
+}
+
 let operations = 0;
 function run(store: WebStore, scope: ExternalConsoleToolScope, tool: ConsoleToolName, args: Record<string, unknown> = {}) {
   operations += 1;
@@ -67,7 +73,8 @@ describe("channel conversations mirrored into projects", () => {
 
   it("renames auto-named projects only, and keeps a chosen name authoritative", async () => {
     const { store } = await openStore();
-    store.observeExternalConversations("agent-one", "telegram", [seen("2026-09-28T09:00:00.000Z", { topicLabel: undefined })]);
+    const { topicLabel: _unnamed, ...unnamedTopic } = seen("2026-09-28T09:00:00.000Z");
+    store.observeExternalConversations("agent-one", "telegram", [unnamedTopic]);
     const [unnamed] = store.listProjects("agent-one");
     expect(unnamed!.name).toBe("Trips › unnamed topic");
     store.observeExternalConversations("agent-one", "telegram", [seen("2026-09-28T09:01:00.000Z")]);
@@ -150,9 +157,9 @@ describe("channel conversations mirrored into projects", () => {
     expect(() => run(store, external({ sourceId: "agent-two" }), "SetConversationProject", { conversationId: current.id, projectId: null }))
       .toThrowError(expect.objectContaining({ code: "thread_not_found" }));
     // A DM turn has no project-capable conversation of its own.
-    expect(() => run(store, external({ key: undefined }), "SetConversationProject", { projectId: current.projectId }))
+    expect(() => run(store, dmScope(), "SetConversationProject", { projectId: current.projectId }))
       .toThrowError(expect.objectContaining({ code: "external_conversation_unsupported" }));
-    expect(() => run(store, external({ key: undefined }), "CreateProject", { name: "Nope", attachCurrentConversation: true }))
+    expect(() => run(store, dmScope(), "CreateProject", { name: "Nope", attachCurrentConversation: true }))
       .toThrowError(expect.objectContaining({ code: "external_conversation_unsupported" }));
     expect(store.listProjects("agent-one")).toHaveLength(1);
   });
@@ -160,7 +167,7 @@ describe("channel conversations mirrored into projects", () => {
   it("lists the channel conversation as an honest descriptor without changing web summaries", async () => {
     const { store } = await openStore();
     const web = store.createThread("agent-one");
-    const before = run(store, external({ key: undefined }), "ListConversations", {}).result;
+    const before = run(store, dmScope(), "ListConversations", {}).result;
     expect(before).toEqual({ conversations: [expect.objectContaining({ id: web.id })] });
     store.observeExternalConversations("agent-one", "telegram", [seen("2026-09-28T09:00:00.000Z")]);
     const current = store.externalConversationByKey("agent-one", "telegram", FLIGHTS)!;
