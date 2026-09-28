@@ -5,9 +5,9 @@ import { atlas } from "../fixtures";
 import { openOverlay, waitForOverlay } from "../overlay-play";
 
 const moderate = { status: "current" as const, measuredModel: "atlas/standard", usage: { total: 84_210, contextWindow: 200_000, model: "atlas/standard" } };
-const typical: WebThreadUsage = { total: { tokens: { input: 68_000, cacheRead: 45_000, cacheWrite: 2_000, output: 11_000 }, costUsd: 2.24 },
+const typical: WebThreadUsage = { total: { tokens: { input: 16_000, cacheRead: 82_000, cacheWrite: 2_000, output: 11_000 }, costUsd: 2.24 },
   byModel: [{ model: "atlas/standard", costUsd: 2.24 }], computedAt: "2026-09-19T12:00:00Z" };
-const mixed: WebThreadUsage = { total: { tokens: { input: 89_000, cacheRead: 72_000, cacheWrite: 3_000, output: 22_000 }, tokensPartial: true, costUsd: 4.18 },
+const mixed: WebThreadUsage = { total: { tokens: { input: 22_000, cacheRead: 76_000, cacheWrite: 2_000, output: 22_000 }, tokensPartial: true, costUsd: 4.18 },
   subagents: { runs: 3, costUsd: 1.12, tokensPartial: true }, byModel: [
     { model: "atlas/standard", costUsd: 3.06 }, { model: "grove/fast", costUsd: 1.12 },
   ], computedAt: "2026-09-19T12:00:00Z" };

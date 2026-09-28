@@ -10,7 +10,7 @@ import {
 } from "../../src/message-cost.js";
 import { messageUsageRollup } from "../../src/message-cost.js";
 import { sumThreadUsage } from "../../src/thread-usage.js";
-import type { WebThreadUsage } from "../../src/contracts.js";
+import type { WebThreadUsage, WebUsageSlice } from "../../src/contracts.js";
 
 export interface ConsoleTokenUsage {
   readonly input?: number;
@@ -67,6 +67,17 @@ export const formatTokenCount = (tokens: number): string => {
   if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1).replace(/\.0$/u, "")}M`;
   if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1).replace(/\.0$/u, "")}k`;
   return String(tokens);
+};
+
+/** Token-weighted share of prompt tokens served from cache, including reported child work. */
+export const conversationCacheHitPercent = (total: WebUsageSlice | undefined): string | undefined => {
+  const tokens = total?.tokens;
+  if (tokens === undefined) return undefined;
+  // Input includes writes, so the denominator is the two dialog columns together.
+  const prompt = tokens.input + tokens.cacheWrite + tokens.cacheRead;
+  if (!Number.isFinite(prompt) || prompt <= 0 || !Number.isFinite(tokens.cacheRead)) return undefined;
+  const percent = tokens.cacheRead / prompt * 100;
+  return percent > 0 && percent < 0.5 ? "<1%" : `${Math.round(percent)}%`;
 };
 
 export const contextLevel = (percent: number | undefined): "normal" | "warning" | "danger" =>

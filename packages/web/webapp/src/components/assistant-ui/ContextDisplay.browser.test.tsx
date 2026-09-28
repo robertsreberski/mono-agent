@@ -36,6 +36,16 @@ const show = async (data = totals) => {
 afterEach(async () => { vi.clearAllMocks(); delete document.documentElement.dataset.consoleTheme; await commands.emulateColorScheme(null); await page.viewport(1440, 1000); });
 
 describe("Context usage layout", () => {
+  it.each([[1440, 1000, "desktop"], [390, 844, "phone"]])("shows the aggregate cache hit in the Tokens heading at %ipx", async (width, height, label) => {
+    await page.viewport(width, height);
+    const { dialog } = await show();
+    const hit = within(dialog).getByLabelText("Cache hit 38 percent");
+    expect(hit).toHaveTextContent("38% cache hit");
+    expect(hit).toHaveAttribute("title", "Share of prompt tokens read from the provider's prompt cache across this conversation.");
+    expect(getComputedStyle(hit).color).toBe(getComputedStyle(dialog.querySelector(".context-display-eyebrow")!).color);
+    const shots = import.meta.env.VITE_CONTEXT_FOLLOWUP_SHOTS as string | undefined;
+    if (shots) await page.screenshot({ path: `${shots}/cache-hit-${label}.png` });
+  });
   it.each(["ocean", "evergreen"])("uses the model-selector dark scrim on %s dark phone sheets", async (theme) => {
     await page.viewport(390, 844);
     await commands.emulateColorScheme("dark");

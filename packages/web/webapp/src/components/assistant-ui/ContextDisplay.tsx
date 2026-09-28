@@ -7,7 +7,7 @@ import { useId, useRef, useState } from "react";
 import type { WebThreadUsage, WebUsageSlice } from "../../../../src/contracts.js";
 import { api, ApiError } from "../../api";
 import type { AgentSummary, ProviderUsageId, ThreadDetail } from "../../types";
-import { contextLevel, formatTokenCount, formatUsd, type ConsoleContextProjection } from "../../usage";
+import { contextLevel, conversationCacheHitPercent, formatTokenCount, formatUsd, type ConsoleContextProjection } from "../../usage";
 import { useThreadUsage } from "../../use-thread-usage";
 import { ProviderUsageMeters, useProviderUsage } from "../ProviderUsageMeters";
 import { shortModelName } from "../route-label";
@@ -103,6 +103,7 @@ const tokenColumns = [
 function TokensSection({ totals, loading, id }: { readonly totals?: WebThreadUsage; readonly loading: boolean; readonly id: string }) {
   const total = totals?.total;
   const sub = totals?.subagents;
+  const cacheHit = conversationCacheHitPercent(total);
   const cells = (slice: WebUsageSlice, subLine = false) => {
     if (slice.tokens === undefined) return <td colSpan={3} className="is-unreported">{subLine ? "not reported" : "No token counts reported"}</td>;
     return tokenColumns.map(({ key }) => {
@@ -118,7 +119,13 @@ function TokensSection({ totals, loading, id }: { readonly totals?: WebThreadUsa
     });
   };
   return <section className="context-display-section" aria-labelledby={id} aria-busy={loading || undefined}>
-    <h3 className="context-display-eyebrow" id={id}>Tokens processed</h3>
+    <div className="context-display-section-heading"><h3 className="context-display-eyebrow" id={id}>Tokens processed</h3>
+      {cacheHit !== undefined && <span className="context-display-meta"
+        aria-label={`Cache hit ${cacheHit === "<1%" ? "less than 1" : cacheHit.slice(0, -1)} percent`}
+        title={`Share of prompt tokens read from the provider's prompt cache across this conversation.${total?.tokensPartial ? " Based on the token counts that were reported." : ""}`}>
+        {cacheHit} cache hit
+      </span>}
+    </div>
     {loading && totals === undefined ? <p className="context-display-empty">—</p> : total?.tokens === undefined && sub === undefined
       ? <p className="context-display-empty">No reply in this conversation reported token counts.</p>
       : <table className="context-display-tokens"><colgroup><col className="label" /><col /><col /><col /></colgroup>
