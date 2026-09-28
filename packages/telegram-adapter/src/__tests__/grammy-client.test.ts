@@ -55,6 +55,35 @@ describe("createGrammyTelegramApi", () => {
     expect(() => createTelegramMessageSender(" ")).toThrow(/bot token is required/u);
   });
 
+  it("forwards a forum topic's message_thread_id on every send method", async () => {
+    const calls: Array<{ method: string; args: unknown[] }> = [];
+    const record = (method: string) => async (...args: unknown[]) => {
+      calls.push({ method, args });
+      return method === "sendChatAction" ? true : { message_id: 1, chat: { id: -1001 } };
+    };
+    const api = {
+      sendMessage: record("sendMessage"),
+      sendChatAction: record("sendChatAction"),
+      sendDocument: record("sendDocument"),
+      sendPhoto: record("sendPhoto"),
+    } as unknown as Api;
+    const client = createGrammyTelegramApi(api);
+
+    await client.sendMessage({ chat_id: -1001, message_thread_id: 77, text: "hi" });
+    await client.sendChatAction?.({ chat_id: -1001, message_thread_id: 77, action: "typing" });
+    await client.sendDocument?.({ chat_id: -1001, message_thread_id: 77, document: "file-id" });
+    await client.sendPhoto?.({ chat_id: -1001, message_thread_id: 77, photo: new Uint8Array([1]) });
+    await client.sendMessage({ chat_id: -1001, text: "general" });
+
+    expect(calls.map((call) => [call.method, (call.args[2] as Record<string, unknown>).message_thread_id])).toEqual([
+      ["sendMessage", 77],
+      ["sendChatAction", 77],
+      ["sendDocument", 77],
+      ["sendPhoto", 77],
+      ["sendMessage", undefined],
+    ]);
+  });
+
   it("translates sendMessage params into grammY positional args plus options", async () => {
     const { api, calls } = recordingApi({
       sendMessage: (chat_id, text) => ({

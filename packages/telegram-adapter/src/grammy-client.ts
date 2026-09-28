@@ -120,7 +120,7 @@ export function createGrammyTelegramApi(api: Api): TelegramMessageSender {
         await api.sendChatAction(
           params.chat_id,
           params.action as Parameters<Api["sendChatAction"]>[1],
-          {},
+          params.message_thread_id === undefined ? {} : { message_thread_id: params.message_thread_id },
           asGrammySignal(options?.signal),
         );
         return true;
@@ -160,6 +160,7 @@ export function createGrammyTelegramApi(api: Api): TelegramMessageSender {
             ? params.document
             : new InputFile(params.document, params.filename);
         const other = {
+          ...(params.message_thread_id === undefined ? {} : { message_thread_id: params.message_thread_id }),
           ...(params.caption === undefined ? {} : { caption: params.caption }),
           ...(params.reply_to_message_id === undefined
             ? {}
@@ -199,7 +200,10 @@ export function createGrammyTelegramApi(api: Api): TelegramMessageSender {
         const message = await api.sendPhoto(
           params.chat_id,
           photo,
-          params.caption === undefined ? {} : { caption: params.caption },
+          {
+            ...(params.message_thread_id === undefined ? {} : { message_thread_id: params.message_thread_id }),
+            ...(params.caption === undefined ? {} : { caption: params.caption }),
+          },
           asGrammySignal(options?.signal),
         );
         return message as unknown as TelegramSentMessage;
@@ -236,6 +240,9 @@ export function createTelegramMessageSender(
 
 function buildSendOther(params: TelegramSendMessageParams): SendOther {
   const other: SendOther = {};
+  if (params.message_thread_id !== undefined) {
+    other.message_thread_id = params.message_thread_id;
+  }
   if (params.parse_mode !== undefined) {
     other.parse_mode = params.parse_mode as NonNullable<SendOther["parse_mode"]>;
   }

@@ -37,6 +37,8 @@ export interface TelegramMessageFinishOptions extends AgentMessageFinishOptions 
 export interface TelegramMessageStreamOptions {
   api: TelegramMessageSender;
   chatId: TelegramChatId;
+  /** Forum topic every post and typing action targets; omit outside topics. */
+  messageThreadId?: number;
   initialStatusText?: string;
   editDebounceMs?: number;
   maxMessageChars?: number;
@@ -132,6 +134,7 @@ class TelegramChannelTransport implements ChannelTransport {
 
   private readonly api: TelegramMessageSender;
   private readonly chatId: TelegramChatId;
+  private readonly messageThreadId: number | undefined;
   private readonly replyToMessageId: number | undefined;
   private readonly silent: boolean;
   private readonly logger: TelegramMessageStreamLogger | undefined;
@@ -142,6 +145,7 @@ class TelegramChannelTransport implements ChannelTransport {
   constructor(options: {
     api: TelegramMessageSender;
     chatId: TelegramChatId;
+    messageThreadId: number | undefined;
     maxMessageChars: number;
     replyToMessageId: number | undefined;
     markdownEnabled: boolean;
@@ -151,6 +155,7 @@ class TelegramChannelTransport implements ChannelTransport {
   }) {
     this.api = options.api;
     this.chatId = options.chatId;
+    this.messageThreadId = options.messageThreadId;
     this.maxMessageChars = options.maxMessageChars;
     this.replyToMessageId = options.replyToMessageId;
     this.markdownEnabled = options.markdownEnabled;
@@ -232,7 +237,11 @@ class TelegramChannelTransport implements ChannelTransport {
   async indicateActivity(): Promise<void> {
     // Telegram "typing…" chat action; expires after ~5s so the substrate
     // refreshes it while the agent works. No-op if the sender lacks the method.
-    await this.api.sendChatAction?.({ chat_id: this.chatId, action: "typing" });
+    await this.api.sendChatAction?.({
+      chat_id: this.chatId,
+      ...(this.messageThreadId === undefined ? {} : { message_thread_id: this.messageThreadId }),
+      action: "typing",
+    });
   }
 
   /**
@@ -273,6 +282,9 @@ class TelegramChannelTransport implements ChannelTransport {
     contentKind?: ChannelMessageContentKind,
   ): TelegramSendMessageParams {
     const params: TelegramSendMessageParams = { chat_id: this.chatId, text };
+    if (this.messageThreadId !== undefined) {
+      params.message_thread_id = this.messageThreadId;
+    }
     if (useMarkdown) {
       params.parse_mode = "MarkdownV2";
     }
@@ -339,6 +351,7 @@ export class TelegramMessageStream implements AgentMessageStream {
     this.transport = new TelegramChannelTransport({
       api: options.api,
       chatId: options.chatId,
+      messageThreadId: options.messageThreadId,
       maxMessageChars,
       replyToMessageId: options.replyToMessageId,
       // Streaming begins with the configured formatting; finish() may override it.

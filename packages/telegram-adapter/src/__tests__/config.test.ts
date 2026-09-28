@@ -170,6 +170,12 @@ describe("loadTelegramAdapterConfig", () => {
       jsonPath: path,
     });
     expect(fromEnv).toMatchObject({ groupMode: "any", stripMentionText: false });
+
+    const listen = await loadTelegramAdapterConfig({
+      env: { MONO_AGENT_TELEGRAM_GROUP_MODE: "listen" },
+      jsonPath: path,
+    });
+    expect(listen).toMatchObject({ groupMode: "listen" });
   });
 
   it("rejects an unknown Telegram group trigger mode", async () => {
@@ -181,6 +187,64 @@ describe("loadTelegramAdapterConfig", () => {
         MONO_AGENT_TELEGRAM_GROUP_MODE: "sometimes",
       },
     })).rejects.toBeInstanceOf(TelegramAdapterConfigError);
+  });
+
+  it("parses per-topic trigger overrides for allowlisted chats and redacts them to a count", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(path, JSON.stringify({
+      telegram: {
+        enabled: true,
+        botToken: "123456:json-token",
+        allowedChatIds: ["-1001"],
+        groupMode: "mention",
+        topics: [
+          { chatId: -1001, topicId: 12, groupMode: "any" },
+          { chatId: "-1001", topicId: 13 },
+          { chatId: "-1001", topicId: 14, groupMode: "mention" },
+          { chatId: "-1001", topicId: 15, groupMode: "listen" },
+        ],
+      },
+    }), "utf8");
+
+    const config = await loadTelegramAdapterConfig({ env: {}, jsonPath: path });
+    expect(config.topics).toEqual([
+      { chatId: "-1001", topicId: 12, groupMode: "any" },
+      { chatId: "-1001", topicId: 13, groupMode: "inherit" },
+      { chatId: "-1001", topicId: 14, groupMode: "mention" },
+      { chatId: "-1001", topicId: 15, groupMode: "listen" },
+    ]);
+    expect(redactTelegramAdapterConfig(config).topics).toEqual({ count: 4 });
+    expect(JSON.stringify(redactTelegramAdapterConfig(config))).not.toContain("-1001");
+  });
+
+  it("rejects topic overrides that are malformed, duplicated, or outside the chat allowlist", async () => {
+    const load = async (topics: unknown, extra: Record<string, unknown> = {}) => {
+      const path = join(dir, "mono-agent.config.json");
+      await writeFile(path, JSON.stringify({
+        telegram: { enabled: true, botToken: "123456:json-token", allowedChatIds: ["-1001"], topics, ...extra },
+      }), "utf8");
+      return loadTelegramAdapterConfig({ env: {}, jsonPath: path });
+    };
+
+    for (const topics of [
+      { chatId: "-1001", topicId: 12 },
+      [{ chatId: "-2002", topicId: 12, groupMode: "any" }],
+      [{ chatId: "@trips", topicId: 12 }],
+      [{ chatId: "-01001", topicId: 12 }],
+      [{ chatId: "-1001", topicId: 0 }],
+      [{ chatId: "-1001", topicId: "12" }],
+      [{ chatId: "-1001", topicId: 12, groupMode: "sometimes" }],
+      [{ chatId: "-1001", topicId: 12, name: "Budapest" }],
+      [{ chatId: "-1001", topicId: 12 }, { chatId: -1001, topicId: 12, groupMode: "any" }],
+    ]) {
+      await expect(load(topics)).rejects.toBeInstanceOf(TelegramAdapterConfigError);
+    }
+    // Allow-all chats accept any chat id, but still validate the entry itself.
+    await expect(load([{ chatId: "-2002", topicId: 12, groupMode: "any" }], { allowAllChats: true }))
+      .resolves.toMatchObject({ topics: [{ chatId: "-2002", topicId: 12, groupMode: "any" }] });
+    // A non-canonical id could never match an inbound integer chat id.
+    await expect(load([{ chatId: "-02002", topicId: 12, groupMode: "any" }], { allowAllChats: true }))
+      .rejects.toBeInstanceOf(TelegramAdapterConfigError);
   });
 
   it("parses transport.ipFamily and pollWatchdogMs from JSON", async () => {

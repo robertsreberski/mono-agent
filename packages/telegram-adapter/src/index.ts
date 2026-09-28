@@ -26,6 +26,13 @@ export type {
   TelegramVoice,
 } from "./types.js";
 
+export {
+  parseTelegramConversationId,
+  telegramConversationId,
+  telegramMessageThreadId,
+} from "./conversation.js";
+export type { TelegramConversationTarget, TelegramDestination } from "./conversation.js";
+
 export { TelegramApiError } from "./telegram-error.js";
 export type {
   TelegramApiErrorDetails,
@@ -140,5 +147,7 @@ export type {
   TelegramGroupTriggerMode,
   TelegramQuietHours,
   TelegramReactionsConfig,
+  TelegramTopicConfig,
+  TelegramTopicTriggerMode,
   TelegramSendToolsConfig,
 } from "./config.js";

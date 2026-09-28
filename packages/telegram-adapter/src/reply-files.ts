@@ -16,6 +16,8 @@ const CONFIRMED_DELIVERY_CACHE_MAX = 512;
 export interface TelegramReplyFileTarget {
   readonly conversationId: string;
   readonly chatId: TelegramChatId;
+  /** Forum topic the file belongs in; omit outside topics. */
+  readonly messageThreadId?: number;
   readonly replyToMessageId?: number;
   readonly silent?: boolean;
   readonly signal?: AbortSignal;
@@ -53,7 +55,7 @@ export class TelegramReplyFileDelivery {
     if (this.responder.openReplyArtifact === undefined || this.sender.sendDocument === undefined) {
       return false;
     }
-    const key = deliveryKey(part.integrityId, target.chatId, target.replyToMessageId);
+    const key = deliveryKey(part.integrityId, target.chatId, target.messageThreadId, target.replyToMessageId);
     if (this.confirmed.delete(key)) {
       this.confirmed.set(key, true);
       return true;
@@ -105,6 +107,7 @@ export class TelegramReplyFileDelivery {
       this.sender,
       {
         chat_id: target.chatId,
+        ...(target.messageThreadId === undefined ? {} : { message_thread_id: target.messageThreadId }),
         document,
         filename: part.name,
         ...(target.replyToMessageId === undefined
@@ -123,13 +126,16 @@ export class TelegramReplyFileDelivery {
 function deliveryKey(
   integrityId: string,
   chatId: TelegramChatId,
+  messageThreadId: number | undefined,
   replyToMessageId: number | undefined,
 ): string {
   return createHash("sha256")
-    .update("telegram-reply-file-v1\0")
+    .update("telegram-reply-file-v2\0")
     .update(integrityId)
     .update("\0")
     .update(String(chatId))
+    .update("\0")
+    .update(messageThreadId === undefined ? "" : String(messageThreadId))
     .update("\0")
     .update(replyToMessageId === undefined ? "" : String(replyToMessageId))
     .digest("hex");

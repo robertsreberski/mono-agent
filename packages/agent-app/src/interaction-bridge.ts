@@ -238,7 +238,9 @@ function validAdapterDeliveryReceipt(conversationId: string, idempotencyKey: str
     const receipt = /^adapter-send:slack:([^:]+):(\d+(?:\.\d+)?)$/u.exec(idempotencyKey);
     return slack[1] !== undefined && receipt?.[1] === slack[1];
   }
-  const telegram = /^telegram:(-?\d+)$/u.exec(conversationId);
+  // A forum-topic conversation (`telegram:<chat>:<topic>`) is bound by its chat;
+  // Telegram message ids are unique per chat across all of its topics.
+  const telegram = /^telegram:(-?\d+)(?::[1-9]\d*)?$/u.exec(conversationId);
   if (telegram !== null) {
     const receipt = /^adapter-send:telegram:(-?\d+):(\d+)$/u.exec(idempotencyKey);
     return telegram[1] !== undefined && receipt?.[1] === telegram[1];

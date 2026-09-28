@@ -1298,10 +1298,21 @@ function isCanonicalProcessJobBase(
   if (!value.startsWith(prefix)) return false;
   const destination = value.slice(prefix.length);
   if (channel === "telegram") {
-    const chatId = Number(destination);
-    return /^-?\d+$/u.test(destination)
+    // `<chat>` or a forum topic `<chat>:<topic>`, both in canonical integer form.
+    const parts = destination.split(":");
+    const rawChat = parts[0] ?? "";
+    const rawTopic = parts[1];
+    const chatId = Number(rawChat);
+    const topicId = rawTopic === undefined ? undefined : Number(rawTopic);
+    return parts.length <= 2
+      && /^-?\d+$/u.test(rawChat)
       && Number.isSafeInteger(chatId)
-      && String(chatId) === destination;
+      && String(chatId) === rawChat
+      && (rawTopic === undefined
+        || (/^[1-9]\d*$/u.test(rawTopic)
+          && topicId !== undefined
+          && Number.isSafeInteger(topicId)
+          && String(topicId) === rawTopic));
   }
   if (channel === "web") return destination !== "new" && /^[^\s:#]+$/u.test(destination);
   if (channel === "slack") {

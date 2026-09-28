@@ -5,6 +5,7 @@ import { Agent as HttpsAgent } from "node:https";
 import { isAbsolute } from "node:path";
 
 import {
+  AGENT_PRECEDING_MESSAGES_MAX_COUNT,
   MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES,
   createChannelUserCancelReason,
   describePeerQuestionForm,
@@ -12,6 +13,7 @@ import {
   isAgentResponseCancelledError,
   isChannelUserCancelReason,
   type AgentLiveInputOffer,
+  type AgentPrecedingMessage,
   type ChannelAskSnapshot,
   type ChannelAskSubmission,
   type ChannelAskSubmissionResult,
@@ -30,6 +32,8 @@ import {
   mergeTelegramMessageInputs,
   normalizeTelegramMessageInput,
   resolveErrorText,
+  telegramContextText,
+  telegramPrecedingMessage,
   type AgentRequest,
   type AgentResponder,
   type AgentResponse,
@@ -42,7 +46,24 @@ import {
 } from "./adapter.js";
 import { parseTelegramAskUserCallbackData, telegramAskUserCallbackData } from "./ask-user.js";
 import { isTelegramReplyCallbackData } from "./reply-options.js";
-import type { TelegramCommandConfig, TelegramGroupTriggerMode, TelegramReactionsConfig } from "./config.js";
+import type {
+  TelegramCommandConfig,
+  TelegramGroupTriggerMode,
+  TelegramReactionsConfig,
+  TelegramTopicTriggerMode,
+} from "./config.js";
+import {
+  isTelegramForumServiceMessage,
+  telegramConversationId,
+  telegramConversationTarget,
+  telegramMessageTarget,
+  telegramMessageThreadId,
+  telegramThreadParams,
+  telegramTopicNameFromMessage,
+  withoutImplicitTopicReply,
+  type TelegramConversationTarget,
+  type TelegramDestination,
+} from "./conversation.js";
 import { createGrammyTelegramApi } from "./grammy-client.js";
 import {
   createSecretSafeTelegramLogger,
@@ -90,9 +111,14 @@ const EFFORT_CALLBACK_PREFIX = `${RUNTIME_CALLBACK_PREFIX}e:`;
 const RUNTIME_CANCEL_CALLBACK = `${RUNTIME_CALLBACK_PREFIX}cancel`;
 const RUNTIME_CALLBACK_TOKEN_LENGTH = 16;
 const TELEGRAM_BUTTON_LABEL_CODE_POINTS = 60;
+// Process-local bounds for learned topic names and listen-mode context buffers.
+const TOPIC_NAME_CACHE_MAX = 1_024;
+const LISTEN_BUFFER_CONVERSATIONS_MAX = 256;
 
 interface TelegramAskPresentation {
   readonly chatId: TelegramChatId;
+  /** Chat or forum-topic conversation the question was posted into. */
+  readonly conversationId: string;
   readonly messageId: number;
   activeQuestionIndex: number;
   readonly selectedOptionIds: Set<string>;
@@ -393,6 +419,16 @@ export interface CreateTelegramBotOptions {
   readonly groupMode?: TelegramGroupTriggerMode;
   /** Remove matching native @mentions before passing text to the responder. Defaults to true. */
   readonly stripMentionText?: boolean;
+  /**
+   * Per-forum-topic trigger overrides. `inherit` (or no entry) follows
+   * {@link groupMode}; the General topic always follows it. Entries never
+   * authorize a chat: the allowlist gate runs first.
+   */
+  readonly topics?: readonly {
+    readonly chatId: TelegramChatId;
+    readonly topicId: number;
+    readonly groupMode?: TelegramTopicTriggerMode;
+  }[];
   readonly stream?: TelegramAdapterStreamOptions;
   readonly messages?: TelegramAdapterMessages;
   readonly logger?: TelegramAdapterLogger;
@@ -494,32 +530,33 @@ export interface TelegramBotController {
   /** Stop polling and wait for the runner to settle. */
   stop(): Promise<void>;
   /**
-   * Deliver a proactive notification to `chatId`, serialized through the same
-   * per-chat queue as inbound messages. By default runs `text` as a turn and
-   * delivers the answer; with `options.verbatim` posts `text` unchanged (no model
-   * call) and records it to history. Used by cron/webhook nudges.
+   * Deliver a proactive notification to a chat (or one of its forum topics),
+   * serialized through the same per-conversation queue as inbound messages. By
+   * default runs `text` as a turn and delivers the answer; with
+   * `options.verbatim` posts `text` unchanged (no model call) and records it to
+   * history. Used by cron/webhook nudges.
    */
-  notify(chatId: TelegramChatId, text: string, options?: TelegramNotifyOptions): Promise<TelegramNotifyResult>;
+  notify(destination: TelegramDestination, text: string, options?: TelegramNotifyOptions): Promise<TelegramNotifyResult>;
   /** Host-only lifecycle card update; never invokes the responder. */
   updateProcessJob(
-    chatId: TelegramChatId,
+    destination: TelegramDestination,
     projection: ProcessJobProjection,
     options?: { readonly silent?: boolean; readonly retirementOnly?: boolean },
   ): Promise<TelegramNotifyResult>;
   /**
    * Post (or edit in place) a short tool-progress status line, keyed per
-   * `(chat, key)`. A terminal state (`done`/`failed`) writes the final text and
+   * `(conversation, key)`. A terminal state (`done`/`failed`) writes the final text and
    * clears the tracking so the next job with the same key starts a new message.
    * Best-effort: a failed send/edit never throws.
    */
   postStatus(
-    chatId: TelegramChatId,
+    destination: TelegramDestination,
     text: string,
     options: { readonly key: string; readonly state: "working" | "done" | "failed" },
   ): Promise<void>;
   /** Present or advance one bridge-owned AskUser interaction. */
-  presentAsk(chatId: TelegramChatId, snapshot: ChannelAskSnapshot): Promise<void>;
-  updateAsk(chatId: TelegramChatId, snapshot: ChannelAskSnapshot): Promise<void>;
+  presentAsk(destination: TelegramDestination, snapshot: ChannelAskSnapshot): Promise<void>;
+  updateAsk(destination: TelegramDestination, snapshot: ChannelAskSnapshot): Promise<void>;
   /**
    * Test seam: total in-flight AbortControllers tracked across all chats. Used to
    * assert the over-cap busy path does not leak an eagerly-created controller.
@@ -808,6 +845,77 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   if (!allowAllChats && allowedChatIds.size === 0) {
     throw new TypeError("createTelegramBot requires allowedChatIds or allowAllChats: true.");
   }
+  // Topic overrides are keyed by the topic's conversation id. `inherit` entries
+  // are dropped so a lookup miss always means "use the chat's groupMode".
+  const topicTriggerModes = new Map<string, TelegramGroupTriggerMode>();
+  for (const topic of options.topics ?? []) {
+    const mode = topic.groupMode ?? "inherit";
+    if (mode === "inherit") continue;
+    topicTriggerModes.set(
+      telegramConversationId({ chatId: topic.chatId, messageThreadId: topic.topicId }),
+      mode,
+    );
+  }
+  /** Trigger rule for one conversation: a topic override, else the chat-wide mode. */
+  const triggerModeFor = (target: TelegramConversationTarget): TelegramGroupTriggerMode =>
+    target.messageThreadId === undefined
+      ? groupMode
+      : topicTriggerModes.get(telegramConversationId(target)) ?? groupMode;
+
+  // Topic names learned from creation/rename service messages and the implicit
+  // topic-root reply, keyed by topic conversation id. Process-local: after a
+  // restart a topic is shown by chat name only until one of its messages
+  // reveals the name again.
+  const topicNames = new Map<string, string>();
+  function learnTopicName(message: TelegramMessage): void {
+    const learned = telegramTopicNameFromMessage(message);
+    if (learned === undefined) return;
+    const key = telegramConversationId({ chatId: message.chat.id, messageThreadId: learned.messageThreadId });
+    topicNames.delete(key);
+    topicNames.set(key, learned.name);
+    if (topicNames.size > TOPIC_NAME_CACHE_MAX) {
+      const oldest = topicNames.keys().next().value;
+      if (oldest !== undefined) topicNames.delete(oldest);
+    }
+  }
+
+  // Listen mode: unaddressed messages since the bot's last turn, per
+  // conversation, handed to the next triggered turn as untrusted background
+  // context. Each entry carries a sequence number so a turn takes only what
+  // arrived before its trigger. Process-local and bounded.
+  let nextListenSeq = 0;
+  const listenBuffers = new Map<string, Array<{ readonly seq: number; readonly message: AgentPrecedingMessage }>>();
+  function rememberUnaddressed(conversationId: string, parts: readonly TelegramMessage[]): void {
+    const first = parts[0];
+    const text = telegramContextText(parts);
+    if (first === undefined || text.trim().length === 0) return;
+    const buffer = listenBuffers.get(conversationId) ?? [];
+    listenBuffers.delete(conversationId);
+    buffer.push({ seq: nextListenSeq++, message: telegramPrecedingMessage(first, text) });
+    if (buffer.length > AGENT_PRECEDING_MESSAGES_MAX_COUNT) {
+      buffer.splice(0, buffer.length - AGENT_PRECEDING_MESSAGES_MAX_COUNT);
+    }
+    listenBuffers.set(conversationId, buffer);
+    if (listenBuffers.size > LISTEN_BUFFER_CONVERSATIONS_MAX) {
+      const oldest = listenBuffers.keys().next().value;
+      if (oldest !== undefined) listenBuffers.delete(oldest);
+    }
+  }
+  /** Whether buffered context from before `cutoff` is waiting for a turn. */
+  function hasUnaddressed(conversationId: string, cutoff: number): boolean {
+    return listenBuffers.get(conversationId)?.some((entry) => entry.seq < cutoff) === true;
+  }
+  /** Remove and return the buffered context that arrived before `cutoff`. */
+  function takeUnaddressed(conversationId: string, cutoff: number | undefined): AgentPrecedingMessage[] | undefined {
+    if (cutoff === undefined) return undefined;
+    const buffer = listenBuffers.get(conversationId);
+    if (buffer === undefined) return undefined;
+    const taken = buffer.filter((entry) => entry.seq < cutoff);
+    const kept = buffer.filter((entry) => entry.seq >= cutoff);
+    if (kept.length === 0) listenBuffers.delete(conversationId);
+    else listenBuffers.set(conversationId, kept);
+    return taken.length === 0 ? undefined : taken.map((entry) => entry.message);
+  }
 
   const messages: Required<TelegramAdapterMessages> = { ...DEFAULT_MESSAGES, ...options.messages };
   const logger = createSecretSafeTelegramLogger(options.logger, [options.botToken]);
@@ -816,19 +924,20 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   // Intentionally process-local: selections reset on restart and never alter the
   // configured host defaults. Each chat gets an independent override record.
   const runtimeSelections = new Map<string, TelegramRuntimeSelection>();
-  // Per-chat set of AbortControllers for in-flight messages. The runtime harness
+  // Per-conversation set of AbortControllers for in-flight messages, keyed by
+  // conversation id (a chat, or one forum topic of it). The runtime harness
   // serializes turns per conversation, so we never reject concurrent messages —
-  // we only track them so `/cancel` can abort every live turn for the chat.
+  // we only track them so `/cancel` can abort every live turn for the conversation.
   const activeControllers = new Map<string, Set<AbortController>>();
 
   /**
-   * Create and register a fresh AbortController for a chat BEFORE the turn is
-   * admitted to the per-chat queue. Registering eagerly means a /cancel can abort
+   * Create and register a fresh AbortController for a conversation BEFORE the
+   * turn is admitted to its queue. Registering eagerly means a /cancel can abort
    * a message that is still parked behind an earlier run (the controller would
    * otherwise not exist until the queue reached its runAgentTurn).
    */
-  function registerController(chatId: TelegramChatId): AbortController {
-    const key = String(chatId);
+  function registerController(target: TelegramConversationTarget): AbortController {
+    const key = telegramConversationId(target);
     const controller = new AbortController();
     const controllers = activeControllers.get(key);
     if (controllers === undefined) {
@@ -839,9 +948,9 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     return controller;
   }
 
-  /** Remove a controller from a chat's active set (no-op if already gone). */
-  function unregisterController(chatId: TelegramChatId, controller: AbortController): void {
-    const key = String(chatId);
+  /** Remove a controller from a conversation's active set (no-op if already gone). */
+  function unregisterController(target: TelegramConversationTarget, controller: AbortController): void {
+    const key = telegramConversationId(target);
     const set = activeControllers.get(key);
     if (set !== undefined) {
       set.delete(controller);
@@ -879,6 +988,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   type AlbumWork = () => Promise<void>;
   const albumBuffers = new Map<string, {
     readonly ctx: Context;
+    readonly target: TelegramConversationTarget;
     readonly messages: TelegramMessage[];
     timer: ReturnType<typeof setTimeout>;
     readonly controller: AbortController;
@@ -887,8 +997,10 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   const noopAlbumWork: AlbumWork = () => Promise.resolve();
   const albumDelayMs = options.albumAggregationDelayMs ?? DEFAULT_ALBUM_AGGREGATION_DELAY_MS;
 
-  const cancelChat = (chatId: TelegramChatId): void => {
-    const conversationId = `telegram:${String(chatId)}`;
+  // Cancels one conversation only: /cancel in a forum topic leaves the chat's
+  // General conversation and its other topics running.
+  const cancelConversation = (target: TelegramConversationTarget): void => {
+    const conversationId = telegramConversationId(target);
     const reason = createChannelUserCancelReason("Telegram");
     // Fail any pending ask first so a tool blocked on AskUser returns
     // "cancelled by user" instead of waiting out its timeout.
@@ -896,25 +1008,38 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     // Clear queued follow-ups (and signal the harness to abort the in-flight
     // turn) first, then abort every controller we are tracking for this chat.
     options.responder.cancel?.(conversationId, reason);
-    const controllers = activeControllers.get(String(chatId));
+    const controllers = activeControllers.get(conversationId);
     if (controllers !== undefined) {
       for (const controller of controllers) {
         controller.abort(reason);
       }
     }
-    // Drop any album still buffering for this chat so /cancel does not leave it
-    // to fire a turn after the user asked to stop. Settle the reserved admission
-    // slot with a no-op so the parked admit() task does not hang the per-chat
-    // queue. (Its eager controller was just aborted in the loop above.)
+    // Drop any album still buffering for this conversation so /cancel does not
+    // leave it to fire a turn after the user asked to stop. Settle the reserved
+    // admission slot with a no-op so the parked admit() task does not hang the
+    // conversation's queue. (Its eager controller was just aborted above.)
     for (const [key, buffer] of albumBuffers) {
-      if (key.startsWith(`${String(chatId)}:`)) {
+      if (telegramConversationId(buffer.target) === conversationId) {
         clearTimeout(buffer.timer);
         albumBuffers.delete(key);
         buffer.ready.resolve(noopAlbumWork);
-        unregisterController(chatId, buffer.controller);
+        unregisterController(buffer.target, buffer.controller);
       }
     }
   };
+
+  /**
+   * The conversation an update belongs to: its chat, narrowed to the forum
+   * topic of the triggering message (or of the message a callback button sits
+   * on). General-topic and non-forum updates resolve to the chat alone.
+   */
+  function contextTarget(ctx: Context): TelegramConversationTarget | undefined {
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return undefined;
+    const msg = ctx.msg as unknown as Partial<TelegramMessage> | undefined;
+    const messageThreadId = msg === undefined ? undefined : telegramMessageThreadId(msg);
+    return messageThreadId === undefined ? { chatId } : { chatId, messageThreadId };
+  }
 
   async function finishCancelledUnlessAcknowledged(
     stream: TelegramMessageStream,
@@ -976,12 +1101,12 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   const isAuthorized = (chatId: TelegramChatId | undefined): boolean =>
     chatId !== undefined && (allowAllChats || allowedChatIds.has(String(chatId)));
 
-  function runtimeSelectionFor(chatId: TelegramChatId): TelegramRuntimeSelection {
-    return runtimeSelections.get(String(chatId)) ?? {};
+  function runtimeSelectionFor(target: TelegramConversationTarget): TelegramRuntimeSelection {
+    return runtimeSelections.get(telegramConversationId(target)) ?? {};
   }
 
-  function saveRuntimeSelection(chatId: TelegramChatId, selection: TelegramRuntimeSelection): void {
-    const key = String(chatId);
+  function saveRuntimeSelection(target: TelegramConversationTarget, selection: TelegramRuntimeSelection): void {
+    const key = telegramConversationId(target);
     if (selection.model === undefined && selection.effort === undefined) {
       runtimeSelections.delete(key);
     } else {
@@ -989,51 +1114,51 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     }
   }
 
-  function effectiveRuntimeModel(chatId: TelegramChatId): TelegramRuntimeModelOption | undefined {
+  function effectiveRuntimeModel(target: TelegramConversationTarget): TelegramRuntimeModelOption | undefined {
     if (runtimeCatalog === undefined) {
       return undefined;
     }
-    const selected = runtimeSelectionFor(chatId).model ?? runtimeCatalog.controls.defaultModel;
+    const selected = runtimeSelectionFor(target).model ?? runtimeCatalog.controls.defaultModel;
     return runtimeCatalog.modelByValue.get(selected);
   }
 
-  function selectRuntimeModel(chatId: TelegramChatId, value: string | undefined): boolean {
+  function selectRuntimeModel(target: TelegramConversationTarget, value: string | undefined): boolean {
     if (runtimeCatalog === undefined) {
       return false;
     }
-    const selection = { ...runtimeSelectionFor(chatId) };
+    const selection = { ...runtimeSelectionFor(target) };
     if (value === undefined || value === runtimeCatalog.controls.defaultModel) {
       delete selection.model;
     } else {
       selection.model = value;
     }
-    const target = runtimeCatalog.modelByValue.get(
+    const targetModel = runtimeCatalog.modelByValue.get(
       selection.model ?? runtimeCatalog.controls.defaultModel,
     );
     const effortCleared = selection.effort !== undefined
-      && target?.efforts.some((effort) => effort.value === selection.effort) !== true;
+      && targetModel?.efforts.some((effort) => effort.value === selection.effort) !== true;
     if (effortCleared) {
       delete selection.effort;
     }
-    saveRuntimeSelection(chatId, selection);
+    saveRuntimeSelection(target, selection);
     return effortCleared;
   }
 
-  function selectRuntimeEffort(chatId: TelegramChatId, value: string | undefined): void {
-    const selection = { ...runtimeSelectionFor(chatId) };
+  function selectRuntimeEffort(target: TelegramConversationTarget, value: string | undefined): void {
+    const selection = { ...runtimeSelectionFor(target) };
     if (value === undefined) {
       delete selection.effort;
     } else {
       selection.effort = value;
     }
-    saveRuntimeSelection(chatId, selection);
+    saveRuntimeSelection(target, selection);
   }
 
   function applyRuntimeSelection(
-    chatId: TelegramChatId,
+    target: TelegramConversationTarget,
     telegram: AgentRequest["metadata"]["telegram"],
   ): void {
-    const selection = runtimeSelections.get(String(chatId));
+    const selection = runtimeSelections.get(telegramConversationId(target));
     if (selection?.model !== undefined) {
       telegram.model = selection.model;
     }
@@ -1042,9 +1167,9 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     }
   }
 
-  function modelSelectionConfirmation(chatId: TelegramChatId, effortCleared: boolean): string {
-    const model = effectiveRuntimeModel(chatId);
-    const isDefault = runtimeSelectionFor(chatId).model === undefined;
+  function modelSelectionConfirmation(target: TelegramConversationTarget, effortCleared: boolean): string {
+    const model = effectiveRuntimeModel(target);
+    const isDefault = runtimeSelectionFor(target).model === undefined;
     const base = isDefault
       ? `Model changed to the configured default: ${model?.label ?? "unknown"}.`
       : `Model changed to ${model?.label ?? "unknown"} for this chat until /model default or restart.`;
@@ -1053,24 +1178,24 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       : base;
   }
 
-  function effortSelectionConfirmation(chatId: TelegramChatId): string {
-    const selection = runtimeSelectionFor(chatId);
+  function effortSelectionConfirmation(target: TelegramConversationTarget): string {
+    const selection = runtimeSelectionFor(target);
     if (selection.effort === undefined) {
       const configured = runtimeCatalog?.controls.defaultEffort;
       return configured === undefined
         ? "Effort changed to the configured provider default."
         : `Effort changed to the configured default: ${configured}.`;
     }
-    const model = effectiveRuntimeModel(chatId);
+    const model = effectiveRuntimeModel(target);
     const effort = model?.efforts.find((candidate) => candidate.value === selection.effort);
     return `Effort changed to ${effort?.label ?? selection.effort} for this chat until /effort default or restart.`;
   }
 
-  function modelMenuMarkup(chatId: TelegramChatId): {
+  function modelMenuMarkup(target: TelegramConversationTarget): {
     inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
   } {
     const catalog = runtimeCatalog as TelegramRuntimeControlCatalog;
-    const selection = runtimeSelectionFor(chatId);
+    const selection = runtimeSelectionFor(target);
     const defaultModel = catalog.modelByValue.get(catalog.controls.defaultModel) as TelegramRuntimeModelOption;
     const rows: Array<Array<{ text: string; callback_data: string }>> = [[{
       text: telegramButtonLabel(`${selection.model === undefined ? "✓ " : ""}Default · ${defaultModel.label}`),
@@ -1090,11 +1215,11 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   }
 
   function effortMenuMarkup(
-    chatId: TelegramChatId,
+    target: TelegramConversationTarget,
     model: TelegramRuntimeModelOption,
   ): { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> } {
     const catalog = runtimeCatalog as TelegramRuntimeControlCatalog;
-    const selection = runtimeSelectionFor(chatId);
+    const selection = runtimeSelectionFor(target);
     const modelToken = catalog.modelTokenByValue.get(model.value) as string;
     const configuredDefault = catalog.controls.defaultEffort ?? "provider default";
     const rows: Array<Array<{ text: string; callback_data: string }>> = [[{
@@ -1117,46 +1242,46 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   }
 
   async function handleModelCommand(ctx: Context): Promise<void> {
-    const chatId = ctx.chat?.id;
-    if (chatId === undefined || runtimeCatalog === undefined) {
+    const target = contextTarget(ctx);
+    if (target === undefined || runtimeCatalog === undefined) {
       return;
     }
     const argument = commandArgument(ctx);
     if (argument.length === 0) {
-      const current = effectiveRuntimeModel(chatId);
+      const current = effectiveRuntimeModel(target);
       await ctx.reply(
         `Current model: ${current?.label ?? "unknown"}. Choose a configured model:`,
-        { reply_markup: modelMenuMarkup(chatId) },
+        { reply_markup: modelMenuMarkup(target) },
       );
       return;
     }
     if (argument.toLowerCase() === "default") {
-      const effortCleared = selectRuntimeModel(chatId, undefined);
-      await ctx.reply(modelSelectionConfirmation(chatId, effortCleared));
+      const effortCleared = selectRuntimeModel(target, undefined);
+      await ctx.reply(modelSelectionConfirmation(target, effortCleared));
       return;
     }
     if (!runtimeCatalog.modelByValue.has(argument)) {
       await ctx.reply("That model is not available. Use /model to choose from the configured primary and fallbacks.");
       return;
     }
-    const effortCleared = selectRuntimeModel(chatId, argument);
-    await ctx.reply(modelSelectionConfirmation(chatId, effortCleared));
+    const effortCleared = selectRuntimeModel(target, argument);
+    await ctx.reply(modelSelectionConfirmation(target, effortCleared));
   }
 
   async function handleEffortCommand(ctx: Context): Promise<void> {
-    const chatId = ctx.chat?.id;
-    if (chatId === undefined || runtimeCatalog === undefined) {
+    const target = contextTarget(ctx);
+    if (target === undefined || runtimeCatalog === undefined) {
       return;
     }
-    const model = effectiveRuntimeModel(chatId);
+    const model = effectiveRuntimeModel(target);
     if (model === undefined) {
       await ctx.reply("Effort controls are unavailable for the current model.");
       return;
     }
     const argument = commandArgument(ctx);
     if (argument.toLowerCase() === "default") {
-      selectRuntimeEffort(chatId, undefined);
-      await ctx.reply(effortSelectionConfirmation(chatId));
+      selectRuntimeEffort(target, undefined);
+      await ctx.reply(effortSelectionConfirmation(target));
       return;
     }
     if (model.efforts.length === 0) {
@@ -1166,7 +1291,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     if (argument.length === 0) {
       await ctx.reply(
         `Choose effort for ${model.label}:`,
-        { reply_markup: effortMenuMarkup(chatId, model) },
+        { reply_markup: effortMenuMarkup(target, model) },
       );
       return;
     }
@@ -1177,19 +1302,20 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       await ctx.reply("That effort is not available for the current model. Use /effort to see its options.");
       return;
     }
-    selectRuntimeEffort(chatId, effort.value);
-    await ctx.reply(effortSelectionConfirmation(chatId));
+    selectRuntimeEffort(target, effort.value);
+    await ctx.reply(effortSelectionConfirmation(target));
   }
 
   async function handleNewSessionCommand(ctx: Context): Promise<void> {
-    const chatId = ctx.chat?.id;
-    if (chatId === undefined) return;
-    const conversationId = `telegram:${String(chatId)}`;
+    const target = contextTarget(ctx);
+    if (target === undefined) return;
+    const conversationId = telegramConversationId(target);
     if (options.startNewSession === undefined) {
       await ctx.reply(messages.newSessionErrorText);
       return;
     }
-    cancelChat(chatId);
+    cancelConversation(target);
+    listenBuffers.delete(conversationId);
     try {
       await options.startNewSession(conversationId);
       await ctx.reply(messages.newSessionText);
@@ -1246,9 +1372,9 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     await ctx.reply(messages.helpText);
   });
   bot.command("cancel", async (ctx) => {
-    const chatId = ctx.chat?.id;
-    if (chatId !== undefined) {
-      cancelChat(chatId);
+    const target = contextTarget(ctx);
+    if (target !== undefined) {
+      cancelConversation(target);
     }
     await ctx.reply(messages.cancelledText);
   });
@@ -1268,39 +1394,45 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   for (const command of customCommands) {
     const prompt = command.prompt;
     bot.command(command.command, async (ctx) => {
-      const chatId = ctx.chat?.id;
-      if (chatId === undefined) {
+      const target = contextTarget(ctx);
+      if (target === undefined) {
         return;
       }
       if (prompt === undefined) {
         await ctx.reply(command.description);
         return;
       }
-      await notifyInteractive(chatId, prompt);
+      await notifyInteractive(target, prompt);
     });
   }
 
   const askPresentations = new Map<string, TelegramAskPresentation>();
-  async function presentAsk(chatId: TelegramChatId, snapshot: ChannelAskSnapshot): Promise<void> {
+  async function presentAsk(destination: TelegramDestination, snapshot: ChannelAskSnapshot): Promise<void> {
+    const target = telegramConversationTarget(destination);
+    const chatId = target.chatId;
     if (snapshot.message !== undefined) {
-      await sender.sendMessage({ chat_id: chatId, text: snapshot.message });
+      await sender.sendMessage({ chat_id: chatId, ...telegramThreadParams(target), text: snapshot.message });
     }
     const rendered = renderTelegramAsk(snapshot, new Set());
     const sent = await sender.sendMessage({
       chat_id: chatId,
+      ...telegramThreadParams(target),
       text: rendered.text,
       ...(rendered.replyMarkup === undefined ? {} : { reply_markup: rendered.replyMarkup }),
     });
     askPresentations.set(snapshot.interactionId, {
       chatId,
+      conversationId: telegramConversationId(target),
       messageId: sent.message_id,
       activeQuestionIndex: snapshot.activeQuestionIndex,
       selectedOptionIds: new Set(),
     });
   }
-  async function updateAsk(chatId: TelegramChatId, snapshot: ChannelAskSnapshot): Promise<void> {
+  async function updateAsk(destination: TelegramDestination, snapshot: ChannelAskSnapshot): Promise<void> {
+    const target = telegramConversationTarget(destination);
+    const chatId = target.chatId;
     const presentation = askPresentations.get(snapshot.interactionId);
-    if (presentation === undefined || String(presentation.chatId) !== String(chatId)) return;
+    if (presentation === undefined || presentation.conversationId !== telegramConversationId(target)) return;
     if (presentation.activeQuestionIndex !== snapshot.activeQuestionIndex) {
       presentation.activeQuestionIndex = snapshot.activeQuestionIndex;
       presentation.selectedOptionIds.clear();
@@ -1371,7 +1503,12 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     await answerCallbackQuietly(ctx, "This menu has expired.");
     await stripCallbackKeyboardQuietly(ctx);
   }
-  async function handleRuntimeCallback(ctx: Context, chatId: TelegramChatId, data: string): Promise<boolean> {
+  async function handleRuntimeCallback(
+    ctx: Context,
+    target: TelegramConversationTarget,
+    data: string,
+  ): Promise<boolean> {
+    const chatId = target.chatId;
     if (!data.startsWith(RUNTIME_CALLBACK_PREFIX)) {
       return false;
     }
@@ -1401,9 +1538,9 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         return true;
       }
       rememberAnswered(dedupeKey);
-      const effortCleared = selectRuntimeModel(chatId, model.value);
+      const effortCleared = selectRuntimeModel(target, model.value);
       await answerCallbackQuietly(ctx, "Model updated.");
-      await replaceRuntimeMenuQuietly(ctx, modelSelectionConfirmation(chatId, effortCleared));
+      await replaceRuntimeMenuQuietly(ctx, modelSelectionConfirmation(target, effortCleared));
       return true;
     }
 
@@ -1411,7 +1548,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       const parts = data.slice(EFFORT_CALLBACK_PREFIX.length).split(":");
       const [modelToken, effortToken] = parts;
       const model = modelToken === undefined ? undefined : runtimeCatalog.modelByToken.get(modelToken);
-      const current = effectiveRuntimeModel(chatId);
+      const current = effectiveRuntimeModel(target);
       const effort = modelToken === undefined || effortToken === undefined
         ? undefined
         : runtimeCatalog.effortByModelToken.get(modelToken)?.get(effortToken);
@@ -1425,9 +1562,9 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         return true;
       }
       rememberAnswered(dedupeKey);
-      selectRuntimeEffort(chatId, effortToken === "d" ? undefined : effort?.value);
+      selectRuntimeEffort(target, effortToken === "d" ? undefined : effort?.value);
       await answerCallbackQuietly(ctx, "Effort updated.");
-      await replaceRuntimeMenuQuietly(ctx, effortSelectionConfirmation(chatId));
+      await replaceRuntimeMenuQuietly(ctx, effortSelectionConfirmation(target));
       return true;
     }
 
@@ -1439,18 +1576,19 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       if (stopped) {
         return;
       }
-      const chatId = ctx.chat?.id;
+      const target = contextTarget(ctx);
       const data = ctx.callbackQuery.data;
-      if (chatId === undefined || !isAuthorized(chatId)) {
+      if (target === undefined || !isAuthorized(target.chatId)) {
         await answerCallbackQuietly(ctx);
         return;
       }
-      if (await handleRuntimeCallback(ctx, chatId, data)) {
+      const chatId = target.chatId;
+      if (await handleRuntimeCallback(ctx, target, data)) {
         return;
       }
       const askCallback = parseTelegramAskUserCallbackData(data);
       if (askCallback !== undefined) {
-        const conversationId = `telegram:${String(chatId)}`;
+        const conversationId = telegramConversationId(target);
         const snapshot = await options.pendingAsks?.getPendingAsk(conversationId);
         if (
           snapshot === undefined
@@ -1476,6 +1614,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         if (presentation === undefined && messageId !== undefined) {
           presentation = {
             chatId,
+            conversationId,
             messageId,
             activeQuestionIndex: snapshot.activeQuestionIndex,
             selectedOptionIds: new Set(),
@@ -1490,7 +1629,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
           }
           if (presentation.selectedOptionIds.has(option.id)) presentation.selectedOptionIds.delete(option.id);
           else presentation.selectedOptionIds.add(option.id);
-          await updateAsk(chatId, snapshot);
+          await updateAsk(target, snapshot);
           await answerCallbackQuietly(ctx, "Selection updated.");
           return;
         }
@@ -1542,7 +1681,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         question !== undefined && question.trim().length > 0
           ? `Re: "${question.trim()}" — I chose: ${label}`
           : `I chose: ${label}`;
-      await notifyInteractive(chatId, syntheticText);
+      await notifyInteractive(target, syntheticText);
     });
   }
 
@@ -1573,11 +1712,11 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
    * the busy terminal instead of admitting an unbounded backlog.
    */
   async function admit(
-    chatId: TelegramChatId,
+    target: TelegramConversationTarget,
     task: () => Promise<void>,
     onReject?: () => void | Promise<void>,
   ): Promise<void> {
-    const key = String(chatId);
+    const key = telegramConversationId(target);
     let queue = admissionQueues.get(key);
     if (queue === undefined) {
       queue = new SerialQueue();
@@ -1607,14 +1746,25 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     if (message === undefined || chatId === undefined) {
       return;
     }
-    const telegramMessage = message as unknown as TelegramMessage;
+    const rawMessage = message as unknown as TelegramMessage;
+    learnTopicName(rawMessage);
+    // Topic lifecycle service messages (created, renamed, closed…) only teach
+    // the topic name; they are never a turn or an "unsupported" reply.
+    if (isTelegramForumServiceMessage(rawMessage)) {
+      return;
+    }
+    // Forum-topic messages carry an implicit reply to the topic's root service
+    // message; drop it before mention matching and reply-context rendering.
+    const telegramMessage = withoutImplicitTopicReply(rawMessage);
+    const target = telegramMessageTarget(telegramMessage);
+    const conversationId = telegramConversationId(target);
 
     // A multi-photo/video album arrives as several messages sharing a
     // media_group_id; buffer them and flush once so the agent sees one request
     // with every attachment instead of N single-attachment turns.
     const groupId = telegramMessage.media_group_id;
     if (typeof groupId === "string" && groupId.length > 0) {
-      bufferAlbumMessage(ctx, chatId, groupId, telegramMessage);
+      bufferAlbumMessage(ctx, target, groupId, telegramMessage);
       return;
     }
 
@@ -1624,15 +1774,22 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       return;
     }
 
+    const triggerMode = triggerModeFor(target);
     const triggeredMessage = resolveTelegramGroupTrigger(
       telegramMessage,
       { id: ctx.me.id, username: ctx.me.username },
-      groupMode,
+      triggerMode,
       stripMentionText,
     );
     if (triggeredMessage === undefined) {
+      if (triggerMode === "listen") {
+        rememberUnaddressed(conversationId, [telegramMessage]);
+      }
       return;
     }
+    // Everything heard before this trigger belongs to its turn; later chatter
+    // waits for the next one.
+    const contextCutoff = nextListenSeq;
 
     // A plain-text reply while AskUser is pending is a custom answer. Consume it
     // before admission: the asking turn holds this chat's queue slot, so queueing
@@ -1643,7 +1800,6 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       triggeredMessage.text.trim().length > 0 &&
       !triggeredMessage.text.trimStart().startsWith("/")
     ) {
-      const conversationId = `telegram:${String(chatId)}`;
       const snapshot = await options.pendingAsks.getPendingAsk(conversationId);
       const question = snapshot?.questions[snapshot.activeQuestionIndex];
       if (snapshot !== undefined && question !== undefined) {
@@ -1674,9 +1830,9 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       return;
     }
     // Register the controller before admission so /cancel can abort this message
-    // even while it is still parked behind an earlier same-chat run.
-    const controller = registerController(chatId);
-    const queueKey = String(chatId);
+    // even while it is still parked behind an earlier same-conversation run.
+    const controller = registerController(target);
+    const queueKey = conversationId;
     let queue = admissionQueues.get(queueKey);
     if (queue === undefined) {
       queue = new SerialQueue();
@@ -1688,12 +1844,15 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       && triggeredMessage.text.trim().length > 0
       && options.responder.offerLiveInput !== undefined
       && !queue.full
+      // Live steering carries only this message's text, so a ping with waiting
+      // listen-mode context runs as its own turn to receive that context.
+      && !hasUnaddressed(conversationId, contextCutoff)
     ) {
       const decision = createDeferred<"run" | "applied" | "discarded">();
       const reserved = queue.run(async () => {
         const next = await decision.promise;
         if (next === "run") {
-          await runAgentTurn(ctx, triggeredMessage, input, controller);
+          await runAgentTurn(ctx, triggeredMessage, input, controller, contextCutoff);
           return;
         }
         if (reactions !== undefined) {
@@ -1703,12 +1862,12 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
             await applyReaction(chatId, telegramMessage.message_id, undefined);
           }
         }
-        unregisterController(chatId, controller);
+        unregisterController(target, controller);
       });
       let offer;
       try {
         offer = options.responder.offerLiveInput({
-          conversationId: `telegram:${String(chatId)}`,
+          conversationId,
           id: `${String(chatId)}:${String(triggeredMessage.message_id)}`,
           // Use the same normalized, quote-aware body as a queued turn. Native
           // reply context must not disappear merely because this message was
@@ -1766,13 +1925,13 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       return;
     }
     await admit(
-      chatId,
-      () => runAgentTurn(ctx, triggeredMessage, input, controller),
+      target,
+      () => runAgentTurn(ctx, triggeredMessage, input, controller, contextCutoff),
       // Over-cap: the task was rejected before entering the queue, so runAgentTurn
       // (and its finally) never ran. Unregister the eagerly created controller so
       // it does not leak in activeControllers, then reply with the busy terminal.
       async () => {
-        unregisterController(chatId, controller);
+        unregisterController(target, controller);
         await ctx.reply(messages.busyText);
       },
     );
@@ -1780,11 +1939,11 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
 
   function bufferAlbumMessage(
     ctx: Context,
-    chatId: TelegramChatId,
+    target: TelegramConversationTarget,
     groupId: string,
     message: TelegramMessage,
   ): void {
-    const key = `${String(chatId)}:${groupId}`;
+    const key = `${telegramConversationId(target)}|${groupId}`;
     const schedule = (): ReturnType<typeof setTimeout> => {
       const timer = setTimeout(() => {
         void flushAlbum(key);
@@ -1800,12 +1959,12 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       // blocks on `ready.promise` — flushAlbum settles it with the real work
       // after the quiet window. The slot blocks only on the album timer, which
       // fires independently of queue progress, so there is no deadlock.
-      const controller = registerController(chatId);
+      const controller = registerController(target);
       const ready = createDeferred<AlbumWork>();
       const timer = schedule();
-      albumBuffers.set(key, { ctx, messages: [message], timer, controller, ready });
+      albumBuffers.set(key, { ctx, target, messages: [message], timer, controller, ready });
       void admit(
-        chatId,
+        target,
         async () => {
           const work = await ready.promise;
           await work();
@@ -1823,7 +1982,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
           } else {
             ready.resolve(noopAlbumWork);
           }
-          unregisterController(chatId, controller);
+          unregisterController(target, controller);
           await ctx.reply(messages.busyText);
         },
       );
@@ -1840,8 +1999,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       return;
     }
     albumBuffers.delete(key);
-    const { ctx, messages: parts, controller, ready } = buffer;
-    const albumChatId = ctx.chat?.id;
+    const { ctx, target, messages: parts, controller, ready } = buffer;
 
     // The reserved admission slot is parked on `ready.promise`. EVERY exit below
     // must settle it (with real work or a no-op) or the per-chat queue hangs
@@ -1850,9 +2008,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     // the run path it is reused (do not re-register) and runAgentTurn owns cleanup.
     const settleAsNoop = (): void => {
       ready.resolve(noopAlbumWork);
-      if (albumChatId !== undefined) {
-        unregisterController(albumChatId, controller);
-      }
+      unregisterController(target, controller);
     };
     if (stopped) {
       settleAsNoop();
@@ -1870,16 +2026,21 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       }
     }
 
+    const albumMode = triggerModeFor(target);
     const triggeredParts = resolveTelegramAlbumTrigger(
       parts,
       { id: ctx.me.id, username: ctx.me.username },
-      groupMode,
+      albumMode,
       stripMentionText,
     );
     if (triggeredParts === undefined) {
+      if (albumMode === "listen") {
+        rememberUnaddressed(telegramConversationId(target), parts);
+      }
       settleAsNoop();
       return;
     }
+    const albumContextCutoff = nextListenSeq;
     const primary = telegramAlbumRequestMessage(triggeredParts);
     const input = mergeTelegramMessageInputs(triggeredParts);
     if (primary === undefined || input === undefined) {
@@ -1890,7 +2051,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     // Fill the reserved slot with the real run so the album executes in its
     // arrival-order position (a later same-chat text admitted after this album
     // started buffering lands behind this slot).
-    ready.resolve(() => runAgentTurn(ctx, primary, input, controller));
+    ready.resolve(() => runAgentTurn(ctx, primary, input, controller, albumContextCutoff));
   }
 
   async function runAgentTurn(
@@ -1898,8 +2059,11 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     message: TelegramMessage,
     input: TelegramAgentMessageInput,
     controller: AbortController,
+    contextCutoff?: number,
   ): Promise<void> {
-    const chatId = message.chat.id;
+    const target = telegramMessageTarget(message);
+    const chatId = target.chatId;
+    const conversationId = telegramConversationId(target);
     // The AbortController is created and registered in activeControllers by the
     // caller BEFORE admission, so a /cancel can abort a message still parked in the
     // per-chat queue (the controller would otherwise not exist until the queue
@@ -1922,6 +2086,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       );
     }
 
+    const topicName = target.messageThreadId === undefined ? undefined : topicNames.get(conversationId);
     const request = buildAgentRequest(
       ctx.update as unknown as TelegramUpdate,
       message as unknown as TelegramMessage,
@@ -1929,10 +2094,11 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       controller.signal,
       resolvedAttachments,
       options.stream?.maxMessageChars,
+      topicName === undefined ? undefined : { topicName },
     );
-    applyRuntimeSelection(chatId, request.metadata.telegram);
+    applyRuntimeSelection(target, request.metadata.telegram);
     const stream = new TelegramMessageStream(
-      buildStreamOptions(chatId, message.message_id, controller.signal),
+      buildStreamOptions(target, message.message_id, controller.signal),
     );
 
     // Tracks the lifecycle reaction to apply on teardown. Defaults to "error" so
@@ -1969,9 +2135,15 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         return;
       }
 
+      // Listen-mode context is taken only once the turn is really starting, so a
+      // turn cancelled while parked leaves it for the next one.
+      const precedingMessages = takeUnaddressed(conversationId, contextCutoff);
+      const turnRequest: AgentRequest = precedingMessages === undefined
+        ? request
+        : { ...request, precedingMessages };
       let response: AgentResponse;
       try {
-        response = await options.responder.respond(request, stream);
+        response = await options.responder.respond(turnRequest, stream);
       } catch (error) {
         if (controller.signal.aborted || isAgentResponseCancelledError(error)) {
           reactionOutcome = "cancelled";
@@ -1999,6 +2171,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         const remainingParts = await replyFiles.deliver(response.parts, {
           conversationId: request.conversationId,
           chatId,
+          ...(target.messageThreadId === undefined ? {} : { messageThreadId: target.messageThreadId }),
           replyToMessageId: message.message_id,
           signal: controller.signal,
         });
@@ -2038,7 +2211,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
           await applyReaction(chatId, message.message_id, undefined);
         }
       }
-      unregisterController(chatId, controller);
+      unregisterController(target, controller);
     }
   }
 
@@ -2051,31 +2224,34 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
    * failed or empty turn posts nothing rather than an unprompted error.
    */
   async function runProactiveTurn(
-    chatId: TelegramChatId,
+    target: TelegramConversationTarget,
     text: string,
     controller: AbortController,
     silent: boolean,
     includeRuntimeSelection: boolean,
     deliveryKey?: string,
     showHints = false,
+    contextCutoff?: number,
   ): Promise<TelegramNotifyResult> {
     try {
       if (controller.signal.aborted) {
         return { delivered: false, reason: "cancelled" };
       }
-      const conversationId = `telegram:${String(chatId)}`;
+      const conversationId = telegramConversationId(target);
+      const precedingMessages = takeUnaddressed(conversationId, contextCutoff);
       const telegramMetadata: AgentRequest["metadata"]["telegram"] = {
         updateId: 0,
-        chat: { id: chatId },
+        chat: { id: target.chatId },
         message: { id: 0 },
+        ...(target.messageThreadId === undefined ? {} : { messageThreadId: target.messageThreadId }),
       };
       if (includeRuntimeSelection) {
-        applyRuntimeSelection(chatId, telegramMetadata);
+        applyRuntimeSelection(target, telegramMetadata);
       }
       const request: AgentRequest = {
         conversationId,
         replyTo: { conversationId },
-        chatId,
+        chatId: target.chatId,
         messageId: 0,
         updateId: 0,
         text,
@@ -2086,9 +2262,10 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
             : { [PROCESS_JOB_WAKE_DELIVERY_METADATA]: deliveryKey }),
           telegram: telegramMetadata,
         },
+        ...(precedingMessages === undefined ? {} : { precedingMessages }),
       };
       const stream = new TelegramMessageStream(buildStreamOptions(
-        chatId,
+        target,
         undefined,
         controller.signal,
         silent,
@@ -2117,7 +2294,8 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       try {
         const remainingParts = await replyFiles.deliver(response.parts, {
           conversationId,
-          chatId,
+          chatId: target.chatId,
+          ...(target.messageThreadId === undefined ? {} : { messageThreadId: target.messageThreadId }),
           silent,
           signal: controller.signal,
         });
@@ -2134,12 +2312,12 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       }
       return { delivered: true };
     } finally {
-      unregisterController(chatId, controller);
+      unregisterController(target, controller);
     }
   }
 
   /**
-   * Deliver `text` VERBATIM to `chatId`: post it unchanged through the normal
+   * Deliver `text` VERBATIM to `target`: post it unchanged through the normal
    * stream with NO model call (the producing cron/webhook run already wrote the
    * message), then record it to the chat's durable history via the responder so a
    * later reply resumes with it in context. Serialized through the per-chat queue
@@ -2147,7 +2325,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
    * already-delivered post.
    */
   async function runVerbatimDelivery(
-    chatId: TelegramChatId,
+    target: TelegramConversationTarget,
     text: string,
     controller: AbortController,
     silent: boolean,
@@ -2159,7 +2337,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       if (text.trim().length === 0) {
         return { delivered: false, reason: "empty notification" };
       }
-      const stream = new TelegramMessageStream(buildStreamOptions(chatId, undefined, controller.signal, silent, false));
+      const stream = new TelegramMessageStream(buildStreamOptions(target, undefined, controller.signal, silent, false));
       try {
         await stream.finish(text);
       } catch (error) {
@@ -2170,31 +2348,37 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         return { delivered: false, reason: "delivery failed" };
       }
       try {
-        await options.responder.deliverVerbatim?.(`telegram:${String(chatId)}`, text);
+        await options.responder.deliverVerbatim?.(telegramConversationId(target), text);
       } catch (error) {
         logger?.warn?.("Telegram verbatim notify history record failed.", { error: errorMessage(error) });
       }
       return { delivered: true };
     } finally {
-      unregisterController(chatId, controller);
+      unregisterController(target, controller);
     }
   }
 
   /**
-   * Deliver a proactive notification to `chatId` by running it as a turn on this
-   * chat through the same per-chat admission queue as inbound messages, so it
-   * serializes with live traffic on the same conversation.
+   * Post or edit the lifecycle card of one process job in the conversation (chat
+   * or forum topic) that started it. Host-only: never invokes the responder.
    */
   function updateProcessJob(
-    chatId: TelegramChatId,
+    destination: TelegramDestination,
     projection: ProcessJobProjection,
     updateOptions?: { readonly silent?: boolean; readonly retirementOnly?: boolean },
   ): Promise<TelegramNotifyResult> {
+    let target: TelegramConversationTarget;
+    try {
+      target = telegramConversationTarget(destination);
+    } catch (error) {
+      return Promise.resolve(invalidDestinationResult(error));
+    }
+    const chatId = target.chatId;
     const previous: Promise<TelegramNotifyResult> = processJobUpdateTails.get(projection.jobId)
       ?? Promise.resolve({ delivered: true });
     let task!: Promise<TelegramNotifyResult>;
     task = previous.catch(() => ({ delivered: false })).then(async (): Promise<TelegramNotifyResult> => {
-      const expectedConversationId = `telegram:${String(chatId)}`;
+      const expectedConversationId = telegramConversationId(target);
       const originConversationId = processJobBaseConversationId(projection.origin.conversationId);
       if (projection.origin.channel !== "telegram" || originConversationId !== expectedConversationId) {
         return {
@@ -2256,7 +2440,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
           };
         }
         return await postProcessJobSurface(
-          chatId,
+          target,
           projection,
           text,
           terminal,
@@ -2300,7 +2484,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
           };
         }
         return await postProcessJobSurface(
-          chatId,
+          target,
           projection,
           text,
           true,
@@ -2317,7 +2501,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   }
 
   async function postProcessJobSurface(
-    chatId: TelegramChatId,
+    target: TelegramConversationTarget,
     projection: ProcessJobProjection,
     text: string,
     terminal: boolean,
@@ -2325,9 +2509,11 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     silent: boolean,
     lifecycle: TelegramProcessJobLifecycleState,
   ): Promise<TelegramNotifyResult> {
+    const chatId = target.chatId;
     try {
       const sent = await sender.sendMessage({
         chat_id: chatId,
+        ...telegramThreadParams(target),
         text,
         ...(silent ? { disable_notification: true } : {}),
       });
@@ -2402,7 +2588,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   }
 
   async function notifyInternal(
-    chatId: TelegramChatId,
+    target: TelegramConversationTarget,
     text: string,
     notifyOptions?: TelegramNotifyOptions,
     includeRuntimeSelection = false,
@@ -2410,13 +2596,18 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     if (stopped) {
       return { delivered: false, reason: "adapter stopped" };
     }
-    const controller = registerController(chatId);
+    const conversationId = telegramConversationId(target);
+    const controller = registerController(target);
     const silent = notifyOptions?.silent === true;
+    // Interactive turns (custom command prompts, reply-button taps) are asked
+    // by a person in the conversation, so they see what was said before them;
+    // public cron/webhook/process-job turns leave listen context untouched.
+    const contextCutoff = includeRuntimeSelection ? nextListenSeq : undefined;
     if (notifyOptions?.steerActive === true
       && notifyOptions.deliveryKey !== undefined
       && notifyOptions.verbatim !== true
       && options.responder.offerLiveInput !== undefined) {
-      const queueKey = String(chatId);
+      const queueKey = conversationId;
       let queue = admissionQueues.get(queueKey);
       if (queue === undefined) {
         queue = new SerialQueue();
@@ -2428,7 +2619,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
           const next = await decision.promise;
           if (next === "run") {
             const outcome = await runProactiveTurn(
-              chatId,
+              target,
               text,
               controller,
               silent,
@@ -2438,7 +2629,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
             );
             return { ...outcome, disposition: "follow_up" as const };
           }
-          unregisterController(chatId, controller);
+          unregisterController(target, controller);
           if (next === "uncertain") {
             return {
               delivered: false,
@@ -2460,7 +2651,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         let offer: AgentLiveInputOffer;
         try {
           offer = options.responder.offerLiveInput({
-            conversationId: `telegram:${String(chatId)}`,
+            conversationId,
             id: notifyOptions.deliveryKey,
             text,
             receivedAt: new Date().toISOString(),
@@ -2508,23 +2699,26 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       retryable: true,
     };
     await admit(
-      chatId,
+      target,
       async () => {
         outcome = notifyOptions?.verbatim === true
-          ? await runVerbatimDelivery(chatId, text, controller, silent)
+          ? await runVerbatimDelivery(target, text, controller, silent)
           : await runProactiveTurn(
-              chatId,
+              target,
               text,
               controller,
               silent,
               includeRuntimeSelection,
               notifyOptions?.deliveryKey,
+              false,
+              contextCutoff,
             );
       },
       () => {
-        unregisterController(chatId, controller);
-        logger?.warn?.("Telegram proactive notify dropped: chat is at its concurrency cap.", {
-          chatId: String(chatId),
+        unregisterController(target, controller);
+        logger?.warn?.("Telegram proactive notify dropped: conversation is at its concurrency cap.", {
+          chatId: String(target.chatId),
+          ...(target.messageThreadId === undefined ? {} : { messageThreadId: target.messageThreadId }),
         });
       },
     );
@@ -2532,19 +2726,28 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   }
 
   async function notify(
-    chatId: TelegramChatId,
+    destination: TelegramDestination,
     text: string,
     notifyOptions?: TelegramNotifyOptions,
   ): Promise<TelegramNotifyResult> {
     // Public cron/webhook notifications intentionally retain configured runtime
     // defaults instead of inheriting a human's interactive chat selection.
-    return await notifyInternal(chatId, text, notifyOptions, false);
+    let target: TelegramConversationTarget;
+    try {
+      target = telegramConversationTarget(destination);
+    } catch (error) {
+      return invalidDestinationResult(error);
+    }
+    return await notifyInternal(target, text, notifyOptions, false);
   }
 
-  async function notifyInteractive(chatId: TelegramChatId, text: string): Promise<TelegramNotifyResult> {
+  async function notifyInteractive(
+    target: TelegramConversationTarget,
+    text: string,
+  ): Promise<TelegramNotifyResult> {
     // Custom command prompts and AskButtons fallbacks are interactive Telegram
     // turns even though they have no inbound Message object.
-    return await notifyInternal(chatId, text, undefined, true);
+    return await notifyInternal(target, text, undefined, true);
   }
 
   async function handleControlCommand(
@@ -2563,15 +2766,15 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       await handleNewSessionCommand(ctx);
       return;
     }
-    const chatId = ctx.chat?.id;
-    if (chatId !== undefined) {
-      cancelChat(chatId);
+    const target = contextTarget(ctx);
+    if (target !== undefined) {
+      cancelConversation(target);
     }
     await ctx.reply(messages.cancelledText);
   }
 
   function buildStreamOptions(
-    chatId: TelegramChatId,
+    target: TelegramConversationTarget,
     replyToMessageId: number | undefined,
     signal: AbortSignal,
     silent = false,
@@ -2579,7 +2782,8 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   ): TelegramMessageStreamOptions {
     const streamOptions: TelegramMessageStreamOptions = {
       api: sender,
-      chatId,
+      chatId: target.chatId,
+      ...(target.messageThreadId === undefined ? {} : { messageThreadId: target.messageThreadId }),
       abortSignal: signal,
       // Default to "typing…" + final-answer-only delivery (no streamed interim
       // edits); a tuning override can restore interim streaming.
@@ -2857,19 +3061,22 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     restartTimer.unref?.();
   }
 
-  // Tool-progress status messages, keyed `chat:key` → message_id for edit-in-place.
+  // Tool-progress status messages, keyed `conversation|key` → message_id for edit-in-place.
   const statusMessages = new Map<string, number>();
 
   return {
     bot,
     notify,
     updateProcessJob,
-    async postStatus(chatId, text, statusOptions): Promise<void> {
-      const key = `${String(chatId)}:${statusOptions.key}`;
+    async postStatus(destination, text, statusOptions): Promise<void> {
+      let key: string | undefined;
       try {
+        const target = telegramConversationTarget(destination);
+        const chatId = target.chatId;
+        key = `${telegramConversationId(target)}|${statusOptions.key}`;
         const existing = statusMessages.get(key);
         if (existing === undefined) {
-          const sent = await sender.sendMessage({ chat_id: chatId, text });
+          const sent = await sender.sendMessage({ chat_id: chatId, ...telegramThreadParams(target), text });
           statusMessages.set(key, sent.message_id);
         } else {
           await sender.editMessageText({ chat_id: chatId, message_id: existing, text });
@@ -2881,7 +3088,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
           error: errorMessage(error),
         });
       } finally {
-        if (statusOptions.state !== "working") {
+        if (statusOptions.state !== "working" && key !== undefined) {
           statusMessages.delete(key);
         }
       }
@@ -2987,7 +3194,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     async stop(): Promise<void> {
       // Guard the timer/late-update paths first: a pending album timer must not
       // flush a turn after teardown. Clear every outstanding album timer and drop
-      // the buffers (mirrors cancelChat's per-chat cleanup, but for all chats).
+      // the buffers (mirrors cancelConversation's cleanup, but for every conversation).
       stopped = true;
       // Cancel any pending auto-restart so a backoff timer cannot resurrect the
       // runner after shutdown. The `stopped` flag also short-circuits the monitor
@@ -3046,6 +3253,16 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       },
     });
   }
+}
+
+/** A malformed destination never falls back to another conversation. */
+function invalidDestinationResult(error: unknown): TelegramNotifyResult {
+  return {
+    delivered: false,
+    code: "invalid_destination",
+    reason: errorMessage(error),
+    retryable: false,
+  };
 }
 
 function errorMessage(error: unknown): string {

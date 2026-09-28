@@ -311,7 +311,7 @@ effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired i
     // Put MONO_AGENT_TELEGRAM_BOT_TOKEN in .env; do not inline botToken here.
     "allowedChatIds": ["123456789"],       // or "allowAllChats": true
     "allowAllChats": false,
-    "groupMode": "mention",               // mention | any; any is backward-compatible default
+    "groupMode": "mention",               // mention | listen | any; any is backward-compatible default
     "stripMentionText": true               // strips the bot's native @mention before the turn
   },
 

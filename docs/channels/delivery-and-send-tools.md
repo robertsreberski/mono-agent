@@ -148,6 +148,11 @@ remaining the destination boundary.
   normal outbound message. The send returns immediately; a later tap removes the
   keyboard and starts a separate user turn that names the original message and
   selected label. Use `AskUser` instead when the current run must wait.
+- **`message_thread_id`** (optional on both tools) posts into a Telegram forum
+  topic. When it is omitted, a send to the chat the current conversation is in
+  stays in the current topic (a reply follows the replied message instead), and
+  any other chat receives its main conversation, including a forum's General
+  topic. A message sent into a topic is recorded in that topic's own history.
 - **`TelegramSendFile`** uploads and sends a file (`kind:"document"`) or an inline image (`kind:"photo"`) to an allowed chat. It accepts the bytes as base64 `data` (with a `filename`) **or** a workspace `path` (filename derived from the path), plus an optional `caption`. Uploads are bounded by the adapter's attachment size cap (~20 MB).
 
 The adapter's own allowlist (`slack.allowedChannelIds` / `slack.allowAllChannels`, `telegram.allowedChatIds` / `telegram.allowAllChats`) **remains the destination boundary**: allowing the tool does not widen where the agent may send. A send to a destination outside the adapter allowlist is refused.
@@ -166,7 +171,9 @@ For an agent shared by multiple Telegram chats, add a stricter per-run boundary:
 ```
 
 `scope` binds message, button, and file delivery to the Telegram chat that
-produced the current request, even if another chat is globally allowed.
+produced the current request, even if another chat is globally allowed. In a
+forum topic the binding includes the topic: sends go to the producing topic and a
+different `message_thread_id` is rejected.
 For `TelegramSendFile`, that binding is entirely host-owned: strict mode removes
 `chat_id` from the model-facing schema, derives the chat from trusted request
 context, rechecks the adapter allowlist, and omits the raw chat id from the tool
@@ -305,7 +312,7 @@ This is AI-native: the operator just writes the cron/webhook prompt, and its fin
 
 Cron has one failure-side notification path as well: if a `notify: true` cron job fails because **all configured models failed** (`provider_unavailable_exhausted`), the app can send a short one-line error notice to the job's explicit `notifyConversationId`. This notice is verbatim, never starts another model turn, never infers a destination, and is rate-limited per job by `notifyFailureCooldownHours` (default `6` hours).
 
-`conversationId` / `notifyConversationId` is a channel-scoped id such as `telegram:42`, `slack:C123`, or `slack:C123:1718.99` (a Slack thread). The special notify-only destination `web:new` means “create a new web-console conversation”; other `web:*` values are rejected.
+`conversationId` / `notifyConversationId` is a channel-scoped id such as `telegram:42`, `telegram:-1001234567890:12` (a Telegram forum topic), `slack:C123`, or `slack:C123:1718.99` (a Slack thread). The special notify-only destination `web:new` means “create a new web-console conversation”; other `web:*` values are rejected.
 
 ### Destination resolution
 
