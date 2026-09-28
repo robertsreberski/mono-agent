@@ -291,7 +291,9 @@ export async function runHarnessRuntime(
         : request.userMessage;
       // Standing host context (a project's shared instructions) decorates the
       // prompt copy only; persistUserMessage already stored the canonical text.
-      const decorate = request.continuation === undefined ? requestExtension?.decorateUserMessage : undefined;
+      // Continuation synthesis gets it too: the destination's instructions still
+      // apply to the host-synthesized prompt, which is never persisted either.
+      const decorate = requestExtension?.decorateUserMessage;
       const currentUserMessage: RuntimeMessage = {
         role: "user",
         content: composeHostTurnEnvelope(currentTurnContext, composeUserMessageWithMemory(

@@ -589,7 +589,8 @@ export interface AgentHarnessRuntimeOptionsExtension {
    * Host-owned standing context for this one turn, such as a project's shared
    * instructions: rewrites only the prompt copy of the user message (after
    * speaker context, before recalled memory). History, memory recall queries
-   * and memory capture keep the canonical message. Continuation turns skip it.
+   * and memory capture keep the canonical message. Continuation synthesis
+   * applies it to its host-synthesized prompt copy as well.
    */
   readonly decorateUserMessage?: (userMessage: string) => string;
   readonly cleanup?: () => void | Promise<void>;

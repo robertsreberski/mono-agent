@@ -3781,6 +3781,52 @@ describe("AgentHarness", () => {
     expect(await history.load("slack:C2")).toEqual(before);
   });
 
+  it.each(["pinned", "detached_latest"] as const)(
+    "decorates a %s continuation's prompt copy once and never its canonical history",
+    async (policy) => {
+      const dir = await tempDir();
+      const identityPath = join(dir, "IDENTITY.md");
+      await writeFile(identityPath, "You are Mono.", "utf8");
+      const history = createInMemoryHistoryStore({ maxMessages: 20 });
+      const runIds = ["run-origin", "run-continuation"];
+      const fake = createFakeRuntime(async () => ({ text: "answer" }));
+      const decorateUserMessage = vi.fn((message: string) => `<project_context name="Trips › Flights">\nPrefer aisle seats.\n</project_context>\n\n${message}`);
+      const harness = createAgentHarness({
+        identityPath,
+        runtime: fake.runtime,
+        model,
+        historyStore: history,
+        createRunId: () => runIds.shift() ?? "run-extra",
+        runtimeOptionsForRequest: () => ({ decorateUserMessage }),
+      });
+      await harness.run({ conversationId: "telegram:-1001:77", userMessage: "origin question", abortSignal: new AbortController().signal });
+      const originHistory = await history.load("telegram:-1001:77");
+      const before = await history.load("telegram:-1001:77");
+      await harness.run({
+        conversationId: "telegram:-1001:77",
+        userMessage: "untrusted specialist result",
+        abortSignal: new AbortController().signal,
+        continuation: policy === "pinned"
+          ? {
+              continuationId: "continuation-pinned", originRunId: "run-origin", originContextPolicy: "pinned", historyBoundary: "run-origin",
+              originContext: { schemaVersion: 1, conversationId: "telegram:-1001:77", originRunId: "run-origin", historyBoundary: "run-origin",
+                capturedAt: originHistory[1]?.timestamp ?? "", messages: originHistory },
+              toolsDisabled: true, deferHistoryCommit: true,
+            }
+          : { continuationId: "continuation-detached", originRunId: "run-origin", originContextPolicy: "detached_latest", toolsDisabled: true, deferHistoryCommit: true },
+      });
+      // The replayed origin history carries the canonical text; only the new prompt copy is decorated.
+      const messages = JSON.stringify(fake.calls[1]?.options.messages);
+      expect(messages.match(/Prefer aisle seats\./gu)).toHaveLength(1);
+      const last = fake.calls[1]!.options.messages.at(-1)!.content as string;
+      expect(last).toContain("Prefer aisle seats.");
+      expect(last).toContain("untrusted specialist result");
+      expect(decorateUserMessage).toHaveBeenLastCalledWith("untrusted specialist result");
+      expect(await history.load("telegram:-1001:77")).toEqual(before);
+      expect(JSON.stringify(await history.load("telegram:-1001:77"))).not.toContain("Prefer aisle seats");
+    },
+  );
+
   it.each(["success", "failure", "cancel"] as const)(
     "deletes request MCP output after runtime settlement on %s",
     async (outcome) => {
