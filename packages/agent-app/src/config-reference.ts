@@ -607,7 +607,7 @@ function setStructuredAppSchemas(root: Record<string, JsonSchema>): void {
       additionalProperties: false,
       required: ["chatId", "topicId"],
       properties: {
-        chatId: { oneOf: [{ type: "string", minLength: 1 }, { type: "integer" }] },
+        chatId: { oneOf: [{ type: "string", pattern: "^-?(0|[1-9][0-9]*)$" }, { type: "integer" }] },
         topicId: { type: "integer", minimum: 1 },
         groupMode: { enum: ["inherit", "any", "mention"] },
       },

@@ -21,12 +21,20 @@ const CONVERSATION_PREFIX = "telegram:";
 const TOPIC_ID_PATTERN = /^[1-9]\d*$/u;
 const NUMERIC_CHAT_ID_PATTERN = /^-?\d+$/u;
 
-/** Normalize a destination into a target, dropping an invalid topic id. */
+/**
+ * Normalize a destination into a target. An explicit topic id that is not a
+ * positive safe integer throws instead of silently falling back to the chat's
+ * main conversation, which would post topic content into General.
+ */
 export function telegramConversationTarget(destination: TelegramDestination): TelegramConversationTarget {
   if (typeof destination === "object" && destination !== null) {
-    return isTelegramTopicId(destination.messageThreadId)
-      ? { chatId: destination.chatId, messageThreadId: destination.messageThreadId }
-      : { chatId: destination.chatId };
+    if (destination.messageThreadId === undefined) {
+      return { chatId: destination.chatId };
+    }
+    if (!isTelegramTopicId(destination.messageThreadId)) {
+      throw new TypeError("Telegram messageThreadId must be a positive safe integer.");
+    }
+    return { chatId: destination.chatId, messageThreadId: destination.messageThreadId };
   }
   return { chatId: destination };
 }

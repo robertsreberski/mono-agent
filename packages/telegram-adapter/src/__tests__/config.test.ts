@@ -221,6 +221,8 @@ describe("loadTelegramAdapterConfig", () => {
     for (const topics of [
       { chatId: "-1001", topicId: 12 },
       [{ chatId: "-2002", topicId: 12, groupMode: "any" }],
+      [{ chatId: "@trips", topicId: 12 }],
+      [{ chatId: "-01001", topicId: 12 }],
       [{ chatId: "-1001", topicId: 0 }],
       [{ chatId: "-1001", topicId: "12" }],
       [{ chatId: "-1001", topicId: 12, groupMode: "sometimes" }],
@@ -232,6 +234,9 @@ describe("loadTelegramAdapterConfig", () => {
     // Allow-all chats accept any chat id, but still validate the entry itself.
     await expect(load([{ chatId: "-2002", topicId: 12, groupMode: "any" }], { allowAllChats: true }))
       .resolves.toMatchObject({ topics: [{ chatId: "-2002", topicId: 12, groupMode: "any" }] });
+    // A non-canonical id could never match an inbound integer chat id.
+    await expect(load([{ chatId: "-02002", topicId: 12, groupMode: "any" }], { allowAllChats: true }))
+      .rejects.toBeInstanceOf(TelegramAdapterConfigError);
   });
 
   it("parses transport.ipFamily and pollWatchdogMs from JSON", async () => {

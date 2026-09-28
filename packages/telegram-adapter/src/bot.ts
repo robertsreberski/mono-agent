@@ -2267,7 +2267,12 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     projection: ProcessJobProjection,
     updateOptions?: { readonly silent?: boolean; readonly retirementOnly?: boolean },
   ): Promise<TelegramNotifyResult> {
-    const target = telegramConversationTarget(destination);
+    let target: TelegramConversationTarget;
+    try {
+      target = telegramConversationTarget(destination);
+    } catch (error) {
+      return Promise.resolve(invalidDestinationResult(error));
+    }
     const chatId = target.chatId;
     const previous: Promise<TelegramNotifyResult> = processJobUpdateTails.get(projection.jobId)
       ?? Promise.resolve({ delivered: true });
@@ -2621,7 +2626,13 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   ): Promise<TelegramNotifyResult> {
     // Public cron/webhook notifications intentionally retain configured runtime
     // defaults instead of inheriting a human's interactive chat selection.
-    return await notifyInternal(telegramConversationTarget(destination), text, notifyOptions, false);
+    let target: TelegramConversationTarget;
+    try {
+      target = telegramConversationTarget(destination);
+    } catch (error) {
+      return invalidDestinationResult(error);
+    }
+    return await notifyInternal(target, text, notifyOptions, false);
   }
 
   async function notifyInteractive(
@@ -2952,10 +2963,11 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     notify,
     updateProcessJob,
     async postStatus(destination, text, statusOptions): Promise<void> {
-      const target = telegramConversationTarget(destination);
-      const chatId = target.chatId;
-      const key = `${telegramConversationId(target)}|${statusOptions.key}`;
+      let key: string | undefined;
       try {
+        const target = telegramConversationTarget(destination);
+        const chatId = target.chatId;
+        key = `${telegramConversationId(target)}|${statusOptions.key}`;
         const existing = statusMessages.get(key);
         if (existing === undefined) {
           const sent = await sender.sendMessage({ chat_id: chatId, ...telegramThreadParams(target), text });
@@ -2970,7 +2982,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
           error: errorMessage(error),
         });
       } finally {
-        if (statusOptions.state !== "working") {
+        if (statusOptions.state !== "working" && key !== undefined) {
           statusMessages.delete(key);
         }
       }
@@ -3135,6 +3147,16 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       },
     });
   }
+}
+
+/** A malformed destination never falls back to another conversation. */
+function invalidDestinationResult(error: unknown): TelegramNotifyResult {
+  return {
+    delivered: false,
+    code: "invalid_destination",
+    reason: errorMessage(error),
+    retryable: false,
+  };
 }
 
 function errorMessage(error: unknown): string {

@@ -511,13 +511,11 @@ function readTelegramTopics(
     if (unknown.length > 0) {
       throw invalidConfig("telegram.topics entries contain unknown fields.", { index, fields: unknown });
     }
-    const chatId = typeof record.chatId === "number" && Number.isSafeInteger(record.chatId)
-      ? String(record.chatId)
-      : typeof record.chatId === "string" && record.chatId.trim().length > 0
-        ? record.chatId.trim()
-        : undefined;
+    // Inbound chat ids are integers, so only a canonical integer id can ever
+    // match a topic; anything else would be a silently unreachable override.
+    const chatId = canonicalTelegramChatId(record.chatId);
     if (chatId === undefined) {
-      throw invalidConfig("telegram.topics entries require a chatId string or integer.", { index });
+      throw invalidConfig("telegram.topics entries require an integer chatId (number or numeric string).", { index });
     }
     if (!allowAllChats && !allowed.has(chatId)) {
       throw invalidConfig("telegram.topics chatId must be listed in telegram.allowedChatIds.", { index });
@@ -539,6 +537,15 @@ function readTelegramTopics(
     seen.add(key);
     return { chatId, topicId, groupMode };
   });
+}
+
+function canonicalTelegramChatId(value: unknown): string | undefined {
+  const raw = typeof value === "number" ? String(value) : typeof value === "string" ? value.trim() : undefined;
+  if (raw === undefined || !/^-?\d+$/u.test(raw)) {
+    return undefined;
+  }
+  const numeric = Number(raw);
+  return Number.isSafeInteger(numeric) && String(numeric) === raw ? raw : undefined;
 }
 
 const RESERVED_TELEGRAM_COMMANDS = new Set(["start", "help", "cancel", "new", "model", "effort"]);

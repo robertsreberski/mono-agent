@@ -196,6 +196,11 @@ describe("Telegram conversation ids", () => {
     }
   });
 
+  it("rejects an explicit invalid topic instead of addressing the main conversation", () => {
+    expect(() => telegramConversationId({ chatId: -1001, messageThreadId: 0 })).toThrow(TypeError);
+    expect(() => telegramConversationId({ chatId: -1001, messageThreadId: 1.5 })).toThrow(TypeError);
+  });
+
   it("treats only is_topic_message as a forum topic", () => {
     expect(telegramMessageThreadId({ message_thread_id: 77, is_topic_message: true })).toBe(77);
     // Non-forum supergroups set message_thread_id for plain reply threads.
@@ -391,6 +396,10 @@ describe("createTelegramBot forum topics", () => {
     await expect(controller.notify(-1001, "General nudge", { verbatim: true }))
       .resolves.toMatchObject({ delivered: true });
 
+    // An explicit but invalid topic fails closed instead of falling back to General.
+    await expect(controller.notify({ chatId: -1001, messageThreadId: 0 }, "Private report", { verbatim: true }))
+      .resolves.toMatchObject({ delivered: false, code: "invalid_destination", retryable: false });
+
     expect(deliverVerbatim.mock.calls.map((call) => call[0])).toEqual(["telegram:-1001:77", "telegram:-1001"]);
     expect(requests[0]?.conversationId).toBe("telegram:-1001:77");
     expect(requests[0]?.metadata.telegram.messageThreadId).toBe(TOPIC);
@@ -398,6 +407,7 @@ describe("createTelegramBot forum topics", () => {
     expect(posted).toContainEqual(["Verbatim report", TOPIC]);
     expect(posted).toContainEqual(["Daily digest", TOPIC]);
     expect(posted).toContainEqual(["General nudge", undefined]);
+    expect(posted.map(([text]) => text)).not.toContain("Private report");
   });
 
   it("asks questions in the topic and accepts answers only from that topic", async () => {
@@ -471,6 +481,8 @@ describe("createTelegramBot forum topics", () => {
       lastError: null,
     } as unknown as ProcessJobProjection;
 
+    await expect(controller.updateProcessJob({ chatId: -1001, messageThreadId: -3 }, projection))
+      .resolves.toMatchObject({ delivered: false, code: "invalid_destination" });
     // The chat's main conversation is a different destination from the topic that owns the job.
     await expect(controller.updateProcessJob(-1001, projection))
       .resolves.toMatchObject({ delivered: false, code: "process_job_origin_mismatch" });

@@ -143,9 +143,10 @@ of the group stays mention-only (or the reverse), add a JSON-only override:
 once. The General topic always follows the chat-wide `groupMode`. An override
 only changes which delivered messages start a turn; Telegram still needs the
 bot to be an administrator (or have privacy mode off) to deliver unaddressed
-messages at all. The topic ID is the number after the chat in a topic link
-(`https://t.me/c/<chat>/<topic>`), or the `<topic>` part of a conversation ID the
-agent has already handled.
+messages at all. `chatId` is the same integer chat ID as in `allowedChatIds`. The topic ID is the
+last number in the topic's copied link (`https://t.me/c/<chat>/<topic>`; the
+link omits the chat ID's `-100` prefix), or the `<topic>` part of a conversation
+ID the agent has already handled.
 
 Telegram attaches an implicit reply to the topic's opening message to every
 message typed in a topic. The adapter ignores that implicit reply, so it is not
