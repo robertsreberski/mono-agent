@@ -3567,12 +3567,12 @@ export class WebStore {
           changed.add(projectId);
         }
         if (projectId === null) continue;
-        if (row.project_auto_named === 1) {
-          const name = externalConversationLabel(row.kind, chatLabel, topicLabel);
-          if (this.requireProject(projectId).name !== name) {
-            this.database.prepare("UPDATE projects SET name = ?, updated_at = ?, revision = revision + 1 WHERE id = ?").run(name, now, projectId);
-            changed.add(projectId);
-          }
+        const name = externalConversationLabel(row.kind, chatLabel, topicLabel);
+        if (row.project_auto_named === 1 && this.requireProject(projectId).name !== name) {
+          this.database.prepare("UPDATE projects SET name = ?, updated_at = ?, revision = revision + 1 WHERE id = ?").run(name, now, projectId);
+          changed.add(projectId);
+        } else if (summaryChanged) {
+          this.bumpProjectRevision(projectId);
         }
         if (summaryChanged) changed.add(projectId);
       }
@@ -3590,7 +3590,10 @@ export class WebStore {
     if (row === undefined) return {};
     const now = this.now();
     if (row.state !== "gone") {
-      this.database.prepare("UPDATE external_conversations SET state = 'gone', state_at = ?, updated_at = ? WHERE id = ?").run(now, now, row.id);
+      this.transaction(() => {
+        this.database.prepare("UPDATE external_conversations SET state = 'gone', state_at = ?, updated_at = ? WHERE id = ?").run(now, now, row.id);
+        if (row.project_id !== null) this.bumpProjectRevision(row.project_id);
+      });
     }
     return row.project_id === null ? {} : { projectId: row.project_id };
   }
@@ -3628,6 +3631,7 @@ export class WebStore {
       if (projectId === null) {
         if (row.project_id !== null || row.detached_at === null) {
           this.database.prepare("UPDATE external_conversations SET project_id = NULL, detached_at = ?, updated_at = ? WHERE id = ?").run(now, now, id);
+          if (row.project_id !== null) this.bumpProjectRevision(row.project_id, now);
         }
         return this.getExternalConversation(id)!;
       }
@@ -3639,7 +3643,9 @@ export class WebStore {
       if (row.project_id !== projectId || row.detached_at !== null) {
         this.database.prepare(`UPDATE external_conversations SET project_id = ?, project_auto_named = 0, detached_at = NULL, updated_at = ?
           WHERE id = ?`).run(projectId, now, id);
-        this.database.prepare("UPDATE projects SET updated_at = ?, revision = revision + 1 WHERE id = ?").run(now, projectId);
+        this.bumpProjectRevision(projectId, now);
+        // The project it left no longer shows it: a new revision there too.
+        if (row.project_id !== null && row.project_id !== projectId) this.bumpProjectRevision(row.project_id, now);
       }
       return this.getExternalConversation(id)!;
     });
@@ -3672,6 +3678,18 @@ export class WebStore {
     if (row.state === "gone") throw new WebConsoleError("external_conversation_gone", "This project's Telegram topic no longer exists.", 409);
     if (row.state === "closed") throw new WebConsoleError("external_conversation_closed", "This project's Telegram topic is closed.", 409);
     return { key: row.external_key, label: this.mapExternal(row).label };
+  }
+
+  /**
+   * A project summary carries its bound channel conversation, so every change
+   * to that binding, label or state is a new project revision; otherwise a
+   * listing read before the change would carry the same revision and a
+   * console's revision guard would let it restore the stale state. Binding
+   * changes also move recency when `at` is given.
+   */
+  private bumpProjectRevision(projectId: string, at?: string): void {
+    if (at === undefined) this.database.prepare("UPDATE projects SET revision = revision + 1 WHERE id = ?").run(projectId);
+    else this.database.prepare("UPDATE projects SET revision = revision + 1, updated_at = ? WHERE id = ?").run(at, projectId);
   }
 
   private externalRowByKey(sourceId: string, channel: WebExternalConversationChannel, key: string): ExternalConversationRow | undefined {

@@ -225,6 +225,47 @@ describe("channel conversations mirrored into projects", () => {
   });
 });
 
+describe("project revisions for channel conversation changes", () => {
+  it("gives every affected project a newer revision than any listing read before the change", async () => {
+    const { store } = await openStore();
+    store.observeExternalConversations("agent-one", "telegram", [seen("2026-09-28T09:00:00.000Z")]);
+    const flights = store.externalConversationByKey("agent-one", "telegram", FLIGHTS)!;
+    const other = store.createProject({ sourceId: "agent-one", name: "Holidays" });
+    const revisionOf = (id: string) => store.getProject(id)!.revision;
+    /** A listing read now, delivered after the next change: the console must reject it. */
+    const staleListing = () => new Map(store.listProjects("agent-one").map((project) => [project.id, project.revision]));
+    const expectNewer = (listing: Map<string, number>, ids: readonly string[]) => {
+      for (const id of ids) expect(revisionOf(id)).toBeGreaterThan(listing.get(id)!);
+    };
+
+    let listing = staleListing();
+    store.observeExternalConversations("agent-one", "telegram", [seen("2026-09-28T09:01:00.000Z", { state: "closed" })]);
+    expectNewer(listing, [flights.projectId!]);
+
+    // A chosen name keeps the name, but the shown Telegram label still changes.
+    store.patchProject(flights.projectId!, { name: "My flights" });
+    listing = staleListing();
+    store.observeExternalConversations("agent-one", "telegram", [seen("2026-09-28T09:02:00.000Z", { topicLabel: "Flights 2027" })]);
+    expectNewer(listing, [flights.projectId!]);
+    expect(store.getProject(flights.projectId!)).toMatchObject({ name: "My flights", external: { label: "Trips › Flights 2027" } });
+
+    listing = staleListing();
+    store.markExternalConversationGone("agent-one", "telegram", FLIGHTS);
+    expectNewer(listing, [flights.projectId!]);
+
+    // Moving updates both the project it left and the one it joined.
+    listing = staleListing();
+    store.setExternalConversationProject(flights.id, other.id);
+    expectNewer(listing, [flights.projectId!, other.id]);
+    expect(store.getProject(flights.projectId!)).not.toHaveProperty("external");
+
+    listing = staleListing();
+    store.setExternalConversationProject(flights.id, null);
+    expectNewer(listing, [other.id]);
+    expect(store.getProject(other.id)).not.toHaveProperty("external");
+  });
+});
+
 describe("observation parsing", () => {
   it("accepts only consistent, bounded observations and sanitizes labels", () => {
     expect(parseExternalObservation({ key: GENERAL, kind: "main", chatLabel: " Trips‮\n", seenAt: "2026-09-28T09:00:00Z" }))

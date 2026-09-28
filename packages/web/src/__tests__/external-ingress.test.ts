@@ -96,6 +96,27 @@ describe("channel conversation ingress", () => {
     }
   });
 
+  it("announces channel changes with revisions a delayed listing cannot override", async () => {
+    const { service } = await createService();
+    const events: WebEvent[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event); });
+    try {
+      service.observeExternalConversations("agent-one", "telegram", [observation]);
+      const project = service.projects("agent-one")[0]!;
+      const delayed = service.projects("agent-one"); // read before the change, delivered after it
+      service.markExternalConversationGone("agent-one", "telegram", FLIGHTS);
+      const announced = events.filter((event) => event.type === "projects.changed")
+        .map((event) => (event.payload as { project?: { id: string; revision: number; external?: { state: string } } }).project)
+        .filter((item) => item?.id === project.id).at(-1)!;
+      expect(announced.external?.state).toBe("gone");
+      // The console keeps the held summary unless a listing's revision is newer.
+      expect(announced.revision).toBeGreaterThan(delayed.find((item) => item.id === project.id)!.revision);
+    } finally {
+      unsubscribe();
+      await service.stop();
+    }
+  });
+
   it("reports the console as unavailable when no ingress is running", async () => {
     const { service } = await createService();
     try {
