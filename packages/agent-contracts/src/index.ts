@@ -21,6 +21,7 @@ export {
   isProcessJobErrorCode,
   isProcessJobState,
   isProcessJobSubagentProgress,
+  normalizeProcessJobSubagentUsage,
   isPeerProcessJobQuestion,
   describePeerQuestionForm,
   peerQuestionStateLabel,

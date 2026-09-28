@@ -1128,23 +1128,25 @@ describe("managed detached production execution", () => {
       expect(result.error).not.toBe(true);
       expect(result.text).toContain("verified");
       const turn = sessions.length;
-      return { text: "done", usage: { input_tokens: 3 }, cost: { total: turn === 1 ? 0.25 : 0.1 } };
+      return { text: "done", usage: { input_tokens: turn === 1 ? 3 : 7 }, cost: { total: turn === 1 ? 0.25 : 0.1 } };
     };
     const { agent, send } = tools(f, run);
     const first = await agent.execute("managed", { persist: true, background: true, id: "helper", prompt: "work" });
     const firstJob = await done(f.service, first.details.jobId);
-    expect(firstJob).toMatchObject({ state: "succeeded", childStillBusy: false, subagentProgress: { costUsd: 0.25 } });
+    expect(firstJob).toMatchObject({ state: "succeeded", childStillBusy: false, subagentProgress: { costUsd: 0.25, usage: { input: 3, output: 0, cacheRead: 0, cacheWrite: 0 } } });
     const stored = (await f.store.get(first.details.jobId))!;
-    expect(stored.subagentProgress).toMatchObject({ costUsd: 0.25 });
+    expect(stored.subagentProgress).toMatchObject({ costUsd: 0.25, usage: { input: 3 } });
     const reopened = await openProcessJobStore(f.root, f.options.settings.stateDir);
-    expect((await reopened.get(first.details.jobId))?.subagentProgress).toMatchObject({ costUsd: 0.25 });
+    expect((await reopened.get(first.details.jobId))?.subagentProgress).toMatchObject({ costUsd: 0.25, usage: { input: 3 } });
     expect(stored.subagentOwnership).toMatchObject({ owner: { settlement: "settled" }, publication: { state: "confirmed" }, command: { state: "released" }, seenCalls: ["1:owned-call"] });
     expect(await f.instances.get("helper")).toMatchObject({ status: "idle", turns: 1, usage: { input: 3 } });
     expect(await f.instances.get("helper")).not.toHaveProperty("ownerReceipt");
     const second = await send.execute("managed-send", { id: "helper", background: true, message: "next" });
-    expect(await done(f.service, second.details.jobId)).toMatchObject({ state: "succeeded", subagentProgress: { costUsd: 0.1 } });
+    expect(await done(f.service, second.details.jobId)).toMatchObject({ state: "succeeded", subagentProgress: { costUsd: 0.1, usage: { input: 7, output: 0, cacheRead: 0, cacheWrite: 0 } } });
     expect(sessions).toEqual([sessions[0], sessions[0]]);
-    expect(await f.instances.get("helper")).toMatchObject({ turns: 2, usage: { input: 6, costUsd: 0.35 } });
+    expect(await f.instances.get("helper")).toMatchObject({ turns: 2, usage: { input: 10, costUsd: 0.35 } });
+    expect((await f.store.get(first.details.jobId))?.subagentProgress?.usage).toMatchObject({ input: 3 });
+    expect((await f.store.get(second.details.jobId))?.subagentProgress?.usage).toMatchObject({ input: 7 });
     expect(f.wake).toHaveBeenCalledTimes(2);
   }, 30_000);
   it.each(["delay-confirm", "fail-after-confirm"])("keeps admission and wakes fenced through %s", async (fault) => {
@@ -1195,6 +1197,7 @@ describe("managed detached production execution", () => {
     const beforeLate = await f.service.get(receipt.details.jobId);
     expect(beforeLate).toMatchObject({ kind: "internal" });
     expect(beforeLate?.kind === "internal" ? beforeLate.subagentProgress : undefined).not.toHaveProperty("costUsd");
+    expect(beforeLate?.kind === "internal" ? beforeLate.subagentProgress : undefined).not.toHaveProperty("usage");
     expect(await f.instances.get("helper")).toMatchObject({ status: "running", recovery: { reason: "timeout", continuity: "unknown" } });
     expect((await f.store.get(receipt.details.jobId))?.subagentOwnership).toMatchObject({ owner: { settlement: "running" }, publication: { state: "confirmed" } });
     await expect(send.execute("blocked", { id: "helper", message: "next" })).rejects.toThrow();
@@ -1202,7 +1205,9 @@ describe("managed detached production execution", () => {
     await vi.waitFor(async () => expect((await f.instances.get("helper"))?.status).toBe("idle"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     expect(await f.instances.get("helper")).toMatchObject({ turns: 1, usage: { input: 7, costUsd: 0.08 }, recovery: { continuity: "unknown" } });
     expect(await f.service.get(receipt.details.jobId)).toMatchObject({ state: "timed_out", childStillBusy: false,
-      subagentProgress: { costUsd: 0.08 } });
+      subagentProgress: { costUsd: 0.08, usage: { input: 7, output: 0, cacheRead: 0, cacheWrite: 0 } } });
+    const recoveredStore = await openProcessJobStore(f.root, f.options.settings.stateDir);
+    expect((await recoveredStore.get(receipt.details.jobId))?.subagentProgress?.usage).toMatchObject({ input: 7 });
     expect(f.wake).toHaveBeenCalledOnce();
     await vi.waitFor(async () => expect((await f.store.get(receipt.details.jobId))?.subagentOwnership?.publication.receiptPending).toBe(false), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     await expect(send.execute("not-retained", { id: "helper", message: "next" })).rejects.toThrow("subagent_recovery_required");

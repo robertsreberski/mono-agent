@@ -162,7 +162,11 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   and credentials.
 
 Persistent Agent/AgentManage can run detached through the app-private in-process
-ProcessJobs lane. Durable admission reserves the child; completion and AskParent
+ProcessJobs lane. Completed job progress reports each child's priced cost and
+non-zero token counts for that job's turn, not cumulative persistent-instance
+usage. Consoles must support the optional progress `usage` field before agents
+begin emitting it; older consoles reject such job cards. Durable admission
+reserves the child; completion and AskParent
 wake the exact origin. Unresolved cancellation reports `childStillBusy:true`
 while retaining the child lock and runtime lease through actual settlement.
 `AgentManage({id, stop:true})` cooperatively stops managed detached work without

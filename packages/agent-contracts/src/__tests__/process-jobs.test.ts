@@ -6,6 +6,7 @@ import {
   isProcessJobErrorCode,
   isProcessJobState,
   isProcessJobSubagentProgress,
+  normalizeProcessJobSubagentUsage,
   isProcessJobSubagentRoute,
   parseProcessJobProjection,
   parseProcessJobProjections,
@@ -258,12 +259,15 @@ describe("internal subagent progress projection", () => {
     const usage = { input: 12, output: 3, cacheRead: 4, cacheWrite: 1 };
     const withTokens = { ...progress, usage };
     expect(isProcessJobSubagentProgress(withTokens)).toBe(true);
+    expect(normalizeProcessJobSubagentUsage(usage)).toEqual(usage);
+    expect(normalizeProcessJobSubagentUsage({ ...usage, input: 0 })).toEqual({ ...usage, input: 0 });
     expect(parseProcessJobProjection({ ...internal(), subagentProgress: withTokens })).toEqual({ ...internal(), subagentProgress: withTokens });
     for (const invalid of [{ ...withTokens, privateText: "redacted" },
       { ...withTokens, usage: { ...usage, output: -1 } },
       { ...withTokens, usage: { ...usage, input: 0.5 } },
       { ...withTokens, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } },
       { ...withTokens, usage: { ...usage, extra: 1 } }]) {
+      if (!("privateText" in invalid)) expect(normalizeProcessJobSubagentUsage(invalid.usage)).toBeUndefined();
       expect(isProcessJobSubagentProgress(invalid)).toBe(false);
       expect(() => parseProcessJobProjection({ ...internal(), subagentProgress: invalid })).toThrow(TypeError);
     }

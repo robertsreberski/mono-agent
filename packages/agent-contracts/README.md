@@ -233,7 +233,7 @@ editing in place and never changes final-answer delivery.
 | Sanitize or validate reply-part delivery outcomes | `sanitizeReplyPartDeliveryOutcomes`, `isAgentReplyPartDeliveryOutcomes` |
 | Carry a display-only restart suggestion | `AgentReplyRestartProposalPart`, `sanitizeRestartProposalReason` |
 | Carry stream events across a process boundary | `AgentStreamWireFrame`, `serializeAgentStreamFrame`, `parseAgentStreamFrame` |
-| Exchange process-job state without kernel/app coupling | `ProcessJobProjection`, `ProcessJobState`, `ProcessJobErrorCode`, `parseProcessJobProjection`, `ProcessJobOperator`, `MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES` |
+| Exchange process-job state without kernel/app coupling | `ProcessJobProjection`, `ProcessJobState`, `ProcessJobErrorCode`, `parseProcessJobProjection`, `normalizeProcessJobSubagentUsage`, `ProcessJobOperator`, `MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES` |
 | Exchange provider-auth state without exposing credentials | `ProviderAuthStatusSnapshot`, `ProviderAuthSessionSnapshot`, `ProviderAuthCheckSessionSnapshot`, `parseProviderAuthStatusSnapshot`, `parseProviderAuthSessionSnapshot`, `parseProviderAuthCheckSessionSnapshot`, `ProviderAuthOperator` |
 | Load adapter settings safely | `readSettingsJson`, `writeSettingsJson`, `layerJsonOntoEnv` |
 | Protect an HTTP listener | `assertSafeBind`, `listen`, `generateBearerToken`, `readAuthorizationBearer` |
@@ -537,6 +537,7 @@ layerJsonOntoEnv
 listen
 normalizeHostForBind
 normalizeOptionalString
+normalizeProcessJobSubagentUsage
 normalizeTrailing
 parseAgentStreamFrame
 parseCronOperatorJob
