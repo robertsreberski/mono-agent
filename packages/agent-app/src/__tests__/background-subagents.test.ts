@@ -1193,11 +1193,16 @@ describe("managed detached production execution", () => {
     const reopened = await openProcessJobsService(f.options); services.push(reopened);
     const registry = createSubagentInstanceRegistry({ root: resolve(f.root, "children"), retireSession: async () => {},
       resolveOwner: (identity) => reopened.resolveSubagentOwner!(identity) });
-    reopened.bindManagedSubagents!({ root: resolve(f.root, "children"),
+    const salvage = vi.fn(async (_identity: { jobId: string }) => undefined);
+    reopened.bindManagedSubagents!({ root: resolve(f.root, "children"), salvage,
       verify: async (identity) => await (await registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
       publish: async (phase, publication) => await (await registry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication) });
     await reopened.activateWakes();
     await vi.waitFor(async () => expect((await reopened.get(queued.details.jobId))?.wake.state).toBe("delivered"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+    expect(salvage.mock.calls.some(([identity]) => identity.jobId === queued.details.jobId)).toBe(false);
+    const queuedWake = f.wake.mock.calls.find(([input]) => (input as ProcessJobWakeInput).projection.jobId === queued.details.jobId)?.[0] as ProcessJobWakeInput | undefined;
+    expect(queuedWake?.prompt).not.toContain('"salvage"');
+    expect(queuedWake?.prompt).not.toContain('"taskLabel"');
     expect(await registry.open(origin.conversationId, { existingOnly: true }).then((instance) => instance.get("waiting")))
       .toMatchObject({ status: "closed", turns: 0 });
     expect(run).toHaveBeenCalledOnce();
