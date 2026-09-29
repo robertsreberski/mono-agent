@@ -1,6 +1,7 @@
 import gfm from "remark-gfm";
 import parse from "remark-parse";
 import stringify from "remark-stringify";
+import stringWidth from "string-width";
 import telegramify from "telegramify-markdown";
 import unified from "unified";
 
@@ -93,11 +94,11 @@ function renderCodeTable(table: MarkdownNode): string {
   }
 
   const widths = Array.from({ length: columnCount }, (_, columnIndex) =>
-    Math.max(3, ...rows.map((row) => codePointLength(row[columnIndex] ?? ""))),
+    Math.max(3, ...rows.map((row) => displayWidth(row[columnIndex] ?? ""))),
   );
   const formatRow = (row: string[]): string =>
     row
-      .map((cell, columnIndex) => padCodePoints(cell, widths[columnIndex] ?? 3))
+      .map((cell, columnIndex) => padDisplayWidth(cell, widths[columnIndex] ?? 3))
       .join(" │ ")
       .trimEnd();
   const separator = widths.map((width) => "─".repeat(width)).join("─┼─");
@@ -109,8 +110,7 @@ function renderCodeTable(table: MarkdownNode): string {
 function renderTableCell(cell: MarkdownNode): string {
   return visibleText(cell)
     .replace(/\s+/gu, " ")
-    .trim()
-    .replaceAll("│", "\\│");
+    .trim();
 }
 
 function visibleText(node: MarkdownNode): string {
@@ -143,10 +143,10 @@ function destinationText(label: string, destination: string | undefined): string
   return label.length === 0 ? destination : `${label} (${destination})`;
 }
 
-function codePointLength(value: string): number {
-  return [...value].length;
+function displayWidth(value: string): number {
+  return stringWidth(value);
 }
 
-function padCodePoints(value: string, width: number): string {
-  return value + " ".repeat(Math.max(0, width - codePointLength(value)));
+function padDisplayWidth(value: string, width: number): string {
+  return value + " ".repeat(Math.max(0, width - stringWidth(value)));
 }

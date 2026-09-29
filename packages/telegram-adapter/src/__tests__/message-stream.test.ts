@@ -625,6 +625,39 @@ describe("TelegramMessageStream", () => {
     ]);
   });
 
+  it("falls back to MarkdownV2 when Telegram rejects a rich edit", async () => {
+    const api = new FakeRichTelegramApi();
+    api.failRichEditWith = new TelegramApiError("rich markdown rejected", {
+      kind: "telegram",
+      method: "editMessageText",
+      errorCode: 400,
+      telegramDescription: "Bad Request: can't parse rich message",
+    });
+    const stream = new TelegramMessageStream({ api, chatId: 42, editDebounceMs: 0 });
+    const answer = "**Bold**\n\n| A | B |\n|---|---|\n| 1 | 2 |";
+
+    await stream.append(answer);
+    await stream.finish(answer);
+
+    expect(api.editRichMessageCalls).toEqual([
+      { chat_id: 42, message_id: 100, rich_message: { markdown: answer } },
+    ]);
+    expect(api.editMessageTextCalls.at(-1)).toEqual({
+      chat_id: 42,
+      message_id: 100,
+      parse_mode: "MarkdownV2",
+      text: [
+        "*Bold*",
+        "",
+        "```",
+        "A   │ B",
+        "────┼────",
+        "1   │ 2",
+        "```",
+      ].join("\n"),
+    });
+  });
+
   it("preserves an already-streamed answer when finish receives no final text", async () => {
     const api = new FakeTelegramApi();
     const stream = new TelegramMessageStream({

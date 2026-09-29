@@ -72,6 +72,21 @@ describe("renderTelegramMarkdown", () => {
     expect(out).not.toContain("\\|");
   });
 
+  it("preserves literal separators and aligns common Unicode display widths", () => {
+    const out = renderTelegramMarkdown([
+      "| Key | Value |",
+      "|---|---|",
+      "| A │ B | x |",
+      "| 古 | y |",
+      "| é | z |",
+    ].join("\n"));
+
+    expect(out).toContain("A │ B │ x");
+    expect(out).not.toContain("A \\│ B");
+    expect(out).toContain("古    │ y");
+    expect(out).toContain("é     │ z");
+  });
+
   it("preserves link destinations when flattening table cells", () => {
     const out = renderTelegramMarkdown([
       "| Name | Site |",
