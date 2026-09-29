@@ -178,10 +178,12 @@ not the transcript, after provider context is lost.
 
 ### Final answer and transient tool activity
 
-Inbound turns do not stream answer tokens by default. Telegram first shows the
-`typing…` action; if tools run, one cumulative, secret-safe activity message is
-edited in place. Once the response is ready, Telegram posts it as a new message
-and deletes the activity message. Adjacent duplicates collapse as `(×N)`.
+Inbound turns do not stream answer tokens by default. Telegram continuously
+refreshes the native `typing…` action while the turn is active, including after
+tool-ledger sends or edits that would otherwise clear it. If tools run, one
+cumulative, secret-safe activity message is edited in place. Once the response
+is ready, Telegram stops the action, posts it as a new message, and deletes the
+activity message. Adjacent duplicates collapse as `(×N)`.
 A subagent stays expanded while it runs; at its first terminal event, Telegram
 removes all of that subagent's child tool lines while retaining its total call
 count and duration. The compact row may include one secret-redacted `Result` or
@@ -274,13 +276,15 @@ answer to that same tool call, while slash commands remain commands. Separately,
 non-blocking `TelegramSendMessage.reply_options` buttons start a new user turn
 when tapped.
 
-After an answer is recorded, Telegram removes the buttons and edits the question
-message with the original labels for resolved selections. One answer is shown
-inline; multiple answers are attributed by question header in recorded order.
-Unknown question and option IDs are omitted. Multi-answer custom-only entries use
-the placeholder `custom answer`, while Telegram never echoes the custom reply
-text; a single custom-only or otherwise unresolved answer keeps the generic
-`Answer recorded.` confirmation.
+After a button answer is recorded, Telegram removes the buttons and edits the
+question message with the original labels for resolved selections. After a
+custom text answer, it settles the old card and posts any follow-up question as
+a new message below the person's reply, preserving the chat's chronology. One
+answer is shown inline; multiple answers are attributed by question header in
+recorded order. Unknown question and option IDs are omitted. Multi-answer
+custom-only entries use the placeholder `custom answer`, while Telegram never
+echoes the custom reply text; a single custom-only or otherwise unresolved
+answer keeps the generic `Answer recorded.` confirmation.
 ### Generated reply files
 
 When the host returns an authorized reply-file part, the adapter reads its

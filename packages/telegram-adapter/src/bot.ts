@@ -124,9 +124,11 @@ interface TelegramAskPresentation {
   readonly chatId: TelegramChatId;
   /** Chat or forum-topic conversation the question was posted into. */
   readonly conversationId: string;
-  readonly messageId: number;
+  messageId: number;
   activeQuestionIndex: number;
   readonly selectedOptionIds: Set<string>;
+  /** Source question indexes whose custom reply must precede the next card. */
+  readonly customReplyQuestionIndexes: Set<number>;
 }
 
 interface TelegramProcessJobMessageRef {
@@ -1487,25 +1489,82 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       messageId: sent.message_id,
       activeQuestionIndex: snapshot.activeQuestionIndex,
       selectedOptionIds: new Set(),
+      customReplyQuestionIndexes: new Set(),
     });
   }
+  const askPresentationUpdates = new Map<string, Promise<void>>();
   async function updateAsk(destination: TelegramDestination, snapshot: ChannelAskSnapshot): Promise<void> {
+    const previous = askPresentationUpdates.get(snapshot.interactionId) ?? Promise.resolve();
+    const update = previous
+      .catch(() => undefined)
+      .then(() => performAskUpdate(destination, snapshot));
+    askPresentationUpdates.set(snapshot.interactionId, update);
+    try {
+      await update;
+    } finally {
+      if (askPresentationUpdates.get(snapshot.interactionId) === update) {
+        askPresentationUpdates.delete(snapshot.interactionId);
+      }
+    }
+  }
+
+  async function performAskUpdate(
+    destination: TelegramDestination,
+    snapshot: ChannelAskSnapshot,
+  ): Promise<void> {
     const target = telegramConversationTarget(destination);
     const chatId = target.chatId;
     const presentation = askPresentations.get(snapshot.interactionId);
     if (presentation === undefined || presentation.conversationId !== telegramConversationId(target)) return;
-    if (presentation.activeQuestionIndex !== snapshot.activeQuestionIndex) {
+    const sourceQuestionIndex = presentation.activeQuestionIndex;
+    const questionAdvanced = sourceQuestionIndex !== snapshot.activeQuestionIndex;
+    const rendered = renderTelegramAsk(snapshot, questionAdvanced ? new Set() : presentation.selectedOptionIds);
+    if (
+      presentation.customReplyQuestionIndexes.has(sourceQuestionIndex)
+      && questionAdvanced
+      && snapshot.status === "pending"
+    ) {
+      // The custom answer is an ordinary Telegram message. Editing the old card
+      // into the next question places that question above the answer and makes it
+      // look stale, so settle the old card and post the next one after the reply.
+      try {
+        await sender.editMessageText({
+          chat_id: chatId,
+          message_id: presentation.messageId,
+          text: "Answer recorded.",
+        });
+      } catch (error) {
+        logger?.debug?.("Telegram previous AskUser card could not be settled (ignored).", {
+          error: errorMessage(error),
+        });
+      }
+      const sent = await sender.sendMessage({
+        chat_id: chatId,
+        ...telegramThreadParams(target),
+        text: rendered.text,
+        ...(rendered.replyMarkup === undefined ? {} : { reply_markup: rendered.replyMarkup }),
+      });
+      presentation.messageId = sent.message_id;
+      presentation.activeQuestionIndex = snapshot.activeQuestionIndex;
+      presentation.selectedOptionIds.clear();
+      presentation.customReplyQuestionIndexes.delete(sourceQuestionIndex);
+      return;
+    }
+    if (questionAdvanced) {
       presentation.activeQuestionIndex = snapshot.activeQuestionIndex;
       presentation.selectedOptionIds.clear();
     }
-    const rendered = renderTelegramAsk(snapshot, presentation.selectedOptionIds);
     await sender.editMessageText({
       chat_id: chatId,
       message_id: presentation.messageId,
       text: rendered.text,
       ...(rendered.replyMarkup === undefined ? {} : { reply_markup: rendered.replyMarkup }),
     });
-    if (snapshot.status !== "pending") askPresentations.delete(snapshot.interactionId);
+    presentation.customReplyQuestionIndexes.delete(sourceQuestionIndex);
+    if (snapshot.status !== "pending") {
+      presentation.customReplyQuestionIndexes.clear();
+      askPresentations.delete(snapshot.interactionId);
+    }
   }
 
   // Runtime controls, structured AskUser, and non-blocking reply options share
@@ -1679,6 +1738,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
             messageId,
             activeQuestionIndex: snapshot.activeQuestionIndex,
             selectedOptionIds: new Set(),
+            customReplyQuestionIndexes: new Set(),
           };
           askPresentations.set(snapshot.interactionId, presentation);
         }
@@ -1863,9 +1923,13 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       const snapshot = await options.pendingAsks.getPendingAsk(conversationId);
       const question = snapshot?.questions[snapshot.activeQuestionIndex];
       if (snapshot !== undefined && question !== undefined) {
+        const presentation = askPresentations.get(snapshot.interactionId);
         const selectedOptionIds = question.multiSelect
-          ? [...(askPresentations.get(snapshot.interactionId)?.selectedOptionIds ?? [])]
+          ? [...(presentation?.selectedOptionIds ?? [])]
           : [];
+        // The interaction bridge can call updateAsk synchronously from inside
+        // submitAskAnswers, so mark the presentation before crossing that boundary.
+        presentation?.customReplyQuestionIndexes.add(snapshot.activeQuestionIndex);
         const result = await options.pendingAsks.submitAskAnswers({
           conversationId,
           interactionId: snapshot.interactionId,
@@ -1876,6 +1940,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
           }],
         });
         if (!result.accepted) {
+          presentation?.customReplyQuestionIndexes.delete(snapshot.activeQuestionIndex);
           await ctx.reply(messages.busyText);
           return;
         }
@@ -2228,6 +2293,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       }
 
       try {
+        await stream.stopActivity();
         const remainingParts = await replyFiles.deliver(response.parts, {
           conversationId: request.conversationId,
           chatId,
@@ -2251,6 +2317,8 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         });
       }
     } finally {
+      // Safety net for every exit path, including failures before finish().
+      await stream.stopActivity();
       // Apply the terminal reaction: 👍 on success / 👎 on failure when that state
       // is enabled; otherwise (or on cancel) clear the working 👀 if we set one, so
       // a disabled terminal state never leaves the message marked "working".
@@ -2293,6 +2361,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     showHints = false,
     contextCutoff?: number,
   ): Promise<TelegramNotifyResult> {
+    let stream: TelegramMessageStream | undefined;
     try {
       if (controller.signal.aborted) {
         return { delivered: false, reason: "cancelled" };
@@ -2324,7 +2393,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         },
         ...(precedingMessages === undefined ? {} : { precedingMessages }),
       };
-      const stream = new TelegramMessageStream(buildStreamOptions(
+      stream = new TelegramMessageStream(buildStreamOptions(
         target,
         undefined,
         controller.signal,
@@ -2352,6 +2421,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         return { delivered: false, reason: "agent produced no answer" };
       }
       try {
+        await stream.stopActivity();
         const remainingParts = await replyFiles.deliver(response.parts, {
           conversationId,
           chatId: target.chatId,
@@ -2372,6 +2442,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       }
       return { delivered: true };
     } finally {
+      await stream?.stopActivity();
       unregisterController(target, controller);
     }
   }

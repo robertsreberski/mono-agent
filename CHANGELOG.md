@@ -6,6 +6,13 @@
   reasoning-effort selection, and pricing while the pinned Pi catalog catches
   up, using Anthropic's published 1M context window and $2/$10 pricing.
 
+- Keep Telegram's native `typing…` indicator alive throughout an active agent
+  turn, including while its transient tool ledger is posted or edited, and stop
+  it before the final answer or cancellation.
+
+- Post the next Telegram `AskUser` question below a person's custom **Other**
+  reply instead of editing the earlier question above that reply.
+
 - Polish the web wake-up schedule editor on phones: a clearly tinted Once/Weekly
   selection, date and time values centred in their fields, and date and time
   values shown at the sheet's own text size on touch screens while the native
