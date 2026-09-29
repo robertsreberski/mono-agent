@@ -117,7 +117,7 @@ import {
   type EffortAdvertisement,
 } from "./effort-ladder.js";
 import { errorCode, errorMessage, WebConsoleError } from "./errors.js";
-import { OperatorClient, type OperatorInfo } from "./operator-client.js";
+import { OperatorClient, OperatorTurnFrameError, type OperatorInfo } from "./operator-client.js";
 import { isAskUserToolName } from "./run-activity.js";
 import {
   generateWebPushIdentity,
@@ -2660,6 +2660,8 @@ export class WebService {
       (error) => controller.abort(error),
     );
     let releaseAttachmentBudget: (() => void) | undefined;
+    let operatorTurnFailure: unknown;
+    let operatorTurnRejected = false;
     try {
       const attachmentBytes = started.attachments.reduce((total, attachment) => total + attachment.sizeBytes, 0);
       releaseAttachmentBudget = await this.attachmentTurnBudget.acquire(attachmentBytes, controller.signal);
@@ -2676,7 +2678,9 @@ export class WebService {
       const consoleTools = started.thread.trigger === undefined;
       if (consoleTools) this.consoleToolTurns.add(started.turnId);
       this.store.markTurnDispatchStarted(started.turnId, this.clientProcessGeneration.get(client));
-      const response = await client.turn({
+      let response;
+      try {
+        response = await client.turn({
         conversationId: started.conversationId,
         text: operatorText,
         attachments,
@@ -2703,7 +2707,12 @@ export class WebService {
           coalescer.push(frame);
         },
         ...(onAdmitted === undefined ? {} : { onAdmitted }),
-      });
+        });
+      } catch (error) {
+        operatorTurnRejected = true;
+        operatorTurnFailure = error;
+        throw error;
+      }
       await coalescer.flush();
       const replyProcessGeneration = this.clientProcessGeneration.get(client);
       const detail = this.store.completeTurn(
@@ -2739,6 +2748,16 @@ export class WebService {
         || controller.signal.reason instanceof WebTurnCancellation;
       const cancelled = explicitCancellation || (error as { cancelled?: unknown }).cancelled === true;
       const code = errorCode(failure);
+      const transportCode = operatorTurnRejected ? errorCode(operatorTurnFailure) : undefined;
+      // An agent error *frame* is a completed transport exchange, even if its
+      // provider error says "terminated" or carries an unreachable-looking code.
+      // Only the operator request/stream can supply this durable classification.
+      const connectionLost = !cancelled && operatorTurnRejected
+        && !(operatorTurnFailure instanceof OperatorTurnFrameError)
+        && (transportCode === "agent_unreachable" || transportCode === "incomplete_operator_stream"
+          || (operatorTurnFailure instanceof Error && !(operatorTurnFailure instanceof WebConsoleError)
+            && (transportCode === "ECONNRESET" || transportCode === "EPIPE" || transportCode === "UND_ERR_SOCKET"
+              || /\bterminated\b|socket closed|other side closed/iu.test(operatorTurnFailure.message))));
       const pendingRestart = this.store.activeRestartOperation(started.thread.sourceId);
       // The pending marker was committed before POST. The shutdown frame can
       // therefore arrive before the response's 202 is parsed (N3); an actual
@@ -2747,12 +2766,12 @@ export class WebService {
         && pendingRestart !== undefined
         && pendingRestart.generation === this.clientProcessGeneration.get(client)
         && (this.options.clock ?? (() => new Date()))().getTime() <= new Date(pendingRestart.deadline).getTime()
-        && (code === undefined || code === "cancelled" || code === "agent_unreachable");
+        && (code === undefined || code === "cancelled" || connectionLost);
       const detail = restartSevered
         ? this.store.interruptTurnForRestart(started.turnId)
         : this.store.failTurn(started.turnId, {
             message: cancelled ? "Turn cancelled." : errorMessage(failure),
-            ...(code === undefined ? {} : { code }),
+            ...(connectionLost ? { code: "agent_connection_lost" } : code === undefined ? {} : { code }),
             cancelled,
           });
       this.emitMessageWrite(started.thread.id, detail.write);

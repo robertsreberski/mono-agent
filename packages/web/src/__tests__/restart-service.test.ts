@@ -320,7 +320,7 @@ describe("unexpected parent process loss", () => {
       const first = s.service.createThread("agent-one");
       const failed = s.service.store.beginTurn({ threadId: first.id, text: "first", attachmentIds: [] });
       s.service.store.markTurnDispatchStarted(failed.turnId, agentGeneration(s.agent()));
-      s.service.store.failTurn(failed.turnId, { message: "terminated" });
+      s.service.store.failTurn(failed.turnId, { message: "terminated", code: "agent_connection_lost" });
       const second = s.service.createThread("agent-one");
       const running = s.service.store.beginTurn({ threadId: second.id, text: "second", attachmentIds: [] });
       s.service.store.markTurnDispatchStarted(running.turnId, agentGeneration(s.agent()));
@@ -342,13 +342,13 @@ describe("unexpected parent process loss", () => {
   });
 });
 
-describe("terminated operator turn", () => {
-  it("persists the dispatch generation through failTurn before process replacement", async () => {
+describe("transport versus agent error frames", () => {
+  it.each([undefined, "agent_unreachable"] as const)("does not classify a completed provider-terminated error frame (code %s) as connection loss", async (frameCode) => {
     let calls = 0;
     const s = await scenario({ turns: () => {
       calls++;
       return new Response(JSON.stringify(calls === 1
-        ? { kind: "error", message: "terminated" }
+        ? { kind: "error", message: "terminated", ...(frameCode === undefined ? {} : { code: frameCode }) }
         : { kind: "finish", finalText: "ready" }) + "\n", { headers: { "content-type": "application/x-ndjson" } });
     } });
     try {
@@ -360,9 +360,40 @@ describe("terminated operator turn", () => {
       await settle(s.service);
       const db = new DatabaseSync(s.service.store.paths.database);
       try {
+        expect(db.prepare("SELECT turn_id FROM parent_turn_interruptions").all()).toHaveLength(0);
+        expect(db.prepare("SELECT dispatch_generation, error_code FROM turns WHERE thread_id = ? ORDER BY started_at LIMIT 1")
+          .get(thread.id)).toMatchObject({ dispatch_generation: agentGeneration(fakeDiscoveredAgent({ apiKey: "fixture-key" })), error_code: frameCode ?? "agent_error" });
+        expect(calls).toBe(1);
+      } finally { db.close(); }
+    } finally { await s.service.stop(); }
+  });
+});
+
+describe("operator connection loss", () => {
+  it.each(["terminated fetch", "incomplete stream"] as const)("records %s only after generation replacement", async (failure) => {
+    let calls = 0;
+    const s = await scenario({ turns: () => {
+      calls++;
+      if (calls > 1) return new Response(JSON.stringify({ kind: "finish", finalText: "ready" }) + "\n",
+        { headers: { "content-type": "application/x-ndjson" } });
+      if (failure === "terminated fetch") throw new Error("terminated");
+      return new Response(new ReadableStream<Uint8Array>({ start(controller) { controller.close(); } }),
+        { headers: { "content-type": "application/x-ndjson" } });
+    } });
+    try {
+      const thread = s.service.createThread("agent-one");
+      await s.service.startTurn(thread.id, { text: "question" });
+      await vi.waitFor(() => expect(s.service.store.getThread(thread.id)?.runState.status).toBe("failed"));
+      expect(s.service.store.getThread(thread.id)?.runState.error?.code).toBe("agent_connection_lost");
+      const db = new DatabaseSync(s.service.store.paths.database);
+      try {
+        expect(db.prepare("SELECT turn_id FROM parent_turn_interruptions").all()).toHaveLength(0);
+        s.updateAgent({ ...s.agent(), source: { ...s.agent().source, pid: 456,
+          startedAt: "2026-09-23T11:00:00.000Z" } });
+        await settle(s.service);
         expect(db.prepare("SELECT turn_id FROM parent_turn_interruptions").all()).toHaveLength(1);
-        expect(db.prepare("SELECT dispatch_generation FROM turns WHERE thread_id = ? ORDER BY started_at LIMIT 1")
-          .get(thread.id)).toMatchObject({ dispatch_generation: agentGeneration(fakeDiscoveredAgent({ apiKey: "fixture-key" })) });
+        await settle(s.service);
+        expect(db.prepare("SELECT turn_id FROM parent_turn_interruptions").all()).toHaveLength(1);
       } finally { db.close(); }
     } finally { await s.service.stop(); }
   });

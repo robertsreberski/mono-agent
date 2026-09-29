@@ -3545,7 +3545,7 @@ describe("WebService", () => {
       {
         op: "set",
         index: 0,
-        part: { type: "error", code: "agent_unreachable", message: "Agent is unreachable (upstream exploded)." },
+        part: { type: "error", code: "agent_connection_lost", message: "Agent is unreachable (upstream exploded)." },
       },
     ]);
     await service.stop();
