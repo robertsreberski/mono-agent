@@ -85,17 +85,17 @@ describe("processJobDisplayState", () => {
     expect(processJobDisplayState(processJob({ state: "cancelled" }), NOW).mark).toBe("stopped");
   });
 
-  it("spins the bar's active mark only while a job is starting or running", () => {
+  it("uses the static half mark while a job is starting or running", () => {
     const queued = active("queued", { jobId: "queued" });
     const running = active("running", { jobId: "running" });
     const starting = active("starting", { jobId: "starting" });
     const stopping = active("running", { jobId: "stopping", cancelRequested: true });
     const done = processJob({ jobId: "done" });
-    expect(processJobActiveMark([queued, running, done], NOW)).toEqual({ tone: "running", mark: "half", spinning: true });
-    expect(processJobActiveMark([queued, starting], NOW)).toEqual({ tone: "running", mark: "half", spinning: true });
+    expect(processJobActiveMark([queued, running, done], NOW)).toEqual({ tone: "running", mark: "half" });
+    expect(processJobActiveMark([queued, starting], NOW)).toEqual({ tone: "running", mark: "half" });
     // Nothing in progress: a still mark for what the active jobs are doing.
-    expect(processJobActiveMark([queued, stopping, done], NOW)).toEqual({ tone: "stopping", mark: "stop", spinning: false });
-    expect(processJobActiveMark([queued, active("queued", { jobId: "queued-2" }), done], NOW)).toEqual({ tone: "waiting", mark: "empty", spinning: false });
+    expect(processJobActiveMark([queued, stopping, done], NOW)).toEqual({ tone: "stopping", mark: "stop" });
+    expect(processJobActiveMark([queued, active("queued", { jobId: "queued-2" }), done], NOW)).toEqual({ tone: "waiting", mark: "empty" });
   });
 
   it("names a stop request on running work, but a terminal state wins", () => {

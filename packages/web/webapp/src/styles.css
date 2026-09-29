@@ -1501,13 +1501,6 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .process-job-glyph.is-question { color: var(--warning); }
 .process-job-glyph.is-danger { color: var(--danger); }
 .process-job-glyph.is-stopping { color: var(--text-soft); }
-/* The spinner is the shelf's only motion: the closed bar's in-progress mark
-   turns for as long as work is in progress. It is one persistent element with
-   a CSS animation, so re-renders and polls never restart it. Rows never move. */
-.process-job-glyph.is-spinner { animation: spin 1s linear infinite; }
-.process-job-spinner-track { opacity: .3; }
-.process-job-spinner-arc { stroke-linecap: round; }
-.process-job-spinner-rest { display: none; }
 
 /* A row: purpose first; state, time, tool and a labelled preview beneath it. */
 .process-job-card { min-width: 0; border-radius: 10px; transition: background-color 180ms ease; }
@@ -1938,11 +1931,6 @@ button.process-job-call-head:focus-visible { outline: 2px solid var(--accent); o
 }
 
 @media (prefers-reduced-motion: reduce) {
-  /* Still, the spinner shows the rows' half-filled ring, never a frozen arc. */
-  .process-job-glyph.is-spinner { animation: none; }
-  .process-job-spinner-track { opacity: 1; }
-  .process-job-spinner-arc { display: none; }
-  .process-job-spinner-rest { display: inline; }
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
 }
 

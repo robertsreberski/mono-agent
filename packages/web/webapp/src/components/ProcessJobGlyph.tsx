@@ -54,22 +54,6 @@ export function ProcessJobGlyph({ tone, mark, small = false }: {
 }
 
 /**
- * The shelf's ONE moving mark: the closed bar's in-progress indicator. A
- * quarter arc turns on the ring for as long as it is mounted, in CSS only, so
- * a re-render or a poll never restarts it. Under reduced motion it holds still
- * as the rows' half-filled ring instead of a frozen arc.
- */
-export function ProcessJobSpinner() {
-  return (
-    <svg className="process-job-glyph is-running is-small is-spinner" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-      <circle className="process-job-glyph-ring process-job-spinner-track" cx="10" cy="10" r="8.25" />
-      <path className="process-job-glyph-ring process-job-spinner-arc" d="M10 1.75a8.25 8.25 0 0 1 8.25 8.25" />
-      <path className="process-job-glyph-solid process-job-spinner-rest" d={HALF} />
-    </svg>
-  );
-}
-
-/**
  * The last few recorded tool calls of a detached agent, oldest first, as
  * distinct shapes: dot = complete, × = failed, hollow ring = running.
  * Categorical evidence of rhythm and failures, never a progress claim.
