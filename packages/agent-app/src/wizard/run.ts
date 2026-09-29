@@ -472,7 +472,7 @@ async function promptManualPiModelRef(): Promise<string> {
       placeholder: provider === "openai-codex" ? "gpt-5.6-terra" : "llama3.1:8b",
       validate: (v) =>
         (v ?? "").trim().length === 0
-          ? "Enter the provider-specific model id (e.g. gpt-5.6-terra, gpt-5.6-sol, kimi-k2.6, llama3.1:8b)"
+          ? "Enter the provider-specific model id (e.g. gpt-5.6-terra, gpt-5.6-sol, kimi-k3, llama3.1:8b)"
           : undefined,
     })
   ).trim();

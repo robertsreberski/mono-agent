@@ -305,12 +305,14 @@ describe("provider setup planner", () => {
         "openai-codex:gpt-5.6-terra",
         "openai-codex:gpt-5.6-terra",
         "openai:gpt-5.5",
-        "opencode-go:kimi-k2.6",
+        "opencode-go:kimi-k3",
         "ollama:gemma4:31b",
         "lmstudio:qwen/qwen3-8b",
       ],
     });
 
+    // Pi 0.99 adds OpenAI ChatGPT OAuth, but onboarding must not silently
+    // offer a flow whose device-id lifecycle has not been implemented here.
     expect(plan.actions.map((action) => action.id)).toEqual([
       "pi-login:anthropic",
       "pi-login:openai-codex",
@@ -517,7 +519,8 @@ describe("wizard model discovery", () => {
     const values = result.candidates.map((candidate) => candidate.value);
     expect(values).toContain("openai-codex:gpt-5.6-terra");
     expect(values).toContain("openai-codex:gpt-5.6-sol");
-    expect(values).toContain("opencode-go:kimi-k2.6");
+    // Pi 0.99.1 removed kimi-k2.6; discovery follows its current chat catalog.
+    expect(values).toContain("opencode-go:kimi-k3");
     expect(values).toContain("ollama:llama3.1:8b");
     expect(values).toContain("lmstudio:qwen/qwen3-8b");
     expect(result.statuses).toMatchObject([

@@ -20,7 +20,7 @@ async function capturedRequest(model, apiKey) {
   return captured;
 }
 
-describe("Pi 0.87.1 Anthropic OAuth transport", () => {
+describe("Pi 0.99.1 Anthropic OAuth transport", () => {
   it("sends the upstream Claude Code 2.1.280 identity for native Opus 5.5", async () => {
     const model = builtinModels().getModel("anthropic", "claude-opus-5-5");
     expect(model).toBeDefined();

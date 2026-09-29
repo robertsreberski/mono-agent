@@ -9,7 +9,6 @@ import {
   getBuiltinModels,
   getBuiltinProviders,
 } from "@earendil-works/pi-ai/providers/all";
-import { getPiSupplementModel, listPiSupplementModels } from "./pi-supplement.js";
 import { getPiOAuthAuth, resolveOAuthApiKey, toAuthInteraction } from "./pi-oauth-compat.js";
 import { reasoningLevelsForPiModel as resolveReasoningLevels } from "./providers/pi-models.js";
 
@@ -121,28 +120,20 @@ function cloneInteropValue(value) {
 }
 
 /**
- * List defensive snapshots of Pi's built-in models for one provider plus
- * temporary mono-agent supplement rows. Upstream rows always win on duplicate
- * ids, and callers cannot mutate either source's shared state.
+ * List defensive snapshots of Pi's built-in chat models for one provider.
+ * Callers cannot mutate the upstream catalog's shared state.
  *
  * @param {string} providerId
  * @returns {PiBuiltinModelSnapshot[]}
  */
 export function listPiBuiltinModels(providerId) {
-  const models = getBuiltinModels(/** @type {any} */ (providerId));
-  const seen = new Set(models.map((model) => model?.id));
-  const merged = [...models];
-  for (const extra of listPiSupplementModels(providerId)) {
-    if (seen.has(extra.id)) continue;
-    seen.add(extra.id);
-    merged.push(/** @type {*} */ (extra));
-  }
-  return /** @type {PiBuiltinModelSnapshot[]} */ (cloneInteropValue(merged));
+  return /** @type {PiBuiltinModelSnapshot[]} */ (cloneInteropValue(
+    getBuiltinModels(/** @type {any} */ (providerId)),
+  ));
 }
 
 /**
- * Read a defensive snapshot of one Pi built-in model, falling back to the
- * temporary supplement only on an upstream miss.
+ * Read a defensive snapshot of one Pi built-in chat model.
  *
  * @param {string} providerId
  * @param {string} modelId
@@ -152,7 +143,7 @@ export function getPiBuiltinModel(providerId, modelId) {
   const model = getBuiltinModel(
     /** @type {any} */ (providerId),
     /** @type {any} */ (modelId),
-  ) ?? getPiSupplementModel(providerId, modelId);
+  );
   return model === undefined
     ? undefined
     : /** @type {PiBuiltinModelSnapshot} */ (cloneInteropValue(model));
@@ -210,6 +201,17 @@ export function describePiBuiltinProvider(providerId) {
 }
 
 /**
+ * Pi 0.99's OpenAI ChatGPT sign-in requires a stable installation device ID.
+ * Until mono-agent owns that lifecycle, never advertise or start this OAuth
+ * login; OpenAI API keys and the separate openai-codex OAuth remain available.
+ * @param {string} providerId
+ * @returns {boolean}
+ */
+export function isPiOAuthLoginEnabled(providerId) {
+  return providerId !== "openai";
+}
+
+/**
  * Describe one provider's supported authentication methods without exposing
  * Pi provider objects across the runtime boundary.
  *
@@ -225,7 +227,7 @@ export function describePiProviderAuth(providerId) {
   }
   if (provider === undefined) return undefined;
   const methods = [];
-  if (provider.auth.oauth !== undefined) {
+  if (isPiOAuthLoginEnabled(provider.id) && provider.auth.oauth !== undefined) {
     methods.push({
       type: /** @type {const} */ ("oauth"),
       label: provider.auth.oauth.loginLabel ?? provider.auth.oauth.name,
@@ -301,6 +303,9 @@ export async function loginPiProviderAuth(providerId, type, interaction) {
   if (type !== "oauth" && type !== "api_key") {
     throw new TypeError("Pi provider auth type must be oauth or api_key");
   }
+  if (type === "oauth" && !isPiOAuthLoginEnabled(providerId)) {
+    throw new Error(`Pi OAuth login for ${providerId} is unavailable until installation device IDs are supported`);
+  }
   if (typeof interaction?.prompt !== "function" || typeof interaction?.notify !== "function") {
     throw new TypeError("Pi provider auth interaction requires prompt() and notify()");
   }
@@ -372,6 +377,9 @@ export async function resolvePiOAuthApiKey(providerId, credentials) {
  * @returns {Promise<PiOAuthCredentialsSnapshot>}
  */
 export async function loginPiOAuth(providerId, callbacks) {
+  if (!isPiOAuthLoginEnabled(providerId)) {
+    throw new Error(`Pi OAuth login for ${providerId} is unavailable until installation device IDs are supported`);
+  }
   const oauth = getPiOAuthAuth(providerId);
   if (!oauth || typeof oauth.login !== "function") {
     throw new Error(`Pi OAuth provider is unavailable: ${providerId}`);

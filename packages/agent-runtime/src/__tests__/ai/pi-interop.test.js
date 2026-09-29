@@ -35,6 +35,7 @@ import {
   checkPiProviderAuth,
   describePiProviderAuth,
   getPiBuiltinModel,
+  isPiOAuthLoginEnabled,
   listPiBuiltinModels,
   loginPiProviderAuth,
   loginPiOAuth,
@@ -219,6 +220,43 @@ describe("Pi interoperability facade", () => {
     expect(describePiProviderAuth("missing")).toBeUndefined();
   });
 
+  it("hides Pi's new OpenAI ChatGPT OAuth but keeps OpenAI API keys and Codex OAuth", () => {
+    piMocks.builtinProviders.mockReturnValue([
+      {
+        id: "openai", name: "OpenAI", auth: {
+          oauth: { name: "Sign in with ChatGPT" },
+          apiKey: { name: "OpenAI API key" },
+        },
+      },
+      {
+        id: "openai-codex", name: "OpenAI Codex (legacy)", auth: {
+          oauth: { name: "Codex sign-in" },
+        },
+      },
+    ]);
+
+    expect(isPiOAuthLoginEnabled("openai")).toBe(false);
+    expect(isPiOAuthLoginEnabled("openai-codex")).toBe(true);
+    expect(describePiProviderAuth("openai")).toEqual({
+      providerId: "openai", label: "OpenAI",
+      methods: [{ type: "api_key", label: "OpenAI API key", interactive: false }],
+    });
+    expect(describePiProviderAuth("openai-codex")).toEqual({
+      providerId: "openai-codex", label: "OpenAI Codex (legacy)",
+      methods: [{ type: "oauth", label: "Codex sign-in", interactive: true }],
+    });
+  });
+
+  it("rejects unsupported OpenAI OAuth before constructing Pi Models or starting login", async () => {
+    const interaction = { prompt: vi.fn(), notify: vi.fn() };
+    await expect(loginPiProviderAuth("openai", "oauth", interaction))
+      .rejects.toThrow("Pi OAuth login for openai is unavailable until installation device IDs are supported");
+    await expect(loginPiOAuth("openai", {}))
+      .rejects.toThrow("Pi OAuth login for openai is unavailable until installation device IDs are supported");
+    expect(piMocks.builtinModels).not.toHaveBeenCalled();
+    expect(piMocks.getPiOAuthAuth).not.toHaveBeenCalled();
+  });
+
   it("checks auth through Pi Models without refreshing or exposing credentials", async () => {
     const checkAuth = vi.fn(async () => ({ source: "OPENCODE_API_KEY", type: "api_key" }));
     piMocks.builtinModels.mockReturnValueOnce({ checkAuth });
@@ -273,7 +311,7 @@ describe("Pi interoperability facade", () => {
     });
 
     it("reads one row straight from upstream with no miss-fallback", () => {
-      // All former backfill rows ship upstream in 0.87.1. The facade reports
+      // All former backfill rows ship upstream by 0.99.1. The facade reports
       // the upstream row verbatim and undefined on a genuine miss.
       piMocks.getBuiltinModel.mockImplementation((provider, id) =>
         id === "model-1" ? rawModel : undefined);
@@ -281,26 +319,6 @@ describe("Pi interoperability facade", () => {
       expect(getPiBuiltinModel("provider-1", "model-1")).toEqual(rawModel);
       expect(getPiBuiltinModel("provider-1", "model-1")).not.toBe(rawModel);
       expect(getPiBuiltinModel("provider-1", "missing")).toBeUndefined();
-    });
-
-    it("adds the Sonnet 5.5 supplement only on an upstream miss", () => {
-      piMocks.getBuiltinModels.mockReturnValueOnce([]);
-      piMocks.getBuiltinModel.mockReturnValueOnce(undefined);
-
-      expect(listPiBuiltinModels("anthropic")).toEqual([
-        expect.objectContaining({ id: "claude-sonnet-5-5", provider: "anthropic" }),
-      ]);
-      expect(getPiBuiltinModel("anthropic", "claude-sonnet-5-5"))
-        .toMatchObject({ id: "claude-sonnet-5-5", provider: "anthropic" });
-    });
-
-    it("prefers an upstream Sonnet 5.5 row and never duplicates it", () => {
-      const upstream = { ...rawModel, id: "claude-sonnet-5-5", name: "Upstream Sonnet 5.5", provider: "anthropic" };
-      piMocks.getBuiltinModels.mockReturnValueOnce([upstream]);
-      piMocks.getBuiltinModel.mockReturnValueOnce(upstream);
-
-      expect(listPiBuiltinModels("anthropic")).toEqual([upstream]);
-      expect(getPiBuiltinModel("anthropic", "claude-sonnet-5-5")).toEqual(upstream);
     });
 
     it("leaves unrelated providers untouched", () => {

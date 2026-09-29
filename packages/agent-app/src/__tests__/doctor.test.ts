@@ -2464,7 +2464,7 @@ describe("validateMonoAgentFolder", () => {
   it("keeps opencode-go under the native mono-agent sandbox", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
-      runtime: { model: "opencode-go:kimi-k2.6" },
+      runtime: { model: "opencode-go:kimi-k3" },
       context: { identityPath: "./IDENTITY.md" },
       sandbox: { mode: "native", fallback: "fail-closed" },
     });
@@ -4168,7 +4168,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     ["openai-codex:gpt-6-sol", "openai-codex", { type: "oauth", expires: FUTURE, refresh: "r" }],
     ["openai-codex:gpt-6-luna", "openai-codex", { type: "oauth", expires: FUTURE, refresh: "r" }],
     ["openai:gpt-6-sol", "openai", { type: "api_key", key: "sk-test" }],
-  ])("accepts Pi 0.87.1 native model %s", async (model, provider, credential) => {
+  ])("accepts Pi 0.99.1 native model %s", async (model, provider, credential) => {
     const authPath = await writeAuthStore({ [provider]: credential });
     const configPath = await writeCredConfig({
       runtime: { model },
@@ -4208,7 +4208,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
   it("rejects an unknown exact Pi agent-host memory LLM before execution", async () => {
     const authPath = await writeAuthStore({ "opencode-go": { type: "api_key", key: "sk-opencode" } });
     const configPath = await writeCredConfig({
-      runtime: { model: "opencode-go:kimi-k2.6" },
+      runtime: { model: "opencode-go:kimi-k3" },
       providers: { piAuthPath: authPath },
       memory: {
         mode: "bujo",
@@ -4265,7 +4265,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     const authPath = await writeAuthStore({ "opencode-go": { type: "api_key", key: "sk-opencode" } });
     expect((await stat(authPath)).mode & 0o777).toBe(0o600);
     const configPath = await writeCredConfig({
-      runtime: { model: "opencode-go:kimi-k2.6" },
+      runtime: { model: "opencode-go:kimi-k3" },
       providers: { piAuthPath: authPath },
     });
 
@@ -4273,7 +4273,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
 
     const creds = sectionById(report, "credentials");
     expect(creds.status).toBe("ok");
-    expect(creds.details.join("\n")).toMatch(/Primary opencode-go:kimi-k2\.6: API key credentials for `opencode-go` present/u);
+    expect(creds.details.join("\n")).toMatch(/Primary opencode-go:kimi-k3: API key credentials for `opencode-go` present/u);
     expect(report.ok).toBe(true);
   });
 
@@ -4283,7 +4283,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     });
     await chmod(authPath, 0o644);
     const configPath = await writeCredConfig({
-      runtime: { model: "opencode-go:kimi-k2.6" },
+      runtime: { model: "opencode-go:kimi-k3" },
       providers: { piAuthPath: authPath },
     });
 
@@ -4307,7 +4307,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     }), { mode: 0o600 });
     await symlink(targetPath, authPath);
     const configPath = await writeCredConfig({
-      runtime: { model: "opencode-go:kimi-k2.6" },
+      runtime: { model: "opencode-go:kimi-k3" },
       providers: { piAuthPath: authPath },
     });
 
@@ -4328,7 +4328,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     }), { mode: 0o600 });
     await link(targetPath, authPath);
     const configPath = await writeCredConfig({
-      runtime: { model: "opencode-go:kimi-k2.6" },
+      runtime: { model: "opencode-go:kimi-k3" },
       providers: { piAuthPath: authPath },
     });
 
@@ -4345,7 +4345,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     const authPath = join(dir, "auth.json");
     await writeFile(authPath, Buffer.alloc(1_048_577, 0x78), { mode: 0o600 });
     const configPath = await writeCredConfig({
-      runtime: { model: "opencode-go:kimi-k2.6" },
+      runtime: { model: "opencode-go:kimi-k3" },
       providers: { piAuthPath: authPath },
     });
 
@@ -4360,7 +4360,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     const authPath = join(dir, "auth.json");
     await writeFile(authPath, "{malformed-secret-sentinel", { mode: 0o600 });
     const configPath = await writeCredConfig({
-      runtime: { model: "opencode-go:kimi-k2.6" },
+      runtime: { model: "opencode-go:kimi-k3" },
       providers: { piAuthPath: authPath },
     });
 
@@ -4373,10 +4373,12 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     expect(text).not.toContain("malformed-secret-sentinel");
   });
 
+  // Pi 0.99.1 removes kimi-k2.6 from the native OpenCode-Go catalog; use
+  // a still-listed chat model so credential checks do not fail on routing first.
   it("flags missing OpenCode-Go API key credentials with an API-key hint", async () => {
     const authPath = await writeAuthStore({});
     const configPath = await writeCredConfig({
-      runtime: { model: "opencode-go:kimi-k2.6" },
+      runtime: { model: "opencode-go:kimi-k3" },
       providers: { piAuthPath: authPath },
     });
 
@@ -4393,7 +4395,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
 
   it("recognizes an OpenCode-Go key in the resolved environment without exposing it", async () => {
     const configPath = await writeCredConfig({
-      runtime: { model: "opencode-go:kimi-k2.6" },
+      runtime: { model: "opencode-go:kimi-k3" },
     });
 
     const report = await validateMonoAgentFolder({
@@ -4412,7 +4414,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
   it("does not treat an empty Pi auth object as an authenticated API-key provider", async () => {
     const authPath = await writeAuthStore({ "opencode-go": {} });
     const configPath = await writeCredConfig({
-      runtime: { model: "opencode-go:kimi-k2.6" },
+      runtime: { model: "opencode-go:kimi-k3" },
       providers: { piAuthPath: authPath },
     });
 
@@ -4427,7 +4429,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     const authPath = await writeAuthStore({ "openai-codex": { type: "oauth", expires: PAST, refresh: "r" } });
     await writeModelsStore(["opencode-go"]);
     const configPath = await writeCredConfig({
-      runtime: { model: "opencode-go:kimi-k2.6", fallbacks: [{ model: "openai-codex:gpt-5.5" }] },
+      runtime: { model: "opencode-go:kimi-k3", fallbacks: [{ model: "openai-codex:gpt-5.5" }] },
       providers: { piAuthPath: authPath },
     });
 
@@ -4450,7 +4452,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     const authPath = await writeAuthStore({ anthropic: { type: "oauth", expires: FUTURE } });
     await writeModelsStore(["opencode-go"]);
     const configPath = await writeCredConfig({
-      runtime: { model: "opencode-go:kimi-k2.6", fallbacks: [{ model: "openai-codex:gpt-5.5" }] },
+      runtime: { model: "opencode-go:kimi-k3", fallbacks: [{ model: "openai-codex:gpt-5.5" }] },
       providers: { piAuthPath: authPath },
     });
 
@@ -4467,7 +4469,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     const authPath = await writeAuthStore({ "openai-codex": { type: "oauth", expires: PAST } });
     await writeModelsStore(["opencode-go"]);
     const configPath = await writeCredConfig({
-      runtime: { model: "opencode-go:kimi-k2.6" },
+      runtime: { model: "opencode-go:kimi-k3" },
       providers: { piAuthPath: authPath },
       memory: {
         mode: "bujo",
@@ -4489,7 +4491,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     const authPath = await writeAuthStore({});
     await writeModelsStore(["opencode-go"]);
     const configPath = await writeCredConfig({
-      runtime: { model: "opencode-go:kimi-k2.6" },
+      runtime: { model: "opencode-go:kimi-k3" },
       providers: { piAuthPath: authPath },
       memory: {
         mode: "bujo", path: dir, writeMode: "capture",

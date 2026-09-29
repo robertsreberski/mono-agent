@@ -10,6 +10,13 @@
   outcome-unknown marker, wait up to 15 minutes, and cancel uncommitted agent
   compaction when its client disconnects.
 
+- Let Pi 0.99.1 provide Claude Sonnet 5.5 natively and list GPT-6.1 Sol
+  through existing chat discovery. Pi also retires catalog rows including
+  `opencode-go:kimi-k2.6`, `glm-5.1`, `qwen3.6-plus` and `qwen3.7-max` on
+  OpenCode-Go: replace removed `model` or fallback references when doctor
+  reports them. `openai-codex` now displays as "OpenAI Codex (legacy)" under
+  the same id; the new ChatGPT sign-in on `openai` is not offered yet.
+
 - Keep every in-progress Background jobs shelf indicator static, using the same
   half-filled circle in the closed bar and open rows.
 
@@ -39,8 +46,8 @@
   preserving history while protecting plain text-only Remember lines.
 
 - Add `anthropic:claude-sonnet-5-5` to model discovery, runtime routing,
-  reasoning-effort selection, and pricing while the pinned Pi catalog catches
-  up, using Anthropic's published 1M context window and $2/$10 pricing.
+  reasoning-effort selection, and pricing through Pi's native catalog, with
+  a 1M context window and $2/$10 pricing.
 
 - Fix background `PeerAgent` job cards and exact-origin completion wakes in the
   web console by keeping peer projections free of subagent-only telemetry.

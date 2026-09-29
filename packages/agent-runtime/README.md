@@ -330,6 +330,7 @@ getPiBuiltinModel
 inferAllowlistMode
 invalidateProviderSession
 isLikelyContextTermination
+isPiOAuthLoginEnabled
 listPiBuiltinModels
 listPiBuiltinProviders
 listRuntimeBridges
@@ -518,6 +519,7 @@ disposeProviderSession
 generatePiNativeResponse
 getPiBuiltinModel
 invalidateProviderSession
+isPiOAuthLoginEnabled
 listPiBuiltinModels
 listPiBuiltinProviders
 listRuntimeBridges
@@ -764,23 +766,18 @@ with `0600` permissions.
 
 Consumers that need lower-level Pi interoperability should still import only
 `@mono-agent/agent-runtime/ai`. `listPiBuiltinModels(providerId)` returns fresh,
-defensively cloned model snapshots, including temporary upstream-first catalog
-supplements; `getPiBuiltinModel(providerId, modelId)` returns one cloned
+defensively cloned built-in chat model snapshots; `getPiBuiltinModel(providerId, modelId)` returns one cloned
 snapshot or `undefined`; and
 `reasoningLevelsForPiModel(model)` translates a Pi model into mono-agent's
 reasoning vocabulary, including `none` rather than Pi's `off`.
-Pi 0.87.0 exposes GPT-6 Astra through these same catalog APIs as
-`openai:gpt-6-astra` for OpenAI API keys and
-`openai-codex:gpt-6-astra` for Codex subscriptions. Pi 0.87.1 also exposes
-`anthropic:claude-opus-5-5` and `gpt-6-sol`/`gpt-6-luna` on both
-`openai` and `openai-codex` natively. Mono-agent temporarily supplements
-`anthropic:claude-sonnet-5-5` until Pi publishes that model id; the upstream
-catalog always wins if both provide it. Sonnet 5.5 advertises low through max
-adaptive effort; disabled thinking is omitted until Pi can send the model's
-replacement `between_tools` mode. Sol and Luna use
-Pi's 272,000-token context window
-and a pricing tier above 272,000 input tokens; Opus 5.5 supports low through
-max effort. Anthropic OAuth requests use Pi's Claude Code 2.1.280 identity.
+Pi 0.87.0 exposes GPT-6 Astra on `openai` and `openai-codex`, and
+Pi 0.87.1 adds Opus 5.5 and GPT-6 Sol/Luna. Pi 0.99.1 also ships Sonnet 5.5
+natively (low through max adaptive effort; disabled thinking is unavailable)
+and GPT-6.1 Sol on `openai`, `openai-codex`, and Azure OpenAI Responses.
+The generated catalog now includes other model types, but these unqualified
+facade reads intentionally remain chat-only. Sol/Luna use Pi's 272,000-token
+context and a pricing tier above 272,000 input tokens. Anthropic OAuth
+requests use Pi's Claude Code identity.
 `resolvePiOAuthApiKey(providerId, credentials)` refreshes a caller-owned
 credential snapshot and returns `{ apiKey, newCredentials }` or `null`, while
 `loginPiOAuth(providerId, callbacks)` runs the selected supported login flow.
