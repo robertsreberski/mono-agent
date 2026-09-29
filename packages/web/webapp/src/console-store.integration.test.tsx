@@ -525,6 +525,9 @@ describe("ConsoleStoreProvider integration", () => {
     }
   });
 
+  // The full shell (dashboard + chat) renders under CI's parallel package load;
+  // the default 1 s find timeout is too tight for its first detail read.
+  const REAL_SHELL_RENDER_TIMEOUT_MS = 5_000;
   it("keeps unsent composer text when the operator switches conversations in the real shell", async () => {
     const alphaAgent = agent("alpha", { label: "Alpha" });
     const first = thread("alpha-first", "alpha", { title: "Alpha first", messageCount: 1 });
@@ -577,13 +580,13 @@ describe("ConsoleStoreProvider integration", () => {
         </ConsoleStoreProvider>,
       );
 
-      expect(await screen.findByText("Alpha first answer")).toBeInTheDocument();
+      expect(await screen.findByText("Alpha first answer", {}, { timeout: REAL_SHELL_RENDER_TIMEOUT_MS })).toBeInTheDocument();
       const input = () => screen.getByRole("combobox", { name: "Message" }) as HTMLTextAreaElement;
       fireEvent.change(input(), { target: { value: "unfinished thought" } });
       await waitFor(() => expect(readComposerDraft("alpha", first.id)).toBe("unfinished thought"));
 
       fireEvent.click(screen.getByRole("button", { name: "Open Alpha second" }));
-      expect(await screen.findByText("Alpha second answer")).toBeInTheDocument();
+      expect(await screen.findByText("Alpha second answer", {}, { timeout: REAL_SHELL_RENDER_TIMEOUT_MS })).toBeInTheDocument();
       await waitFor(() => expect(input().value).toBe(""));
       // The other conversation's composer must not have inherited the text, and
       // the draft must survive being switched away from.
@@ -591,7 +594,7 @@ describe("ConsoleStoreProvider integration", () => {
       expect(readComposerDraft("alpha", first.id)).toBe("unfinished thought");
 
       fireEvent.click(screen.getByRole("button", { name: "Open Alpha first" }));
-      expect(await screen.findByText("Alpha first answer")).toBeInTheDocument();
+      expect(await screen.findByText("Alpha first answer", {}, { timeout: REAL_SHELL_RENDER_TIMEOUT_MS })).toBeInTheDocument();
       await waitFor(() => expect(input().value).toBe("unfinished thought"));
       expect(readComposerDraft("alpha", first.id)).toBe("unfinished thought");
     } finally {
