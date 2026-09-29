@@ -1454,6 +1454,7 @@ async function createConfiguredAgentHarnessInternal(
     ...(runtimeForModel === undefined ? {} : { runtimeForModel }),
     ...(memory === undefined ? {} : { memory }),
     memoryWriteMode: config.memory?.writeMode ?? "disabled",
+    ...(config.memory?.capture?.cron === undefined ? {} : { memoryCaptureCron: config.memory.capture.cron }),
     ...(options.onMemoryWarning === undefined ? {} : { onMemoryWarning: options.onMemoryWarning }),
     historyStore,
     toolHistory,

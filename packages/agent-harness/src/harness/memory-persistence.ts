@@ -106,6 +106,8 @@ export async function persistSuccessfulMemory(
   assistantText: string,
   persistenceOptions: {
     readonly runId: string;
+    /** Host-owned cron metadata, not a conversation-id/source-name guess. */
+    readonly cronRequest?: boolean;
     readonly source?: string;
     readonly captureSpeakerKind?: MemoryCaptureSpeakerKind;
     readonly sender?: AgentMessageSender;
@@ -116,6 +118,7 @@ export async function persistSuccessfulMemory(
   },
 ): Promise<void> {
     const mode = harnessOptions.memoryWriteMode;
+    if (mode === "capture" && harnessOptions.memoryCaptureCron === false && persistenceOptions.cronRequest === true) return;
     if (harnessOptions.memory !== undefined && (mode === "append-host-summary" || mode === "capture")) {
       if (shouldSkipMemoryPersistence(assistantText)) {
         return;

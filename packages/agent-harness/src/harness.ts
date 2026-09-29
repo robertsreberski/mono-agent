@@ -1682,6 +1682,7 @@ export class MonoAgentHarness implements AgentHarness {
           text,
           {
             runId,
+            cronRequest: isCronRequest(request),
             ...(runSource.source === undefined ? {} : { source: runSource.source }),
             captureSpeakerKind: request.captureSpeakerKind ?? "unknown",
             ...(request.captureSpeakerKind === "human-turn" && (request.metadata?.source === "web"

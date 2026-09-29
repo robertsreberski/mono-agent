@@ -498,6 +498,8 @@ export interface AgentHarnessOptions {
   readonly runtimeForModel?: (model: RuntimeModelReference) => MonoRuntimeLike;
   readonly memory?: MemoryStore;
   readonly memoryWriteMode?: MemoryWriteMode;
+  /** Disable automatic capture admission for host-identified cron turns only. */
+  readonly memoryCaptureCron?: boolean;
   /** Best-effort post-provider persistence warning sink (host log/metric). */
   readonly onMemoryWarning?: (message: string) => void;
   readonly historyStore?: ConversationHistoryStore;

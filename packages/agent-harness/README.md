@@ -90,6 +90,10 @@ lease, so a custom runtime's stale callback cannot settle a newer attempt. The
 opaque logical-owner identity lets the standard runtime refresh that lease
 without granting callback ownership to an unrelated same-ID duplicate.
 
+`memoryCaptureCron: false` skips completed-turn admission only for host-identified
+cron metadata in capture mode (including raw-audit projection); it does not
+change other sources or history.
+
 For `append-host-summary` and `capture` write modes, the store must implement
 `persistCompletedTurn`; harness construction rejects an incompatible store.
 Each successful turn awaits one run-idempotent admission. The provider answer

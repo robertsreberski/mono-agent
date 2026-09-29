@@ -242,6 +242,11 @@ is what makes retries idempotent: the index is consulted first, then the whole
 canonical source, so a bullet appended before a crash is completed rather than
 duplicated even when the retry lands on a later day. `supportsRemember()` reports
 whether the store can accept writes at all; it is `false` on a read-only store.
+`supportsRememberDetails()` affirms the writable BuJo-only variant: an existing
+person association, an explicitly replaceable unlinked observation, and/or
+explicit supersession of a captured note/event or enhanced Remember write are committed via the recoverable capture outbox with
+assistant-inferred coarse fact attribution. It never creates a person or
+replaces text-only Remember lines, user-stated facts, preferences or lessons.
 
 ### Curated chronological reads
 

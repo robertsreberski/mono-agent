@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add `memory.capture.cron: false` to skip automatic BuJo capture for cron
+  firings without changing other turns or explicit memory writes.
+- Let BuJo `Remember` link an existing person, mark unlinked scan observations
+  replaceable, and explicitly supersede captured notes/events or enhanced writes,
+  preserving history while protecting plain text-only Remember lines.
+
 - Add `anthropic:claude-sonnet-5-5` to model discovery, runtime routing,
   reasoning-effort selection, and pricing while the pinned Pi catalog catches
   up, using Anthropic's published 1M context window and $2/$10 pricing.
