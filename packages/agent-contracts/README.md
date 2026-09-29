@@ -525,6 +525,7 @@ isChannelUserCancelReason
 isCodedError
 isDeliverableConversation
 isLoopbackHost
+isNativeNotifyRequest
 isPeerProcessJobQuestion
 isProcessJobErrorCode
 isProcessJobState
@@ -532,11 +533,13 @@ isProcessJobSubagentProgress
 isProcessJobSubagentRoute
 isProviderUsageId
 isSafePrototypeInstance
+isSilentTurnAlreadyVisible
 isSubagentLaunchToolName
 isTerminalProviderAuthSessionState
 isWildcardHost
 layerJsonOntoEnv
 listen
+markSilentTurnAlreadyVisible
 normalizeHostForBind
 normalizeOptionalString
 normalizeProcessJobSubagentUsage
@@ -572,6 +575,7 @@ readSafeDataProperty
 readSettingsJson
 readString
 redactedSecret
+registerNativeNotifyRequest
 sanitizeInboundHttpHeaders
 sanitizeReplyPartDeliveryOutcomes
 sanitizeRestartProposalReason
