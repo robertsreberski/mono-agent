@@ -334,6 +334,22 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
       CREATE INDEX IF NOT EXISTS external_tool_operations_by_age ON external_tool_operations(created_at);
     `);
   } },
+  { version: 39, name: "parent-turn-interruptions", up: ({ database }) => {
+    addColumn(database, "turns", "dispatch_generation", "TEXT");
+    database.exec(`CREATE TABLE IF NOT EXISTS parent_turn_interruptions (
+      source_id TEXT NOT NULL REFERENCES agents(source_id) ON DELETE CASCADE,
+      turn_id TEXT NOT NULL UNIQUE REFERENCES turns(id) ON DELETE CASCADE,
+      thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+      message_id TEXT NOT NULL UNIQUE REFERENCES messages(id) ON DELETE CASCADE,
+      wake_key TEXT NOT NULL UNIQUE,
+      state TEXT NOT NULL CHECK (state IN ('pending', 'attempted', 'completed', 'expired')),
+      associated_turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL,
+      deadline TEXT NOT NULL,
+      PRIMARY KEY(source_id, turn_id)
+    );
+    CREATE INDEX IF NOT EXISTS parent_turn_interruptions_due ON parent_turn_interruptions(source_id, state);`);
+  } },
 ] satisfies WebStorageMigration[]).map((step) => Object.freeze(step)));
 
 export const WEB_STORAGE_SCHEMA_VERSION = WEB_STORAGE_MIGRATIONS.at(-1)!.version;
@@ -401,7 +417,8 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       messages: ["seq", "cron_suppressed"],
       message_search_writes: ["message_id"],
       process_job_cards: ["state", "completed_at"],
-      turns: ["conversation_markers_json", "dispatch_started_at", "cancel_origin", "project_context_json", "requested_model", "requested_effort", "effective_effort", "routing_json"],
+      parent_turn_interruptions: ["source_id", "turn_id", "thread_id", "message_id", "wake_key", "state", "associated_turn_id", "created_at", "deadline"],
+      turns: ["dispatch_generation", "conversation_markers_json", "dispatch_started_at", "cancel_origin", "project_context_json", "requested_model", "requested_effort", "effective_effort", "routing_json"],
       live_inputs: ["dispatch_started_at"],
       web_submissions: [
         "thread_id", "submission_id", "payload_sha256", "outcome", "reason", "message_id", "turn_id", "input_id", "created_at",

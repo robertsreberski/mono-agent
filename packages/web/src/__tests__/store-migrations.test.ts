@@ -579,7 +579,7 @@ describe("external conversation projects migration", () => {
     } finally { reopened.close(); }
     const database = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
     try {
-      expect(database.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 38 });
+      expect(database.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 39 });
       expect(database.prepare("SELECT COUNT(*) AS count FROM external_conversations").get()).toEqual({ count: 0 });
     } finally { database.close(); }
   });
@@ -598,8 +598,8 @@ describe("external conversation projects migration", () => {
 
 describe("named migration registry", () => {
   const step = (version: number, name: string): WebStorageMigration => ({ version, name, up: vi.fn() });
-  it("is immutable and derives schema 38 from its last step", () => {
-    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(38);
+  it("is immutable and derives schema 39 from its last step", () => {
+    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(39);
     expect(WEB_STORAGE_SCHEMA_VERSION).toBe(WEB_STORAGE_MIGRATIONS.at(-1)?.version);
     expect(Object.isFrozen(WEB_STORAGE_MIGRATIONS)).toBe(true);
     expect(WEB_STORAGE_MIGRATIONS.every(Object.isFrozen)).toBe(true);
