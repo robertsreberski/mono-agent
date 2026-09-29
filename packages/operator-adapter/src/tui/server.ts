@@ -900,7 +900,11 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       res.status(501).json({ error: { code: "compaction_unsupported", message: "This agent does not support manual compaction." } });
       return;
     }
-    void options.responder.compactConversation(id, model === undefined ? undefined : { model }).then((result) => {
+    const controller = new AbortController();
+    const onClose = () => { if (!res.writableFinished) controller.abort(); };
+    res.on("close", onClose);
+    void options.responder.compactConversation(id, model === undefined ? undefined : { model }, controller.signal).then((result) => {
+      if (controller.signal.aborted) return;
       const status = ["succeeded", "skipped", "failed"].includes(result.status) ? result.status : "failed";
       res.status(200).json({
         status,
@@ -912,6 +916,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
         tokenCountsExact: result.tokenCountsExact === true,
       });
     }).catch((error: unknown) => {
+      if (controller.signal.aborted) return;
       const kind = typeof error === "object" && error !== null && "failureKind" in error ? error.failureKind : undefined;
       const busy = kind === "compaction_busy";
       const unsupported = kind === "compaction_unsupported";
@@ -937,7 +942,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
         message: busy ? "This conversation is busy; wait for the turn to finish." : unsupported
           ? "Manual compaction is unavailable for this agent." : "Context compaction failed.",
       } });
-    });
+    }).finally(() => res.off("close", onClose));
   });
 
   app.post(liveInputPath, express.json({ limit: MAX_LIVE_INPUT_BODY_BYTES, strict: true }), (req, res, next) => {

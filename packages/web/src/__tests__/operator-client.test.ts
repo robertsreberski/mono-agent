@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Agent, getGlobalDispatcher, setGlobalDispatcher } from "undici";
 
 import {
@@ -89,6 +89,21 @@ describe("OperatorClient", () => {
       { url: "http://127.0.0.1:1234/gui/v1/conversations/web%3Aa/compact", body: '{"model":"anthropic:claude-opus-4-8"}' },
     ]);
   });
+  it("allows a 15-minute manual compaction budget and preserves lost-response classification", async () => {
+    const { MANUAL_COMPACTION_TIMEOUT_MS } = await import("../operator-client.js");
+    expect(MANUAL_COMPACTION_TIMEOUT_MS).toBe(15 * 60_000);
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", fetchImpl: (async (_url, init) => {
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      expect(init?.signal?.aborted).toBe(false);
+      throw new DOMException("timed out", "TimeoutError");
+    }) as typeof fetch });
+    try {
+      await expect(client.compactConversation("web:fictional")).rejects.toMatchObject({ code: "compaction_outcome_unknown" });
+      expect(timeout).toHaveBeenCalledWith(MANUAL_COMPACTION_TIMEOUT_MS);
+    } finally { timeout.mockRestore(); }
+  });
+
   it("parses account verification and a model-less credential rejection through the shared contract", async () => {
     const snapshot = {
       schema: "mono-agent.provider-auth.v1", generatedAt: "2026-09-14T12:00:00.000Z",

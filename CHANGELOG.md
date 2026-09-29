@@ -6,6 +6,10 @@
   unapproved launchd inputs or invalid systemd inputs; show durable launchd
   snapshot refusal in `mono-agent status` if inputs race after acceptance.
 
+- Keep manual web compaction visible after a lost response with a durable
+  outcome-unknown marker, wait up to 15 minutes, and cancel uncommitted agent
+  compaction when its client disconnects.
+
 - Keep every in-progress Background jobs shelf indicator static, using the same
   half-filled circle in the closed bar and open rows.
 

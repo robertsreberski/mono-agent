@@ -1001,7 +1001,7 @@ export interface AgentResponder<
    * `model` is the same per-conversation model selection a turn would carry;
    * omitted means the host default.
    */
-  compactConversation?(conversationId: string, options?: AgentManualCompactionOptions): Promise<AgentManualCompactionResult>;
+  compactConversation?(conversationId: string, options?: AgentManualCompactionOptions, signal?: AbortSignal): Promise<AgentManualCompactionResult>;
   /**
    * Optional: offer a text follow-up to the active turn without starting a
    * parallel response. Callers reserve their ordinary queue position first so

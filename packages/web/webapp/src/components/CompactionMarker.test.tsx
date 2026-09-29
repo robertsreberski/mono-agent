@@ -13,5 +13,7 @@ describe("persisted compaction marker divider", () => {
     expect(screen.getByRole("note", { name: "Context compaction skipped · Model changed. · automatic" })).toBeVisible();
     rerender(<CompactionMarkerRow marker={{ ...marker, status: "failed" }} />);
     expect(screen.getByRole("note", { name: "Context compaction failed · manual" })).toBeVisible();
+    rerender(<CompactionMarkerRow marker={{ ...marker, status: "failed", reason: "outcome_unknown" }} />);
+    expect(screen.getByRole("note", { name: "Context compaction outcome unknown · Response lost; it may have completed. · manual" })).toBeVisible();
   });
 });

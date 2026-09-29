@@ -11,3 +11,4 @@ export const ManualSkipped: Story = { args: { marker: { ...noCounts, status: "sk
 export const AutomaticSkipped: Story = { args: { marker: { ...noCounts, trigger: "automatic", status: "skipped" } } };
 export const ManualFailed: Story = { args: { marker: { ...noCounts, status: "failed" } } };
 export const AutomaticFailed: Story = { args: { marker: { ...noCounts, trigger: "automatic", status: "failed" } } };
+export const ManualOutcomeUnknown: Story = { args: { marker: { ...noCounts, status: "failed", reason: "outcome_unknown" } } };

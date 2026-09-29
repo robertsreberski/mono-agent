@@ -48,10 +48,11 @@ describe("app responder decorators", () => {
     const responder = bindProcessJobWakeContextToResponder(postedReplyHistory.wrapResponder(inner));
 
     expect(typeof responder.compactConversation).toBe("function");
-    expect(await responder.compactConversation?.("web:thread", { model: "openai:test" })).toEqual({
+    const signal = new AbortController().signal;
+    expect(await responder.compactConversation?.("web:thread", { model: "openai:test" }, signal)).toEqual({
       status: "succeeded", operationId: "compact-1", trigger: "manual",
     });
-    expect(inner.compactConversation).toHaveBeenCalledWith("web:thread", { model: "openai:test" });
+    expect(inner.compactConversation).toHaveBeenCalledWith("web:thread", { model: "openai:test" }, signal);
 
     const operator = await startTuiAdapter({ responder });
     try {

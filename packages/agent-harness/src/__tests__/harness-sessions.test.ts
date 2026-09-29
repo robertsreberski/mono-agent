@@ -441,6 +441,33 @@ describe("AgentHarness manual compaction", () => {
     expect(JSON.stringify(fake.calls[2]?.options.messages)).toContain(HISTORY_MARKER);
   });
 
+  it("fails closed on a caller abort, frees the lock, and does not undo a completed commit", async () => {
+    let seenSignal: AbortSignal | undefined;
+    const { fake, historyStore, makeHarness, revision } = await manualFixture({
+      run: async (_prompt, options) => {
+        if (!isManual(options)) return { text: "answer", providerSessionId: options.sessionId as string };
+        seenSignal = options.abortSignal;
+        if (fake.calls.length === 2) return await new Promise<RuntimeResult>(() => undefined);
+        return manualResult(options, "succeeded");
+      },
+    });
+    const harness = makeHarness();
+    await harness.run(request("manual", "first"));
+    const history = await historyStore.load("manual");
+    const controller = new AbortController();
+    const pending = harness.compactConversation!("manual", undefined, controller.signal);
+    await vi.waitFor(() => expect(fake.calls).toHaveLength(2));
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ failureKind: "compaction_failed" });
+    expect(seenSignal?.aborted).toBe(true);
+    expect(await historyStore.load("manual")).toEqual(history);
+    await expect(harness.compactConversation!("manual")).resolves.toMatchObject({ status: "succeeded" });
+    const committedRevision = await revision();
+    expect(committedRevision).toBe(1); // Failed epoch rotated before the new commit.
+    controller.abort();
+    expect(await revision()).toBe(committedRevision);
+  });
+
   it("skips an empty conversation and rejects hosts without durable Pi sessions", async () => {
     const { fake, makeHarness } = await manualFixture({ seedHistory: false });
     await expect(makeHarness().compactConversation!("manual")).resolves.toMatchObject({ status: "skipped", reason: "nothing_to_compact" });

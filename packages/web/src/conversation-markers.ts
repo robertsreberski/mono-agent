@@ -23,7 +23,7 @@ export function isConversationMarker(value: unknown): value is WebConversationMa
     && (part.status === "succeeded" || part.status === "skipped" || part.status === "failed")
     && count(part.tokensBefore) && count(part.tokensAfter)
     && (part.tokenCountsExact === undefined || typeof part.tokenCountsExact === "boolean")
-    && (part.reason === undefined || part.reason === "model_changed" || part.reason === "nothing_to_compact");
+    && (part.reason === undefined || part.reason === "model_changed" || part.reason === "nothing_to_compact" || (part.status === "failed" && part.reason === "outcome_unknown"));
   return part.type === "conversation-marker" && date(part.at) && (
     part.kind === "compaction" ? compaction()
       : part.kind === "model" ? route(part.before) && route(part.after)

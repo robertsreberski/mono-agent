@@ -501,7 +501,7 @@ export type WebConversationMarkerPart = {
   | { readonly kind: "model"; readonly before: WebRouteSelection; readonly after: WebRouteSelection }
   | { readonly kind: "project"; readonly before: WebProjectIdentity | null; readonly after: WebProjectIdentity | null }
   | { readonly kind: "resumed"; readonly previousMessageAt: string; readonly idleMs: number }
-  | { readonly kind: "compaction"; readonly operationId: string; readonly trigger: "manual" | "automatic"; readonly status: "succeeded" | "skipped" | "failed"; readonly tokensBefore?: number; readonly tokensAfter?: number; readonly tokenCountsExact?: boolean; readonly reason?: "model_changed" | "nothing_to_compact" }
+  | { readonly kind: "compaction"; readonly operationId: string; readonly trigger: "manual" | "automatic"; readonly status: "succeeded" | "skipped" | "failed"; readonly tokensBefore?: number; readonly tokensAfter?: number; readonly tokenCountsExact?: boolean; readonly reason?: "model_changed" | "nothing_to_compact" | "outcome_unknown" }
 );
 
 export interface WebProjectIdentity {

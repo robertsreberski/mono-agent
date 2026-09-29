@@ -63,6 +63,8 @@ import {
 } from "@mono-agent/operator-adapter/client";
 
 const OPERATOR_WIRE_SCHEMA = 1;
+// Align with the ten-minute agent/wake budget, with room for provider cleanup.
+export const MANUAL_COMPACTION_TIMEOUT_MS = 15 * 60 * 1_000;
 const MAX_PROCESS_JOBS_BODY_BYTES = 16 * 1024 * 1024;
 const MAX_ERROR_BODY_BYTES = 64 * 1024;
 // Compatibility boundary: older operators may emit frames up to 8 MiB. New
@@ -575,7 +577,7 @@ export class OperatorClient {
           headers: this.headers(true),
           // The same model selection the next turn would declare; {} means the agent default.
           body: JSON.stringify(options?.model === undefined ? {} : { model: options.model }),
-          signal: AbortSignal.timeout(180_000),
+          signal: AbortSignal.timeout(MANUAL_COMPACTION_TIMEOUT_MS),
         },
         PRESERVED_COMPACTION_ERRORS,
       );

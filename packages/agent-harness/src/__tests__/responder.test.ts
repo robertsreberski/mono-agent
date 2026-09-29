@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   createChannelUserCancelReason,
@@ -79,6 +79,32 @@ describe("createAgentResponder", () => {
     await Promise.all([compaction, turn]);
     expect(order).toEqual(["compact:start:anthropic:claude-opus-4-8", "compact:end", "turn"]);
   });
+  it("passes a disconnect signal through the responder and queues the next turn until abort cleanup", async () => {
+    let release!: () => void;
+    const cleanup = new Promise<void>((resolve) => { release = resolve; });
+    let seen: AbortSignal | undefined;
+    const order: string[] = [];
+    const responder = createAgentResponder({ harness: {
+      run: async (request) => { order.push("turn"); return okResponse(request.conversationId); },
+      compactConversation: async (_id, _options, signal) => {
+        seen = signal;
+        order.push("compact");
+        await cleanup;
+        throw new Error("cancelled");
+      },
+    } });
+    const controller = new AbortController();
+    const compaction = responder.compactConversation!("web:one", undefined, controller.signal).catch(() => undefined);
+    await vi.waitFor(() => expect(seen).toBe(controller.signal));
+    controller.abort();
+    const turn = responder.respond(baseRequest("web:one"), noopStream());
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(order).toEqual(["compact"]);
+    release();
+    await Promise.all([compaction, turn]);
+    expect(order).toEqual(["compact", "turn"]);
+  });
+
   it("positively exposes context import and serializes it onto the responder bucket", async () => {
     const calls: Array<[string, string, string]> = [];
     const responder = createAgentResponder({

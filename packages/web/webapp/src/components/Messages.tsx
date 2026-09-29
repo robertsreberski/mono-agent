@@ -889,7 +889,7 @@ function ContextCompactionDisplay({ payload, isMessageRunning = false }: { reado
     running: "Compacting context…",
     succeeded: "Context compacted",
     skipped: "Context compaction skipped",
-    failed: "Context compaction failed",
+    failed: payload.reason === "outcome_unknown" ? "Context compaction outcome unknown" : "Context compaction failed",
     interrupted: "Context compaction interrupted",
   }[status];
   const triggerLabel = payload.trigger === "manual" ? "manual" : "automatic";
@@ -902,7 +902,8 @@ function ContextCompactionDisplay({ payload, isMessageRunning = false }: { reado
       : status === "succeeded" && after !== undefined ? `${count(after)} tokens after` : undefined;
   const detail = status === "succeeded" ? undefined
     : payload.reason === "model_changed" ? "Model changed."
-      : payload.reason === "nothing_to_compact" ? "Nothing to compact yet." : undefined;
+      : payload.reason === "nothing_to_compact" ? "Nothing to compact yet."
+        : payload.reason === "outcome_unknown" ? "Response lost; it may have completed." : undefined;
 
   return <div className={`context-compaction-row is-${status}`} role="note"
     aria-label={[label, counts, detail, triggerLabel].filter(Boolean).join(" · ")}>

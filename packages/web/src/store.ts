@@ -1012,6 +1012,16 @@ export class WebStore {
     return row?.cancel_origin ?? undefined;
   }
 
+  /** A lost response has no trustworthy agent telemetry; persist only the timeline row. */
+  recordManualCompactionFailure(threadId: string, reason?: "outcome_unknown"): void {
+    this.transaction(() => {
+      this.requireThread(threadId);
+      this.insertCompactionMarker(threadId, this.now(), {
+        operationId: randomUUID(), trigger: "manual", status: "failed", ...(reason === undefined ? {} : { reason }),
+      });
+    });
+  }
+
   /** Persist a promptless compaction notice on this thread's last settled answer. */
   recordManualCompaction(threadId: string, result: import("@mono-agent/agent-contracts").AgentManualCompactionResult): string | undefined {
     return this.transaction(() => {
@@ -3865,7 +3875,7 @@ export class WebStore {
       ...(value.tokensBefore === undefined ? {} : { tokensBefore: value.tokensBefore }),
       ...(value.tokensAfter === undefined ? {} : { tokensAfter: value.tokensAfter }),
       ...(value.tokenCountsExact === undefined ? {} : { tokenCountsExact: value.tokenCountsExact }),
-      ...(value.status !== "succeeded" && (value.reason === "model_changed" || value.reason === "nothing_to_compact")
+      ...(value.status !== "succeeded" && (value.reason === "model_changed" || value.reason === "nothing_to_compact" || (value.status === "failed" && value.reason === "outcome_unknown"))
         ? { reason: value.reason } : {}),
     };
     if (!isConversationMarker(marker) || marker.kind !== "compaction") return; // Untrusted stream data never enters marker storage.

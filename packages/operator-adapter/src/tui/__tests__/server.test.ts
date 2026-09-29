@@ -101,13 +101,38 @@ describe("startTuiAdapter", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toContain("no-store");
     expect(await response.json()).toMatchObject({ status: "succeeded", tokensBefore: 1500, tokensAfter: 600 });
-    expect(compactConversation).toHaveBeenCalledExactlyOnceWith("web:one", undefined);
+    expect(compactConversation).toHaveBeenCalledExactlyOnceWith("web:one", undefined, expect.any(AbortSignal));
     const withModel = await fetch(path, { method: "POST", headers, body: '{"model":"anthropic:claude-opus-4-8"}' });
     expect(withModel.status).toBe(200);
-    expect(compactConversation).toHaveBeenLastCalledWith("web:one", { model: "anthropic:claude-opus-4-8" });
+    expect(compactConversation).toHaveBeenLastCalledWith("web:one", { model: "anthropic:claude-opus-4-8" }, expect.any(AbortSignal));
     expect((await fetch(path, { method: "POST", headers, body: '{"model":42}' })).status).toBe(400);
     expect((await fetch(path, { method: "POST", headers, body: '{"model":"a:b","extra":1}' })).status).toBe(400);
     expect(JSON.stringify(await (await fetch(path, { method: "POST", headers, body: "{}" })).json())).not.toContain("PRIVATE SUMMARY");
+  });
+
+  it("aborts the responder when the compaction HTTP client disconnects", async () => {
+    let observed!: AbortSignal;
+    let started!: () => void;
+    const admitted = new Promise<void>((resolve) => { started = resolve; });
+    running = await startTuiAdapter({ apiKey: "test-owner", responder: {
+      respond: async () => ({ text: "unused" }),
+      compactConversation: async (_id, _options, signal) => {
+        observed = signal!;
+        started();
+        await new Promise<void>((resolve) => signal!.addEventListener("abort", () => resolve(), { once: true }));
+        throw new Error("cancelled");
+      },
+    } });
+    const controller = new AbortController();
+    const pending = fetch(`${running.baseUrl}/v1/conversations/web%3Aone/compact`, {
+      method: "POST", headers: { authorization: "Bearer test-owner", "content-type": "application/json" },
+      body: "{}", signal: controller.signal,
+    });
+    await admitted;
+    expect(observed.aborted).toBe(false);
+    controller.abort();
+    await expect(pending).rejects.toThrow();
+    await vi.waitFor(() => expect(observed.aborted).toBe(true));
   });
 
   it("rejects absent compaction and bounds a busy result", async () => {
