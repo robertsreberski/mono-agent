@@ -717,12 +717,14 @@ describe("pi-native AgentHarness bridge", () => {
   });
 
   it.each([
+    ["anthropic", "claude-sonnet-5-5", "high"],
     ["anthropic", "claude-opus-5-5", "medium"],
     ["openai-codex", "gpt-6-sol", "none"],
     ["openai-codex", "gpt-6-luna", "none"],
-  ])("resolves native %s:%s through the real run collection before auth", async (provider, model, effort) => {
-    // No injected model or collection: only Pi's built-in run collection can
-    // resolve this id. Isolate Pi's entire ambient auth context, including
+  ])("resolves catalog %s:%s through the real run collection before auth", async (provider, model, effort) => {
+    // No injected model or collection: Pi's built-in run collection plus the
+    // upstream-first supplement registration must resolve this id. Isolate
+    // Pi's entire ambient auth context, including
     // ANTHROPIC_AUTH_TOKEN and ANTHROPIC_OAUTH_TOKEN, not just the API key.
     // Stored credentials are also disabled by the null resolver below.
     const authContext = { env: vi.fn(async () => undefined), fileExists: vi.fn(async () => false) };

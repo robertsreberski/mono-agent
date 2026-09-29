@@ -253,8 +253,8 @@ describe("Pi interoperability facade", () => {
     expect(suppliedOptions.credentials).toBeDefined();
   });
 
-  describe("pi catalog reads (pure upstream, no backfill)", () => {
-    it("lists exactly what the upstream catalog reports, snapshot-cloned", () => {
+  describe("pi catalog reads", () => {
+    it("lists upstream rows snapshot-cloned for providers without supplements", () => {
       piMocks.getBuiltinModels.mockReturnValue([rawModel]);
 
       const listed = listPiBuiltinModels("provider-1");
@@ -281,6 +281,26 @@ describe("Pi interoperability facade", () => {
       expect(getPiBuiltinModel("provider-1", "model-1")).toEqual(rawModel);
       expect(getPiBuiltinModel("provider-1", "model-1")).not.toBe(rawModel);
       expect(getPiBuiltinModel("provider-1", "missing")).toBeUndefined();
+    });
+
+    it("adds the Sonnet 5.5 supplement only on an upstream miss", () => {
+      piMocks.getBuiltinModels.mockReturnValueOnce([]);
+      piMocks.getBuiltinModel.mockReturnValueOnce(undefined);
+
+      expect(listPiBuiltinModels("anthropic")).toEqual([
+        expect.objectContaining({ id: "claude-sonnet-5-5", provider: "anthropic" }),
+      ]);
+      expect(getPiBuiltinModel("anthropic", "claude-sonnet-5-5"))
+        .toMatchObject({ id: "claude-sonnet-5-5", provider: "anthropic" });
+    });
+
+    it("prefers an upstream Sonnet 5.5 row and never duplicates it", () => {
+      const upstream = { ...rawModel, id: "claude-sonnet-5-5", name: "Upstream Sonnet 5.5", provider: "anthropic" };
+      piMocks.getBuiltinModels.mockReturnValueOnce([upstream]);
+      piMocks.getBuiltinModel.mockReturnValueOnce(upstream);
+
+      expect(listPiBuiltinModels("anthropic")).toEqual([upstream]);
+      expect(getPiBuiltinModel("anthropic", "claude-sonnet-5-5")).toEqual(upstream);
     });
 
     it("leaves unrelated providers untouched", () => {

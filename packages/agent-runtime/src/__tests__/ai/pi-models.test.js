@@ -64,6 +64,39 @@ describe("Pi 0.87.1 native model integration", () => {
   });
 });
 
+describe("Claude Sonnet 5.5 supplement integration", () => {
+  it("uses one row for listing, resolution, effort and pricing", () => {
+    expect(getBuiltinModel("anthropic", "claude-sonnet-5-5")).toBeUndefined();
+    expect(getBuiltinModels("anthropic").some((row) => row.id === "claude-sonnet-5-5"))
+      .toBe(false);
+
+    const listed = listPiBuiltinModels("anthropic")
+      .filter((row) => row.id === "claude-sonnet-5-5");
+    expect(listed).toHaveLength(1);
+    expect(getPiBuiltinModel("anthropic", "claude-sonnet-5-5")).toEqual(listed[0]);
+
+    const resolved = resolvePiRuntimeModel({
+      provider: "anthropic",
+      model: "claude-sonnet-5-5",
+      reference: "anthropic:claude-sonnet-5-5",
+    }, {});
+    expect(resolved.model).toEqual(listed[0]);
+    expect(resolved.model).toMatchObject({
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+      cost: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+    });
+    expect(resolved.capabilities.reasoning_levels)
+      .toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(thinkingLevelForEffort("max", resolved.capabilities)).toBe("max");
+    expect(estimateCost({
+      model: "anthropic:claude-sonnet-5-5",
+      inputTokens: 1_000,
+      outputTokens: 1_000,
+    })).toBeCloseTo(0.012, 6);
+  });
+});
+
 describe("resolvePiRuntimeModel — unknown builtin model guard", () => {
   it("throws a clean 'pi model not found' error instead of a raw TypeError on a catalog miss", () => {
     expect(() => resolvePiRuntimeModel({ provider: "ollama", model: "nope", reference: "ollama:nope" }, {}))
