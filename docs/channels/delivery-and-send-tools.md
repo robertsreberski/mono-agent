@@ -348,7 +348,7 @@ When the web console's header bell is enabled, a new marked conversation is comm
 
 ### Staying silent ("nothing to report")
 
-To send nothing for a `notify: true` tick or request, call `FinishSilently({})` alone without narration or attachments. The host records the silent disposition and posts no notification. When the tool is unavailable, reply with the reserved sentinel `NOTHING_TO_REPORT` (matched trimmed and case-insensitively, either as the whole answer or as its final line — never as a substring). An empty final answer is an `empty_response` failure.
+To send nothing for a `notify: true` tick or request, call `FinishSilently({})` alone without narration or attachments. The host records the silent disposition and posts no notification. `FinishSilently` is Pi-runtime-only and must be included in explicit `tools.allowedTools` lists (including `DEFAULT_SAFE_TOOLS`-based lists); allow-all admits it. A prior ordinary tool error or refused silence call does not by itself prevent a later accepted silence, but runtime failure/cancellation, prior answer text or rich output, an answered `AskUser` interaction, a pending `AskParent` question, or consumed live input does. When the tool is unavailable, reply with the reserved sentinel `NOTHING_TO_REPORT` (matched trimmed and case-insensitively, either as the whole answer or as its final line — never as a substring). An empty final answer is an `empty_response` failure.
 
 ### How native notification differs from send tools
 
