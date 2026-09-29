@@ -3925,8 +3925,93 @@ export class WebStore {
     return markers.filter(isConversationMarker);
   }
 
-  markTurnDispatchStarted(turnId: string): void {
-    this.database.prepare("UPDATE turns SET dispatch_started_at = COALESCE(dispatch_started_at, ?) WHERE id = ?").run(this.now(), turnId);
+  markTurnDispatchStarted(turnId: string, generation?: string): void {
+    this.database.prepare(`UPDATE turns SET dispatch_started_at = COALESCE(dispatch_started_at, ?),
+      dispatch_generation = COALESCE(dispatch_generation, ?) WHERE id = ?`)
+      .run(this.now(), generation ?? null, turnId);
+  }
+
+  /** A generation change is evidence of process loss, not evidence that a child settled. */
+  reconcileParentInterruptions(sourceId: string, currentGeneration: string): ReadonlyArray<{
+    readonly threadId: string; readonly messageId: string; readonly turnId: string;
+  }> {
+    const created: Array<{ threadId: string; messageId: string; turnId: string }> = [];
+    this.transaction(() => {
+      // Startup recovery proves web-console loss, not agent loss. The first
+      // process generation observed after reopening is the only comparison
+      // that can classify it: if still the dispatched generation, permanently
+      // exclude it before a later unrelated agent restart, without erasing the
+      // original dispatch identity.
+      this.database.prepare(`UPDATE turns SET web_recovery_generation_confirmed_at = ?
+        WHERE dispatch_generation = ? AND status = 'interrupted' AND error_code = 'interrupted'
+          AND web_recovery_generation_confirmed_at IS NULL
+          AND thread_id IN (SELECT id FROM threads WHERE source_id = ?)`)
+        .run(this.now(), currentGeneration, sourceId);
+      const turns = this.database.prepare(`SELECT t.id, t.thread_id, t.status FROM turns t
+        JOIN threads th ON th.id = t.thread_id
+        WHERE th.source_id = ? AND t.dispatch_generation IS NOT NULL AND t.dispatch_generation <> ?
+          AND t.web_recovery_generation_confirmed_at IS NULL AND t.cancel_origin IS NULL
+          AND (t.status = 'running' OR (t.status = 'failed' AND t.error_code = 'agent_connection_lost')
+            OR (t.status = 'interrupted' AND t.error_code IN ('interrupted', 'agent_restart_interrupted')))
+          AND NOT EXISTS (SELECT 1 FROM parent_turn_interruptions n WHERE n.turn_id = t.id)`)
+        .all(sourceId, currentGeneration) as Array<{ id: string; thread_id: string; status: string }>;
+      for (const turn of turns) {
+        if (turn.status === "running") this.finishTurnInTransaction(turn.id, "interrupted", undefined,
+          "agent_process_interrupted", "The agent process ended before this turn completed.", undefined);
+        const now = this.now();
+        const messageId = randomUUID();
+        const notice = "The agent process ended during a previous turn. That turn was not replayed. Inspect background jobs and subagents (for example, with AgentManage inspect) before continuing; their outcomes are not established by this notice.";
+        this.database.prepare(`INSERT INTO messages
+          (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
+          VALUES (?, ?, NULL, 'assistant', ?, ?, ?, 'complete')`)
+          .run(messageId, turn.thread_id, serializeParts([{ type: "text", text: notice }]), now, now);
+        this.database.prepare(`INSERT INTO parent_turn_interruptions
+          (source_id, turn_id, thread_id, message_id, wake_key, state, created_at, deadline)
+          VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`)
+          .run(sourceId, turn.id, turn.thread_id, messageId,
+            `parent-interruption:${sourceId}:${turn.id}`, now, new Date(Date.parse(now) + 10 * 60_000).toISOString());
+        this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
+          .run(now, turn.thread_id);
+        this.recordThreadRevision(turn.thread_id, "parent_turn_interrupted", now);
+        created.push({ threadId: turn.thread_id, messageId, turnId: turn.id });
+      }
+    });
+    return created;
+  }
+
+  pendingParentInterruptions(sourceId: string): ReadonlyArray<{
+    readonly sourceId: string; readonly threadId: string; readonly turnId: string; readonly wakeKey: string;
+  }> {
+    return this.database.prepare(`SELECT source_id AS sourceId, thread_id AS threadId,
+      turn_id AS turnId, wake_key AS wakeKey FROM parent_turn_interruptions
+      WHERE source_id = ? AND state = 'pending' ORDER BY created_at`).all(sourceId) as
+      Array<{ sourceId: string; threadId: string; turnId: string; wakeKey: string }>;
+  }
+
+  /** Once an operator request may have crossed the boundary, never redeliver it. */
+  claimParentInterruptionWake(sourceId: string, turnId: string, associatedTurnId?: string): boolean {
+    return this.database.prepare(`UPDATE parent_turn_interruptions SET state = 'attempted', associated_turn_id = ?
+      WHERE source_id = ? AND turn_id = ? AND state = 'pending' AND deadline > ?`)
+      .run(associatedTurnId ?? null, sourceId, turnId, this.now()).changes === 1;
+  }
+
+  /** Only an explicit pre-dispatch refusal proves this attempt never entered a turn. */
+  deferParentInterruptionWake(sourceId: string, turnId: string, associatedTurnId: string): void {
+    this.database.prepare(`UPDATE parent_turn_interruptions SET state = 'pending', associated_turn_id = NULL
+      WHERE source_id = ? AND turn_id = ? AND state = 'attempted' AND associated_turn_id = ?`)
+      .run(sourceId, turnId, associatedTurnId);
+  }
+
+  expireParentInterruptionWake(sourceId: string, turnId: string): void {
+    this.database.prepare(`UPDATE parent_turn_interruptions SET state = 'expired'
+      WHERE source_id = ? AND turn_id = ? AND state = 'pending' AND deadline <= ?`)
+      .run(sourceId, turnId, this.now());
+  }
+
+  completeParentInterruptionWake(sourceId: string, turnId: string, associatedTurnId: string): void {
+    this.database.prepare(`UPDATE parent_turn_interruptions SET state = 'completed', associated_turn_id = ?
+      WHERE source_id = ? AND turn_id = ? AND state = 'attempted'`)
+      .run(associatedTurnId, sourceId, turnId);
   }
 
   /** Observers run only after the outer transaction commits and its depth clears. */

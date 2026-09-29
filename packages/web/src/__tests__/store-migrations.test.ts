@@ -579,7 +579,7 @@ describe("external conversation projects migration", () => {
     } finally { reopened.close(); }
     const database = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
     try {
-      expect(database.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 38 });
+      expect(database.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 40 });
       expect(database.prepare("SELECT COUNT(*) AS count FROM external_conversations").get()).toEqual({ count: 0 });
     } finally { database.close(); }
   });
@@ -598,8 +598,8 @@ describe("external conversation projects migration", () => {
 
 describe("named migration registry", () => {
   const step = (version: number, name: string): WebStorageMigration => ({ version, name, up: vi.fn() });
-  it("is immutable and derives schema 38 from its last step", () => {
-    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(38);
+  it("is immutable and derives schema 40 from its last step", () => {
+    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(40);
     expect(WEB_STORAGE_SCHEMA_VERSION).toBe(WEB_STORAGE_MIGRATIONS.at(-1)?.version);
     expect(Object.isFrozen(WEB_STORAGE_MIGRATIONS)).toBe(true);
     expect(WEB_STORAGE_MIGRATIONS.every(Object.isFrozen)).toBe(true);
@@ -751,4 +751,38 @@ it.each([
   expect(() => validateWebStorageShape(database)).toThrowError(expect.objectContaining({ code: "storage_corrupt" }));
   database.close();
   await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "storage_corrupt" });
+});
+
+describe("web recovery observation migration", () => {
+  it("adds a nullable observation to an existing schema-39 database without erasing the dispatch generation", async () => {
+    const stateDir = await seeded(18);
+    const store = await WebStore.open({ stateDir });
+    const thread = store.createThread("fixture-agent");
+    store.close();
+    const legacy = new DatabaseSync(join(stateDir, "state.sqlite"));
+    const turnId = "retained-turn";
+    try {
+      legacy.prepare(`INSERT INTO turns (id, thread_id, status, text, assistant_message_id,
+        started_at, finished_at, error_code, error_message, dispatch_started_at, dispatch_generation)
+        VALUES (?, ?, 'failed', 'request', 'retained-answer', '2026-01-01', '2026-01-02',
+          'agent_connection_lost', 'Connection ended.', '2026-01-01', 'generation-old')`)
+        .run(turnId, thread.id);
+      legacy.prepare(`INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
+        VALUES ('retained-answer', ?, ?, 'assistant', '[]', '2026-01-01', '2026-01-02', 'failed')`)
+        .run(thread.id, turnId);
+      legacy.exec("ALTER TABLE turns DROP COLUMN web_recovery_generation_confirmed_at; PRAGMA user_version = 39;");
+    } finally { legacy.close(); }
+    const migrated = await WebStore.open({ stateDir });
+    try {
+      const db = new DatabaseSync(join(stateDir, "state.sqlite"));
+      try {
+        expect(db.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 40 });
+        expect(db.prepare(`SELECT dispatch_generation, web_recovery_generation_confirmed_at
+          FROM turns WHERE id = ?`).get(turnId)).toMatchObject({
+          dispatch_generation: "generation-old", web_recovery_generation_confirmed_at: null,
+        });
+      } finally { db.close(); }
+      expect(migrated.reconcileParentInterruptions("fixture-agent", "generation-new")).toHaveLength(1);
+    } finally { migrated.close(); }
+  });
 });

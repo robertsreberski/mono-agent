@@ -221,6 +221,10 @@ export interface OperatorClientOptions extends OperatorConnection {
   readonly fetchImpl?: typeof fetch;
 }
 
+/* Only the agent's explicit error frame carries this type. Transport failures
+ * and an incomplete stream must remain distinguishable from provider errors. */
+export class OperatorTurnFrameError extends WebConsoleError {}
+
 export class OperatorClient {
   private readonly baseUrl: string;
   private readonly apiKey: string | undefined;
@@ -492,7 +496,7 @@ export class OperatorClient {
           return { ...result, ...(text === undefined ? {} : { finalText: text }) };
         }
         if (frame.kind === "error") {
-          const error = new WebConsoleError(
+          const error = new OperatorTurnFrameError(
             frame.code ?? (frame.cancelled === true ? "cancelled" : "agent_error"),
             frame.message,
             frame.cancelled === true ? 409 : 502,

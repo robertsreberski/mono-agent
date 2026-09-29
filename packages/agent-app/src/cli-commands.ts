@@ -66,7 +66,6 @@ import { runSandboxCommand } from "./cli-sandbox-command.js";
 export { runSandboxCommand } from "./cli-sandbox-command.js";
 export type { SandboxCommandDependencies } from "./cli-sandbox-command.js";
 import * as ui from "./ui.js";
-import { AGENT_RESTART_EXIT_CODE, armAcceptedRestartExitFallback } from "./supervised-restart-latch.js";
 
 interface ValidateContext {
   readonly cwd: string;
@@ -435,10 +434,7 @@ if (isDirectCliInvocation) {
     .then((code) => {
       if (code !== 0) {
         process.exitCode = code;
-        // Accepted supervised restarts must relaunch even if an unrelated
-        // referenced handle outlives graceful app/lease teardown. Signals and
-        // ordinary failures retain their existing event-loop-drain behavior.
-        if (code === AGENT_RESTART_EXIT_CODE) armAcceptedRestartExitFallback();
+        // The accepted restart armed its shutdown-wide deadline before app.stop().
       }
     })
     .catch((error: unknown) => {

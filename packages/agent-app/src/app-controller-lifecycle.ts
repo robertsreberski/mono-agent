@@ -13,7 +13,7 @@ export interface LifecycleControllerPort {
   invalidateMemoryHealthRefresh(): void;
   stopChannel(id: ChannelId, reason: string): Promise<void>;
   stopContinuationService(): Promise<void>;
-  stopProcessJobsService(): Promise<void>;
+  stopProcessJobsService(shutdownDeadline?: number): Promise<void>;
   stopInteractionBridge(): Promise<void>;
   stopMemoryRituals(): void;
   stopArtifactRetentionScheduler(): void;
@@ -116,7 +116,7 @@ export async function startChannelIfConfigured(controller: LifecycleControllerPo
   return status;
 }
 
-export async function stop(controller: LifecycleControllerPort): Promise<void> {
+export async function stop(controller: LifecycleControllerPort, shutdownDeadline?: number): Promise<void> {
   if (controller.stopped) {
     return;
   }
@@ -124,7 +124,7 @@ export async function stop(controller: LifecycleControllerPort): Promise<void> {
   // Stop the periodic audit before the first teardown await. Already-entered
   // computation is generation-fenced and must never delay shutdown.
   controller.invalidateMemoryHealthRefresh();
-  await controller.stopProcessJobsService();
+  await controller.stopProcessJobsService(shutdownDeadline);
   await Promise.all(controller.drivers.map((driver) => controller.stopChannel(driver.id, "stop")));
   await controller.stopContinuationService();
   await controller.stopInteractionBridge();

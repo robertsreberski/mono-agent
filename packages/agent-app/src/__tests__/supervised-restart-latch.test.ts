@@ -7,6 +7,7 @@ afterEach(() => {
   process.removeAllListeners("SIGINT");
   process.removeAllListeners("SIGTERM");
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 describe("supervised host lifecycle latch", () => {
@@ -72,5 +73,29 @@ describe("supervised host lifecycle latch", () => {
     await expect(pending).resolves.toBe(AGENT_RESTART_EXIT_CODE);
     latch.beginStop(result.operationId);
     expect(app.stop).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("shutdown-wide restart deadline", () => {
+  it("arms before awaiting app.stop and forces exit at the one original bound", async () => {
+    vi.useFakeTimers();
+    const exit = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    const latch = createSupervisedRestartLatch();
+    let release!: () => void;
+    const app = { stop: vi.fn((_deadline?: number) => new Promise<void>((resolve) => { release = resolve; })) };
+    const pending = waitForShutdownSignal(app, undefined, latch);
+    const accepted = latch.accept(verified);
+    if (accepted.kind !== "accepted") throw new Error("accept failed");
+    latch.beginStop(accepted.operationId);
+    await vi.waitFor(() => expect(app.stop).toHaveBeenCalledOnce());
+    const deadline = app.stop.mock.calls[0]?.[0];
+    expect(deadline).toBeTypeOf("number");
+    expect(latch.beginShutdownDeadline()).toBe(deadline);
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(AGENT_RESTART_EXIT_FALLBACK_MS);
+    expect(exit).toHaveBeenCalledWith(AGENT_RESTART_EXIT_CODE);
+    release();
+    await expect(pending).resolves.toBe(AGENT_RESTART_EXIT_CODE);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

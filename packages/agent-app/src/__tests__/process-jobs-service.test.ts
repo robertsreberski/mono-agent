@@ -3758,3 +3758,44 @@ it("external and internal jobs share the same durable admission and queue", asyn
   await waitFor(async () => (await service.get(internal.jobId))?.state === "succeeded");
   expect(internalRun).toHaveBeenCalledOnce(); expect((await service.get(external.jobId))?.state).toBe("succeeded");
 });
+
+describe("accepted restart drain", () => {
+  it("lets a child settle inside the remaining shutdown budget without cancelling it", async () => {
+    const fixture = await createFixture();
+    const completion = deferred<ProcessJobProcessResult>();
+    const handle = handleOf(completion);
+    const service = await startService(fixture);
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handle));
+    const beforeStop = performance.now();
+    const stopping = service.stop(beforeStop + 3_500);
+    setTimeout(() => completion.resolve(processResult()), 30);
+    await stopping;
+    expect(performance.now() - beforeStop).toBeLessThan(3_500);
+    expect(handle.cancel).not.toHaveBeenCalled();
+    expect(await service.get(started.jobId)).toMatchObject({ state: "succeeded", wake: { state: "pending" } });
+    // Shutdown closes wake delivery; the next owner delivers the ordinary
+    // terminal wake, not a fabricated interruption notification.
+    const wake = vi.fn(async (_input: ProcessJobWakeInput) => ({ delivered: true as const }));
+    const next = await startService(fixture, { wake });
+    await next.activateWakes();
+    await waitFor(async () => (await next.get(started.jobId))?.wake.state === "delivered");
+    expect(wake).toHaveBeenCalledOnce();
+    expect(wake.mock.calls[0]![0].projection.state).toBe("succeeded");
+  });
+
+  it("cancels an overdue child after the short drain, within the shared window", async () => {
+    const fixture = await createFixture();
+    const completion = deferred<ProcessJobProcessResult>();
+    const handle = handleOf(completion);
+    handle.cancel.mockImplementation(() => completion.resolve(processResult({ aborted: true, code: null })));
+    const service = await startService(fixture);
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handle));
+    const beforeStop = performance.now();
+    await service.stop(beforeStop + 3_100);
+    const elapsed = performance.now() - beforeStop;
+    expect(elapsed).toBeGreaterThanOrEqual(75);
+    expect(elapsed).toBeLessThan(3_100);
+    expect(handle.cancel).toHaveBeenCalledOnce();
+    expect((await service.get(started.jobId))?.state).toBe("interrupted");
+  });
+});

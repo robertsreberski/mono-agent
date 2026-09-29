@@ -324,7 +324,7 @@ export async function activateProcessJobWakes(controller: ProcessJobsControllerP
   await controller.processJobsService?.activateWakes();
 }
 
-export async function stopProcessJobsService(controller: ProcessJobsControllerPort): Promise<void> {
+export async function stopProcessJobsService(controller: ProcessJobsControllerPort, shutdownDeadline?: number): Promise<void> {
   const service = controller.processJobsService;
   const start = controller.processJobsServiceStart;
   controller.processJobsService = undefined;
@@ -333,7 +333,7 @@ export async function stopProcessJobsService(controller: ProcessJobsControllerPo
   controller.processJobsStateDir = undefined;
   controller.processJobsDegradation = undefined;
   try {
-    await service?.stop();
+    await service?.stop(shutdownDeadline);
   } catch (error) {
     // The service itself attempts every cancellation, owned-process cleanup,
     // and lock release before rejecting. Keep app reload/shutdown moving so a
