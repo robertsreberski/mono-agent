@@ -94,12 +94,12 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
   {
     jsonPath: "processJobs.maxActivePerConversation", env: "--", type: "integer",
     defaultLabel: "2", defaultValue: 2, example: 2,
-    description: "Maximum non-terminal process jobs admitted from one conversation (compiled cap 8).",
+    description: "Maximum simultaneously running or starting jobs per conversation (compiled cap 8); waiting jobs use the global queue. Nested child launches may borrow their running ancestor's conversation slot.",
   },
   {
     jsonPath: "processJobs.maxQueued", env: "--", type: "integer",
     defaultLabel: "8", defaultValue: 8, example: 8,
-    description: "Maximum queued process jobs after running capacity is full (compiled cap 64).",
+    description: "Maximum waiting process jobs globally, including jobs waiting on a conversation slot (compiled cap 64).",
   },
   {
     jsonPath: "processJobs.maxRuntimeMs", env: "--", type: "integer",

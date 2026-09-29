@@ -139,8 +139,11 @@ export function createProcessJobsRuntimeExtension(
           : origin === undefined ? "origin_unavailable" as const
             : chainDepth >= maxChainDepth ? "chain_depth_exhausted" as const
               : !hasAllowedProcessTool(options.coreConfig) ? "tool_unavailable" as const : undefined;
+        const backgroundCapacity = origin === undefined || typeof options.service.capacity !== "function" ? undefined
+          : await options.service.capacity(origin.normalizedReplyTarget).catch(() => undefined);
         runtimeOptions = {
           ...runtimeOptions,
+          ...(backgroundCapacity ? { backgroundCapacity } : {}),
           hostCapabilities: {
             ...(runtimeOptions.hostCapabilities as Record<string, unknown> | undefined),
             "Bash/Exec.background": { available: unavailableReason === undefined, ...(unavailableReason ? { reason: unavailableReason } : {}), limits: { maxRuntimeMs: options.service.settings.maxRuntimeMs } },

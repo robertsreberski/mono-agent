@@ -838,7 +838,7 @@ function processJobStartReceipt(
     const actualKeys = Object.keys(outcome);
     const allowedKeys: readonly string[] = [
       ...PROCESS_JOB_OUTCOME_KEYS,
-      "max_runtime_ms",
+      "max_runtime_ms", "queue_position", "queue_deadline_at",
       ...(toolName === "Bash" ? ["legacyTimeoutUsed"] : []),
     ];
     if (!PROCESS_JOB_OUTCOME_KEYS.every((key) => hasOwn(outcome, key))
@@ -863,10 +863,16 @@ function processJobStartReceipt(
       || (outcome.started_at !== null && !canonicalIsoTimestamp(outcome.started_at))) return undefined;
     if (hasOwn(outcome, "max_runtime_ms")
       && (!Number.isSafeInteger(outcome.max_runtime_ms) || Number(outcome.max_runtime_ms) <= 0)) return undefined;
+    if (hasOwn(outcome, "queue_position")
+      && (outcome.state !== "queued" || !Number.isSafeInteger(outcome.queue_position) || Number(outcome.queue_position) < 1)) return undefined;
+    if (hasOwn(outcome, "queue_deadline_at")
+      && (outcome.state !== "queued" || !canonicalIsoTimestamp(outcome.queue_deadline_at))) return undefined;
     if (hasOwn(outcome, "legacyTimeoutUsed")
       && (toolName !== "Bash" || outcome.legacyTimeoutUsed !== true)) return undefined;
     const expectedLength = PROCESS_JOB_OUTCOME_KEYS.length
       + (hasOwn(outcome, "max_runtime_ms") ? 1 : 0)
+      + (hasOwn(outcome, "queue_position") ? 1 : 0)
+      + (hasOwn(outcome, "queue_deadline_at") ? 1 : 0)
       + (hasOwn(outcome, "legacyTimeoutUsed") ? 1 : 0);
     if (actualKeys.length !== expectedLength) return undefined;
     return {

@@ -44,5 +44,6 @@ export function formatHostCapabilities(options: Partial<RuntimeRunOptions>): str
     operations: Object.fromEntries(Object.entries(facts).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)),
     command: { foregroundTimeoutMs: options.toolLimits?.bashTimeoutMs ?? 120_000, backgroundMaxRuntimeMs: options.processJobs?.limits?.maxRuntimeMs ?? null },
     processLineage: options.processJobsAvailability ?? null,
+    backgroundCapacity: options.backgroundCapacity ?? null,
   }) + askUserFallback;
 }

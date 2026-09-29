@@ -152,7 +152,7 @@ it("G09: current/previous consumption markers compact; the third-oldest token st
   const f = await fixture(); const requests: { ack: string; message: string; background: boolean }[] = [];
   for (let index = 0; index < 3; index++) {
     const inspected = await f.handle.inspect(spec.id); const request = { ack: inspected.ack!, message: `verified continuation ${index}`, background: true }; requests.push(request);
-    const token = randomUUID(); await f.handle.reserve(spec.id, token, request); await f.handle.begin(spec.id, token);
+    const token = randomUUID(); await f.handle.reserve(spec.id, token, request); await f.handle.begin(spec.id, token, request);
     await f.handle.publishOwned("confirm", { identity: { ...f.identity, jobId: token, turnToken: token }, sequence: 7,
       disposition: { status: "timeout", reason: "timeout", continuity: "retained" }, released: true });
   }
@@ -169,22 +169,25 @@ it("G09: current/previous consumption markers compact; the third-oldest token st
   expect(run).not.toHaveBeenCalled(); expect(startInternal).not.toHaveBeenCalled();
 });
 
-it("issues a retained-only token, atomically consumes with reservation, and checks duplicates before busy", async () => {
+it("issues a retained-only token and defers consumption until begin while reservation remains held", async () => {
   const f = await fixture(); const inspection = await f.handle.inspect(spec.id);
   expect(inspection).toMatchObject({ status: "ready", recovery: { continuity: "retained" } }); expect(inspection.ack).toBeTypeOf("string");
   const request = { ack: inspection.ack!, message: "Verified independently; continue.", background: true };
   const next = randomUUID(); const reserved = await f.handle.reserve(spec.id, next, request);
-  expect(reserved).toMatchObject({ status: "queued", activeTurn: { token: next } }); expect(reserved.recovery).toBeUndefined();
+  expect(reserved).toMatchObject({ status: "queued", activeTurn: { token: next }, recovery: { continuity: "retained" } });
   const disk = JSON.parse(await readFile(f.file, "utf8"))[0];
   expect(Buffer.from(disk.recoveryBinding.key, "hex")).toHaveLength(32);
-  expect(disk.recoveryBinding.consumed.turnToken).toBe(next);
+  expect(disk.recoveryBinding.consumed).toBeUndefined();
   expect(JSON.stringify(disk).includes(request.message)).toBe(false);
   expect(JSON.stringify(await f.handle.list()).includes(disk.recoveryBinding.key)).toBe(false);
   expect(reserved).not.toHaveProperty("recoveryBinding");
-  await expect(f.handle.reserve(spec.id, randomUUID(), { ...request, close: false })).rejects.toMatchObject({ code: "subagent_recovery_already_consumed" });
-  await expect(f.handle.checkAcknowledgement(spec.id, { ...request, message: request.message + " " })).rejects.toMatchObject({ code: "subagent_recovery_ack_conflict" });
-  await expect(f.handle.checkAcknowledgement(spec.id, { ...request, close: true })).rejects.toMatchObject({ code: "subagent_recovery_ack_conflict" });
-  await expect(f.handle.verifyOwner({ ...f.identity, jobId: next, turnToken: next })).resolves.toEqual({ retained: true });
+  await expect(f.handle.reserve(spec.id, randomUUID(), request)).rejects.toMatchObject({ code: "subagent_ownership_held" });
+  await expect(f.handle.checkAcknowledgement(spec.id, request)).resolves.toBeUndefined();
+  await expect(f.handle.checkAcknowledgement(spec.id, { ...request, close: true })).resolves.toBeUndefined();
+  await expect(f.handle.verifyOwner({ ...f.identity, jobId: next, turnToken: next })).resolves.toEqual({ retained: false });
+  await f.handle.begin(spec.id, next, request);
+  expect(JSON.parse(await readFile(f.file, "utf8"))[0].recoveryBinding.consumed.turnToken).toBe(next);
+  await expect(f.handle.checkAcknowledgement(spec.id, request)).rejects.toMatchObject({ code: "subagent_recovery_already_consumed" });
 });
 it.each(["lost", "unknown"] as const)("never issues a continuation token for %s continuity", async (continuity) => {
   const f = await fixture(continuity);
@@ -224,21 +227,24 @@ it("rejects a retained profile change after inspection before consuming the toke
   await expect(f.handle.reserve(spec.id, randomUUID(), { ack: inspection.ack!, message: "next", background: true })).rejects.toMatchObject({ code: "subagent_recovery_ack_stale" });
   expect(JSON.parse(await readFile(f.file, "utf8"))[0].recoveryBinding.consumed).toBeUndefined();
 });
-it.each([{ background: false }, { description: "changed purpose" }])("rejects conflicting consumed request semantics %j without another reservation", async (change) => {
+it.each([{ background: false }, { description: "changed purpose" }])("defers request-consumption conflicts until begin %j", async (change) => {
   const f = await fixture(); const inspection = await f.handle.inspect(spec.id);
   const request = { ack: inspection.ack!, message: "next", background: true };
   const turnToken = randomUUID(); await f.handle.reserve(spec.id, turnToken, request);
-  await expect(f.handle.checkAcknowledgement(spec.id, { ...request, ...change })).rejects.toMatchObject({ code: "subagent_recovery_ack_conflict" });
+  await expect(f.handle.checkAcknowledgement(spec.id, { ...request, ...change })).resolves.toBeUndefined();
   expect(JSON.parse(await readFile(f.file, "utf8"))[0].activeTurn.token).toBe(turnToken);
+  await f.handle.begin(spec.id, turnToken, request);
+  await expect(f.handle.checkAcknowledgement(spec.id, { ...request, ...change })).rejects.toMatchObject({ code: "subagent_recovery_ack_conflict" });
 });
-it("reopens persisted consumption without granting a second admission", async () => {
+it("reopens an unconsumed reservation without granting a second admission", async () => {
   const f = await fixture(); const inspection = await f.handle.inspect(spec.id);
   const request = { ack: inspection.ack!, message: "next", background: true };
   await f.handle.reserve(spec.id, randomUUID(), request);
   const reopened = await f.registry.open("conversation");
-  await expect(reopened.checkAcknowledgement(spec.id, request)).rejects.toMatchObject({ code: "subagent_recovery_already_consumed" });
+  await expect(reopened.checkAcknowledgement(spec.id, request)).resolves.toBeUndefined();
+  await expect(reopened.reserve(spec.id, randomUUID(), request)).rejects.toMatchObject({ code: "subagent_ownership_held" });
 });
-it("physically kills the owner after consumption but before admission; duplicates never retry missing work", async () => {
+it("physically kills the owner after reservation but before admission; duplicates never retry missing work", async () => {
   const root = await mkdtemp(resolve(process.cwd(), "node_modules/.ack-crash-")); roots.push(root);
   const module = new URL("../../dist/subagent-instances.js", import.meta.url).href;
   const child = spawn(process.execPath, ["--input-type=module", "-e", `
@@ -263,9 +269,9 @@ it("physically kills the owner after consumption but before admission; duplicate
     child.kill("SIGKILL"); expect((await exited)[1]).toBe("SIGKILL");
     const handle = await createSubagentInstanceRegistry({ root, retireSession: async () => {}, authorizeRecovery: async () => true,
       resolveOwner: async () => ({ state: "unavailable" }) }).open("conversation");
-    await expect(handle.checkAcknowledgement("helper", request)).rejects.toMatchObject({ code: "subagent_recovery_already_consumed" });
-    await expect(handle.reserve("helper", randomUUID(), request)).rejects.toMatchObject({ code: "subagent_recovery_already_consumed" });
-    await expect(handle.checkAcknowledgement("helper", { ...request, message: "different" })).rejects.toMatchObject({ code: "subagent_recovery_ack_conflict" });
+    await expect(handle.checkAcknowledgement("helper", request)).resolves.toBeUndefined();
+    await expect(handle.reserve("helper", randomUUID(), request)).rejects.toMatchObject({ code: "subagent_ownership_held" });
+    await expect(handle.checkAcknowledgement("helper", { ...request, message: "different" })).resolves.toBeUndefined();
     await expect(handle.begin("helper")).rejects.toMatchObject({ code: "subagent_owner_unavailable" });
     await expect(handle.create({ ...spec, id: "bypass" })).rejects.toMatchObject({ code: "subagent_owner_unavailable" });
   } finally { clearTimeout(deadline); if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }
@@ -280,13 +286,14 @@ it("admits an acknowledged continuation that also retargets the instance, and st
   // The acknowledgement digest covers [systemPrompt, definition], so the route
   // is applied only after consumption; it is deliberately outside the digest.
   await expect(f.handle.reserve(spec.id, token, request, undefined, { model, effort: "low" }))
-    .resolves.toMatchObject({ status: "queued", definition: { model, effort: "low" } });
-  await expect(f.handle.reserve(spec.id, randomUUID(), request)).rejects.toMatchObject({ code: "subagent_recovery_already_consumed" });
-  await expect(f.handle.reserve(spec.id, randomUUID(), { ...request, message: "something else" })).rejects.toMatchObject({ code: "subagent_recovery_ack_conflict" });
-  // Detached turns apply the same route twice; the second application is a no-op.
-  await expect(f.handle.begin(spec.id, token, undefined, undefined, { model, effort: "low" }))
+    .resolves.toMatchObject({ status: "queued", definition: spec.definition });
+  await expect(f.handle.reserve(spec.id, randomUUID(), request)).rejects.toMatchObject({ code: "subagent_ownership_held" });
+  // Begin consumes the acknowledgement and applies the route only once.
+  await expect(f.handle.begin(spec.id, token, request, undefined, { model, effort: "low" }))
     .resolves.toMatchObject({ status: "running", definition: { model, effort: "low" } });
   const stored = JSON.parse(await readFile(f.file, "utf8"))[0];
   expect(stored.definition).toMatchObject({ model, effort: "low" });
   expect(stored.recovery).toBeUndefined();
+  await expect(f.handle.reserve(spec.id, randomUUID(), request)).rejects.toMatchObject({ code: "subagent_recovery_already_consumed" });
+  await expect(f.handle.reserve(spec.id, randomUUID(), { ...request, message: "something else" })).rejects.toMatchObject({ code: "subagent_recovery_ack_conflict" });
 });

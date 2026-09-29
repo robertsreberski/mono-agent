@@ -477,6 +477,12 @@ export interface RuntimeRunOptions {
   /** Host-scoped awaited command ownership; does not enable background tools. */
   readonly ownedForegroundProcesses?: OwnedForegroundProcesses;
   /** Request lineage diagnostics, including when no start controller is available. */
+  readonly backgroundCapacity?: {
+    readonly observedAt: string;
+    readonly perConversation: { readonly running: number; readonly maxActivePerConversation: number; readonly queued: number; readonly availableRunningSlots: number };
+    readonly global: { readonly running: number; readonly maxConcurrent: number; readonly queued: number; readonly maxQueued: number };
+    readonly maxQueueAgeMs: number;
+  };
   readonly processJobsAvailability?: {
     readonly chainDepth: number;
     readonly maxChainDepth: number;

@@ -36,7 +36,7 @@ describe("persistent subagent registry", () => {
     const { registry, handle } = await setup({ maxPerConversation: 1, maxTurns: 1 });
     await expect(handle.create({ ...spec, id: "../bad" })).rejects.toThrow(/id must/u);
     const record = await handle.create({ ...spec, id: "one" });
-    await expect(handle.create(spec)).rejects.toThrow(/maxPerConversation.*Live ids: one/u);
+    await expect(handle.create(spec)).rejects.toMatchObject({ code: "subagent_instance_capacity", occupancy: 1, limit: 1 });
     await handle.begin(record.id);
     const other = await registry.open("conversation");
     expect((await other.get(record.id))?.status).toBe("running");
@@ -60,13 +60,13 @@ describe("persistent subagent registry", () => {
     const reopened = await createSubagentInstanceRegistry({ root, retireSession }).open("conversation");
     expect((await reopened.get(created.id))?.definition).toMatchObject({ model, effort: "high" });
   });
-  it("keeps a route persisted when a detached start fails after the reservation", async () => {
+  it("preserves the previous route when a detached start fails before begin", async () => {
     const { handle } = await setup();
     const created = await handle.create(spec);
     const token = randomUUID();
     await handle.reserve(created.id, token, undefined, undefined, { effort: "low" });
     await handle.releaseReservation(created.id, token);
-    expect(await handle.get(created.id)).toMatchObject({ status: "idle", definition: { effort: "low" } });
+    expect(await handle.get(created.id)).toMatchObject({ status: "idle", definition: spec.definition });
   });
   it("refuses an invalid route and admits no turn", async () => {
     const { handle } = await setup();
@@ -275,7 +275,7 @@ describe("awaiting child questions", () => {
     const { handle } = await setup({ maxPerConversation: 1, idleTtlMs: 60000, now: () => now });
     const { id } = await handle.create(spec);
     await handle.begin(id); await handle.markAwaiting(id, question); await handle.finish(id, { status: "awaiting_reply", question });
-    await expect(handle.create(spec)).rejects.toThrow(/maxPerConversation/);
+    await expect(handle.create(spec)).rejects.toMatchObject({ code: "subagent_instance_capacity", occupancy: 1, limit: 1 });
     await handle.begin(id); now += 60001;
     expect((await handle.get(id))?.status).toBe("running");
     await handle.finish(id, { status: "awaiting_reply", question }); now += 60001;

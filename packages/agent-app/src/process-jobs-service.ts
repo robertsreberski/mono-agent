@@ -188,17 +188,35 @@ export interface ProcessJobsServiceHandle {
   get(jobId: string): Promise<ProcessJobProjection | undefined>;
   cancel(jobId: string): Promise<ProcessJobProjection>;
   counts(): Promise<Readonly<Record<ProcessJobState, number>>>;
+  capacity(normalizedReplyTarget: string): Promise<{
+    observedAt: string;
+    perConversation: { running: number; maxActivePerConversation: number; queued: number; availableRunningSlots: number };
+    global: { running: number; maxConcurrent: number; queued: number; maxQueued: number };
+    maxQueueAgeMs: number;
+  }>;
   activateWakes(): Promise<void>;
   stop(shutdownDeadline?: number): Promise<void>;
 }
 
 export class ProcessJobServiceError extends Error {
   readonly code: ProcessJobErrorCode;
+  readonly occupancy?: number;
+  readonly limit?: number;
+  readonly limitKey?: string;
+  readonly conversationOccupancy?: number;
+  readonly conversationLimit?: number;
 
-  constructor(code: ProcessJobErrorCode, _message?: string) {
+  constructor(code: ProcessJobErrorCode, _message?: string, capacity?: { occupancy: number; limit: number; limitKey: string; conversationOccupancy?: number; conversationLimit?: number }) {
     super(processJobPublicError(code).message);
     this.name = "ProcessJobServiceError";
     this.code = code;
+    if (capacity) {
+      this.occupancy = capacity.occupancy;
+      this.limit = capacity.limit;
+      this.limitKey = capacity.limitKey;
+      if (capacity.conversationOccupancy !== undefined) this.conversationOccupancy = capacity.conversationOccupancy;
+      if (capacity.conversationLimit !== undefined) this.conversationLimit = capacity.conversationLimit;
+    }
   }
 }
 
@@ -416,18 +434,18 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     } catch {
       records = this.snapshotRecords();
     }
-    return boundedNewestRecords(records)
+    return boundedNewestRecords(records.filter((record) => !record.rejectedAdmission))
       .map((record) => structuredClone(this.projectWithOutput(record)));
   }
 
   async get(jobId: string): Promise<ProcessJobProjection | undefined> {
     try {
       const record = await this.storeGet(jobId, "get");
-      if (record === undefined) return undefined;
+      if (record === undefined || record.rejectedAdmission) return undefined;
       return structuredClone(this.projectWithOutput(record));
     } catch {
       const record = this.recordSnapshot.get(jobId);
-      if (record === undefined) return undefined;
+      if (record === undefined || record.rejectedAdmission) return undefined;
       return structuredClone(this.projectWithOutput(record));
     }
   }
@@ -575,6 +593,22 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     });
   }
 
+  async capacity(normalizedReplyTarget: string) {
+    const records = await this.storeList("capacity.observe");
+    const active = records.filter(occupiesRunningSlot);
+    const local = records.filter((record) => record.origin.normalizedReplyTarget === normalizedReplyTarget);
+    const running = local.filter(occupiesRunningSlot).length;
+    return {
+      observedAt: this.now().toISOString(),
+      perConversation: { running, maxActivePerConversation: this.settings.maxActivePerConversation,
+        queued: local.filter((record) => record.state === "queued").length,
+        availableRunningSlots: Math.max(0, this.settings.maxActivePerConversation - running) },
+      global: { running: active.length, maxConcurrent: this.settings.maxConcurrent,
+        queued: records.filter((record) => record.state === "queued").length, maxQueued: this.settings.maxQueued },
+      maxQueueAgeMs: this.settings.maxQueueAgeMs,
+    };
+  }
+
   async counts(): Promise<Readonly<Record<ProcessJobState, number>>> {
     let records: readonly DurableProcessJobRecord[];
     try {
@@ -595,8 +629,10 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       interrupted: 0,
     };
     for (const record of records) {
-      const state = this.completionOverlays.get(record.jobId)?.state ?? record.state;
-      counts[state] += 1;
+      if (!record.rejectedAdmission) {
+        const state = this.completionOverlays.get(record.jobId)?.state ?? record.state;
+        counts[state] += 1;
+      }
     }
     return counts;
   }
@@ -741,11 +777,17 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       if (!isTerminalProcessJobState(record.state) || hasUnresolvedSubagentOwnership(record) || owner.publication.state !== "confirmed") return { state: "held" };
       // Positive job/disposition proof can certify the registry while its durable
       // acknowledgement still pins retention/capacity. It is not absence evidence.
-      return { state: "released", identity, sequence: owner.publication.sequence, receiptPending: hasPendingSubagentReleaseReceipt(record), receiptRecorded: owner.publication.receiptRecorded === owner.publication.sequence, continuity: owner.disposition?.continuity ?? "unknown",
+      return { state: record.rejectedAdmission ? "not_admitted" : "released", identity, sequence: owner.publication.sequence, receiptPending: hasPendingSubagentReleaseReceipt(record), receiptRecorded: owner.publication.receiptRecorded === owner.publication.sequence, continuity: owner.disposition?.continuity ?? "unknown",
+        ...(this.neverStarted(record) ? { neverStarted: true as const } : {}),
         ...(owner.disposition?.resumeAfterStop ? { resumeAfterStop: true as const } : {}),
         ...(owner.disposition?.reason ? { reason: owner.disposition.reason } : {}),
         ...(owner.disposition?.certifiedTimeout ? { certifiedTimeout: true as const } : {}) };
     }).catch(() => ({ state: "unavailable" as const }));
+  }
+
+  private neverStarted(record: DurableProcessJobRecord): boolean {
+    const owner = record.subagentOwnership;
+    return owner?.owner.settlement === "not_started" && owner.command === undefined && owner.seenCalls.length === 0;
   }
 
   private newManagedOwnership(request: InternalProcessJobRequest): NonNullable<DurableProcessJobRecord["subagentOwnership"]> {
@@ -877,6 +919,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       && owner.owner.settlement === "settled" && (!owner.disposition?.reason || owner.disposition.reason === "timeout")
       && outcome.continuity?.turnToken === owner.turnToken && outcome.continuity.state === "retained";
     const continuity = outcome.failureKind === "session_continuity_lost" ? "lost"
+      : this.neverStarted(record) ? "retained"
       : certifiedTimeout ? "retained"
       : owner.parentStopRequested && outcome.continuity?.turnToken === owner.turnToken ? outcome.continuity.state
       : owner.parentStopRequested && owner.owner.settlement === "not_started" ? "retained" : undefined;
@@ -893,7 +936,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       continuity: continuity ?? (outcome.failureKind === "session_continuity_lost" ? "lost" : owner.disposition?.continuity === "retained" || (["ok", "awaiting_reply"].includes(status) && owner.owner.settlement === "settled") ? "retained" : "unknown"),
       ...(["ok", "awaiting_reply", "busy"].includes(status) ? {} : { reason: outcome.failureKind ?? (status === "failed" ? "failed" : status as "timeout" | "cancelled" | "empty" | "interrupted") }) };
     await this.withManagedRegistry(async (registry) => await registry.publish("intent", { identity: this.managedIdentity(record), sequence: owner.publication.sequence + 1,
-      disposition, released: false }));
+      disposition, released: false, ...(this.neverStarted(record) ? { neverStarted: true as const } : {}) }));
     await this.withManagedLock(async () => await this.storeMutate("subagent.report", (records) => {
       const record = requireRecord(records, jobId);
       const current = record.subagentOwnership!;
@@ -916,6 +959,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       if (!this.managedRegistry || owner.registryRoot !== this.managedRegistry.root) throw new Error("Managed subagent registry is unavailable.");
       const publication: SubagentRegistryPublication = { identity: this.managedIdentity(record), sequence: owner.publication.sequence,
         disposition: owner.disposition, released: !hasUnresolvedSubagentOwnership(record) && isTerminalProcessJobState(record.state),
+        ...(this.neverStarted(record) ? { neverStarted: true as const } : {}),
         outcome: { status: owner.disposition.status, ...(owner.usage ? { usage: owner.usage } : {}), ...(record.subagentQuestion ? { question: record.subagentQuestion } : {}) } };
       if (owner.publication.state === "pending") {
         await this.withManagedRegistry(async (registry) => await registry.publish("intent", publication));
@@ -954,10 +998,15 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           });
           // The exact durable acknowledgement owns the capacity transition.
           if (this.runningOccupancy() < occupied) await this.drainQueue();
+          if (record.rejectedAdmission) await this.storeMutate("admission.release", (records) => {
+            const current = records.get(jobId);
+            if (current?.rejectedAdmission && current.subagentOwnership?.publication.receiptPending === false) records.delete(jobId);
+          });
         });
+        if (record.rejectedAdmission) await this.storeDiscardArtifacts(jobId);
       }
       if (publication.released) { this.managedCommands.delete(jobId); this.closeSubagentLiveInput(jobId); }
-      this.scheduleWake(jobId);
+      if (!record.rejectedAdmission) this.scheduleWake(jobId);
     });
     this.managedPublications.set(jobId, task);
     try { await task; } finally {
@@ -1025,7 +1074,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           // Until exact owner reconciliation supplies proof, retain the original obligation.
           if (ownership) {
             if (!isTerminalProcessJobState(current.state)) {
-              ownership.disposition = ownership.disposition?.reason ? ownership.disposition : { status: "interrupted", reason: "interrupted", continuity: ownership.disposition?.continuity ?? "unknown" };
+              ownership.disposition = ownership.disposition?.reason ? ownership.disposition : { status: "interrupted", reason: current.state === "queued" && ownership.owner.settlement === "not_started" ? "continuation_not_started" : "interrupted", continuity: current.state === "queued" && ownership.owner.settlement === "not_started" ? "retained" : ownership.disposition?.continuity ?? "unknown" };
               ownership.publication.sequence++; ownership.publication.state = "pending";
             }
             current.subagentOwnership = ownership;
@@ -1126,7 +1175,6 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     let handedOff = false;
     let admissionTicket: string | undefined;
     let rejectedManagedJob: string | undefined;
-    let retainedBeforeAdmission = false;
     let verification: SubagentVerificationTarget | undefined;
     const pending = pendingRequest(isInternal(request) && request.managed ? { ...request, cleanup: async () => {} } : request);
     try {
@@ -1140,7 +1188,6 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         });
         const verified = await this.withManagedRegistry(async (registry) => await registry.verify({ storeRoot: this.settings.stateDir, jobId: request.jobId, conversationId: origin.conversationId,
           instanceId: request.instanceId, instanceIncarnation: managed.instanceIncarnation, turnToken: managed.turnToken }));
-        retainedBeforeAdmission = verified?.retained === true;
         verification = verified?.verification;
       }
       const result = await this.withLock(async () => {
@@ -1151,7 +1198,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         if (admissionRecords.some((record) => record.jobId === jobId)) throw new ProcessJobServiceError("process_job_conflict");
         let notAdmitted: ProcessJobServiceError | undefined;
         try {
-          enforceAdmission(new Map(admissionRecords.map((record) => [record.jobId, record])), origin.normalizedReplyTarget, this.settings);
+          enforceAdmission(admissionRecords, origin.normalizedReplyTarget, chainDepth, this.settings);
         } catch (error) {
           if (!isInternal(request) || !request.managed || !(error instanceof ProcessJobServiceError)) throw error;
           notAdmitted = error;
@@ -1218,8 +1265,9 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         if (notAdmitted) {
           transitionTerminal(record, "failed", this.now(), "process_job_failed", "The child drive was not admitted; no provider or command started.");
           record.wake.state = "failed";
+          record.rejectedAdmission = true;
           record.subagentOwnership!.revoked = true;
-          record.subagentOwnership!.disposition = { status: "failed", reason: "continuation_not_started", continuity: retainedBeforeAdmission ? "retained" : "unknown" };
+          record.subagentOwnership!.disposition = { status: "failed", reason: "continuation_not_started", continuity: "retained" };
         }
         try {
           await this.storeMutate("admission.persist", (records) => {
@@ -1233,11 +1281,20 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         if (notAdmitted) { rejectedManagedJob = jobId; throw notAdmitted; }
         this.pending.set(jobId, pending);
         handedOff = true;
-        if (this.runningOccupancy() < this.settings.maxConcurrent) {
-          return await this.launch(jobId, false);
-        }
+        // Drain existing eligible work first; a new request must not overtake it.
+        await this.drainQueue(jobId);
+        const launched = await this.storeGet(jobId, "admission.result");
+        if (!launched || isTerminalProcessJobState(launched.state)) throw new ProcessJobServiceError(launched?.lastError?.code ?? "process_job_store_error");
+        if (launched.state === "running" || launched.state === "starting") return {
+          jobId, state: launched.state, startedAt: launched.startedAt, maxRuntimeMs,
+        };
         this.armQueueTimer();
-        return { jobId, state: "queued" as const, startedAt: null, maxRuntimeMs };
+        const waiting = (await this.storeList("admission.position"))
+          .filter((entry) => entry.state === "queued")
+          .sort((left, right) => left.admittedAt.localeCompare(right.admittedAt) || left.jobId.localeCompare(right.jobId));
+        return { jobId, state: "queued" as const, startedAt: null, maxRuntimeMs,
+          queuePosition: waiting.findIndex((entry) => entry.jobId === jobId) + 1,
+          queueDeadlineAt: record.queueDeadlineAt };
       });
       await this.updateInitialSurface(result.jobId);
       return result;
@@ -1759,18 +1816,22 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       record.state === "starting" || record.state === "running" || (isTerminalProcessJobState(record.state) && hasSubagentObligation(record))).length);
   }
 
-  private async drainQueue(): Promise<void> {
-    while (!this.stopping && this.storageOperational && this.runningOccupancy() < this.settings.maxConcurrent) {
-      const queued = (await this.storeList("queue.drain"))
-        .filter((record) => record.state === "queued")
-        .sort((left, right) => left.admittedAt.localeCompare(right.admittedAt) || left.jobId.localeCompare(right.jobId))[0];
-      if (queued === undefined) break;
-      if (Date.parse(queued.queueDeadlineAt) <= this.now().getTime()) {
-        await this.expireJob(queued.jobId);
-        continue;
+  private async drainQueue(initialJobId?: string): Promise<void> {
+    while (!this.stopping && this.storageOperational) {
+      const records = await this.storeList("queue.drain");
+      const queued = records.filter((record) => record.state === "queued")
+        .sort((left, right) => left.admittedAt.localeCompare(right.admittedAt) || left.jobId.localeCompare(right.jobId));
+      const expired = queued.find((record) => Date.parse(record.queueDeadlineAt) <= this.now().getTime());
+      if (expired) { await this.expireJob(expired.jobId); continue; }
+      if (this.runningOccupancy() >= this.settings.maxConcurrent) break;
+      const eligible = queued.find((record) => conversationSlotAvailable(records, record, this.settings));
+      if (!eligible) break;
+      try { await this.launch(eligible.jobId, eligible.jobId !== initialJobId); }
+      catch (error) {
+        if (eligible.jobId === initialJobId) throw error;
+        // Only a persisted terminal transition permits moving to the next job.
+        if ((await this.storeGet(eligible.jobId, "queue.launch_failure"))?.state === "queued") break;
       }
-      try { await this.launch(queued.jobId); }
-      catch { /* launch recorded a terminal failure and queue draining continues */ }
     }
     this.armQueueTimer();
   }
@@ -1842,6 +1903,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
 
   private scheduleWake(jobId: string): void {
     const pendingOwner = this.recordSnapshot.get(jobId);
+    if (pendingOwner?.rejectedAdmission) return;
     if (pendingOwner?.subagentOwnership && hasPendingSubagentPublication(pendingOwner)) {
       this.scheduleManagedPublication(jobId);
       return;
@@ -2102,6 +2164,12 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
               await this.storeMutate("stop.interrupt_queued", (records) => {
                 const record = records.get(jobId);
                 if (record !== undefined && !isTerminalProcessJobState(record.state)) {
+                  if (record.state === "queued" && this.neverStarted(record)) {
+                    const owner = record.subagentOwnership!;
+                    owner.revoked = true;
+                    owner.disposition = { status: "interrupted", reason: "continuation_not_started", continuity: "retained" };
+                    owner.publication.sequence++; owner.publication.state = "pending";
+                  }
                   transitionTerminal(
                     record,
                     "interrupted",
@@ -2615,29 +2683,35 @@ function captureMutationSnapshot(draft: ProcessJobStoreMutationDraft): ProcessJo
   };
 }
 
-function enforceAdmission(
-  records: Map<string, DurableProcessJobRecord>,
-  normalizedReplyTarget: string,
-  settings: ProcessJobsSettings,
-): void {
-  const outstandingWakes = [...records.values()].filter((record) => record.wake.state === "pending").length;
-  if (outstandingWakes >= pendingWakeCap(settings)) {
-    throw new ProcessJobServiceError(
-      "process_job_capacity",
-      "Process-job pending-wake capacity is full until an earlier result settles.",
-    );
-  }
-  const nonterminal = [...records.values()].filter((record) => !isTerminalProcessJobState(record.state) || hasSubagentObligation(record));
-  if (nonterminal.filter((record) => record.origin.normalizedReplyTarget === normalizedReplyTarget).length >= settings.maxActivePerConversation) {
-    throw new ProcessJobServiceError(
-      "process_job_conversation_capacity",
-      `Conversation already has ${String(settings.maxActivePerConversation)} active process jobs.`,
-    );
-  }
-  const running = nonterminal.filter((record) => record.state === "starting" || record.state === "running" || (isTerminalProcessJobState(record.state) && hasSubagentObligation(record))).length;
-  const queued = nonterminal.filter((record) => record.state === "queued").length;
-  if (running >= settings.maxConcurrent && queued >= settings.maxQueued) {
-    throw new ProcessJobServiceError("process_job_queue_full", "Process-job queue is full.");
+function occupiesRunningSlot(record: DurableProcessJobRecord): boolean {
+  return record.state === "starting" || record.state === "running"
+    || (isTerminalProcessJobState(record.state) && hasSubagentObligation(record));
+}
+
+function conversationSlotAvailable(records: readonly DurableProcessJobRecord[], candidate: DurableProcessJobRecord, settings: ProcessJobsSettings): boolean {
+  const running = records.filter((record) => occupiesRunningSlot(record)
+    && record.origin.normalizedReplyTarget === candidate.origin.normalizedReplyTarget);
+  // A nested launch must not wait for its own running ancestor to release a slot.
+  // Chain-depth and global concurrency/queue limits still bound that exemption.
+  return running.length < settings.maxActivePerConversation || (candidate.chainDepth > 0
+    && running.some((record) => record.chainDepth < candidate.chainDepth));
+}
+
+function enforceAdmission(records: readonly DurableProcessJobRecord[], normalizedReplyTarget: string, chainDepth: number, settings: ProcessJobsSettings): void {
+  const outstandingWakes = records.filter((record) => record.wake.state === "pending").length;
+  if (outstandingWakes >= pendingWakeCap(settings)) throw new ProcessJobServiceError("process_job_capacity", undefined,
+    { occupancy: outstandingWakes, limit: pendingWakeCap(settings), limitKey: "processJobs.pendingWakeCap" });
+  const queued = records.filter((record) => record.state === "queued").length;
+  // A full conversation may queue even when global slots remain available.
+  if (queued >= settings.maxQueued) {
+    const running = records.filter(occupiesRunningSlot);
+    const conversation = running.filter((record) => record.origin.normalizedReplyTarget === normalizedReplyTarget);
+    const hasSlot = conversation.length < settings.maxActivePerConversation
+      || (chainDepth > 0 && conversation.some((record) => record.chainDepth < chainDepth));
+    if (running.length >= settings.maxConcurrent || !hasSlot
+      || records.some((record) => record.state === "queued" && conversationSlotAvailable(records, record, settings))) throw new ProcessJobServiceError("process_job_queue_full", undefined,
+        { occupancy: queued, limit: settings.maxQueued, limitKey: "processJobs.maxQueued",
+          ...(!hasSlot ? { conversationOccupancy: conversation.length, conversationLimit: settings.maxActivePerConversation } : {}) });
   }
 }
 

@@ -15,7 +15,7 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { writeJsonAtomic } from "../continuation-store-fs.js";
 import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
-import { openProcessJobsService, type ProcessJobsServiceHandle } from "../process-jobs-service.js";
+import { openProcessJobsService, type ProcessJobsServiceHandle, type ProcessJobWakeInput } from "../process-jobs-service.js";
 import { PROCESS_JOBS_DEFAULTS } from "../process-jobs-config.js";
 import { openProcessJobStore, PROCESS_JOB_TRANSACTION_FILE } from "../process-jobs-store.js";
 import { launchInternalProcessJob } from "../process-jobs-internal.js";
@@ -77,6 +77,8 @@ function processJobSettlement(service: ProcessJobsServiceHandle, jobId: string):
 
 async function managedFixture(retireSession: (id: string, root: string) => Promise<unknown> = async () => {}, overrides = {}, realOwner = false, writeRegistry?: typeof writeJsonAtomic,
   surfaceUpdate?: (job: ProcessJobProjection) => Promise<void>) {
+  // Synthetic settings: maxQueued:0 cannot be compiled from user configuration.
+  // These ownership tests use it to force an immediate rejection boundary.
   const f = await fixture({ maxConcurrent: 1, maxQueued: 0, ...overrides }, retireSession, surfaceUpdate, realOwner);
   const registry = createSubagentInstanceRegistry({ root: resolve(f.root, "children"), retireSession, ...(writeRegistry ? { writeRegistry } : {}),
     ...createSubagentRecoveryAccess({ service: f.service, privateRoots: async () => [resolve(f.root, "jobs"), resolve(f.root, "children")],
@@ -102,9 +104,8 @@ describe("parent stop", () => {
       const stopped = await send.execute("stop", { id: "helper", stop: true });
       expect(stopped.details.stop).toMatchObject({ status: "stopped", turns: 0, resumable: true, jobId: queued.details.jobId });
       expect(run).toHaveBeenCalledOnce();
-      expect(await f.instances.get("helper")).toMatchObject({ status: "idle", turns: 0 });
+      expect(await f.instances.get("helper")).toMatchObject({ status: "closed", turns: 0 });
       expect((await f.instances.get("helper"))?.recovery).toBeUndefined();
-      await send.execute("close", { id: "helper", close: true });
     } finally { gate.resolve({ text: "done" }); await done(f.service, first.details.jobId); }
   }, 30_000);
   it("cooperative stop permits ordinary resume and close", async () => {
@@ -1067,12 +1068,8 @@ describe("managed detached production execution", () => {
         const holder = await other.agent.execute("occupier", { persist: true, background: true, id: "occupier", prompt: "hold" });
         try {
           await expect(send.execute("denied-ack", request)).rejects.toMatchObject({ code: "process_job_queue_full" });
-          expect((await f.instances.get("helper"))?.recovery).toMatchObject({ reason: "continuation_not_started", continuity: "retained" });
-          expect((await send.execute("denied-duplicate", request)).details).toMatchObject({ executed: false, recovery: { code: "subagent_recovery_already_consumed" } });
+          expect((await f.instances.get("helper"))?.recovery).toMatchObject({ reason: "timeout", continuity: "retained" });
           expect(run).toHaveBeenCalledOnce();
-          const fresh = await send.execute("fresh-inspection", { id: "helper", inspect: true });
-          expect(fresh.details.recovery.ack).not.toBe(request.ack);
-          request = { ...request, ack: fresh.details.recovery.ack };
         } finally { busy.resolve(); await done(f.service, holder.details.jobId); }
       }
       const continuation = await send.execute("ack", request);
@@ -1083,8 +1080,155 @@ describe("managed detached production execution", () => {
       expect((await f.service.get(original.details.jobId))?.state).toBe("timed_out"); expect(f.wake).toHaveBeenCalledTimes(admissionRejected ? 3 : 2);
     } finally { release.resolve(); }
   }, 30_000);
+  it("restores a continuing instance's acknowledgement and route when cancellation follows begin but precedes provider admission", async () => {
+    const f = await managedFixture(undefined, { maxRuntimeMs: 3_000 });
+    const releasePublication = deferred<void>(); let delayed = false;
+    const run = vi.fn(async () => ({ text: "clean durable result" }));
+    f.service.bindManagedSubagents!({ root: resolve(f.root, "children"),
+      verify: async (identity) => await (await f.registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
+      publish: async (phase, publication) => {
+        if (!delayed && phase === "confirm" && !publication.released && publication.disposition.status === "ok") {
+          delayed = true; await releasePublication.promise;
+        }
+        await (await f.registry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication);
+      },
+    });
+    const { agent } = tools(f, run, { timeoutMs: 3_000 });
+    const original = await agent.execute("original", { persist: true, background: true, id: "helper", prompt: "work" });
+    try {
+      await vi.waitFor(async () => expect((await f.store.get(original.details.jobId))?.subagentOwnership?.disposition)
+        .toMatchObject({ reason: "timeout", continuity: "retained" }), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+      releasePublication.resolve(); await done(f.service, original.details.jobId);
+      const { send } = tools(f, run, { timeoutMs: 3_000 });
+      const inspected = await send.execute("inspection", { id: "helper", inspect: true });
+      const before = (await f.instances.get("helper"))!;
+      const request = { id: "helper", ack: inspected.details.recovery.ack, background: true,
+        effort: "high", message: "Verify and continue." };
+      const began = deferred<void>(); const releaseBegin = deferred<void>();
+      const instances = { ...f.instances, begin: async (...args: Parameters<typeof f.instances.begin>) => {
+        const result = await f.instances.begin(...args);
+        began.resolve(); await releaseBegin.promise;
+        return result;
+      } };
+      const gated = tools(f, run, { instances, timeoutMs: 3_000 });
+      const second = await gated.send.execute("gated", request);
+      await began.promise;
+      expect((await f.instances.get("helper"))?.definition.effort).toBe("high");
+      await f.service.cancel(second.details.jobId);
+      releaseBegin.resolve();
+      await done(f.service, second.details.jobId);
+      expect(run).toHaveBeenCalledOnce();
+      expect(await f.instances.get("helper")).toMatchObject({ status: "idle", turns: before.turns,
+        definition: before.definition, recovery: before.recovery });
+      const retry = await send.execute("retry", request);
+      await done(f.service, retry.details.jobId);
+      expect(run).toHaveBeenCalledTimes(2);
+    } finally { releasePublication.resolve(); }
+  }, 40_000);
+
+  it("retires a new instance cancelled after begin but before provider admission", async () => {
+    const f = await managedFixture();
+    const began = deferred<void>(); const releaseBegin = deferred<void>();
+    const instances = { ...f.instances, begin: async (...args: Parameters<typeof f.instances.begin>) => {
+      const result = await f.instances.begin(...args);
+      began.resolve(); await releaseBegin.promise;
+      return result;
+    } };
+    const run = vi.fn(async () => ({ text: "must not run" }));
+    const { agent } = tools(f, run, { instances });
+    const started = await agent.execute("gated", { persist: true, background: true, id: "new-child", prompt: "work" });
+    try {
+      await began.promise;
+      expect((await f.instances.get("new-child"))?.status).toBe("running");
+      await f.service.cancel(started.details.jobId);
+      releaseBegin.resolve();
+      await done(f.service, started.details.jobId);
+      expect(run).not.toHaveBeenCalled();
+      expect(await f.instances.get("new-child")).toMatchObject({ status: "closed", turns: 0 });
+      expect((await f.instances.get("new-child"))?.recovery).toBeUndefined();
+      const { agent: retry } = tools(f, run);
+      const next = await retry.execute("retry", { persist: true, background: true, id: "new-child", prompt: "work" });
+      await done(f.service, next.details.jobId);
+    } finally { releaseBegin.resolve(); }
+  }, 30_000);
+
+  it("names the live-instance limit and remedy before a new child can be admitted", async () => {
+    const f = await managedFixture();
+    for (let index = 0; index < 8; index++) await f.instances.create({ ...spec, id: `idle-${index}` });
+    const { agent } = tools(f, async () => ({ text: "not invoked" }));
+    await expect(agent.execute("ninth", { persist: true, background: true, id: "ninth", prompt: "work" }))
+      .rejects.toThrow("8/8 (subagents.instances.maxPerConversation); close idle instances or raise the configured limit");
+  });
+
+  it("releases an admitted running job cancelled before its provider obtains a subagent slot", async () => {
+    const f = await managedFixture(undefined, { maxConcurrent: 2, maxActivePerConversation: 2, maxQueued: 1 });
+    const held = deferred<any>();
+    const run = vi.fn(() => held.promise);
+    const { agent } = tools(f, run, { maxConcurrent: 1 });
+    const first = await agent.execute("first", { persist: true, background: true, id: "holder", prompt: "hold" });
+    try {
+      await vi.waitFor(() => expect(run).toHaveBeenCalledOnce(), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+      const second = await agent.execute("second", { persist: true, background: true, id: "waiting", prompt: "work" });
+      expect(second.details.state).toBe("running"); // Job started; provider did not.
+      await f.service.cancel(second.details.jobId);
+      await done(f.service, second.details.jobId);
+      expect(run).toHaveBeenCalledOnce();
+      expect(await f.instances.get("waiting")).toMatchObject({ status: "closed", turns: 0 });
+      expect((await f.instances.get("waiting"))?.recovery).toBeUndefined();
+    } finally { held.resolve({ text: "done" }); await done(f.service, first.details.jobId); }
+  }, 30_000);
+
+  it("interrupts accepted queued managed work on restart without replay or a recovery fence", async () => {
+    const f = await managedFixture(undefined, { maxQueued: 1 });
+    const gate = deferred<any>();
+    const run = vi.fn(() => gate.promise);
+    const { agent } = tools(f, run);
+    const first = await agent.execute("holder", { persist: true, background: true, id: "holder", prompt: "hold" });
+    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce(), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+    const queued = await agent.execute("waiting", { persist: true, background: true, id: "waiting", prompt: "work" });
+    expect(queued.details.state).toBe("queued");
+    const stopping = f.service.stop();
+    gate.resolve({ text: "late" });
+    await stopping;
+    const reopened = await openProcessJobsService(f.options); services.push(reopened);
+    const registry = createSubagentInstanceRegistry({ root: resolve(f.root, "children"), retireSession: async () => {},
+      resolveOwner: (identity) => reopened.resolveSubagentOwner!(identity) });
+    reopened.bindManagedSubagents!({ root: resolve(f.root, "children"),
+      verify: async (identity) => await (await registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
+      publish: async (phase, publication) => await (await registry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication) });
+    await reopened.activateWakes();
+    await vi.waitFor(async () => expect((await reopened.get(queued.details.jobId))?.wake.state).toBe("delivered"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+    expect(await registry.open(origin.conversationId, { existingOnly: true }).then((instance) => instance.get("waiting")))
+      .toMatchObject({ status: "closed", turns: 0 });
+    expect(run).toHaveBeenCalledOnce();
+    expect(f.wake.mock.calls.some(([input]) => (input as ProcessJobWakeInput).projection.jobId === queued.details.jobId)).toBe(true);
+    expect((await reopened.get(queued.details.jobId))?.state).toBe("interrupted");
+    expect(first.details.jobId).not.toBe(queued.details.jobId);
+  }, 30_000);
+
+  it("retires a never-started new instance after queue rejection and reuses its id", async () => {
+    const f = await managedFixture(); // Synthetic maxQueued:0 forces rejection while the global slot is held.
+    const held = deferred<any>();
+    const run = vi.fn(() => held.promise);
+    const { agent } = tools(f, run);
+    const holder = await agent.execute("holder", { persist: true, background: true, id: "holder", prompt: "hold" });
+    try {
+      await vi.waitFor(() => expect(run).toHaveBeenCalledOnce(), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+      await expect(agent.execute("denied", { persist: true, background: true, id: "reusable", prompt: "later" }))
+        .rejects.toMatchObject({ code: "process_job_queue_full" });
+      expect(await f.instances.get("reusable")).toMatchObject({ status: "closed", turns: 0 });
+      expect((await f.instances.get("reusable"))?.recovery).toBeUndefined();
+      expect((await f.service.counts()).failed).toBe(0);
+    } finally { held.resolve({ text: "done" }); await done(f.service, holder.details.jobId); }
+    const { agent: retry } = tools(f, async () => ({ text: "done" }));
+    const next = await retry.execute("retry", { persist: true, background: true, id: "reusable", prompt: "work" });
+    await done(f.service, next.details.jobId);
+    expect(await f.instances.get("reusable")).toMatchObject({ status: "idle", turns: 1 });
+  }, 30_000);
+
   it("serializes rejected admission with a durable not-started proof and excludes delayed duplicate verifiers", async () => {
     const f = await managedFixture(); const held = deferred<void>(); const verified = deferred<void>(); const proceed = deferred<void>();
+    const confirming = deferred<void>(); const finishConfirmation = deferred<void>();
     const { agent } = tools(f, async () => { await held.promise; return { text: "done" }; });
     const holder = await agent.execute("holder", { persist: true, background: true, id: "holder", prompt: "hold" });
     const instance = await f.instances.create({ ...spec, id: "rejected" });
@@ -1095,7 +1239,10 @@ describe("managed detached production execution", () => {
         await (await f.registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity);
         if (identity.jobId === jobId) { verifierCalls++; verified.resolve(); await proceed.promise; }
       },
-      publish: async (phase, publication) => await (await f.registry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication),
+      publish: async (phase, publication) => {
+        if (publication.identity.jobId === jobId && phase === "confirm") { confirming.resolve(); await finishConfirmation.promise; }
+        await (await f.registry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication);
+      },
     });
     const run = vi.fn(async () => ({ output: "must not execute", status: "ok" }));
     const request = { kind: "internal", tool: "Agent", jobId, instanceId: instance.id,
@@ -1107,16 +1254,25 @@ describe("managed detached production execution", () => {
       await expect(controller.startInternal(request)).rejects.toMatchObject({ code: "process_job_conflict" });
       expect(verifierCalls).toBe(1);
       proceed.resolve();
+      await confirming.promise;
+      expect(await f.store.get(jobId)).toMatchObject({ rejectedAdmission: true, state: "failed" });
+      expect(await f.service.get(jobId)).toBeUndefined();
+      expect((await f.service.list()).some((job) => job.jobId === jobId)).toBe(false);
+      expect((await f.service.counts()).failed).toBe(0);
+      expect(f.wake).not.toHaveBeenCalled();
+      finishConfirmation.resolve();
       expect(await original).toMatchObject({ code: "process_job_queue_full" });
       expect(run).not.toHaveBeenCalled();
-      expect(await f.store.get(jobId)).toMatchObject({ state: "failed", wakeOnCompletion: false,
-        subagentOwnership: { owner: { settlement: "not_started" }, publication: { state: "confirmed" }, disposition: { reason: "continuation_not_started" } } });
-      expect(await f.instances.get(instance.id)).toMatchObject({ status: "idle", turns: 0, recovery: { reason: "continuation_not_started" } });
+      expect(await f.store.get(jobId)).toBeUndefined();
+      expect(await f.service.get(jobId)).toBeUndefined();
+      expect((await f.service.list()).some((job) => job.jobId === jobId)).toBe(false);
+      expect((await f.service.counts()).failed).toBe(0);
+      expect(await f.instances.get(instance.id)).toMatchObject({ status: "idle", turns: 0 });
+      expect((await f.instances.get(instance.id))?.recovery).toBeUndefined();
       expect(f.wake).not.toHaveBeenCalled();
-      await f.store.mutate((records) => { records.delete(jobId); }); // Simulate later retention after confirmation.
       await expect(controller.startInternal(request)).rejects.toThrow();
       expect(run).not.toHaveBeenCalled(); expect(verifierCalls).toBe(1);
-    } finally { proceed.resolve(); held.resolve(); await done(f.service, holder.details.jobId); }
+    } finally { proceed.resolve(); finishConfirmation.resolve(); held.resolve(); await done(f.service, holder.details.jobId); }
   }, 30_000);
   it("awaits a real gated command on its original slot and permits a clean retained continuation", async () => {
     const f = await managedFixture();
@@ -1289,8 +1445,8 @@ describe("detached persistent subagents", () => {
     expect(await f.instances.get("helper")).toMatchObject({ status: "queued", turns: 0, reservation: { token: queued.details.jobId } });
     await expect(send.execute("c", { id: "helper", message: "duplicate", background: true })).rejects.toThrow(/busy/);
     const denied = tools(f, run, { backgroundSubagentController: { startInternal: async () => { throw new Error("admission rejected"); } } });
-    await expect(denied.agent.execute("d", { persist: true, background: true, id: "denied", prompt: "reject" })).rejects.toThrow("admission rejected");
-    expect(await f.instances.get("denied")).toMatchObject({ status: "idle", turns: 0 });
+    await expect(denied.agent.execute("d", { persist: true, background: true, id: "denied", prompt: "reject" })).rejects.toThrow("controller is unavailable");
+    expect(await f.instances.get("denied")).toMatchObject({ status: "closed", turns: 0 });
     await f.service.cancel(queued.details.jobId); await done(f.service, queued.details.jobId);
     expect(await f.instances.get("helper")).toMatchObject({ status: "idle", turns: 0 });
     expect(run).toHaveBeenCalledOnce();
@@ -1344,7 +1500,7 @@ describe("detached persistent subagents", () => {
     const agent = createAgentTool(options, { recoveryAccess: { workspace: f.root, readableRoots: [], sandboxPolicy: createSandboxPolicy({ root: f.root }) } });
     const first = await agent.execute("slow-admission", { persist: true, background: true, id: "helper", prompt: "work" });
     await done(f.service, first.details.jobId);
-    await vi.waitFor(async () => expect((await f.instances.get("helper"))?.status).toBe("idle"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+    await vi.waitFor(async () => expect((await f.instances.get("helper"))?.status).toBe("closed"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     expect((await f.instances.get("helper"))?.activeTurn).toBeUndefined();
     expect(run).not.toHaveBeenCalled();
   }, 25_000);
@@ -1845,7 +2001,7 @@ it("queue expiry releases the reservation without invoking the child", async () 
   const first = await agent.execute("a", { persist: true, id: "first", prompt: "hold", background: true });
   const queued = await agent.execute("b", { persist: true, id: "second", prompt: "expire", background: true });
   expect((await done(f.service, queued.details.jobId)).state).toBe("queue_expired");
-  expect(await f.instances.get("second")).toMatchObject({ status: "idle", turns: 0 });
+  expect(await f.instances.get("second")).toMatchObject({ status: "closed", turns: 0 });
   expect(run).toHaveBeenCalledOnce();
   gate.resolve({ text: "done" }); await done(f.service, first.details.jobId);
 });
@@ -1887,7 +2043,7 @@ it("rolls failed internal running publication back and drains the next queued ch
   expect(await done(f.service, failed.details.jobId)).toMatchObject({ state: "spawn_failed" });
   expect(await done(f.service, next.details.jobId)).toMatchObject({ state: "succeeded" });
   expect(run.mock.calls.map(([r]) => r.instance.id)).toEqual(["first", "next"]);
-  expect((await f.instances.get("helper"))?.status).toBe("idle");
+  expect((await f.instances.get("helper"))?.status).toBe("closed");
   expect((f.service as any).pending.has(failed.details.jobId)).toBe(false);
   expect(f.wake.mock.calls.filter(([w]: any) => w.projection.jobId === failed.details.jobId)).toHaveLength(1);
 });

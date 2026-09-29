@@ -2309,7 +2309,7 @@ async function processJobsSection(
     ...(unsafeWarning === undefined ? [] : [unsafeWarning]),
     ...protectionDetail,
     `Owner-only local state: ${settings.stateDir}.`,
-    `Concurrency: ${String(settings.maxConcurrent)} global, ${String(settings.maxActivePerConversation)} per conversation, ${String(settings.maxQueued)} queued.`,
+    `Running slots: ${String(settings.maxConcurrent)} global, ${String(settings.maxActivePerConversation)} per conversation (nested descendants exempt); ${String(settings.maxQueued)} global waiting slots, including conversation-limited work.`,
     `Caps: runtime=${String(settings.maxRuntimeMs)}ms, queue-age=${String(settings.maxQueueAgeMs)}ms, output=${String(settings.maxOutputBytes)} bytes, chain-depth=${String(settings.maxChainDepth)}.`,
     `Runtime availability: Pi-native Exec/Bash and enabled persistent Agent/AgentManage; configured primary provider is ${displayText(config.runtime.model.provider)}.`,
   ];

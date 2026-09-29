@@ -101,6 +101,8 @@ export interface DurableProcessJobRecord {
   readonly instanceId?: string;
   childStillBusy?: boolean;
   subagentOwnership?: SubagentExecutionOwnership;
+  /** Private admission certificate; never project as a lifecycle card. */
+  rejectedAdmission?: true;
   subagentCommandReceipts?: SubagentCommandReceipts;
   subagentVerification?: SubagentVerificationTarget;
   subagentObservation?: SubagentVerificationObservation;
@@ -1146,7 +1148,7 @@ function assertDurableRecord(value: unknown): asserts value is DurableProcessJob
   if (!isRecord(value)
     || !hasExactKeys(value, [
       "schemaVersion", "generation", "jobId", "tool", "state", "summary", "agentIncarnation",
-      ...["kind", "instanceId", "childStillBusy", "subagentQuestion", "peerQuestion", "subagentProgress", "subagentOwnership", "subagentCommandReceipts", "subagentVerification", "subagentObservation"].filter((key) => Object.prototype.hasOwnProperty.call(value, key)),
+      ...["kind", "instanceId", "childStillBusy", "subagentQuestion", "peerQuestion", "subagentProgress", "subagentOwnership", "rejectedAdmission", "subagentCommandReceipts", "subagentVerification", "subagentObservation"].filter((key) => Object.prototype.hasOwnProperty.call(value, key)),
       ...(Object.prototype.hasOwnProperty.call(value, "processIncarnation") ? ["processIncarnation"] : []),
       "pid", "pgid", "sandboxSettingsPath", "argvSummary", "cwd", "envKeys", "origin", "chainDepth",
       ...(Object.prototype.hasOwnProperty.call(value, "wakeOnCompletion") ? ["wakeOnCompletion"] : []),
@@ -1161,6 +1163,7 @@ function assertDurableRecord(value: unknown): asserts value is DurableProcessJob
     // records persisted before the rename must still validate. Never emitted.
     || (value.kind === "internal" ? !["Agent", "AgentManage", "AgentSend", "PeerAgent"].includes(String(value.tool))
       || typeof value.instanceId !== "string" || !/^[a-z0-9][a-z0-9-]{0,39}$/u.test(value.instanceId)
+      || (value.rejectedAdmission !== undefined && (value.rejectedAdmission !== true || value.kind !== "internal" || value.subagentOwnership === undefined))
       || (value.subagentVerification !== undefined && (value.kind !== "internal" || !value.subagentOwnership || !isSubagentVerificationTarget(value.subagentVerification)))
       || (value.subagentObservation !== undefined && (value.kind !== "internal" || !value.subagentOwnership || !isSubagentVerificationObservation(value.subagentObservation)))
       || (value.subagentCommandReceipts !== undefined && (value.kind !== "internal" || value.subagentOwnership === undefined || !isSubagentCommandReceipts(value.subagentCommandReceipts)))

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Let conversation-limited background subagents and commands wait in a bounded
+  queue for a running slot; show queue receipts and capacity, and release
+  never-started subagent reservations without a recovery demand.
+
 - Update `undici` to 8.11.2 in `agent-app`, `operator-adapter` and `web` for
   the GHSA-rfgv-xxqx-mfg5 and GHSA-w293-vg96-wgc3 advisories.
 

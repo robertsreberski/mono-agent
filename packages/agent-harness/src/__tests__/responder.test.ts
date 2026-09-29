@@ -1583,6 +1583,21 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
     });
   });
 
+  it.each(["Exec", "Bash"])("links queued %s outcome metadata to the canonical start receipt", (name) => {
+    const outcome = backgroundOutcome({ state: "queued", started_at: null,
+      queue_position: 2, queue_deadline_at: "2026-09-08T10:05:00.000Z" });
+    expect(completedBackgroundTool(name, outcome)).toEqual({
+      type: "tool_call_completed", id: "background-1", name,
+      content: "Background process job started.",
+      structuredContent: { schema: "mono-agent.process-job-start-receipt.v1",
+        jobId: "job-1", tool: name, state: "queued", startedAt: null, maxRuntimeMs: 60_000 },
+    });
+    for (const invalid of [
+      { queue_position: 0 }, { queue_position: 1.5 }, { queue_deadline_at: "2026-09-08" },
+      { state: "running" },
+    ]) expect(completedBackgroundTool(name, { ...outcome, ...invalid })).not.toHaveProperty("structuredContent");
+  });
+
   it("accepts only Bash's exact legacy-timeout extension and omits it from the receipt", () => {
     expect(completedBackgroundTool("Bash", backgroundOutcome({ legacyTimeoutUsed: true })))
       .toMatchObject({ structuredContent: { schema: "mono-agent.process-job-start-receipt.v1", tool: "Bash" } });

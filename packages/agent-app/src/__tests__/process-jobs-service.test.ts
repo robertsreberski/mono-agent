@@ -82,7 +82,7 @@ describe("held subagent obligations", () => {
     const reopened = await openProcessJobStore(cwd, stateDir);
     expect((await reopened.get(jobId))?.subagentProgress?.usage).toEqual(usage);
   });
-  it.each(["ownership", "publication", "legacy"])("pins terminal %s through retention, reopen, admission and projection", async (mode) => {
+  it.each(["ownership", "publication", "legacy"])("pins terminal %s through retention, reopen, admission and projection (synthetic settings)", async (mode) => {
     const cwd = await mkdtemp(join(process.cwd(), ".job-ownership-")); ownershipRoots.push(cwd);
     const fixture = { cwd, settings: { ...PROCESS_JOBS_DEFAULTS, configured: true, enabled: true, stateDir: join(cwd, "jobs"),
       maxConcurrent: 1, maxQueued: 0, maxActivePerConversation: 1,
@@ -112,7 +112,7 @@ describe("held subagent obligations", () => {
     expect(await service.checkSubagentOwnerIndex!(ORIGIN.conversationId, [{ instanceId: "child", incarnation: instanceIncarnation, jobId }])).toBe("clear");
     const launch = vi.fn(() => handleOf(deferred<ProcessJobProcessResult>()));
     await expect(service.controller(ORIGIN, 0).start({ ...requestOf(handleOf(deferred<ProcessJobProcessResult>())), launch }))
-      .rejects.toMatchObject({ code: "process_job_conversation_capacity" });
+      .rejects.toMatchObject({ code: "process_job_queue_full" });
     expect(launch).not.toHaveBeenCalled();
     expect(wake).not.toHaveBeenCalled();
     await service.stop();
@@ -640,7 +640,7 @@ describe("process job service", () => {
     expect(second.state).toBe("queued");
 
     await expect(service.controller(ORIGIN, 0).start(requestOf(handleOf(deferred<ProcessJobProcessResult>()))))
-      .rejects.toMatchObject({ code: "process_job_conversation_capacity" });
+      .rejects.toMatchObject({ code: "process_job_queue_full", occupancy: 1, limit: 1 });
     await expect(service.controller({
       ...ORIGIN,
       conversationId: "slack:C2:2.2",
@@ -660,6 +660,58 @@ describe("process job service", () => {
       timestamps: { admittedAt: "2026-08-14T10:00:00.000Z", startedAt: null, runtimeDeadlineAt: null },
     });
     expect((await service.get(first.jobId))?.timestamps.runtimeDeadlineAt).toBe("2026-08-14T10:30:01.000Z");
+  });
+
+  it("queues conversation-limited work, skips blocked heads, and starts oldest eligible work", async () => {
+    const fixture = await createFixture({ maxConcurrent: 3, maxActivePerConversation: 1, maxQueued: 3 });
+    const service = await startService(fixture);
+    const firstDone = deferred<ProcessJobProcessResult>();
+    const first = await service.controller(ORIGIN, 0).start(requestOf(handleOf(firstDone)));
+    const secondDone = deferred<ProcessJobProcessResult>();
+    const secondLaunch = vi.fn(() => handleOf(secondDone));
+    const second = await service.controller(ORIGIN, 0).start({ ...requestOf(handleOf(deferred<ProcessJobProcessResult>())), launch: secondLaunch });
+    const thirdDone = deferred<ProcessJobProcessResult>();
+    const thirdLaunch = vi.fn(() => handleOf(thirdDone));
+    const third = await service.controller(ORIGIN, 0).start({ ...requestOf(handleOf(deferred<ProcessJobProcessResult>())), launch: thirdLaunch });
+    expect([second.state, third.state]).toEqual(["queued", "queued"]);
+    expect([second.queuePosition, third.queuePosition]).toEqual([1, 2]);
+    expect(secondLaunch).not.toHaveBeenCalled();
+    const other = { ...ORIGIN, conversationId: "slack:C2:1.1#2026-08-14", baseConversationId: "slack:C2:1.1",
+      replyToConversationId: "slack:C2:1.1", normalizedReplyTarget: "slack:C2:1.1" };
+    const otherDone = deferred<ProcessJobProcessResult>();
+    expect((await service.controller(other, 0).start(requestOf(handleOf(otherDone)))).state).toBe("running");
+    expect(await service.capacity(ORIGIN.normalizedReplyTarget)).toMatchObject({
+      perConversation: { running: 1, queued: 2, availableRunningSlots: 0 }, global: { running: 2, queued: 2 },
+    });
+    firstDone.resolve(processResult());
+    await waitFor(async () => (await service.get(second.jobId))?.state === "running");
+    expect(secondLaunch).toHaveBeenCalledOnce();
+    expect(thirdLaunch).not.toHaveBeenCalled();
+    await service.cancel(second.jobId);
+    secondDone.resolve(processResult());
+    await waitFor(async () => (await service.get(third.jobId))?.state === "running");
+    expect(thirdLaunch).toHaveBeenCalledOnce();
+    await service.cancel(third.jobId);
+    thirdDone.resolve(processResult());
+    otherDone.resolve(processResult());
+    expect(first.state).toBe("running");
+  });
+
+  it("permits nested descendants to use a global slot without waiting on their running ancestor", async () => {
+    const fixture = await createFixture({ maxConcurrent: 2, maxActivePerConversation: 1, maxQueued: 2 });
+    const service = await startService(fixture);
+    const parentDone = deferred<ProcessJobProcessResult>();
+    await service.controller(ORIGIN, 0).start(requestOf(handleOf(parentDone)));
+    const childDone = deferred<ProcessJobProcessResult>();
+    expect((await service.controller(ORIGIN, 1).start(requestOf(handleOf(childDone)))).state).toBe("running");
+    const peer = await service.controller(ORIGIN, 0).start(requestOf(handleOf(deferred<ProcessJobProcessResult>())));
+    expect(peer.state).toBe("queued");
+    const nested = await service.controller(ORIGIN, 2).start(requestOf(handleOf(deferred<ProcessJobProcessResult>())));
+    expect(nested.state).toBe("queued"); // global bound still applies
+    await service.cancel(peer.jobId);
+    await service.cancel(nested.jobId);
+    parentDone.resolve(processResult());
+    childDone.resolve(processResult());
   });
 
   it("tracks only the newest queue timer when overlapping arms resolve out of order", async () => {
