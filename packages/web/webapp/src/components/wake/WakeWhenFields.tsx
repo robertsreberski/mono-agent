@@ -8,6 +8,33 @@ import {
 const timezones = typeof Intl.supportedValuesOf === "function" ? Intl.supportedValuesOf("timeZone") : [];
 
 /**
+ * On touch screens iOS zooms into any focused field under 16px, which made the
+ * native date/time values the largest text in the sheet. There the native
+ * input stays 16px but transparent over the field (so a tap still opens the
+ * system picker) and this copy shows the value at the sheet's own size. It is
+ * presentation only: the input remains the labelled control.
+ */
+export function nativeDisplay(type: "date" | "time", value: string): string | null {
+  if (type === "date") {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(value);
+    if (match === null) return null;
+    return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeZone: "UTC" })
+      .format(new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]))));
+  }
+  const match = /^(\d{2}):(\d{2})/u.exec(value);
+  if (match === null) return null;
+  return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", timeZone: "UTC" })
+    .format(new Date(Date.UTC(2000, 0, 1, Number(match[1]), Number(match[2]))));
+}
+
+function NativeValue({ type, value }: { readonly type: "date" | "time"; readonly value: string }) {
+  const shown = nativeDisplay(type, value);
+  return <span className={`wake-native-display${shown === null ? " is-empty" : ""}`} aria-hidden="true">
+    {shown ?? (type === "date" ? "Choose a date" : "Choose a time")}
+  </span>;
+}
+
+/**
  * When the wake-up happens: kind, the once date/time or weekly days/times, and
  * the zone those wall times are read in. Native inputs throughout, so iOS and
  * desktop keep their own pickers; each date/time input sits padding-free inside
@@ -46,20 +73,23 @@ export function WakeWhenFields({ draft, issues, pastHint, order, onChange }: {
 
     {draft.kind === "once" ? <div className="wake-group">
       <div className="wake-once-grid">
-        <label className="wake-field">
-          <span className="wake-label">Date</span>
+        {/* A sibling label (not a wrapping one): the field also holds the visible value copy. */}
+        <div className="wake-field">
+          <label className="wake-label" htmlFor={`${id}-date`}>Date</label>
           <span className={`wake-native-control${issues.when && draft.date === "" ? " is-invalid" : ""}`}>
-            <input type="date" value={draft.date} aria-invalid={(issues.when !== undefined && draft.date === "") || undefined}
+            <input id={`${id}-date`} type="date" value={draft.date} aria-invalid={(issues.when !== undefined && draft.date === "") || undefined}
               aria-describedby={whenMessage ? whenId : undefined} onChange={(event) => onChange({ date: event.target.value })} />
+            <NativeValue type="date" value={draft.date} />
           </span>
-        </label>
-        <label className="wake-field">
-          <span className="wake-label">Time</span>
+        </div>
+        <div className="wake-field">
+          <label className="wake-label" htmlFor={`${id}-time`}>Time</label>
           <span className={`wake-native-control${issues.when && draft.time === "" ? " is-invalid" : ""}`}>
-            <input type="time" value={draft.time} aria-invalid={(issues.when !== undefined && draft.time === "") || undefined}
+            <input id={`${id}-time`} type="time" value={draft.time} aria-invalid={(issues.when !== undefined && draft.time === "") || undefined}
               aria-describedby={whenMessage ? whenId : undefined} onChange={(event) => onChange({ time: event.target.value })} />
+            <NativeValue type="time" value={draft.time} />
           </span>
-        </label>
+        </div>
       </div>
       {issues.when !== undefined
         ? <p className="wake-field-error" id={whenId}>{issues.when}</p>
@@ -90,6 +120,7 @@ export function WakeWhenFields({ draft, issues, pastHint, order, onChange }: {
               <input type="time" aria-label={`Time ${String(index + 1)}`} value={time}
                 aria-invalid={bad || undefined} aria-describedby={bad ? timesId : undefined}
                 onChange={(event) => setTime(index, event.target.value)} />
+              <NativeValue type="time" value={time} />
               {draft.times.length > 1 && <button type="button" className="wake-time-remove" aria-label={`Remove time ${String(index + 1)}`}
                 onClick={() => onChange({ times: draft.times.filter((_, at) => at !== index) })}><Icon name="close" size={14} /></button>}
             </div>;

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Polish the web wake-up schedule editor on phones: a clearly tinted Once/Weekly
+  selection, date and time values centred in their fields, and date and time
+  values shown at the sheet's own text size on touch screens while the native
+  picker keeps the 16px size that stops iOS from zooming. Summary and header
+  text now match the other settings sheets.
+
 - Add opt-in `telegram.projects.enabled` to make each Telegram forum topic the
   bot sees (and a forum's General conversation) an ordinary web-console
   project named `Chat › Topic`. The project's shared context reaches every
