@@ -57,6 +57,25 @@ function systemdShow(properties: Record<string, string>, code = 0) {
 }
 
 describe("verifySupervisedRestart", () => {
+  it("refuses a hanging startup-input check without latching a stop", async () => {
+    vi.useFakeTimers();
+    try {
+      const latch = createSupervisedRestartLatch();
+      const authority = createSupervisedRestartAuthority({ configPath: CONFIG_PATH, startedAt: "boot-1", platform: "linux", pid: 777,
+        systemdRun: systemdShow({ LoadState: "loaded", ActiveState: "active", MainPID: "777",
+          FragmentPath: `/home/u/.config/systemd/user/${EXPECTED_UNIT}`,
+          ExecStart: `argv[]=/node /cli start --foreground --config ${CONFIG_PATH} --expected-background-snapshot proof`,
+          Restart: "on-failure" }),
+        verifyStartupInputs: () => new Promise(() => undefined),
+      }, latch);
+      const fresh = authority.verifyFresh!();
+      await vi.advanceTimersByTimeAsync(5_000);
+      const verdict = await fresh;
+      expect(verdict).toMatchObject({ supported: false, reason: expect.stringContaining("mono-agent restart") });
+      expect(authority.accept(verdict).kind).toBe("refused");
+      expect(latch.exitCode).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
   it("re-checks a changed supervisor policy at POST and refuses stale acceptance", async () => {
     let policy = "on-failure";
     const latch = createSupervisedRestartLatch();

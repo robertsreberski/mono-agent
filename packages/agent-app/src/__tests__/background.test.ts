@@ -32,10 +32,12 @@ import type { BackgroundDeps, InstanceTarget } from "../background.js";
 import type { BackgroundSnapshot } from "../background-snapshot.js";
 import { encodeBackgroundSnapshot } from "../background-snapshot.js";
 import type { LaunchdLogInspection } from "../launchd-logs.js";
-import { buildLaunchdProgramArguments } from "../launchd.js";
+import { buildLaunchdProgramArguments, deriveLaunchdLabel } from "../launchd.js";
+import { recordManagedSnapshotRefusal } from "../cli-background-command.js";
 import type { LaunchctlRunner } from "../launchd.js";
 import type { ProcessIncarnation } from "../process-incarnation.js";
 import type { OwnerPrivateLock } from "../owner-private-lock.js";
+import { readLaunchdSnapshotRefusal, clearLaunchdSnapshotRefusal } from "../launchd-snapshot-refusal.js";
 import {
   readLaunchdLogMonitorStatus,
   removeLaunchdLogMonitorStatus,
@@ -2962,6 +2964,26 @@ describe("stopBackground", () => {
 });
 
 describe("statusBackground", () => {
+  it("shows an offline launchd snapshot refusal in text and JSON until approved startup clears it", async () => {
+    const home = await mkdtemp(join(tmpdir(), "snapshot-refusal-status-"));
+    try {
+      const target = makeTarget({ label: deriveLaunchdLabel(makeTarget().configPath), paths: { ...makeTarget().paths, logDir: join(home, "logs") } });
+      const { runner } = makeRunner({ loaded: false });
+      const harness = makeHarness({ runner, list: listReturning(() => []), isAlive: () => false });
+      await recordManagedSnapshotRefusal(target.configPath, target.paths);
+      expect(await readLaunchdSnapshotRefusal(target.label, target.paths)).toBe(true);
+      expect(await statusBackground(target, harness.deps, { json: true })).toBe(1);
+      expect(JSON.parse(harness.out.join(""))).toMatchObject({ ok: false, startupFailure: { reason: "snapshot-refused" } });
+      harness.out.length = 0;
+      expect(await statusBackground(target, harness.deps)).toBe(1);
+      expect(harness.out.join("")).toContain("mono-agent restart");
+      await clearLaunchdSnapshotRefusal(target.label, target.paths);
+      expect(await readLaunchdSnapshotRefusal(target.label, target.paths)).toBe(false);
+      harness.out.length = 0;
+      await statusBackground(target, harness.deps, { json: true });
+      expect(JSON.parse(harness.out.join(""))).not.toHaveProperty("startupFailure");
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
   it.skipIf(process.platform === "win32")("finds the running agent for an absolute --config from another cwd", async () => {
     const home = await mkdtemp(join(tmpdir(), "mono-agent-status-elsewhere-"));
     try {

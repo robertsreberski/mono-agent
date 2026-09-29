@@ -540,7 +540,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     const accept = authority.accept.bind(authority);
     const identity = authority.processIdentity.bind(authority);
     const beginStop = authority.beginStop.bind(authority);
-    void boundedRestartVerify(verify, 1_000).then((support) => {
+    void boundedRestartVerify(verify, 6_500).then((support) => {
       if (res.destroyed || res.closed) return;
       const result = accept(support);
       if (result.kind === "refused") {

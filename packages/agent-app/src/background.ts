@@ -73,6 +73,7 @@ import {
 import type { BackgroundSnapshot } from "./background-snapshot.js";
 import { resolveConfiguredManagedRuntimePackages } from "./managed-runtime-packages.js";
 import { removeLaunchdLogMonitorStatus } from "./launchd-log-monitor-status.js";
+import { clearLaunchdSnapshotRefusal, readLaunchdSnapshotRefusal, SNAPSHOT_REFUSAL_MESSAGE } from "./launchd-snapshot-refusal.js";
 import { acquireManagedRuntimePublicationBarrier } from "./managed-runtime-publication.js";
 import type { OwnerPrivateLock } from "./owner-private-lock.js";
 import { ensureOwnerPrivateLaunchdDirectory } from "./launchd-private-files.js";
@@ -1503,6 +1504,7 @@ async function stopBackgroundWithSharedLogLock(
     }
     await deps.clearLaunchdLogMaintenanceIntent(target.paths, maintenanceIntent);
     await deps.removeLaunchdLogMonitorStatus?.(target);
+    await clearLaunchdSnapshotRefusal(target.label, target.paths);
   } catch (error) {
     deps.stderr(ui.errorLine(`Failed to clear pending launchd-log state for ${target.label}.`));
     deps.stderr(ui.style.dim(error instanceof Error ? error.message : String(error)) + "\n");
@@ -1539,6 +1541,11 @@ export async function statusBackground(
     launchdServiceInfo(deps.runner, target.label, deps.getuid()),
   ]);
   const matchingSources = classified.filter((entry) => entry.matches).map((entry) => entry.source);
+  // Status is diagnostic: unsafe or unreadable refusal state is reported, never fatal.
+  const snapshotRefused = await readLaunchdSnapshotRefusal(target.label, target.paths).catch((error: unknown) => {
+    deps.stderr(ui.errorLine(`Could not read the managed snapshot refusal status: ${error instanceof Error ? error.message : String(error)}`));
+    return false;
+  });
   const recorded = service.pid === undefined
     ? matchingSources[0]
     : matchingSources.find((source) => source.pid === service.pid) ?? matchingSources[0];
@@ -1559,6 +1566,7 @@ export async function statusBackground(
     deps.stdout(`${JSON.stringify({
       ok: active,
       instance,
+      ...(snapshotRefused ? { startupFailure: { reason: "snapshot-refused", message: SNAPSHOT_REFUSAL_MESSAGE } } : {}),
       others: others.map(assembleOtherInstanceStatus),
     })}\n`);
     return active ? 0 : 1;
@@ -1571,6 +1579,8 @@ export async function statusBackground(
     writeInstanceDetail(current, target, deps);
     await writeRunsHealthDetail(current, deps);
   }
+
+  if (snapshotRefused) deps.stdout(ui.errorLine(SNAPSHOT_REFUSAL_MESSAGE));
 
   if (others.length > 0) {
     deps.stdout("\n" + ui.rule("Other mono-agent instances"));

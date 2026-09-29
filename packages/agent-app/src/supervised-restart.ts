@@ -38,6 +38,8 @@ export interface SupervisedRestartDeps {
   readonly getuid?: () => number | undefined;
   readonly launchdRunner?: LaunchctlRunner;
   readonly systemdRun?: typeof runSystemdTool;
+  /** Fresh input check for POST only; advisory capability checks stay cheap. */
+  readonly verifyStartupInputs?: () => Promise<SupervisedRestartVerification>;
   readonly logger?: {
     warn(message: string, metadata?: Record<string, unknown>): void;
   };

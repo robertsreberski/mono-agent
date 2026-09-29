@@ -40,6 +40,7 @@ import {
   decodeBackgroundSnapshot,
   loadDurableBackgroundEnvironment,
   materializeBackgroundRuntimeInputs,
+  sameBackgroundSnapshot,
 } from "./background-snapshot.js";
 import type { BackgroundSnapshot } from "./background-snapshot.js";
 import { verifyManagedRuntimeLaunch } from "./background-runtime.js";
@@ -50,6 +51,8 @@ import type {
   ManagedLaunchdLogMonitorDependencies,
 } from "./background-log-maintenance.js";
 import { writeLaunchdLogMonitorStatus } from "./launchd-log-monitor-status.js";
+import { clearLaunchdSnapshotRefusal, writeLaunchdSnapshotRefusal } from "./launchd-snapshot-refusal.js";
+import { selectSystemdBackgroundOperationalEnvironment } from "./background-environment.js";
 import { formatChannelFactValue } from "./channel-fact-format.js";
 import { formatHumanChannelSections } from "./channel-status-display.js";
 import type { ChannelStatus } from "./channels.js";
@@ -193,6 +196,53 @@ export function decodeAndVerifyWorkerSnapshot(
   return snapshot;
 }
 
+export async function recordManagedSnapshotRefusal(
+  configPath: string,
+  target = launchdPathsFor(deriveLaunchdLabel(configPath)),
+): Promise<void> {
+  const label = deriveLaunchdLabel(configPath);
+  await writeLaunchdSnapshotRefusal(label, target).catch((error) => {
+    process.stderr.write(ui.errorLine(`Could not publish managed snapshot refusal status: ${error instanceof Error ? error.message : String(error)}`));
+  });
+}
+
+const RESTART_INPUT_REFUSAL = "The old agent is still running. Run `mono-agent validate` then `mono-agent restart` from its folder.";
+
+/** Freshly prove that the supervisor can relaunch on the current inputs before stopping the host. */
+export async function verifySupervisedRestartInputs(input: {
+  readonly args: ParsedCliArgs;
+  readonly cwd: string;
+  readonly configPath: string;
+  readonly env: Readonly<Record<string, string | undefined>>;
+  readonly platform: "darwin" | "linux";
+}): Promise<{ readonly supported: boolean; readonly reason?: string }> {
+  try {
+    const approved = decodeAndVerifyWorkerSnapshot(input.args, input.cwd, input.configPath);
+    if (input.platform === "darwin") {
+      const fresh = await captureBackgroundSnapshot({
+        cwd: input.cwd, configPath: input.configPath,
+        ...(input.args.envFile === undefined ? {} : { envFile: input.args.envFile }),
+        env: input.env,
+      });
+      if (!sameBackgroundSnapshot(approved, fresh)) return { supported: false, reason: RESTART_INPUT_REFUSAL };
+    } else {
+      // Linux's foreground worker structurally validates, but does not freeze
+      // keyed file fingerprints. Match its effective environment, including
+      // newly edited dotenv values, rather than imposing a new startup policy.
+      const effective = await loadDurableBackgroundEnvironment({
+        cwd: input.cwd,
+        ...(input.args.envFile === undefined ? {} : { envFile: input.args.envFile }),
+        operationalEnvironment: selectSystemdBackgroundOperationalEnvironment(input.env),
+      });
+      const preflight = await ensureStartable(input.args, effective, { cwd: input.cwd, configPath: input.configPath });
+      if (!preflight.ok) return { supported: false, reason: RESTART_INPUT_REFUSAL };
+    }
+    return { supported: true };
+  } catch {
+    return { supported: false, reason: RESTART_INPUT_REFUSAL };
+  }
+}
+
 /**
  * The blocking worker: builds the responder, starts every configured channel
  * plus traceability, and stays alive until a signal. This is what launchd
@@ -283,6 +333,10 @@ async function runForeground(
         configPath,
         startedAt: new Date().toISOString(),
         ...(managedBackgroundWorker ? { launchdRunner: makeLaunchctlRunner(2_000) } : {}),
+        verifyStartupInputs: () => verifySupervisedRestartInputs({
+          args, cwd, configPath, env: startupEnvironment,
+          platform: managedBackgroundWorker ? "darwin" : "linux",
+        }),
         logger: consoleLogger(),
       }, restartLatch);
   try {
@@ -299,9 +353,9 @@ async function runForeground(
         process.stderr.write(ui.errorLine(
           `Managed worker could not freeze its startup snapshot: ${error instanceof Error ? error.message : String(error)}`,
         ));
-        // KeepAlive restarts only unsuccessful exits. This refusal cannot heal
-        // without a new approved snapshot, so exit successfully and let the
-        // controller unload/recreate the job instead of retrying forever.
+        // KeepAlive must not spin on an unapproved snapshot. Publish an offline
+        // status before a successful exit; scheduled/explicit controllers repair it.
+        await recordManagedSnapshotRefusal(configPath);
         return 0;
       }
     }
@@ -348,6 +402,10 @@ async function runForeground(
       ? await startMonoAgentApp(appOptions)
       : await startVerifiedManagedMonoAgentApp(appOptions, managedRuntime);
 
+    if (managedBackgroundWorker) {
+      await clearLaunchdSnapshotRefusal(deriveLaunchdLabel(configPath), launchdPathsFor(deriveLaunchdLabel(configPath)))
+        .catch((error) => process.stderr.write(ui.errorLine(`Could not clear the managed snapshot refusal status: ${error instanceof Error ? error.message : String(error)}`)));
+    }
     await printAppStatus(app);
     // Block until a shutdown signal. Returning here (the old behavior) let the
     // process exit immediately whenever no channel owned a live handle — e.g. a
