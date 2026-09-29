@@ -201,13 +201,6 @@ export function describePiBuiltinProvider(providerId) {
 }
 
 /**
- * Describe one provider's supported authentication methods without exposing
- * Pi provider objects across the runtime boundary.
- *
- * @param {string} providerId
- * @returns {PiProviderAuthDescription|undefined}
- */
-/**
  * Pi 0.99's OpenAI ChatGPT sign-in requires a stable installation device ID.
  * Until mono-agent owns that lifecycle, never advertise or start this OAuth
  * login; OpenAI API keys and the separate openai-codex OAuth remain available.
@@ -218,6 +211,13 @@ export function isPiOAuthLoginEnabled(providerId) {
   return providerId !== "openai";
 }
 
+/**
+ * Describe one provider's supported authentication methods without exposing
+ * Pi provider objects across the runtime boundary.
+ *
+ * @param {string} providerId
+ * @returns {PiProviderAuthDescription|undefined}
+ */
 export function describePiProviderAuth(providerId) {
   let provider;
   try {

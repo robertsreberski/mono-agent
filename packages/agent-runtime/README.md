@@ -330,6 +330,7 @@ getPiBuiltinModel
 inferAllowlistMode
 invalidateProviderSession
 isLikelyContextTermination
+isPiOAuthLoginEnabled
 listPiBuiltinModels
 listPiBuiltinProviders
 listRuntimeBridges
@@ -518,6 +519,7 @@ disposeProviderSession
 generatePiNativeResponse
 getPiBuiltinModel
 invalidateProviderSession
+isPiOAuthLoginEnabled
 listPiBuiltinModels
 listPiBuiltinProviders
 listRuntimeBridges
