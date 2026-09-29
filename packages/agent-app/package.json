@@ -56,7 +56,7 @@
     "@mono-agent/telegram-adapter": "workspace:0.24.0",
     "@mono-agent/web": "workspace:0.24.0",
     "@mono-agent/webhook-adapter": "workspace:0.24.0",
-    "undici": "8.9.0",
+    "undici": "8.11.2",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },

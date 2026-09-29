@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Update `undici` to 8.11.2 in `agent-app`, `operator-adapter` and `web` for
+  the GHSA-rfgv-xxqx-mfg5 and GHSA-w293-vg96-wgc3 advisories.
+
 - Add a single durable web-conversation notice when a dispatched parent turn
   loses its agent process, without replaying the turn or claiming child outcomes.
   An attempted wake may remain ambiguous; explicitly cancelled turns are excluded.

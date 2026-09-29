@@ -45,7 +45,7 @@
     "@types/compression": "^1.8.1",
     "@types/express": "^5.0.2",
     "@types/web-push": "3.6.4",
-    "undici": "8.9.0"
+    "undici": "8.11.2"
   },
   "publishConfig": {
     "access": "public"
