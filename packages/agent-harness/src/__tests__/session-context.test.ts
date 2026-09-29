@@ -12,6 +12,25 @@ function block(surface?: AgentSurface): string {
   return sessionContextBlock({ conversationId, replyTo, ...(surface === undefined ? {} : { surface }) });
 }
 
+describe("sessionContextBlock manual memory guidance", () => {
+  const cron = { conversationId: "scheduled-run", metadata: { cron: { jobId: "fictional" } } };
+  it("appends detail guidance only for enabled host capability without changing other turns", () => {
+    const baseline = sessionContextBlock(cron, { hostManagedMemory: true });
+    expect(sessionContextBlock(cron, { hostManagedMemory: true, manualMemoryCapture: false, rememberDetails: true })).toBe(baseline);
+    const details = sessionContextBlock(cron, { hostManagedMemory: true, manualMemoryCapture: true, rememberDetails: true });
+    expect(details.startsWith(`${baseline}\n\n`)).toBe(true);
+    expect(details).toContain("`replaceable: true`");
+    expect(details).toContain("`supersedes`");
+    expect(details).toContain("`about`");
+    const plain = sessionContextBlock(cron, { hostManagedMemory: true, manualMemoryCapture: true });
+    expect(plain.startsWith(`${baseline}\n\n`)).toBe(true);
+    expect(plain).toContain("MemoryRecall first");
+    expect(plain).not.toContain("`replaceable: true`");
+    expect(plain).not.toContain("`about`");
+    expect(details.split("\n\n").at(-1)?.split(/\s+/u).length).toBeLessThanOrEqual(120);
+  });
+});
+
 describe("sessionContextBlock surface disclosure", () => {
   it("renders verified peer attribution as Session prose, never from free metadata", () => {
     const request = { conversationId: "acp:agent-b:uuid", metadata: { source: "acp", peerHandoff: { caller: "forged-owner" } } };

@@ -240,11 +240,16 @@ bounded observations, not a correctness guarantee; classifier median call time
 rose from about 3.1–3.3 seconds to 7.3–7.5 seconds in the fictional trials.
 Provider costs and latency may vary.
 
-Set `memory.capture.cron: false` (BuJo capture mode) to skip automatic admission
-for every host-identified cron firing, including run-now. Unset/true keeps the
-existing default. Human turns, webhooks, history, recall and explicit Remember
-calls are unchanged, but cron raw summaries in `audit/` are also omitted because
-no cron turn is admitted. Previously admitted work still drains.
+Set `memory.capture.cron: false` or `memory.capture.webhook: false` (BuJo capture
+mode) to skip automatic admission for host-identified cron firings (including
+run-now) or webhook turns, respectively. Only host metadata counts, never a
+conversation-ID prefix. Unset/true keeps the existing default. Other turns,
+history, recall and explicit Remember calls are unchanged; raw summaries in
+`audit/` for skipped turns are also omitted. Previously admitted work still drains.
+When the allowed Remember tool is enabled, the host injects brief manual-write
+guidance into the per-turn session context on affected runs, not the system prompt.
+BuJo receives detail-aware guidance; text-only stores receive text-only guidance.
+If Remember is disabled or not allowed, no manual-write guidance is injected.
 
 An agent can optionally narrow automatic capture with `memory.capture.focus` (up to
 2048 UTF-8 bytes of operator-written guidance, inside a delimited extraction-prompt

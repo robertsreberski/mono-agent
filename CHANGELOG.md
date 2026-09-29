@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add `memory.capture.webhook: false` to skip automatic BuJo capture on
+  host-identified webhook turns, leaving other turns and explicit writes unchanged.
+- Give cron and webhook turns with automatic capture off short host-owned,
+  capability-matched Remember guidance when the write tool is enabled.
+
 - Add `memory.capture.cron: false` to skip automatic BuJo capture for cron
   firings without changing other turns or explicit memory writes.
 - Let BuJo `Remember` link an existing person, mark unlinked scan observations

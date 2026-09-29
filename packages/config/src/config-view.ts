@@ -86,6 +86,7 @@ export const CORE_CONFIG_FIELD_IDS = {
   "memory.maxBytes": true,
   "memory.writeMode": true,
   "memory.capture.cron": true,
+  "memory.capture.webhook": true,
   "memory.capture.focus": true,
   "memory.capture.only": true,
   "memory.capture.reconcileModel": true,
@@ -544,6 +545,12 @@ function buildMemorySection(input: BuildMonoAgentConfigViewInput): ConfigViewSec
       label: "Capture cron",
       value: String(memory.capture.cron),
       jsonPresent: json.memory?.capture?.cron !== undefined,
+    })]),
+    ...(memory.capture?.webhook === undefined ? [] : [toField({
+      id: "memory.capture.webhook",
+      label: "Capture webhook",
+      value: String(memory.capture.webhook),
+      jsonPresent: json.memory?.capture?.webhook !== undefined,
     })]),
     ...(memory.capture?.focus === undefined ? [] : [toField({
       id: "memory.capture.focus",

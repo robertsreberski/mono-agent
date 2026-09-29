@@ -15,7 +15,7 @@ import { AgentHarnessError } from "./error.js";
 import { representedContinuityToolRecordIds } from "./turn-continuity.js";
 import { sessionContextBlock } from "./session-context.js";
 import { memorySenderToken, memoryUserText } from "./memory-persistence.js";
-import { runSourceFromRequest } from "./request-routing.js";
+import { isCronRequest, runSourceFromRequest } from "./request-routing.js";
 import { errorMessageText } from "./value-utils.js";
 import { buildToolHistoryProjection } from "../tool-history-projection.js";
 
@@ -59,6 +59,10 @@ export async function prepareHarnessContext(
         ...(options.subagentInstancesFor === undefined ? {} : { subagentInstances: await options.subagentInstancesFor({ request, runId: contextOptions.turnId }) }),
         backgroundSubagents: options.backgroundSubagentsAvailable?.({ request, runId: contextOptions.turnId }) === true,
         hostManagedMemory: options.memory !== undefined,
+        manualMemoryCapture: options.memoryWriteMode === "capture" && options.memoryRememberEnabled === true
+          && ((options.memoryCaptureCron === false && isCronRequest(request))
+            || (options.memoryCaptureWebhook === false && request.metadata?.webhook !== undefined)),
+        rememberDetails: options.memoryRememberDetails === true,
         backgroundProcessJobs: options.backgroundProcessJobsAvailable?.({
           request,
           runId: contextOptions.turnId,

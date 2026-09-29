@@ -90,9 +90,12 @@ lease, so a custom runtime's stale callback cannot settle a newer attempt. The
 opaque logical-owner identity lets the standard runtime refresh that lease
 without granting callback ownership to an unrelated same-ID duplicate.
 
-`memoryCaptureCron: false` skips completed-turn admission only for host-identified
-cron metadata in capture mode (including raw-audit projection); it does not
-change other sources or history.
+`memoryCaptureCron: false` / `memoryCaptureWebhook: false` skip completed-turn
+admission only for the respective host-identified trigger metadata in capture
+mode (including raw-audit projection); neither changes other sources or history.
+When the host provisions Remember and disables capture for that turn, it can pass
+`memoryRememberEnabled` and `memoryRememberDetails` to add capability-matched
+per-turn session guidance without modifying cached system instructions.
 
 For `append-host-summary` and `capture` write modes, the store must implement
 `persistCompletedTurn`; harness construction rejects an incompatible store.

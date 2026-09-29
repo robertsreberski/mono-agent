@@ -2442,6 +2442,57 @@ describe("AgentHarness", () => {
     }
   });
 
+  it("skips only host-identified webhook capture when memoryCaptureWebhook is false", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    for (const switchValue of [undefined, true, false]) {
+      const admissions: string[] = [];
+      const harness = createAgentHarness({ identityPath, runtime: createFakeRuntime(async () => ({ text: "Noted." })).runtime,
+        model, memoryWriteMode: "capture", ...(switchValue === undefined ? {} : { memoryCaptureWebhook: switchValue }),
+        memory: { load: async () => undefined, persistCompletedTurn: async (turn) => {
+          admissions.push(turn.conversationId); return { id: turn.runId, runId: turn.runId,
+            conversationId: turn.conversationId, source: "test", bytesWritten: 0, admissionStatus: "admitted" as const };
+        } } });
+      for (const [conversationId, metadata] of [["webhook", { webhook: { endpoint: "fictional" } }],
+        ["cron", { cron: { jobId: "fictional-job" } }], ["web", { source: "web" }],
+        ["webhook:fictional-prefix", { source: "openai-api" }]] as const) {
+        await harness.run({ conversationId, userMessage: "Morgan noted an event.",
+          captureSpeakerKind: conversationId === "web" ? "human-turn" : "trigger", metadata,
+          abortSignal: new AbortController().signal });
+      }
+      expect(admissions).toEqual(switchValue === false ? ["cron", "web", "webhook:fictional-prefix"]
+        : ["webhook", "cron", "web", "webhook:fictional-prefix"]);
+    }
+  });
+
+  it("injects manual guidance per turn only when capture is off and Remember is provisioned", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const cases = [
+      { metadata: { cron: {} }, memoryCaptureCron: false, memoryRememberEnabled: true, expected: true },
+      { metadata: { webhook: {} }, memoryCaptureWebhook: false, memoryRememberEnabled: true, expected: true },
+      { metadata: { source: "webhook" }, memoryCaptureWebhook: false, memoryRememberEnabled: true, expected: false },
+      { metadata: { cron: {} }, memoryCaptureCron: true, memoryRememberEnabled: true, expected: false },
+      { metadata: { cron: {} }, memoryCaptureCron: false, memoryRememberEnabled: false, expected: false },
+      { metadata: { cron: {} }, memoryCaptureCron: false, memoryRememberEnabled: true, memoryWriteMode: "disabled" as const, expected: false },
+    ];
+    for (const entry of cases) {
+      const fake = createFakeRuntime(async () => ({ text: "Noted." }));
+      const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model,
+        memory: { load: async () => undefined, persistCompletedTurn: async (turn) => ({ id: turn.runId,
+          runId: turn.runId, conversationId: turn.conversationId, source: "test", bytesWritten: 0,
+          admissionStatus: "admitted" as const }) },
+        memoryWriteMode: "capture", ...entry });
+      await harness.run({ conversationId: "fictional", userMessage: "Review.",
+        metadata: entry.metadata, captureSpeakerKind: "trigger", abortSignal: new AbortController().signal });
+      expect(String(fake.calls[0]?.options.messages?.at(-1)?.content).includes("Automatic memory capture is off on this run."))
+        .toBe(entry.expected);
+      expect(fake.calls[0]?.prompt).not.toContain("Automatic memory capture is off on this run.");
+    }
+  });
+
   it("never admits webhook trigger text as capture evidence", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
