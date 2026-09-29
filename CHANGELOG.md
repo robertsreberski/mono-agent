@@ -6,6 +6,11 @@
   response, then bound missing receipts after the turn settles. Apply pending or
   uncertain steers inline when their exact receipt arrives without resending.
 
+- Add ChatGPT sign-in and API-key method choice for the `openai` provider in
+  CLI, guided setup and Agent settings, with a stable installation identity,
+  owner-only credential persistence and remote-browser paste-back. Keep
+  `openai-codex` and default model routes unchanged.
+
 - Let conversation-limited background subagents and commands wait in a bounded
   queue for a running slot; show queue receipts and capacity, and release
   never-started subagent reservations without a recovery demand.

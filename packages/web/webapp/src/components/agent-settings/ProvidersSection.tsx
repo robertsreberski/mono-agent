@@ -1,4 +1,4 @@
-import type { AgentSummary, ProviderAuthProviderStatus } from "../../types";
+import type { AgentSummary, ProviderAuthMethod, ProviderAuthProviderStatus } from "../../types";
 import { ProviderUsageMeters } from "../ProviderUsageMeters";
 import { Icon } from "../Icon";
 import { relativeTime } from "../time";
@@ -51,11 +51,16 @@ function ProviderRow({ agent, provider, state, compact }: { readonly agent: Agen
   </article>;
 }
 
+function confirmAuthReplacement(provider: ProviderAuthProviderStatus, method: ProviderAuthMethod): boolean {
+  if (provider.providerId !== "openai" || provider.credentialType === undefined || provider.credentialType === method.authType || provider.state !== "present") return true;
+  return window.confirm(`Replace the stored OpenAI ${provider.credentialType === "oauth" ? "ChatGPT sign-in" : "API key"} with ${method.authType === "oauth" ? "ChatGPT sign-in" : "an API key"}? The existing credential remains until authentication succeeds.`);
+}
+
 function ProviderAuthFlow({ provider, state }: { readonly provider: ProviderAuthProviderStatus; readonly state: State }) {
   const session = state.sessionProvider?.providerId === provider.providerId ? state.session : null;
   const methodProvider = state.methodProvider?.providerId === provider.providerId ? state.methodProvider : null;
   return <div className="settings-provider-flow">
-    {methodProvider !== null && methodProvider.methods.length > 1 && !state.checkActive && <div className="settings-provider-flow-row">{methodProvider.methods.map((method) => <button key={`${method.authType}:${method.strategy}`} type="button" className="settings-button" disabled={state.busy} onClick={() => void state.start(methodProvider, method)}>{method.label}</button>)}</div>}
+    {methodProvider !== null && methodProvider.methods.length > 1 && !state.checkActive && <div className="settings-provider-flow-row">{methodProvider.methods.map((method) => <button key={`${method.authType}:${method.strategy}`} type="button" className="settings-button" disabled={state.busy} onClick={() => { if (confirmAuthReplacement(methodProvider, method)) void state.start(methodProvider, method); }}>{method.label}</button>)}</div>}
     {session?.authUrl && <><p>{session.authUrl.instructions}</p><a href={session.authUrl.url} target="_blank" rel="noopener noreferrer">Open authentication page</a></>}
     {session?.deviceCode && <div className="provider-device-code-row"><a href={session.deviceCode.verificationUri} target="_blank" rel="noopener noreferrer">Open device page</a><code className="provider-device-code">{session.deviceCode.userCode}</code></div>}
     {session?.progress && <p>{session.progress}</p>}

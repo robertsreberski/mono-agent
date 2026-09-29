@@ -78,7 +78,7 @@ A route that names a provider in none of `providers`, Pi's built-in catalog, nor
 
 ## Credential resolution
 
-- **Pi-level auth** (OAuth/account providers such as Anthropic, GitHub Copilot, OpenAI Codex; API-key providers such as OpenCode-Go) resolves through `providers.piAuthPath`. Set it up with `mono-agent auth login <provider> [--pi-auth-path ...]`.
+- **Pi-level auth** (OAuth/account providers such as Anthropic, GitHub Copilot, OpenAI Codex, and ChatGPT on `openai`; API-key providers such as OpenCode-Go and `openai`) resolves through `providers.piAuthPath`. Set it up with `mono-agent auth login <provider> [--pi-auth-path ...]`; for `openai` choose `--auth-method oauth|api-key` when headless.
 - **Provider-level keys** resolve through the definition's `apiKeyEnv`: keep the value in `.env` and reference only its variable name in config, so the committed file carries no secret.
 
 ### Provider authentication in Agent Settings
@@ -109,6 +109,14 @@ The headless login flow is provider-owned by Pi 0.87.0:
   URL and, when the browser cannot reach the callback on the remote host, paste
   the complete final localhost redirect URL into the dialog. Pi validates the
   callback state before exchange.
+- `openai` offers **Sign in with ChatGPT** or **OpenAI API key**. A successful
+  selection replaces the previous stored `openai` method, leaving other
+  providers unchanged; cancellation leaves it intact. The ChatGPT callback
+  listens on the agent host at `127.0.0.1:1455`. In a remote browser, or when
+  that port is busy, paste the **entire** final redirect URL from the browser's
+  address bar into Agent settings. A code alone is not accepted, and a bad paste
+  ends the attempt: restart sign-in. The authorization URL carries an
+  installation identifier to OpenAI; it is not stored in console history.
 - OpenCode-Go and other Pi API-key providers render their provider-owned prompts
   in the dialog. Secret prompts are masked and cleared as they are submitted.
 
@@ -119,6 +127,15 @@ owner-only, locked, no-clobber promotion path as `auth login --api-key-stdin`.
 The web service only proxies short-lived, no-store session projections and never
 persists submitted values. This feature does not inspect or modify Codex CLI
 credentials such as `~/.codex/auth.json`.
+
+ChatGPT sign-in creates `mono-agent-installation-id.json` next to the effective
+Pi auth file on first use, with owner-only permissions. Agents using the same
+auth directory share its stable UUID; it is not a credential. To rotate it,
+stop sign-ins, remove the file from that private directory, then explicitly
+sign in again. Pi token refresh does not require the installation ID. A stored
+credential (of either method) takes precedence over `OPENAI_API_KEY`; selecting
+an environment key while a stored entry exists cannot switch methods. Use
+secure-store replacement instead, or explicitly remove the old entry first.
 
 A valid repeated login replaces the current login with a fresh session after
 provider/method validation; invalid requests do not cancel a usable prompt.
