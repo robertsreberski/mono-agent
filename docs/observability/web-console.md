@@ -155,6 +155,18 @@ a confirmed successful restart.
 Only a supervised launchd/systemd worker with a configured operator API key and
 a verifiably loaded relaunch policy advertises `capabilities.restart.supported`.
 Plain foreground/embedded, keyless, stopped, or unverifiable agents refuse.
+When discovery confirms that an agent process generation changed, a dispatched
+web parent turn left running or failed by a lost connection gets one durable
+conversation notice. The original turn is never replayed. The notice asks the
+agent to inspect its background jobs and subagents; it does not assert their
+outcomes. Explicit user cancellations and older turns without a persisted
+process-generation marker are not classified retrospectively. The separate
+host wake may be acknowledged as attempted even when model receipt is uncertain;
+an ambiguous dispatch or steer is never automatically replayed. Accepted
+supervised restarts briefly drain running background jobs before cancellation,
+under a single shutdown-wide ten-second forced-exit bound; unresolved work is
+reconciled by the next process generation.
+
 The agent's `POST {basePath}/v1/restart` requires its bearer; the web console
 proxies `POST /api/v1/agents/:id/restart` or a persisted reply-part click to the
 selected source, and browsers poll the web-owned operation. `ProposeRestart`

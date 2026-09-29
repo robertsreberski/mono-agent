@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add a single durable web-conversation notice when a dispatched parent turn
+  loses its agent process, without replaying the turn or claiming child outcomes.
+  An attempted wake may remain ambiguous; explicitly cancelled turns are excluded.
+
+- Let supervised restarts briefly drain running background jobs before cancelling
+  unsettled work, inside the existing ten-second shutdown deadline.
+
 - Flag duplicate object keys anywhere in `mono-agent.config.json` as errors in
   `validate` and `doctor`; runtime loading warns and keeps the last value.
 

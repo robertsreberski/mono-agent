@@ -7,6 +7,8 @@ export interface SupervisedRestartLatch {
   signal(): void;
   beginStop(operationId: string): void;
   onStop(callback: () => void): void;
+  /** Arm once before app.stop; monotonic deadline is shared with job draining. */
+  beginShutdownDeadline(): number | undefined;
   readonly exitCode: number;
 }
 
@@ -30,6 +32,7 @@ export function createSupervisedRestartLatch(): SupervisedRestartLatch {
   let stopRequested = false;
   let stopStarted = false;
   let stopCallback: (() => void) | undefined;
+  let shutdownDeadline: number | undefined;
   const dispatch = (): void => {
     if (!stopRequested || stopStarted || stopCallback === undefined) return;
     stopStarted = true;
@@ -62,6 +65,14 @@ export function createSupervisedRestartLatch(): SupervisedRestartLatch {
     onStop(callback) {
       stopCallback = callback;
       dispatch();
+    },
+    beginShutdownDeadline() {
+      if (disposition !== AGENT_RESTART_EXIT_CODE) return undefined;
+      if (shutdownDeadline !== undefined) return shutdownDeadline;
+      shutdownDeadline = performance.now() + AGENT_RESTART_EXIT_FALLBACK_MS;
+      const timer = setTimeout(() => process.exit(AGENT_RESTART_EXIT_CODE), AGENT_RESTART_EXIT_FALLBACK_MS);
+      timer.unref();
+      return shutdownDeadline;
     },
     get exitCode() { return disposition; },
   };

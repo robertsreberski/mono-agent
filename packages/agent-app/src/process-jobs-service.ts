@@ -189,7 +189,7 @@ export interface ProcessJobsServiceHandle {
   cancel(jobId: string): Promise<ProcessJobProjection>;
   counts(): Promise<Readonly<Record<ProcessJobState, number>>>;
   activateWakes(): Promise<void>;
-  stop(): Promise<void>;
+  stop(shutdownDeadline?: number): Promise<void>;
 }
 
 export class ProcessJobServiceError extends Error {
@@ -320,6 +320,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   private wakesActive = false;
   private storageOperational = true;
   private stopping = false;
+  private drainingForRestart = false;
   private stopped = false;
   private stopPromise: Promise<void> | undefined;
   private agentIncarnation!: ProcessIncarnation;
@@ -669,8 +670,8 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     }
   }
 
-  stop(): Promise<void> {
-    this.stopPromise ??= this.stopOnce();
+  stop(shutdownDeadline?: number): Promise<void> {
+    this.stopPromise ??= this.stopOnce(shutdownDeadline);
     return this.stopPromise;
   }
 
@@ -1624,7 +1625,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
             }
             return;
           }
-          if (this.stopping) {
+          if (this.stopping && !this.drainingForRestart) {
             transitionTerminal(
               record,
               "interrupted",
@@ -2042,9 +2043,25 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     }
   }
 
-  private async stopOnce(): Promise<void> {
+  private async stopOnce(shutdownDeadline?: number): Promise<void> {
     if (this.stopped) return;
     this.stopping = true;
+    // Admission is closed before draining. Leave at least three seconds of the
+    // supervised window for cancellation, durable settlement and owner cleanup.
+    if (shutdownDeadline !== undefined && this.settlements.size > 0) {
+      this.drainingForRestart = true;
+      const drainMs = Math.min(1_500, Math.max(0, shutdownDeadline - performance.now() - 3_000));
+      if (drainMs > 0) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            Promise.allSettled([...this.settlements.values()]),
+            new Promise<void>((resolve) => { timer = setTimeout(resolve, drainMs); }),
+          ]);
+        } finally { if (timer !== undefined) clearTimeout(timer); }
+      }
+    }
+    this.drainingForRestart = false;
     for (const commands of this.managedCommands.values()) commands.revoke();
     for (const jobId of [...this.subagentLiveInput.keys()]) this.forgetSubagentLiveInput(jobId);
     this.wakesActive = false;

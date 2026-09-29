@@ -926,7 +926,8 @@ export function waitForShutdownSignal(
           }
         }
         try {
-          await app.stop();
+          const deadline = restartLatch?.beginShutdownDeadline();
+          await app.stop(deadline);
           resolve(restartLatch?.exitCode || (latchFailed ? 1 : 0));
         } catch (error) {
           try {

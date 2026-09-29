@@ -146,7 +146,7 @@ export interface MonoAgentApp {
   ): Promise<ContinuationStatusSnapshot>;
   startChannelIfConfigured(id: ChannelId, reason: string): Promise<ChannelStatus>;
   applyConfigChange(reason: string): Promise<ConfigApplyResult>;
-  stop(): Promise<void>;
+  stop(shutdownDeadline?: number): Promise<void>;
 }
 
 /**
@@ -617,8 +617,8 @@ export class MonoAgentAppController implements MonoAgentApp {
     return processJobsOperations.activateProcessJobWakes(this);
   }
 
-  async stopProcessJobsService(): Promise<void> {
-    return processJobsOperations.stopProcessJobsService(this);
+  async stopProcessJobsService(shutdownDeadline?: number): Promise<void> {
+    return processJobsOperations.stopProcessJobsService(this, shutdownDeadline);
   }
 
   requireContinuationService(): ContinuationServiceHandle { return continuationOperations.requireContinuationService(this); }
@@ -641,11 +641,11 @@ export class MonoAgentAppController implements MonoAgentApp {
     deliveryKey: string,
   ): Promise<ContinuationHistoryRecordResult> { return continuationOperations.recordContinuationHistory(this, conversationId, text, deliveryKey); }
 
-  async stop(): Promise<void> {
+  async stop(shutdownDeadline?: number): Promise<void> {
     for (const service of this.providerUsageServices.values()) service.stop();
     this.providerUsageServices.clear();
     try {
-      await lifecycleOperations.stop(this);
+      await lifecycleOperations.stop(this, shutdownDeadline);
     } finally {
       // A teardown failure must not strand this logical host reference. Active
       // request-generation leases still defer the physical owner-lock release.
