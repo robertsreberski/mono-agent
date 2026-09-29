@@ -34,6 +34,10 @@
   reports them. `openai-codex` now displays as "OpenAI Codex (legacy)" under
   the same id; the new ChatGPT sign-in on `openai` is not offered yet.
 
+- Add bounded read-only salvage to interrupted detached child wakes and authorized
+  `AgentManage inspect`: distinguish placed tool results from unknown outcomes,
+  without resuming the old instance or guaranteeing tool-effect completeness.
+
 - Keep every in-progress Background jobs shelf indicator static, using the same
   half-filled circle in the closed bar and open rows.
 
