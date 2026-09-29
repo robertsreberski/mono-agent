@@ -2675,7 +2675,7 @@ export class WebService {
       // webhook channels stay excluded here and in `assertConsoleToolTurn`.
       const consoleTools = started.thread.trigger === undefined;
       if (consoleTools) this.consoleToolTurns.add(started.turnId);
-      this.store.markTurnDispatchStarted(started.turnId);
+      this.store.markTurnDispatchStarted(started.turnId, this.clientProcessGeneration.get(client));
       const response = await client.turn({
         conversationId: started.conversationId,
         text: operatorText,
@@ -3006,6 +3006,82 @@ export class WebService {
     this.emitThread("threads.changed", { thread: detail.thread });
     this.refreshMemberProject(detail.thread);
     this.announcePushEvent(`turn:${turnId}:terminal`);
+  }
+
+  private readonly parentInterruptionWakes = new Set<string>();
+
+  private async deliverParentInterruptionWake(
+    input: { readonly sourceId: string; readonly threadId: string; readonly turnId: string; readonly wakeKey: string },
+    connection: AgentConnection,
+  ): Promise<void> {
+    if (this.parentInterruptionWakes.has(input.wakeKey)) return;
+    this.parentInterruptionWakes.add(input.wakeKey);
+    const previous = this.hostWakeTails.get(input.threadId) ?? Promise.resolve();
+    const delivery = previous.catch(() => undefined).then(async () => {
+      if (this.stopped || this.connections.get(input.sourceId)?.processGeneration !== connection.processGeneration) return;
+      this.store.expireParentInterruptionWake(input.sourceId, input.turnId);
+      const prompt = "The agent process ended during a previous turn. The turn was not replayed. Inspect background jobs and subagents with AgentManage inspect before continuing; this notice does not establish their outcomes.";
+      const active = this.activeTurns.get(input.threadId);
+      if (active !== undefined && this.clientProcessGeneration.get(active.client) === connection.processGeneration
+        && connection.info.supportsLiveInput && this.withProjectPrefix(input.threadId, prompt).length <= AGENT_LIVE_INPUT_MAX_CHARACTERS) {
+        if (!this.store.claimParentInterruptionWake(input.sourceId, input.turnId, active.turnId)) return;
+        try {
+          const settlement = await active.client.liveInput({
+            conversationId: `web:${input.threadId}`, id: input.wakeKey,
+            text: this.withProjectPrefix(input.threadId, prompt),
+            receivedAt: new Date().toISOString(), deliveryKey: input.wakeKey,
+            signal: AbortSignal.timeout(10 * 60_000),
+          });
+          if (settlement.status === "applied") {
+            this.store.completeParentInterruptionWake(input.sourceId, input.turnId, active.turnId);
+          } else if (settlement.status === "requeue" || settlement.status === "unavailable") {
+            this.store.deferParentInterruptionWake(input.sourceId, input.turnId, active.turnId);
+          }
+        } catch {
+          // An attempted steer may have crossed the boundary. Never retry it.
+        }
+        return;
+      }
+      if (active !== undefined) {
+        try { await active.completion; } catch { /* The original turn already owns its failure. */ }
+      }
+      await this.activeCompactions.get(input.threadId);
+      if (this.stopped || this.connections.get(input.sourceId)?.processGeneration !== connection.processGeneration) return;
+      if (this.withProjectPrefix(input.threadId, prompt).length > WEB_MAX_TURN_TEXT_CHARACTERS) return;
+      let started;
+      try {
+        const selection = this.resolveTurnSelection(input.threadId);
+        started = this.store.beginAssistantTurn({
+          threadId: input.threadId, prompt, storedPrompt: "[Parent turn interrupted]",
+          ...(selection.model === undefined ? {} : { model: selection.model }),
+          ...(selection.effort === undefined ? {} : { effort: selection.effort }),
+        });
+      } catch {
+        // Pre-dispatch refusal retains the bounded pending obligation.
+        return;
+      }
+      if (!this.store.claimParentInterruptionWake(input.sourceId, input.turnId, started.turnId)) {
+        this.store.failTurn(started.turnId, { message: "Interruption wake expired before dispatch.", code: "wake_expired" });
+        return;
+      }
+      const { completion, admitted } = this.launchTurn(started, connection.client, prompt);
+      void completion.catch((error: unknown) => {
+        this.options.logger?.warn?.("Parent interruption follow-up settlement failed.", {
+          turnId: started.turnId, errorCode: errorCode(error) ?? "unknown",
+        });
+      });
+      this.emit("message.changed", input.threadId, { messageId: started.assistantMessageId, updatedAt: started.thread.updatedAt });
+      this.emit("turn.changed", input.threadId, { turn: started.thread.runState });
+      this.emitThread("threads.changed", { thread: started.thread });
+      if (await admitted) this.store.completeParentInterruptionWake(input.sourceId, input.turnId, started.turnId);
+      // A missing admission receipt is ambiguous, not a reason to replay.
+    });
+    const tail = delivery.then(() => undefined, () => undefined);
+    this.hostWakeTails.set(input.threadId, tail);
+    try { await delivery; } finally {
+      if (this.hostWakeTails.get(input.threadId) === tail) this.hostWakeTails.delete(input.threadId);
+      this.parentInterruptionWakes.delete(input.wakeKey);
+    }
   }
 
   private async deliverProcessJobWake(
@@ -3672,6 +3748,19 @@ export class WebService {
     const previousConnections = this.connections;
     this.connections = nextConnections;
     const agentsChanged = this.store.replaceAgents(summaries);
+    for (const [sourceId, connection] of nextConnections) {
+      for (const notice of this.store.reconcileParentInterruptions(sourceId, connection.processGeneration)) {
+        this.emit("message.changed", notice.threadId, { messageId: notice.messageId, updatedAt: this.currentDate().toISOString() });
+        this.emitThread("threads.changed", { thread: this.store.getThread(notice.threadId)! });
+      }
+      for (const pending of this.store.pendingParentInterruptions(sourceId)) {
+        void this.deliverParentInterruptionWake(pending, connection).catch((error: unknown) => {
+          this.options.logger?.warn?.("Parent interruption wake unavailable.", {
+            sourceId, errorCode: errorCode(error) ?? "unknown",
+          });
+        });
+      }
+    }
     this.reconcilePendingRestartOperations();
     // Usable provider authentication comes from the live connection, so when it
     // turns on or off nothing on the discovery summary moves and `replaceAgents`

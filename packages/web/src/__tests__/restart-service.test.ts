@@ -1,5 +1,6 @@
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebService, agentGeneration } from "../service.js";
 import { fakeDiscoveredAgent, temporaryRoot } from "./helpers.js";
@@ -308,6 +309,61 @@ describe("web-owned restart lifecycle", () => {
       expect(s.service.store.getThread(thread.id)?.runState.error?.code).toBe("agent_restart_interrupted");
       release(Response.json({ operation: { id: "host-1" }, process: { pid: 123, startedAt: "2026-09-23T10:00:00.000Z" } }, { status: 202 }));
       await pending;
+    } finally { await s.service.stop(); }
+  });
+});
+
+describe("unexpected parent process loss", () => {
+  it("notices failed and startup-running dispatched turns without a child job, once across refresh", async () => {
+    const s = await scenario();
+    try {
+      const first = s.service.createThread("agent-one");
+      const failed = s.service.store.beginTurn({ threadId: first.id, text: "first", attachmentIds: [] });
+      s.service.store.markTurnDispatchStarted(failed.turnId, agentGeneration(s.agent()));
+      s.service.store.failTurn(failed.turnId, { message: "terminated" });
+      const second = s.service.createThread("agent-one");
+      const running = s.service.store.beginTurn({ threadId: second.id, text: "second", attachmentIds: [] });
+      s.service.store.markTurnDispatchStarted(running.turnId, agentGeneration(s.agent()));
+      s.updateAgent({ ...s.agent(), source: { ...s.agent().source, pid: 456,
+        startedAt: "2026-09-23T11:00:00.000Z" } });
+      await settle(s.service);
+      const db = new DatabaseSync(s.service.store.paths.database);
+      expect(db.prepare("SELECT turn_id FROM parent_turn_interruptions").all()).toHaveLength(2);
+      expect(s.service.store.turnStatus(running.turnId)).toBe("interrupted");
+      await settle(s.service);
+      expect(db.prepare("SELECT turn_id FROM parent_turn_interruptions").all()).toHaveLength(2);
+      db.close();
+      for (const thread of [first, second]) {
+        expect(s.service.store.getThreadDetail(thread.id)?.messages.filter((message) =>
+          message.parts.some((part) => part.type === "text" && part.text.includes("AgentManage inspect"))))
+          .toHaveLength(1);
+      }
+    } finally { await s.service.stop(); }
+  });
+});
+
+describe("terminated operator turn", () => {
+  it("persists the dispatch generation through failTurn before process replacement", async () => {
+    let calls = 0;
+    const s = await scenario({ turns: () => {
+      calls++;
+      return new Response(JSON.stringify(calls === 1
+        ? { kind: "error", message: "terminated" }
+        : { kind: "finish", finalText: "ready" }) + "\n", { headers: { "content-type": "application/x-ndjson" } });
+    } });
+    try {
+      const thread = s.service.createThread("agent-one");
+      await s.service.startTurn(thread.id, { text: "question" });
+      await vi.waitFor(() => expect(s.service.store.getThread(thread.id)?.runState.status).toBe("failed"));
+      s.updateAgent({ ...s.agent(), source: { ...s.agent().source, pid: 456,
+        startedAt: "2026-09-23T11:00:00.000Z" } });
+      await settle(s.service);
+      const db = new DatabaseSync(s.service.store.paths.database);
+      try {
+        expect(db.prepare("SELECT turn_id FROM parent_turn_interruptions").all()).toHaveLength(1);
+        expect(db.prepare("SELECT dispatch_generation FROM turns WHERE thread_id = ? ORDER BY started_at LIMIT 1")
+          .get(thread.id)).toMatchObject({ dispatch_generation: agentGeneration(fakeDiscoveredAgent({ apiKey: "fixture-key" })) });
+      } finally { db.close(); }
     } finally { await s.service.stop(); }
   });
 });
