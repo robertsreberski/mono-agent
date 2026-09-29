@@ -526,8 +526,9 @@ describe("ConsoleStoreProvider integration", () => {
   });
 
   // The full shell (dashboard + chat) renders under CI's parallel package load;
-  // the default 1 s find timeout is too tight for its first detail read.
+  // the default 1 s find and 5 s test timeouts are too tight for it.
   const REAL_SHELL_RENDER_TIMEOUT_MS = 5_000;
+  const REAL_SHELL_TEST_TIMEOUT_MS = 30_000;
   it("keeps unsent composer text when the operator switches conversations in the real shell", async () => {
     const alphaAgent = agent("alpha", { label: "Alpha" });
     const first = thread("alpha-first", "alpha", { title: "Alpha first", messageCount: 1 });
@@ -602,7 +603,7 @@ describe("ConsoleStoreProvider integration", () => {
       if (scrollToDescriptor === undefined) Reflect.deleteProperty(HTMLElement.prototype, "scrollTo");
       else Object.defineProperty(HTMLElement.prototype, "scrollTo", scrollToDescriptor);
     }
-  });
+  }, REAL_SHELL_TEST_TIMEOUT_MS);
 
   it("publishes an owned pending create immediately and reconciles the server identity", async () => {
     localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
