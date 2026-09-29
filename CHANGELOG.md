@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Update undici to 8.11.2 for the WebSocket subprotocol denial-of-service and
+  BalancedPool TLS validation advisories (GHSA-rfgv-xxqx-mfg5, GHSA-w293-vg96-wgc3).
+
 - Add a single durable web-conversation notice when a dispatched parent turn
   loses its agent process, without replaying the turn or claiming child outcomes.
   An attempted wake may remain ambiguous; explicitly cancelled turns are excluded.
