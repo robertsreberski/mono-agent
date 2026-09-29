@@ -14,15 +14,19 @@ import { getBuiltinModel, getBuiltinModels } from "@earendil-works/pi-ai/provide
 import { getPiBuiltinModel, listPiBuiltinModels } from "../../ai/pi-interop.js";
 import { estimateCost } from "../../ai/cost.js";
 
-// Exercise the real pinned 0.87.1 catalog, rather than a mock or a copied
+// Exercise the real pinned 0.99.1 chat catalog, rather than a mock or a copied
 // temporary row: pricing, dispatch, advertised effort and listing must agree.
-describe("Pi 0.87.1 native model integration", () => {
+describe("Pi 0.99.1 native model integration", () => {
   const rows = [
     ["anthropic", "claude-opus-5-5", 1_000_000, ["low", "medium", "high", "xhigh", "max"], 4, 20],
+    ["anthropic", "claude-sonnet-5-5", 1_000_000, ["low", "medium", "high", "xhigh", "max"], 2, 10],
     ["openai-codex", "gpt-6-sol", 272_000, ["none", "minimal", "low", "medium", "high", "xhigh", "max"], 2, 10],
     ["openai-codex", "gpt-6-luna", 272_000, ["none", "minimal", "low", "medium", "high", "xhigh", "max"], 0.1, 0.5],
     ["openai", "gpt-6-sol", 272_000, ["none", "low", "medium", "high", "xhigh", "max"], 2, 10],
     ["openai", "gpt-6-luna", 272_000, ["none", "low", "medium", "high", "xhigh", "max"], 0.1, 0.5],
+    // Pi 0.99.1 does not expose disabled effort for GPT-6.1 Sol.
+    ["openai", "gpt-6.1-sol", 272_000, ["low", "medium", "high", "xhigh", "max"], 2, 10],
+    ["openai-codex", "gpt-6.1-sol", 272_000, ["minimal", "low", "medium", "high", "xhigh", "max"], 2, 10],
   ];
 
   for (const [provider, model, contextWindow, levels, input, output] of rows) {
@@ -44,6 +48,16 @@ describe("Pi 0.87.1 native model integration", () => {
     });
   }
 
+  it("keeps unqualified catalog discovery chat-only after Pi's v6 catalog adds images/classifiers", () => {
+    // Pi 0.99 includes non-chat entries under the same provider; the runtime
+    // must not advertise these as promptable chat models.
+    const listed = listPiBuiltinModels("openrouter");
+    expect(listed).toEqual(getBuiltinModels("openrouter"));
+    expect(listed.length).toBeGreaterThan(0);
+    expect(listed.every((row) => row.type === "chat")).toBe(true);
+    expect(getPiBuiltinModel("typesafe", "system-one")).toBeUndefined();
+  });
+
   it("rejects genuinely unknown refs instead of inventing backfill rows", () => {
     for (const [provider, model] of [
       ["openai-codex", "gpt-6-nemesis"],
@@ -64,39 +78,8 @@ describe("Pi 0.87.1 native model integration", () => {
   });
 });
 
-describe("Claude Sonnet 5.5 supplement integration", () => {
-  it("uses one row for listing, resolution, effort and pricing", () => {
-    expect(getBuiltinModel("anthropic", "claude-sonnet-5-5")).toBeUndefined();
-    expect(getBuiltinModels("anthropic").some((row) => row.id === "claude-sonnet-5-5"))
-      .toBe(false);
-
-    const listed = listPiBuiltinModels("anthropic")
-      .filter((row) => row.id === "claude-sonnet-5-5");
-    expect(listed).toHaveLength(1);
-    expect(getPiBuiltinModel("anthropic", "claude-sonnet-5-5")).toEqual(listed[0]);
-
-    const resolved = resolvePiRuntimeModel({
-      provider: "anthropic",
-      model: "claude-sonnet-5-5",
-      reference: "anthropic:claude-sonnet-5-5",
-    }, {});
-    expect(resolved.model).toEqual(listed[0]);
-    expect(resolved.model).toMatchObject({
-      contextWindow: 1_000_000,
-      maxTokens: 128_000,
-      cost: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
-    });
-    expect(resolved.capabilities.reasoning_levels)
-      .toEqual(["low", "medium", "high", "xhigh", "max"]);
-    expect(thinkingLevelForEffort("max", resolved.capabilities)).toBe("max");
-    expect(estimateCost({
-      model: "anthropic:claude-sonnet-5-5",
-      inputTokens: 1_000,
-      outputTokens: 1_000,
-    })).toBeCloseTo(0.012, 6);
-  });
-});
-
+// Pi 0.99.0 ships the Sonnet row natively; neither static discovery nor the
+// harness needs a mono-agent backfill. Disabled effort remains unavailable.
 describe("resolvePiRuntimeModel — unknown builtin model guard", () => {
   it("throws a clean 'pi model not found' error instead of a raw TypeError on a catalog miss", () => {
     expect(() => resolvePiRuntimeModel({ provider: "ollama", model: "nope", reference: "ollama:nope" }, {}))

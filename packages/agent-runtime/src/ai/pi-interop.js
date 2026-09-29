@@ -9,7 +9,6 @@ import {
   getBuiltinModels,
   getBuiltinProviders,
 } from "@earendil-works/pi-ai/providers/all";
-import { getPiSupplementModel, listPiSupplementModels } from "./pi-supplement.js";
 import { getPiOAuthAuth, resolveOAuthApiKey, toAuthInteraction } from "./pi-oauth-compat.js";
 import { reasoningLevelsForPiModel as resolveReasoningLevels } from "./providers/pi-models.js";
 
@@ -121,28 +120,20 @@ function cloneInteropValue(value) {
 }
 
 /**
- * List defensive snapshots of Pi's built-in models for one provider plus
- * temporary mono-agent supplement rows. Upstream rows always win on duplicate
- * ids, and callers cannot mutate either source's shared state.
+ * List defensive snapshots of Pi's built-in chat models for one provider.
+ * Callers cannot mutate the upstream catalog's shared state.
  *
  * @param {string} providerId
  * @returns {PiBuiltinModelSnapshot[]}
  */
 export function listPiBuiltinModels(providerId) {
-  const models = getBuiltinModels(/** @type {any} */ (providerId));
-  const seen = new Set(models.map((model) => model?.id));
-  const merged = [...models];
-  for (const extra of listPiSupplementModels(providerId)) {
-    if (seen.has(extra.id)) continue;
-    seen.add(extra.id);
-    merged.push(/** @type {*} */ (extra));
-  }
-  return /** @type {PiBuiltinModelSnapshot[]} */ (cloneInteropValue(merged));
+  return /** @type {PiBuiltinModelSnapshot[]} */ (cloneInteropValue(
+    getBuiltinModels(/** @type {any} */ (providerId)),
+  ));
 }
 
 /**
- * Read a defensive snapshot of one Pi built-in model, falling back to the
- * temporary supplement only on an upstream miss.
+ * Read a defensive snapshot of one Pi built-in chat model.
  *
  * @param {string} providerId
  * @param {string} modelId
@@ -152,7 +143,7 @@ export function getPiBuiltinModel(providerId, modelId) {
   const model = getBuiltinModel(
     /** @type {any} */ (providerId),
     /** @type {any} */ (modelId),
-  ) ?? getPiSupplementModel(providerId, modelId);
+  );
   return model === undefined
     ? undefined
     : /** @type {PiBuiltinModelSnapshot} */ (cloneInteropValue(model));

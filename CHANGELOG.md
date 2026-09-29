@@ -10,6 +10,10 @@
   outcome-unknown marker, wait up to 15 minutes, and cancel uncommitted agent
   compaction when its client disconnects.
 
+- Let Pi 0.99.1 provide Claude Sonnet 5.5 directly instead of a local catalog
+  supplement, and expose its new GPT-6.1 Sol chat catalog rows through existing
+  discovery without changing configured routes or login flows.
+
 - Keep every in-progress Background jobs shelf indicator static, using the same
   half-filled circle in the closed bar and open rows.
 
@@ -39,8 +43,8 @@
   preserving history while protecting plain text-only Remember lines.
 
 - Add `anthropic:claude-sonnet-5-5` to model discovery, runtime routing,
-  reasoning-effort selection, and pricing while the pinned Pi catalog catches
-  up, using Anthropic's published 1M context window and $2/$10 pricing.
+  reasoning-effort selection, and pricing through Pi's native catalog, with
+  a 1M context window and $2/$10 pricing.
 
 - Fix background `PeerAgent` job cards and exact-origin completion wakes in the
   web console by keeping peer projections free of subagent-only telemetry.

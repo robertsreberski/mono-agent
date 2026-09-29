@@ -4,7 +4,6 @@
 // `undefined` on an unknown provider/model exactly like the old `getModel`.
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { getBuiltinModel as getPiModel } from "@earendil-works/pi-ai/providers/all";
-import { getPiSupplementModel } from "../pi-supplement.js";
 import { DEFAULT_RUNTIME_BRAND } from "../../runtime-brand.js";
 
 export const EMPTY_USAGE = {
@@ -126,10 +125,7 @@ export function resolvePiRuntimeModel(resolved, options) {
     throw new Error("invalid pi model reference: provider and model are required");
   }
   if (options.customProvider) return resolveCustomPiModel(resolved, options);
-  // Pi remains authoritative. A temporary mono-agent supplement fills only a
-  // genuine upstream miss, then follows the same capability path as a builtin.
-  const catalogModel = getPiModel(/** @type {*} */ (provider), model)
-    ?? getPiSupplementModel(provider, model);
+  const catalogModel = getPiModel(/** @type {*} */ (provider), model);
   if (!catalogModel) {
     // Phrasing matters: this must match ai/failure.js's NON_RETRYABLE_PROVIDER_RE
     // `model[_ ]not[_ ]found` alternation so the router classifies a catalog miss

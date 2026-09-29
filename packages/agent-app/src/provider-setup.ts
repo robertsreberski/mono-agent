@@ -407,7 +407,9 @@ export function planProviderSetup(options: PlanProviderSetupOptions): ProviderSe
   // property of the provider itself, alongside the `auth.apiKey` read below.
   const piOAuthProviders = new Set(
     piProviders.getProviders()
-      .filter((provider) => provider.auth.oauth !== undefined)
+      // Pi 0.99 adds ChatGPT OAuth to `openai`, but this wizard has no
+      // device-id lifecycle yet. Keep its existing API-key setup path.
+      .filter((provider) => provider.id !== "openai" && provider.auth.oauth !== undefined)
       .map((provider) => provider.id),
   );
   const authAlreadyDetected = (keys: readonly string[]): boolean =>

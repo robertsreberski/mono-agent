@@ -35,7 +35,6 @@ import { closePiMcpClients } from "../../agent/tools/pi-bridge.js";
 import { createApprovalManager } from "../../agent/approval.js";
 import { buildCapabilitiesUsed, toolCompactionAppliedFromWarnings } from "../runtime/capabilities-used.js";
 import { reasoningLevelsForPiModel, resolvePiRuntimeModel } from "./pi-models.js";
-import { registerPiSupplementModels } from "../pi-supplement.js";
 import {
   textFromContent,
   thinkingFromContent,
@@ -220,11 +219,6 @@ function buildRunModels(runtime, options, runtimeWarnings, providerAttributionSe
           ? {}
           : { authContext: options.providerCheckAuthContext }),
       });
-      // Pi's harness resolves the selected id again inside this collection, so
-      // supplement rows must be present here as well as in the static resolver.
-      // Existing upstream rows remain untouched, and test/custom collections
-      // supplied through the seams above stay verbatim.
-      registerPiSupplementModels(models);
     }
   }
   return withProviderCheckOutputCap(

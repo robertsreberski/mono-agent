@@ -249,7 +249,9 @@ async function discoverPiModels(
   const models = builtinModels();
   const oauthProviders = new Set(
     models.getProviders()
-      .filter((provider) => provider.auth.oauth !== undefined)
+      // Pi 0.99 adds ChatGPT OAuth to `openai`; onboarding does not implement
+      // its device-id contract, so continue to advertise API-key setup only.
+      .filter((provider) => provider.id !== "openai" && provider.auth.oauth !== undefined)
       .map((provider) => provider.id),
   );
   const providerNames = new Map(models.getProviders().map((provider) => [provider.id, provider.name]));

@@ -17,6 +17,7 @@ function unavailableFetch(): Promise<Response> {
   return Promise.reject(new Error("unavailable"));
 }
 
+// Pi 0.99.1 removes kimi-k2.6; test discovery against a currently listed chat model.
 describe("supported wizard model catalog", () => {
   it("rejects unsupported remote and undeclared custom providers in manual guided entry", () => {
     expect(guidedPiProviderProblem("cloudflare-workers-ai")).toMatch(/Configure other Pi providers manually/u);
@@ -44,7 +45,7 @@ describe("supported wizard model catalog", () => {
       expect(result.statuses.find((status) => status.provider === "Pi"))
         .toMatchObject({ status: "unavailable" });
       expect(result.statuses.find((status) => status.provider === "Pi")?.detail).toContain("not-owner-only");
-      expect(result.candidates.find((candidate) => candidate.value === "opencode-go:kimi-k2.6"))
+      expect(result.candidates.find((candidate) => candidate.value === "opencode-go:kimi-k3"))
         .toMatchObject({ authState: "auth_required", setupRequired: true });
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -69,7 +70,7 @@ describe("supported wizard model catalog", () => {
       expect(result.statuses.find((status) => status.provider === "Pi"))
         .toMatchObject({ status: "unavailable" });
       expect(result.statuses.find((status) => status.provider === "Pi")?.detail).toContain("symbolic-link");
-      expect(result.candidates.find((candidate) => candidate.value === "opencode-go:kimi-k2.6"))
+      expect(result.candidates.find((candidate) => candidate.value === "opencode-go:kimi-k3"))
         .toMatchObject({ authState: "auth_required", setupRequired: true });
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -91,7 +92,7 @@ describe("supported wizard model catalog", () => {
 
       expect(result.statuses.find((status) => status.provider === "Pi"))
         .toMatchObject({ status: "detected" });
-      expect(result.candidates.find((candidate) => candidate.value === "opencode-go:kimi-k2.6"))
+      expect(result.candidates.find((candidate) => candidate.value === "opencode-go:kimi-k3"))
         .toMatchObject({ authState: "credential_detected" });
     } finally {
       await rm(dir, { recursive: true, force: true });
