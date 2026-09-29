@@ -2752,7 +2752,7 @@ export class WebService {
       // An agent error *frame* is a completed transport exchange, even if its
       // provider error says "terminated" or carries an unreachable-looking code.
       // Only the operator request/stream can supply this durable classification.
-      const connectionLost = !cancelled && operatorTurnRejected
+      const connectionLost = !cancelled && operatorTurnRejected && failure === operatorTurnFailure
         && !(operatorTurnFailure instanceof OperatorTurnFrameError)
         && (transportCode === "agent_unreachable" || transportCode === "incomplete_operator_stream"
           || (operatorTurnFailure instanceof Error && !(operatorTurnFailure instanceof WebConsoleError)
