@@ -162,6 +162,26 @@ describe("process job service", () => {
     expect(wake).not.toHaveBeenCalled();
   });
 
+  it("records a pre-acceptance web refusal as failed rather than unknown without replay", async () => {
+    const fixture = await createFixture();
+    const completion = deferred<ProcessJobProcessResult>();
+    const wake = vi.fn(async () => ({ delivered: false as const, code: "process_job_wake_failed" as const,
+      retryable: false, reason: "The web console rejected the process-job notification before accepting its wake." }));
+    const service = await startService(fixture, { wake });
+    await service.activateWakes();
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion)));
+    completion.resolve(processResult());
+    await waitFor(async () => (await service.get(started.jobId))?.wake.state === "failed");
+    expect(await service.get(started.jobId)).toMatchObject({ wake: { state: "failed", attempts: 1 },
+      lastError: processJobPublicError("process_job_wake_failed") });
+    await expect((await openProcessJobStore(fixture.cwd, fixture.settings.stateDir)).get(started.jobId))
+      .resolves.toMatchObject({ wake: { retrySafe: false } });
+    await service.stop();
+    const restarted = await startService(fixture, { wake });
+    await restarted.activateWakes();
+    expect(wake).toHaveBeenCalledOnce();
+  });
+
   it("retains a delayed ambiguous wake as unknown and never replays it after restart", async () => {
     const fixture = await createFixture({ maxChainDepth: 32 });
     const completion = deferred<ProcessJobProcessResult>();
@@ -3546,6 +3566,106 @@ function emptyStoreWorkCounter(): ProcessJobStoreWorkCounter {
 function resetStoreWorkCounter(counter: ProcessJobStoreWorkCounter): void {
   Object.assign(counter, emptyStoreWorkCounter());
 }
+
+it("projects PeerAgent at start, during progress, and at completion without subagent telemetry", async () => {
+  const fixture = await createFixture();
+  const gate = deferred<void>();
+  const surfaceUpdate = vi.fn(async (projection: ProcessJobProjection) => { parseProcessJobProjection(projection); });
+  const wake = vi.fn(async (input: ProcessJobWakeInput) => {
+    parseProcessJobProjection(input.projection);
+    return { delivered: true as const };
+  });
+  const service = await startService(fixture, { surfaceUpdate, wake });
+  await service.activateWakes();
+  const started = await service.internalController(ORIGIN, 0).startInternal({
+    kind: "internal", tool: "PeerAgent", jobId: randomUUID(), instanceId: "ledger",
+    description: "Peer ledger thread planning", wakeOnCompletion: true,
+    run: async (_signal, writeOutput, reportProgress) => {
+      reportProgress({ type: "started", profile: "Subagent" });
+      reportProgress({ type: "tool_started", id: "call-1", toolName: "ExampleTool" });
+      writeOutput("Example peer answer");
+      await gate.promise;
+      return { status: "ok", output: "Example peer answer", answer: "Example peer answer",
+        question: { question: "This is not a subagent question." } };
+    },
+    cleanup: async () => {},
+  });
+  const assertPeer = (projection: ProcessJobProjection | undefined) => {
+    expect(projection).toBeDefined();
+    parseProcessJobProjection(projection);
+    expect(projection).not.toHaveProperty("subagentProgress");
+    expect(projection).not.toHaveProperty("subagentQuestion");
+  };
+  assertPeer(await service.get(started.jobId));
+  await waitFor(() => surfaceUpdate.mock.calls.length > 0);
+  for (const [projection] of surfaceUpdate.mock.calls) assertPeer(projection);
+  await new Promise((resolve) => setTimeout(resolve, 300)); // past the progress persist interval
+  assertPeer(await service.get(started.jobId));
+  const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+  expect((await store.get(started.jobId))?.subagentProgress).toBeUndefined();
+  gate.resolve();
+  await waitFor(async () => (await service.get(started.jobId))?.wake.state === "delivered");
+  assertPeer(await service.get(started.jobId));
+  expect((await service.get(started.jobId))?.output.preview).toContain("Example peer answer");
+  expect(wake.mock.calls[0]?.[0].prompt).toContain("Example peer answer");
+  for (const [projection] of surfaceUpdate.mock.calls) assertPeer(projection);
+  expect((await store.get(started.jobId))?.subagentProgress).toBeUndefined();
+});
+
+it("loads legacy PeerAgent telemetry but omits it from every projection", async () => {
+  const fixture = await createFixture();
+  const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+  const jobId = randomUUID();
+  const record = durableRecord(jobId, { tool: "PeerAgent", kind: "internal", instanceId: "ledger",
+    pid: null, pgid: null, state: "succeeded", completedAt: "2026-08-14T10:00:03.000Z",
+    exitCode: 0, durationMs: 2_000, preview: "Example peer answer",
+    wake: { state: "delivered", attempts: 1, deliveryKey: `process-job:${jobId}`,
+      lastAttemptAt: "2026-08-14T10:00:04.000Z" },
+    subagentProgress: { revision: 1, profile: "Subagent", toolCalls: 0, failedCalls: 0,
+      recent: [], answerHead: "Example peer answer" },
+    subagentQuestion: { question: "Legacy question" },
+  });
+  delete record.processIncarnation;
+  record.childStillBusy = false;
+  await store.mutate((draft) => { draft.set(jobId, record); });
+  await store.ensureArtifacts(jobId);
+  await expect((await openProcessJobStore(fixture.cwd, fixture.settings.stateDir)).get(jobId)).resolves.toMatchObject({
+    subagentProgress: { answerHead: "Example peer answer" },
+  });
+  parseProcessJobProjection(projectProcessJob(record));
+  const service = await startService(fixture);
+  const projection = await service.get(jobId);
+  parseProcessJobProjection(projection);
+  expect(projection).not.toHaveProperty("subagentProgress");
+  expect(projection).not.toHaveProperty("subagentQuestion");
+  expect(projection?.output.preview).toBe("Example peer answer");
+});
+
+it.each(["Agent", "AgentManage"] as const)("keeps %s subagent progress during and after execution", async (tool) => {
+  const fixture = await createFixture();
+  const gate = deferred<void>();
+  const service = await startService(fixture);
+  const started = await service.internalController(ORIGIN, 0).startInternal({ kind: "internal",
+    tool, jobId: randomUUID(), instanceId: "helper", cleanup: async () => {},
+    run: async (_signal, _writeOutput, reportProgress) => {
+      reportProgress({ type: "started", profile: "Subagent" });
+      await gate.promise;
+      return { status: "ok", output: "Example helper answer", answer: "Example helper answer" };
+    },
+  });
+  await waitFor(async () => {
+    const projection = await service.get(started.jobId);
+    return projection?.kind === "internal" && projection.subagentProgress?.profile === "Subagent";
+  });
+  parseProcessJobProjection(await service.get(started.jobId));
+  gate.resolve();
+  await waitFor(async () => (await service.get(started.jobId))?.state === "succeeded");
+  const terminal = await service.get(started.jobId);
+  parseProcessJobProjection(terminal);
+  expect(terminal?.kind).toBe("internal");
+  if (terminal?.kind !== "internal") throw new Error("Expected an internal process job.");
+  expect(terminal.subagentProgress).toMatchObject({ profile: "Subagent", answerHead: "Example helper answer" });
+});
 
 it("delivers a bounded PeerAgent completion to the exact caller without subagent ownership", async () => {
   const fixture = await createFixture();

@@ -732,7 +732,7 @@ export function projectProcessJob(record: DurableProcessJobRecord): ProcessJobPr
   return {
     schema: "mono-agent.process-job-projection.v1",
     jobId: record.jobId,
-    ...(record.kind === "internal" ? { tool: record.tool as InternalProcessJobTool, kind: record.kind, instanceId: record.instanceId!, childStillBusy: hasUnresolvedSubagentOwnership(record), ...(record.subagentProgress ? { subagentProgress: record.subagentProgress } : {}), ...(record.subagentQuestion ? { subagentQuestion: record.subagentQuestion } : {}), ...(record.peerQuestion ? { peerQuestion: record.peerQuestion } : {}) } : { tool: record.tool as "Exec" | "Bash" }),
+    ...(record.kind === "internal" ? { tool: record.tool as InternalProcessJobTool, kind: record.kind, instanceId: record.instanceId!, childStillBusy: hasUnresolvedSubagentOwnership(record), ...(record.tool !== "PeerAgent" && record.subagentProgress ? { subagentProgress: record.subagentProgress } : {}), ...(record.tool !== "PeerAgent" && record.subagentQuestion ? { subagentQuestion: record.subagentQuestion } : {}), ...(record.peerQuestion ? { peerQuestion: record.peerQuestion } : {}) } : { tool: record.tool as "Exec" | "Bash" }),
     state: record.state,
     summary: record.summary,
     origin: {

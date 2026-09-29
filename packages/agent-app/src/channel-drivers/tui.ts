@@ -662,6 +662,19 @@ export function createTuiChannelDriver(
                   channelId: "tui",
                 };
               }
+              if (webConsoleErrorCode(error) === "notification_rejected") {
+                input.logger?.warn?.("Web console rejected a process-job wake before acceptance.", {
+                  jobId: processJob.jobId,
+                  code: "notification_rejected",
+                });
+                return {
+                  delivered: false,
+                  code: "process_job_wake_failed",
+                  reason: "The web console rejected the process-job notification before accepting its wake.",
+                  retryable: false,
+                  channelId: "tui",
+                };
+              }
               return {
                 delivered: false,
                 code: "process_job_wake_failed",
