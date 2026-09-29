@@ -1732,7 +1732,9 @@ describe("ConsoleStoreProvider integration", () => {
     fireEvent.click(await screen.findByRole("button", { name: /^Background jobs/u }));
     expect(await screen.findByRole("button", { name: "Background job history" }))
       .toHaveAttribute("aria-pressed", "false");
-    expect(await screen.findByText("Background jobs: No active jobs, 1 finished shown.")).toBeInTheDocument();
+    expect(await screen.findByText("Background jobs: 1 done.")).toBeInTheDocument();
+    // Bounded: History carries the short note saying where older jobs are.
+    expect(await screen.findByText("Older jobs are in earlier messages.")).toBeInTheDocument();
     expect(api.cronRuns).toHaveBeenCalled();
   });
 

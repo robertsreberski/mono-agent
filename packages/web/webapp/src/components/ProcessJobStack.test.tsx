@@ -82,6 +82,31 @@ const openShelf = () => {
 };
 const historyToggle = () => screen.getByRole("button", { name: "Background job history" });
 const announcement = (container: HTMLElement) => container.querySelector("[aria-live='polite']");
+/** The bar's chips, left to right: tone class, visible number and tooltip. */
+const chips = () => [...shelfToggle().querySelectorAll<HTMLElement>(".process-job-chip")].map((chip) => ({
+  tone: [...chip.classList].find((name) => name.startsWith("is-"))?.slice(3),
+  count: chip.querySelector(".process-job-chip-count")?.textContent,
+  title: chip.getAttribute("title"),
+}));
+/** The closed bar's named current rows, as shown: [glyph mark, name]. */
+const listed = () => [...shelfToggle().querySelectorAll<HTMLElement>(".process-job-stack-entries > .process-job-stack-entry")].map((entry) => [
+  // The bar's one spinner is the in-progress mark that moves.
+  entry.querySelector(".process-job-glyph.is-spinner") !== null ? "half"
+    : [...entry.querySelector(".process-job-glyph")!.classList].find((name) => ["is-half", "is-empty", "is-stop", "is-question", "is-cross"].includes(name))?.slice(3),
+  entry.querySelector(".process-job-stack-entry-name")?.textContent,
+]);
+/** The text a sighted operator reads: without visually hidden words or hidden rows. */
+const visibleText = (element: Element): string => {
+  const copy = element.cloneNode(true) as Element;
+  for (const hidden of copy.querySelectorAll(".sr-only, [hidden]")) hidden.remove();
+  const words: string[] = [];
+  const walker = document.createTreeWalker(copy, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    const text = node.textContent?.trim();
+    if (text) words.push(text);
+  }
+  return words.join(" ");
+};
 
 const peerJob = (expiresAt: string, overrides: NonNullable<Parameters<typeof processJob>[0]> = {}) => processJob({
   jobId: "peer-job",
@@ -140,16 +165,22 @@ describe("ProcessJobStack", () => {
     // Closed by default: a glance, not a list.
     const toggle = shelfToggle();
     expect(toggle).toHaveAttribute("aria-expanded", "false");
-    // One current job: the bar names it; the issue count still shows.
-    expect(toggle).toHaveAccessibleName("Background jobs Running Exec job: node worker.js --safe-summary 1 issue");
-    expect(announcement(view.container)).toHaveTextContent("Background jobs: 1 active, 2 finished, 1 issue.");
+    // One current job: the bar names it; every other row still counts once.
+    expect(toggle).toHaveAccessibleName("Background jobs Running Exec job: node worker.js --safe-summary 1 issue 1 done");
+    expect(announcement(view.container)).toHaveTextContent("Background jobs: 1 active, 1 issue, 1 done.");
     expect(screen.queryByRole("group", { name: "Exec background job running" })).toBeNull();
     expect(view.container.querySelectorAll(".process-job-card")).toHaveLength(3);
     expect(screen.queryByRole("button", { name: "Background job history" })).toBeNull();
 
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByText("1 active · 2 finished · 1 issue")).toBeVisible();
+    // Open, the header is the same chips, now with the in-progress one: they add up to the rows.
+    expect(chips()).toEqual([
+      { tone: "running", count: "1", title: "1 active" },
+      { tone: "danger", count: "1", title: "1 issue" },
+      { tone: "success", count: "1", title: "1 done" },
+    ]);
+    expect(toggle).toHaveAccessibleName("Background jobs 1 active 1 issue 1 done");
     expect(screen.getByRole("group", { name: "Exec background job running" })).toHaveClass("is-running");
     expect(screen.queryByRole("group", { name: "Exec background job succeeded" })).toBeNull();
     expect(screen.queryByRole("group", { name: "Exec background job failed" })).toBeNull();
@@ -158,6 +189,9 @@ describe("ProcessJobStack", () => {
     const history = historyToggle();
     expect(history).toHaveAttribute("aria-pressed", "false");
     expect(history).not.toHaveAttribute("aria-expanded");
+    // History says how many rows it holds: a bare number on screen, words for assistive tech.
+    expect(history.querySelector(".process-job-stack-history-count")).toHaveTextContent(/^2$/u);
+    expect(history).toHaveAccessibleDescription("2 finished");
     fireEvent.click(history);
 
     expect(screen.getByRole("group", { name: "Exec background job running" })).toHaveClass("is-running");
@@ -209,7 +243,16 @@ describe("ProcessJobStack", () => {
 
     expect(view.container.querySelectorAll(".process-job-stack-item[hidden]")).toHaveLength(states.length);
     expect(screen.queryAllByRole("group")).toHaveLength(0);
-    expect(screen.getByText("No active jobs · 7 finished · 5 issues")).toBeVisible();
+    // Each row once: five issues, one cancelled, one done. Nothing says what is absent.
+    expect(chips()).toEqual([
+      { tone: "danger", count: "5", title: "5 issues" },
+      { tone: "neutral", count: "1", title: "1 cancelled" },
+      { tone: "success", count: "1", title: "1 done" },
+    ]);
+    expect(shelfToggle()).toHaveAccessibleName("Background jobs 5 issues 1 cancelled 1 done");
+    expect(visibleText(shelfToggle())).toBe("5 1 1");
+    expect(visibleText(view.container.querySelector(".process-job-stack-history-row")!)).toBe("History 7");
+    expect(historyToggle().querySelector(".process-job-stack-history-count")).toHaveTextContent(/^7$/u);
     fireEvent.click(historyToggle());
     expect(screen.getAllByRole("group")).toHaveLength(states.length);
   });
@@ -218,9 +261,9 @@ describe("ProcessJobStack", () => {
     const view = render(<StackHarness threadId="thread" jobs={[entry(processJob({ jobId: "done-job" }))]} />);
     const stack = view.container.querySelector(".process-job-stack")!;
     expect(stack).toHaveClass("is-quiet");
-    expect(shelfToggle()).toHaveAccessibleName(/1 finished/u);
-    expect(announcement(view.container)).toHaveTextContent("Background jobs: No active jobs, 1 finished.");
-    // Header chips use the rows' settled glyphs: finished is the green check.
+    expect(shelfToggle()).toHaveAccessibleName("Background jobs 1 done");
+    expect(announcement(view.container)).toHaveTextContent("Background jobs: 1 done.");
+    // Header chips use the rows' settled glyphs: done is the green check.
     expect(shelfToggle().querySelector(".process-job-chip.is-success .process-job-glyph")).toHaveClass("is-success", "is-check");
 
     view.rerender(<StackHarness threadId="thread" jobs={[entry(processJob({ jobId: "done-job" })), entry(processJob({ jobId: "broken-job", state: "failed" }))]} />);
@@ -250,7 +293,7 @@ describe("ProcessJobStack", () => {
     expect(item).toHaveAttribute("hidden");
     expect(item.querySelector(".process-job-card")).toBe(row);
     expect(row).toHaveClass("is-complete");
-    expect(announcement(view.container)).toHaveTextContent("Background jobs: No active jobs, 1 finished.");
+    expect(announcement(view.container)).toHaveTextContent("Background jobs: 1 done.");
     expect(screen.queryByRole("group", { name: "Exec background job succeeded" })).toBeNull();
     act(() => vi.advanceTimersByTime(20_000));
     expect(api.threadJob).toHaveBeenCalledOnce();
@@ -310,10 +353,11 @@ describe("ProcessJobStack", () => {
     expect(within(toggle).getByText("Water the north beds")).toBeInTheDocument();
     // State and kind are spoken with the purpose; on screen the spinner says
     // the state and a terminal icon the kind.
-    expect(toggle).toHaveAccessibleName("Background jobs Running Exec job: Water the north beds");
+    expect(toggle).toHaveAccessibleName("Background jobs Running Exec job: Water the north beds 1 done");
     expect(toggle.querySelector(".process-job-stack-single .process-job-glyph")).toHaveClass("is-spinner");
     expect(toggle.querySelector(".process-job-stack-kind")).toHaveClass("is-command");
-    expect(toggle.querySelector(".process-job-chip")).toBeNull();
+    // The lone current row stands for itself: no in-progress chip beside it, only the done row's.
+    expect(chips()).toEqual([{ tone: "success", count: "1", title: "1 done" }]);
   });
 
   it("marks a lone agent job with the agent icon and a still job with its own glyph", () => {
@@ -335,7 +379,7 @@ describe("ProcessJobStack", () => {
     expect(glyph).toHaveClass("is-waiting", "is-empty");
   });
 
-  it("counts several current jobs as marked numbers and leaves finished counts out while work is active", () => {
+  it("names several current jobs in the closed bar and keeps the settled rows' chips beside them", () => {
     vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
     render(<StackHarness threadId="thread" jobs={[
       entry(activeJob("thread", "running", { jobId: "one" })),
@@ -344,11 +388,46 @@ describe("ProcessJobStack", () => {
       entry(processJob({ jobId: "broken", state: "failed" })),
     ]} />);
     const toggle = shelfToggle();
-    const chips = [...toggle.querySelectorAll(".process-job-chip")].map((chip) => chip.querySelector(".process-job-chip-count")?.textContent);
-    expect(chips).toEqual(["2", "1"]);
-    expect(toggle).toHaveAccessibleName("Background jobs 2 active 1 issue");
-    // One of them runs, so the active count carries the bar's spinner.
-    expect(toggle.querySelector(".process-job-chip.is-running .process-job-glyph")).toHaveClass("is-spinner");
+    // A command job has no id: its tool names it. Never the task title.
+    expect(listed()).toEqual([["half", "Exec"], ["empty", "Exec"]]);
+    expect(within(toggle).queryByText("node worker.js --safe-summary")).toBeNull();
+    // The names stand in for the in-progress count; the settled rows keep their chips.
+    expect(chips().map((chip) => [chip.tone, chip.count])).toEqual([["danger", "1"], ["success", "1"]]);
+    expect(toggle).toHaveAccessibleName("Background jobs Exec running, Exec queued, 1 issue 1 done");
+    // One of them runs, so its glyph is the bar's one spinner.
+    expect(toggle.querySelectorAll(".process-job-glyph.is-spinner")).toHaveLength(1);
+    expect(toggle.querySelector(".process-job-stack-entry.is-first .process-job-glyph")).toHaveClass("is-spinner");
+    // Middle dots between the names, one fewer than the names.
+    expect(toggle.querySelectorAll(".process-job-stack-entries .process-job-stack-dot")).toHaveLength(1);
+  });
+
+  it("names questions first, then work in progress, by id or tool and never by title", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-17T10:00:00.000Z"));
+    render(<StackHarness threadId="thread" jobs={[
+      entry(activeJob("thread", "running", { jobId: "cmd", tool: "Bash", summary: "Purpose: Water the north beds" })),
+      entry(agentTurn("a1", "garden-helper", 0, { summary: "Draft the spring planting plan" })),
+      entry(activeJob("thread", "running", { jobId: "stopping", cancelRequested: true })),
+      // A failed peer still asking: listed as the question it is, ahead of the work.
+      entry(peerJob("2026-07-17T10:20:00.000Z", { state: "failed", exitCode: 1 })),
+      entry(processJob({ jobId: "done" })),
+    ]} />);
+    expect(listed()).toEqual([["question", "seed-bank"], ["half", "Bash"], ["half", "garden-helper"], ["stop", "Exec"]]);
+    const toggle = shelfToggle();
+    expect(toggle).toHaveAccessibleName("Background jobs seed-bank question pending, Bash running, garden-helper running, Exec stopping, 1 done");
+    for (const title of ["Water the north beds", "Draft the spring planting plan", "Ask the seed-bank agent about heirloom stock"]) {
+      expect(within(toggle).queryByText(title)).toBeNull();
+    }
+    // Everything fits here (jsdom lays nothing out), so no "+n".
+    expect(toggle.querySelector(".process-job-stack-entries > .process-job-stack-more")).toBeNull();
+    expect(chips().map((chip) => chip.tone)).toEqual(["success"]);
+    // Only the first in-progress entry spins.
+    expect(toggle.querySelectorAll(".process-job-stack-entries .is-spinner")).toHaveLength(1);
+    expect(toggle.querySelectorAll(".process-job-stack-entries .process-job-stack-entry")[1]!.querySelector(".process-job-glyph")).toHaveClass("is-spinner");
+    // Open, the header is chips again and the rows below carry their titles.
+    openShelf();
+    expect(toggle.querySelector(".process-job-stack-current")).toBeNull();
+    expect(chips().map((chip) => chip.tone)).toEqual(["question", "running", "success"]);
   });
 
   it("holds the active count still when none of its jobs is in progress", () => {
@@ -357,10 +436,14 @@ describe("ProcessJobStack", () => {
       entry(activeJob("thread", "queued", { jobId: "one" })),
       entry(activeJob("thread", "queued", { jobId: "two" })),
     ]} />);
+    expect(listed()).toEqual([["empty", "Exec"], ["empty", "Exec"]]);
+    expect(shelfToggle().querySelector(".is-spinner")).toBeNull();
+    expect(shelfToggle()).toHaveAccessibleName("Background jobs Exec queued, Exec queued");
+    // Open, the count holds the queued ring too.
+    openShelf();
     const chip = shelfToggle().querySelector(".process-job-chip")!;
     expect(chip).toHaveClass("is-waiting");
     expect(chip.querySelector(".process-job-glyph")).toHaveClass("is-empty");
-    expect(chip.querySelector(".is-spinner")).toBeNull();
     expect(shelfToggle()).toHaveAccessibleName("Background jobs 2 active");
   });
 
@@ -372,7 +455,7 @@ describe("ProcessJobStack", () => {
       entry(activeJob("thread", "running", { jobId: "running-job" })),
     ]} />);
     openShelf();
-    expect(announcement(view.container)).toHaveTextContent("Background jobs: 1 active, 1 question awaiting the agent.");
+    expect(announcement(view.container)).toHaveTextContent("Background jobs: 1 question awaiting the agent, 1 active.");
     // The peer is a group: its header says the question, and so does its turn.
     const group = openGroup("seed-bank");
     expect(within(group.querySelector("summary")!).getByText("Question pending")).toBeVisible();
@@ -382,7 +465,7 @@ describe("ProcessJobStack", () => {
 
     // The shelf's one clock re-evaluates at the deadline without any poll.
     for (let step = 0; step < 4; step += 1) act(() => { vi.advanceTimersByTime(30_000); });
-    expect(announcement(view.container)).toHaveTextContent("Background jobs: 1 active, 1 finished.");
+    expect(announcement(view.container)).toHaveTextContent("Background jobs: 1 active, 1 done.");
     expect(group.closest(".process-job-stack-item")).toHaveAttribute("hidden");
   });
 
@@ -445,7 +528,7 @@ describe("ProcessJobStack", () => {
     openShelf();
     const toggle = historyToggle();
     const stack = screen.getByRole("region", { name: "Background jobs" });
-    const guidance = screen.getByText(/Load earlier messages to reveal older jobs/u);
+    const guidance = screen.getByText("Older jobs are in earlier messages.");
     expect(stack).toContainElement(guidance);
     expect(guidance).not.toBeVisible();
     expect(toggle).toHaveAttribute("aria-pressed", "false");
@@ -456,9 +539,13 @@ describe("ProcessJobStack", () => {
     expect(toggle).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("scopes a bounded finished count to what is loaded", () => {
+  it("counts only what is loaded when history is bounded, and never says so in a count", () => {
     const view = render(<StackHarness threadId="thread" jobs={[entry(processJob({ jobId: "done" }))]} historyIsBounded />);
-    expect(announcement(view.container)).toHaveTextContent("Background jobs: No active jobs, 1 finished shown.");
+    expect(announcement(view.container)).toHaveTextContent("Background jobs: 1 done.");
+    expect(shelfToggle()).toHaveAccessibleName("Background jobs 1 done");
+    openShelf();
+    expect(historyToggle()).toHaveAccessibleDescription("1 finished");
+    expect(visibleText(view.container.querySelector(".process-job-stack")!)).not.toMatch(/shown|finished/u);
   });
 
   it("shows new active work without opening terminal history", () => {
@@ -475,7 +562,7 @@ describe("ProcessJobStack", () => {
     expect(toggle).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByRole("group", { name: "Exec background job running" })).toHaveClass("is-running");
     expect(screen.queryByRole("group", { name: "Exec background job failed" })).toBeNull();
-    expect(announcement(view.container)).toHaveTextContent("Background jobs: 1 active, 1 finished, 1 issue.");
+    expect(announcement(view.container)).toHaveTextContent("Background jobs: 1 active, 1 issue.");
   });
 
   it("keeps shelf and history preferences and same-id card state isolated through keyed thread remounts", async () => {
@@ -522,27 +609,98 @@ describe("ProcessJobStack", () => {
     expect(screen.queryByRole("region", { name: "Background jobs" })).toBeNull();
   });
 
-  it("shows no visible title but keeps its name, and says the counts in words once open", () => {
+  it("shows no visible title but keeps its name, and keeps the same still chips once open", () => {
     vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
     render(<StackHarness threadId="thread" jobs={[entry(activeJob("thread", "running", { jobId: "one" })), entry(activeJob("thread", "queued", { jobId: "two" }))]} />);
     const toggle = shelfToggle();
     expect(within(toggle).getByText("Background jobs")).toHaveClass("sr-only");
     expect(screen.getByRole("region", { name: "Background jobs" })).toContainElement(toggle);
-    expect(toggle).toHaveAccessibleName("Background jobs 2 active");
+    expect(toggle).toHaveAccessibleName("Background jobs Exec running, Exec queued");
+    expect(toggle.querySelector(".process-job-stack-current .process-job-glyph.is-spinner")).not.toBeNull();
 
     fireEvent.click(toggle);
     expect(toggle).toHaveAccessibleName("Background jobs 2 active");
-    expect(within(toggle).getByText("2 active")).toHaveClass("process-job-stack-summary");
-    expect(toggle.querySelector(".process-job-chip")).toBeNull();
+    expect(chips()).toEqual([{ tone: "running", count: "2", title: "2 active" }]);
+    // Open, nothing moves: the chip holds the rows' still half-filled ring, and no sentence stands in for it.
+    expect(toggle.querySelector(".process-job-chip .process-job-glyph")).toHaveClass("is-half");
+    expect(toggle.querySelector(".process-job-glyph.is-spinner")).toBeNull();
+    expect(visibleText(toggle)).toBe("2");
   });
 
-  it("says what an idle bar counts in words instead of a bare number", () => {
+  it("shows an idle bar as the rows' glyphs and numbers, with the words in tooltips and its name", () => {
     render(<StackHarness threadId="thread" jobs={[entry(processJob({ jobId: "done" })), entry(processJob({ jobId: "broken", state: "failed" }))]} />);
     const toggle = shelfToggle();
-    expect(within(toggle).getByText("1 issue")).toHaveClass("process-job-chip-words");
-    expect(within(toggle).getByText("2 finished")).toHaveClass("process-job-chip-words");
-    expect(toggle.querySelector(".process-job-chip-count")).toBeNull();
-    expect(toggle).toHaveAccessibleName("Background jobs 1 issue 2 finished");
+    expect(chips()).toEqual([
+      { tone: "danger", count: "1", title: "1 issue" },
+      { tone: "success", count: "1", title: "1 done" },
+    ]);
+    for (const chip of toggle.querySelectorAll(".process-job-chip")) expect(visibleText(chip)).toMatch(/^\d+$/u);
+    expect(toggle).toHaveAccessibleName("Background jobs 1 issue 1 done");
+  });
+
+  it("counts six finished rows with three failures as three issues and three done, never nine", () => {
+    const rows = [
+      processJob({ jobId: "export" }),
+      processJob({ jobId: "lint", state: "failed", exitCode: 1 }),
+      agentTurn("plan", "bed-planner", 0, { durationMinutes: 8, summary: "Draft the spring planting plan" }),
+      processJob({ jobId: "crawl", state: "timed_out", exitCode: null }),
+      agentTurn("bulbs", "seed-bank", 10, { tool: "PeerAgent", durationMinutes: 1, summary: "Ask about bulb stock" }),
+      processJob({ jobId: "sync", state: "interrupted", exitCode: null }),
+    ];
+    const view = render(<StackHarness threadId="thread" jobs={rows.map(entry)} historyIsBounded />);
+    const toggle = shelfToggle();
+    expect(chips()).toEqual([
+      { tone: "danger", count: "3", title: "3 issues" },
+      { tone: "success", count: "3", title: "3 done" },
+    ]);
+    expect(toggle).toHaveAccessibleName("Background jobs 3 issues 3 done");
+    expect(announcement(view.container)).toHaveTextContent("Background jobs: 3 issues, 3 done.");
+    for (const chip of toggle.querySelectorAll(".process-job-chip")) expect(visibleText(chip)).toMatch(/^\d+$/u);
+
+    openShelf();
+    // The open header is the same two chips, left of the chevron; no sentence.
+    expect(chips().map((chip) => chip.count)).toEqual(["3", "3"]);
+    expect(visibleText(shelfToggle())).toBe("3 3");
+    const history = historyToggle();
+    expect(visibleText(history)).toBe("History 6");
+    expect(history).toHaveAccessibleName("Background job history");
+    expect(history).toHaveAccessibleDescription("6 finished");
+    const note = screen.getByText("Older jobs are in earlier messages.");
+    expect(note).not.toBeVisible();
+    fireEvent.click(history);
+    expect(note).toBeVisible();
+    // The chips add up to the rows the operator can now see.
+    expect(view.container.querySelectorAll(".process-job-stack-item:not([hidden])")).toHaveLength(6);
+  });
+
+  it("orders every chip the same way and counts a clean cancellation apart", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-17T10:00:00.000Z"));
+    vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+    render(<StackHarness threadId="thread" jobs={[
+      entry(processJob({ jobId: "done" })),
+      entry(processJob({ jobId: "cancelled", state: "cancelled", exitCode: null, cancelRequested: true })),
+      // A success whose wake failed is an issue, not done.
+      entry(processJob({ jobId: "woke", wake: { ...processJob().wake, state: "failed" } })),
+      entry(processJob({ jobId: "broken", state: "failed", exitCode: 1 })),
+      entry(activeJob("thread", "running", { jobId: "running" })),
+      entry(peerJob("2026-07-17T10:20:00.000Z")),
+    ]} />);
+    // Closed, the two current rows are named, the question first; the settled rows keep their chips.
+    expect(listed()).toEqual([["question", "seed-bank"], ["half", "Exec"]]);
+    expect(chips().map((chip) => chip.tone)).toEqual(["danger", "neutral", "success"]);
+    expect(shelfToggle()).toHaveAccessibleName("Background jobs seed-bank question pending, Exec running, 2 issues 1 cancelled 1 done");
+    openShelf();
+    expect(chips()).toEqual([
+      { tone: "question", count: "1", title: "1 question awaiting the agent" },
+      { tone: "running", count: "1", title: "1 active" },
+      { tone: "danger", count: "2", title: "2 issues" },
+      { tone: "neutral", count: "1", title: "1 cancelled" },
+      { tone: "success", count: "1", title: "1 done" },
+    ]);
+    const glyphs = [...shelfToggle().querySelectorAll(".process-job-chip-mark > .process-job-glyph")];
+    expect(glyphs[3]).toHaveClass("is-neutral", "is-stopped");
+    expect(shelfToggle()).toHaveAccessibleName("Background jobs 1 question awaiting the agent 1 active 2 issues 1 cancelled 1 done");
   });
 
   describe("agent groups", () => {
@@ -561,7 +719,10 @@ describe("ProcessJobStack", () => {
       const view = render(<StackHarness threadId="thread" parentCalls={calls}
         jobs={[entry(brief), entry(activeJob("thread", "running", { jobId: "cmd" })), entry(follow)]} />);
       expect(announcement(view.container)).toHaveTextContent("Background jobs: 2 active.");
-      expect(shelfToggle()).toHaveAccessibleName("Background jobs 2 active");
+      // Named in shelf order: a group sits where its newest turn was admitted.
+      expect(shelfToggle()).toHaveAccessibleName("Background jobs Exec running, helper running");
+      expect(listed()).toEqual([["half", "Exec"], ["half", "helper"]]);
+      expect(shelfToggle().querySelector(".process-job-stack-entry.is-agent .process-job-stack-entry-name")).toHaveTextContent("helper");
       openShelf();
       expect(view.container.querySelectorAll(".process-job-group")).toHaveLength(1);
       expect(view.container.querySelectorAll(".process-job-card")).toHaveLength(3);
@@ -614,7 +775,7 @@ describe("ProcessJobStack", () => {
 
       view.rerender(<StackHarness threadId="thread" jobs={[entry(failed), entry({ ...retry, state: "failed", exitCode: 1, durationMs: 60_000,
         timestamps: { ...retry.timestamps, completedAt: retry.timestamps.startedAt } })]} />);
-      expect(announcement(view.container)).toHaveTextContent("Background jobs: No active jobs, 1 finished, 1 issue.");
+      expect(announcement(view.container)).toHaveTextContent("Background jobs: 1 issue.");
     });
 
     it("keeps a group mounted and open while its newest turn settles into History", async () => {
@@ -633,7 +794,7 @@ describe("ProcessJobStack", () => {
       });
 
       expect(item).toHaveAttribute("hidden");
-      expect(announcement(view.container)).toHaveTextContent("Background jobs: No active jobs, 1 finished.");
+      expect(announcement(view.container)).toHaveTextContent("Background jobs: 1 done.");
       fireEvent.click(historyToggle());
       expect(item).not.toHaveAttribute("hidden");
       expect(view.container.querySelector(".process-job-group")).toBe(group);

@@ -1300,7 +1300,7 @@ describe("message actions", () => {
     expect(document.querySelectorAll(".message-assistant")).toHaveLength(1);
     expect(document.querySelectorAll(".message-actions")).toHaveLength(1);
     expect(screen.getByText("The background report is ready.")).toBeVisible();
-    expect(screen.getByText("Background jobs: No active jobs, 1 finished.")).toBeInTheDocument();
+    expect(screen.getByText("Background jobs: 1 done.")).toBeInTheDocument();
     openJobShelf();
     const stackToggle = screen.getByRole("button", { name: "Background job history" });
     expect(stackToggle).toHaveAttribute("aria-pressed", "false");
@@ -1368,7 +1368,7 @@ describe("message actions", () => {
     expect(document.querySelectorAll(".message-assistant")).toHaveLength(1);
     expect(document.querySelectorAll(".message-actions")).toHaveLength(1);
     expect(screen.getByText("The report is ready.")).toBeVisible();
-    expect(screen.getByText("Background jobs: No active jobs, 1 finished.")).toBeInTheDocument();
+    expect(screen.getByText("Background jobs: 1 done.")).toBeInTheDocument();
     expect(screen.queryByRole("group", { name: "Exec background job succeeded" })).toBeNull();
     // The surviving start row carries the launch arguments behind its disclosure.
     fireEvent.click(started.querySelector("summary")!);
@@ -1418,7 +1418,7 @@ describe("message actions", () => {
     expect(document.querySelectorAll(".message-assistant")).toHaveLength(1);
     expect(document.querySelectorAll(".message-actions")).toHaveLength(1);
     expect(screen.getByText("The report is ready.")).toBeVisible();
-    expect(screen.getByText("Background jobs: No active jobs, 1 finished.")).toBeInTheDocument();
+    expect(screen.getByText("Background jobs: 1 done.")).toBeInTheDocument();
     expect(screen.queryByRole("group", { name: `${tool} background job succeeded` })).toBeNull();
     // A wall of prompt text folds into the start row instead of doubling it.
     fireEvent.click(started.querySelector("summary")!);
@@ -1786,7 +1786,7 @@ describe("message actions", () => {
       ...assistantMessage("complete"),
       parts: [{ type: "process-job", job: complete, responseText: "Completed normally." }],
     }} />);
-    await waitFor(() => expect(screen.getByText("Background jobs: No active jobs, 1 finished.")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Background jobs: 1 done.")).toBeInTheDocument());
     expect(screen.queryByRole("group", { name: "Exec background job succeeded" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Background job history" }));
     const settled = await screen.findByRole("group", { name: "Exec background job succeeded" });

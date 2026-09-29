@@ -597,12 +597,19 @@ only while the controller and its owner bearer are present. List responses keep
 every queued, starting, and running projection and add a deterministic
 newest-terminal prefix within the 16 MiB response ceiling. The web console
 collects running and terminal jobs from the loaded transcript window into one
-compact shelf directly above the composer. Closed by default, the shelf is one
-line with no visible title (its accessible name still starts with "Background
-jobs"): either the one current row's purpose or marked counts of active rows,
-questions awaiting the agent and issues (failed outcomes, wake problems, a
-child still busy). With nothing current, the counts carry their words, such as
-"3 finished". Open, its header says the same counts in words and it lists
+compact shelf directly above the composer. Every row counts in exactly one
+bucket, so the shelf's numbers add up to its rows: a question awaiting the
+agent, work in progress (queued, starting, running or stopping), an issue (a
+failed, timed-out, unstarted, expired or interrupted job, or a wake problem or a
+child still busy even when the job succeeded), a clean cancellation, or done.
+Closed by default, the shelf is one line with no visible title (its accessible
+name still starts with "Background jobs"). One current row shows its status,
+kind and purpose; two or more are named without their task (an agent's or
+peer's id, a command's tool), questions first, separated by middle dots and
+ending in "+n" for those that do not fit. The other buckets are chips of the
+rows' own glyph and a number in a fixed order, with their words in each chip's
+tooltip and the bar's accessible name. Open, its header shows the same chips for
+every bucket and it lists
 current work purpose-first, with state, elapsed time, tool, exit facts and a
 labelled output or step preview on each row; a row opens for its output tail,
 wake state and the wake's response, without the host-local artifact paths an
@@ -617,7 +624,8 @@ question first, then running work, else the newest turn). Opening it shows a
 timeline: the parent's calls read from the loaded transcript as tool rows (the
 `Agent` brief, each `AgentManage` message or reply, foreground messages that
 have no detached turn, steer, stop and close, and `PeerAgent` sends and
-answers), each opening to its whole text with the transcript's own **Load full
+answers), without a background of their own until hovered, focused or opened,
+each opening to its whole text with the transcript's own **Load full
 message** for a preview the server shortened, and the child's turns as ordinary
 job rows between them, plus any question a turn ended with. A call is linked to
 the job it started only by the host's own start receipt; tool result text never
@@ -640,8 +648,9 @@ with current work (and keeps a question count in the closed shelf, even when
 the job itself failed or was cancelled) until the question is answered or
 expires. The shelf and
 History choices are remembered per conversation for the browser session.
-Finished counts are scoped to loaded messages, and **History** points to **Load
-earlier messages** whenever older history is available. Nothing opens by
+**History** shows how many finished rows it holds. Counts cover the loaded
+messages only; whenever older history is available, History notes that older
+jobs are in earlier messages, which **Load earlier messages** reveals. Nothing opens by
 itself: a running card polls its exact job once per second, and an opened tail
 follows the bottom only until the operator scrolls upward. Queued/starting jobs
 and failed reads retain bounded backoff. Each nonterminal card polls only its

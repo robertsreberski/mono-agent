@@ -324,7 +324,9 @@ describe("Chat conversation viewport", () => {
     expect(column).not.toContainElement(stack);
     expect(stack.parentElement).toBe(footer);
     expect(stack.querySelector(".message-actions")).toBeNull();
-    expect(screen.getByText("Background jobs: No active jobs, 1 finished shown.")).toBeInTheDocument();
+    expect(screen.getByText("Background jobs: 1 done.")).toBeInTheDocument();
+    // Older messages exist: the counts say nothing about it; History's note does.
+    expect(screen.getByText("Older jobs are in earlier messages.")).not.toBeVisible();
     openJobShelf();
     expect(screen.getByRole("button", { name: "Background job history" }))
       .toHaveAttribute("aria-pressed", "false");

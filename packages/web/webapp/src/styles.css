@@ -1428,16 +1428,28 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .process-job-stack-agent { flex: none; max-width: 40%; overflow: hidden; color: var(--cat-4); font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .process-job-stack-purpose { min-width: 0; overflow: hidden; color: var(--text-soft); font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .process-job-stack-chips { flex: none; display: inline-flex; align-items: center; gap: 5px; }
+/* Two or more current rows, named: glyph + id (agents, purple) or tool
+   (commands), middle dots between, then "+n" for what does not fit. The list
+   takes the free width (never its content's), so the count chips stay right. */
+.process-job-stack-current { position: relative; min-width: 0; flex: 1 1 0; display: flex; align-items: center; overflow: hidden; padding-left: 2px; }
+.process-job-stack-entries { min-width: 0; display: flex; align-items: center; white-space: nowrap; }
+.process-job-stack-entry { flex: none; display: inline-flex; align-items: center; gap: 5px; }
+.process-job-stack-entry.is-first { flex: 0 1 auto; min-width: 0; }
+.process-job-stack-entry-name { min-width: 0; overflow: hidden; color: var(--text-soft); font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.process-job-stack-entry.is-agent .process-job-stack-entry-name { color: var(--cat-4); font-weight: 700; }
+/* 7 px either side of each dot: its left margin, then its right margin plus the entry's gap. */
+.process-job-stack-dot { flex: none; margin: 0 2px 0 7px; color: var(--text-muted); font-weight: 700; }
+.process-job-stack-more { flex: none; display: inline-flex; align-items: center; gap: 5px; color: var(--text-muted); font-size: 12px; font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* The ruler: every entry laid out at its natural width, never seen or read. */
+.process-job-stack-ruler { position: absolute; top: 0; left: 0; width: max-content; display: flex; align-items: center; visibility: hidden; pointer-events: none; white-space: nowrap; }
 .process-job-stack-chevron { flex: none; color: var(--text-muted); transition: transform 150ms ease; }
 .process-job-stack-toggle > .process-job-stack-chevron { margin-left: auto; }
 .process-job-stack.is-open .process-job-stack-toggle > .process-job-stack-chevron { transform: rotate(180deg); }
-/* Open, the header says in words what the closed bar's marks count. */
-.process-job-stack-summary { min-width: 0; flex: 1 1 auto; padding: 6px 0 6px 2px; color: var(--text-soft); font-size: 12px; font-weight: 600; line-height: 1.35; }
-/* A marked count: shape + number, never colour alone; words in the button name. */
+/* A marked count, open or closed: the rows' glyph + a number, never colour
+   alone and never words on screen; the words are its tooltip and its part of
+   the button's name. Each row counts in one chip, so the numbers add up. */
 .process-job-chip { min-height: 22px; display: inline-flex; align-items: center; gap: 4px; padding: 0 7px 0 5px; border-radius: 999px; font-size: 12px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1; white-space: nowrap; }
 .process-job-chip-mark { width: 16px; height: 16px; display: grid; place-items: center; }
-/* Nothing current: the bar has room, so a chip says what it counts. */
-.process-job-chip.is-worded { padding-right: 9px; }
 .process-job-chip.is-running { color: var(--process-job-progress-text); background: color-mix(in srgb, var(--process-job-progress) 14%, transparent); }
 .process-job-chip.is-question { color: var(--process-job-warning-text); background: color-mix(in srgb, var(--warning) 14%, transparent); }
 .process-job-chip.is-danger { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
@@ -1463,7 +1475,8 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .process-job-stack-history-toggle:hover { background: var(--surface-hover); }
 .process-job-stack-history-toggle[aria-pressed="true"] { color: var(--text); background: var(--surface-subtle); }
 .process-job-stack-history-toggle[aria-pressed="true"] .process-job-stack-chevron { transform: rotate(180deg); }
-.process-job-stack-history-count { color: var(--text-muted); font-size: 11.5px; }
+/* How many rows History holds: a bare number inside the pill. */
+.process-job-stack-history-count { min-width: 18px; padding: 2px 5px; color: var(--text-soft); background: color-mix(in srgb, var(--text) 8%, transparent); border-radius: 999px; font-size: 11px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.2; text-align: center; }
 .process-job-stack-history { margin: 4px 10px 6px; color: var(--text-muted); font-size: 11.5px; line-height: 1.45; }
 
 /* One job's status glyph: one circular family drawn on a 20-unit grid (see
@@ -1588,15 +1601,21 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .process-job-timeline > .process-job-step.is-nested:last-child::before { bottom: auto; height: 16px; }
 .process-job-step.is-turn .process-job-card[open] { background: color-mix(in srgb, var(--surface) 70%, transparent); }
 
-/* The parent's call, read like a transcript tool row: tool, action, what it said. */
-.process-job-call { --process-job-call-tint: color-mix(in srgb, var(--cat-4) 5%, transparent); min-width: 0; }
-.process-job-call-head { width: 100%; min-width: 0; min-height: 32px; display: flex; align-items: center; gap: 7px; padding: 5px 10px; color: var(--text); background: var(--process-job-call-tint); border: 0; border-radius: 9px; font: inherit; text-align: left; }
+/* The parent's call, read like a transcript tool row: tool, action, what it
+   said. At rest it sits on the shelf itself, like the job rows around it; a
+   call that opens takes a tint only while highlighted (hover, keyboard focus)
+   and a softer one while its full text is open below it, so the pair reads
+   as one. Only the background changes: never the size, the rail or the icon.
+   Both tints stay light enough for the muted words on them (4.5:1 in light). */
+.process-job-call { --process-job-call-tint: color-mix(in srgb, var(--cat-4) 5%, transparent); --process-job-call-highlight: color-mix(in srgb, var(--cat-4) 7%, transparent); min-width: 0; }
+.process-job-call-head { width: 100%; min-width: 0; min-height: 32px; display: flex; align-items: center; gap: 7px; padding: 5px 10px; color: var(--text); background: transparent; border: 0; border-radius: 9px; font: inherit; text-align: left; }
 button.process-job-call-head { cursor: pointer; }
-button.process-job-call-head:hover { background: color-mix(in srgb, var(--cat-4) 10%, transparent); }
+.process-job-call.is-open > button.process-job-call-head { background: var(--process-job-call-tint); }
+button.process-job-call-head:is(:hover, :focus-visible) { background: var(--process-job-call-highlight); }
 button.process-job-call-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .process-job-call-icon { flex: none; width: 20px; height: 20px; display: grid; place-items: center; color: var(--cat-4); background: color-mix(in srgb, var(--cat-4) 14%, var(--surface)); border-radius: 50%; }
 .process-job-call:is(.is-stop, .is-close, .is-decline) .process-job-call-icon { color: var(--text-soft); background: color-mix(in srgb, var(--text) 9%, var(--surface)); }
-.process-job-call:is(.is-stop, .is-close, .is-decline) { --process-job-call-tint: color-mix(in srgb, var(--text) 4%, transparent); }
+.process-job-call:is(.is-stop, .is-close, .is-decline) { --process-job-call-tint: color-mix(in srgb, var(--text) 3%, transparent); --process-job-call-highlight: color-mix(in srgb, var(--text) 5%, transparent); }
 .process-job-call-tool { flex: none; color: var(--text); font-size: 11.5px; font-weight: 650; }
 .process-job-call-word { flex: none; color: var(--text-muted); font-size: 11px; }
 /* One peer, several threads: each call and question names its thread. */

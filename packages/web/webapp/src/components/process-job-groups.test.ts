@@ -4,13 +4,16 @@ import { collectProcessJobParentCalls, type ProcessJobParentCall } from "../proc
 import { agentTurn, at, launchCall, manageCall, parentMessage, peerCall, peerStarted, T0 } from "../test/agent-group-fixtures";
 import { processJob } from "../test/fixtures";
 import type { ProcessJobProjection } from "../types";
+import { PROCESS_JOB_BUCKETS, type ProcessJobBucket } from "./process-job-display";
 import {
   processJobGroupPurpose,
+  processJobItemBucket,
   processJobItemCounts,
   processJobItemIsCurrent,
   processJobItemIsIssue,
   processJobItemLead,
   processJobShelfItems,
+  processJobShelfPartition,
   type ProcessJobGroupItem,
   type ProcessJobShelfItem,
 } from "./process-job-groups";
@@ -225,7 +228,7 @@ describe("agent group state and counts", () => {
       command("cmd"),
       command("done", "succeeded"),
     ]);
-    expect(processJobItemCounts(list, NOW)).toEqual({ active: 2, finished: 2, issues: 1, questions: 1 });
+    expect(processJobItemCounts(list, NOW)).toEqual({ question: 1, active: 2, issue: 1, cancelled: 0, done: 1 });
   });
 
   it("names a group by its NEWEST task, whichever turn speaks for its status", () => {
@@ -254,5 +257,141 @@ describe("agent group state and counts", () => {
     ])], "thread");
     const two = items([pendingPeer("p1", 0, 90)], calls);
     expect(group(two[0]).showThreads).toBe(true);
+  });
+});
+
+describe("the shelf partition", () => {
+  const settled = processJob().wake;
+  /** A command job in any state, with state-correct stamps and wake. */
+  const job = (jobId: string, state: ProcessJobProjection["state"], extra: Partial<Extract<ProcessJobProjection, { tool: "Exec" | "Bash" }>> = {}) => {
+    const terminal = !["queued", "starting", "running"].includes(state);
+    return processJob({
+      jobId, state, summary: `Purpose: ${jobId}`,
+      ...(terminal ? {} : { timestamps: { ...processJob().timestamps, completedAt: null }, exitCode: null, durationMs: null,
+        wake: { ...settled, state: "pending", attempts: 0, lastAttemptAt: null } }),
+      ...extra,
+    });
+  };
+  const bucketOf = (jobs: readonly ProcessJobProjection[], now = NOW): ProcessJobBucket => {
+    const list = items(jobs);
+    expect(list).toHaveLength(1);
+    return processJobItemBucket(list[0]!, now);
+  };
+  const peerTurn = (jobId: string, minute: number, state: ProcessJobProjection["state"], expiresMinute?: number) => agentTurn(jobId, "seed-bank", minute, {
+    tool: "PeerAgent", state, durationMinutes: 1,
+    ...(expiresMinute === undefined ? {} : { extra: { peerQuestion: { state: "awaiting_answer", questionId: `q-${jobId}`, peer: "seed-bank", thread: "spring",
+      message: "Reserve now?", requestedSchema: {}, expiresAt: at(expiresMinute) } } }),
+  });
+  /** The partition's invariants for any list: one bucket per row, sums, lists and order. */
+  const expectPartition = (list: readonly ProcessJobShelfItem[], now = NOW) => {
+    const partition = processJobShelfPartition(list, now);
+    const buckets = list.map((item) => processJobItemBucket(item, now));
+    const { counts } = partition;
+    expect(PROCESS_JOB_BUCKETS.reduce((sum, bucket) => sum + counts[bucket], 0)).toBe(list.length);
+    for (const bucket of PROCESS_JOB_BUCKETS) expect(counts[bucket]).toBe(buckets.filter((value) => value === bucket).length);
+    expect(partition.current).toEqual(list.filter((_, index) => buckets[index] === "question" || buckets[index] === "active"));
+    expect(partition.finished).toEqual(list.filter((_, index) => buckets[index] !== "question" && buckets[index] !== "active"));
+    expect(partition.active).toEqual(list.filter((_, index) => buckets[index] === "active"));
+    expect(partition.current.length).toBe(counts.question + counts.active);
+    expect(partition.finished.length).toBe(counts.issue + counts.cancelled + counts.done);
+    // The rows above History are exactly the current ones.
+    for (const item of list) expect(partition.current.includes(item)).toBe(processJobItemIsCurrent(item, now));
+    return partition;
+  };
+
+  it.each<[ProcessJobProjection["state"], boolean, ProcessJobBucket]>([
+    ["queued", false, "active"],
+    ["starting", false, "active"],
+    ["running", false, "active"],
+    // Stopping is still in progress until the host settles it.
+    ["running", true, "active"],
+    ["succeeded", false, "done"],
+    ["failed", false, "issue"],
+    ["timed_out", false, "issue"],
+    ["spawn_failed", false, "issue"],
+    ["queue_expired", false, "issue"],
+    ["interrupted", false, "issue"],
+    ["cancelled", true, "cancelled"],
+  ])("puts a %s command job (stop asked: %s) in exactly one bucket: %s", (state, cancelRequested, bucket) => {
+    expect(bucketOf([job("one", state, { cancelRequested })])).toBe(bucket);
+  });
+
+  it("counts a wake or child problem as an issue, even on a success or a cancellation", () => {
+    expect(bucketOf([job("woke", "succeeded", { wake: { ...settled, state: "failed" } })])).toBe("issue");
+    expect(bucketOf([job("unknown", "succeeded", { wake: { ...settled, state: "unknown" } })])).toBe("issue");
+    expect(bucketOf([job("stopped", "cancelled", { wake: { ...settled, state: "failed" } })])).toBe("issue");
+    expect(bucketOf([agentTurn("busy", "helper", 0, { state: "cancelled", durationMinutes: 1, extra: { childStillBusy: true } })])).toBe("issue");
+    // Delivered or still pending wakes are nothing wrong.
+    expect(bucketOf([job("fine", "succeeded")])).toBe("done");
+  });
+
+  it("puts a pending peer question first, whatever the job's outcome, until its deadline", () => {
+    expect(bucketOf([peerTurn("ok", 0, "succeeded", 90)])).toBe("question");
+    expect(bucketOf([peerTurn("bad", 0, "failed", 90)])).toBe("question");
+    expect(bucketOf([peerTurn("stop", 0, "cancelled", 90)])).toBe("question");
+    const late = T0 + 120 * 60_000;
+    expect(bucketOf([peerTurn("ok", 0, "succeeded", 90)], late)).toBe("done");
+    expect(bucketOf([peerTurn("bad", 0, "failed", 90)], late)).toBe("issue");
+    expect(bucketOf([peerTurn("stop", 0, "cancelled", 90)], late)).toBe("cancelled");
+  });
+
+  it("decides a settled group by its newest turn, and a current one by any turn still asking or working", () => {
+    expect(bucketOf([agentTurn("f", "planner", 0, { state: "failed", durationMinutes: 1 }), agentTurn("r", "planner", 5, { tool: "AgentManage" })])).toBe("active");
+    expect(bucketOf([agentTurn("ok", "planner", 0, { durationMinutes: 1 }), agentTurn("bad", "planner", 5, { tool: "AgentManage", state: "failed", durationMinutes: 1 })])).toBe("issue");
+    // A later success answers an earlier failure.
+    expect(bucketOf([agentTurn("bad", "planner", 0, { state: "failed", durationMinutes: 1 }), agentTurn("ok", "planner", 5, { tool: "AgentManage", durationMinutes: 1 })])).toBe("done");
+    expect(bucketOf([agentTurn("ok", "planner", 0, { durationMinutes: 1 }), agentTurn("stop", "planner", 5, { tool: "AgentManage", state: "cancelled", durationMinutes: 1 })])).toBe("cancelled");
+    // A peer: an older question outranks newer work; newer work outranks an older failure.
+    expect(bucketOf([peerTurn("asks", 0, "succeeded", 90), agentTurn("works", "seed-bank", 5, { tool: "PeerAgent" })])).toBe("question");
+    expect(bucketOf([agentTurn("works", "seed-bank", 0, { tool: "PeerAgent" }), peerTurn("bad", 5, "failed")])).toBe("active");
+  });
+
+  it("partitions a mixed shelf so the counts add up to its rows, in shelf order", () => {
+    const list = items([
+      job("queued", "queued"),
+      job("running", "running"),
+      job("stopping", "running", { cancelRequested: true }),
+      agentTurn("a1", "researcher-1", 0, { durationMinutes: 2 }),
+      agentTurn("a2", "researcher-1", 5, { tool: "AgentManage" }),
+      peerTurn("p1", 0, "failed", 90),
+      job("done", "succeeded"),
+      job("woke", "succeeded", { wake: { ...settled, state: "failed" } }),
+      job("failed", "failed"),
+      job("timed-out", "timed_out"),
+      job("cancelled", "cancelled"),
+      agentTurn("b1", "planner", 0, { state: "failed", durationMinutes: 1 }),
+      agentTurn("b2", "planner", 5, { tool: "AgentManage", durationMinutes: 1 }),
+    ]);
+    const partition = expectPartition(list);
+    expect(partition.counts).toEqual({ question: 1, active: 4, issue: 3, cancelled: 1, done: 2 });
+    expect(partition.active.map((item) => item.key)).toEqual(["queued", "running", "stopping", "agent:researcher-1"]);
+    expect(partition.finished.map((item) => item.key)).toEqual(["done", "woke", "failed", "timed-out", "cancelled", "agent:planner"]);
+  });
+
+  it("reads six finished rows with three failures as three issues and three done, never nine", () => {
+    const list = items([
+      job("export", "succeeded"),
+      job("lint", "failed"),
+      agentTurn("plan", "bed-planner", 0, { durationMinutes: 8 }),
+      job("crawl", "timed_out"),
+      agentTurn("bulbs", "seed-bank", 10, { tool: "PeerAgent", durationMinutes: 1 }),
+      job("sync", "interrupted"),
+    ]);
+    const partition = expectPartition(list);
+    expect(partition.counts).toEqual({ question: 0, active: 0, issue: 3, cancelled: 0, done: 3 });
+    expect(partition.finished).toHaveLength(6);
+  });
+
+  it("keeps its invariants at every instant as questions expire", () => {
+    const list = items([
+      peerTurn("p1", 0, "succeeded", 30),
+      job("x", "running"),
+      agentTurn("q2", "bulb-club", 0, { tool: "PeerAgent", state: "cancelled", durationMinutes: 1,
+        extra: { peerQuestion: { state: "awaiting_answer", questionId: "q-q2", peer: "bulb-club", thread: "autumn", message: "Order?", requestedSchema: {}, expiresAt: at(60) } } }),
+    ]);
+    const minuteAt = (minute: number) => T0 + minute * 60_000;
+    expect(expectPartition(list, minuteAt(10)).counts).toEqual({ question: 2, active: 1, issue: 0, cancelled: 0, done: 0 });
+    expect(expectPartition(list, minuteAt(45)).counts).toEqual({ question: 1, active: 1, issue: 0, cancelled: 0, done: 1 });
+    expect(expectPartition(list, minuteAt(90)).counts).toEqual({ question: 0, active: 1, issue: 0, cancelled: 1, done: 1 });
   });
 });

@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { commands, page } from "@vitest/browser/context";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { agentTurn } from "../test/agent-group-fixtures";
 import { processJob } from "../test/fixtures";
 import { backgroundSubagentJob } from "../test/background-subagent-fixtures";
 import type { ProcessJobProjection } from "../types";
@@ -49,6 +50,53 @@ const busy = { ...backgroundSubagentJob(true), jobId: "agent-busy", state: "canc
 const failed = processJob({ jobId: "failed", state: "failed", exitCode: 1, summary: "Purpose: Lint the seed catalog",
   wake: { ...base.wake, state: "failed" } });
 const mixed = [running("one"), running("two"), backgroundSubagentJob(), busy, failed, processJob({ jobId: "done" })];
+const times = (count: number, make: (index: number) => ProcessJobProjection) => Array.from({ length: count }, (_, index) => make(index));
+const asking = processJob({
+  jobId: "peer-asking", tool: "PeerAgent", kind: "internal", instanceId: "seed-bank", childStillBusy: false,
+  summary: "Ask the seed-bank agent about heirloom stock",
+  peerQuestion: { state: "awaiting_answer", questionId: "q-asking", peer: "seed-bank", thread: "spring-orders",
+    message: "Reserve the heirloom tomato seeds now?", requestedSchema: {}, expiresAt: new Date(Date.now() + 20 * 60_000).toISOString() },
+});
+/** Every bucket at once, most with two-digit counts: the widest bar a normal day produces. */
+const settledMany = [
+  ...times(14, (index) => processJob({ jobId: `failed-${String(index)}`, state: "failed", exitCode: 1 })),
+  ...times(11, (index) => processJob({ jobId: `cancelled-${String(index)}`, state: "cancelled", exitCode: null, cancelRequested: true })),
+  ...times(23, (index) => processJob({ jobId: `done-${String(index)}` })),
+];
+const everyCount = [asking, ...times(12, (index) => running(`running-${String(index)}`)), ...settledMany];
+const agent = (id: string, minute: number) => agentTurn(`agent-${id}`, id, minute, { summary: `Plan the ${id} work` });
+/** Seven current rows (a question, agents and commands) beside two settled ones. */
+const sevenCurrent = [asking, agent("garden-helper", 1), agent("soil-analyst", 2), running("cmd-1"), running("cmd-2"), agent("compost-steward", 3), running("cmd-3"), failed, processJob({ jobId: "done" })];
+const sevenOrder = ["seed-bank", "garden-helper", "soil-analyst", "Exec", "Exec", "compost-steward", "Exec"];
+/** The named list as shown: entries, "+n", and the ruler's natural widths. */
+const namedList = (toggle: HTMLElement) => {
+  const list = toggle.querySelector<HTMLElement>(".process-job-stack-current")!;
+  const entries = [...list.querySelectorAll<HTMLElement>(".process-job-stack-entries > .process-job-stack-entry")];
+  const more = list.querySelector<HTMLElement>(".process-job-stack-entries > .process-job-stack-more");
+  const rest = more === null ? 0 : Number(/\+(\d+)$/u.exec(more.textContent ?? "")![1]);
+  const ruler = [...list.querySelectorAll<HTMLElement>(".process-job-stack-ruler > .process-job-stack-entry")].map((node) => node.getBoundingClientRect().width);
+  const moreWidth = list.querySelector<HTMLElement>(".process-job-stack-ruler > .process-job-stack-more")!.getBoundingClientRect().width;
+  return { list, entries, more, rest, ruler, moreWidth, names: entries.map((entry) => entry.querySelector(".process-job-stack-entry-name")!.textContent) };
+};
+/** Whole entries only, all inside the bar, and not one more would have fit. */
+const expectBestFit = (toggle: HTMLElement, total: number) => {
+  const { list, entries, more, rest, ruler, moreWidth } = namedList(toggle);
+  const box = list.getBoundingClientRect();
+  expect(entries.length + rest).toBe(total);
+  expect(entries.length).toBeGreaterThanOrEqual(1);
+  for (const entry of [...entries, ...(more === null ? [] : [more])]) expect(entry.getBoundingClientRect().right).toBeLessThanOrEqual(box.right + 1);
+  if (entries.length > 1) {
+    for (const entry of entries) {
+      const name = entry.querySelector<HTMLElement>(".process-job-stack-entry-name")!;
+      expect(name.scrollWidth).toBeLessThanOrEqual(name.clientWidth + 1);
+    }
+  }
+  if (rest > 0) {
+    // One more entry (and the "+n" still needed after it) would not fit.
+    const next = ruler.slice(0, entries.length + 1).reduce((sum, width) => sum + width, 0) + (rest > 1 ? moreWidth : 0);
+    expect(next).toBeGreaterThan(box.width + 0.5);
+  }
+};
 
 const shelf = (jobs: readonly ProcessJobProjection[]) => (
   <main style={{ width: "100%", maxWidth: 880, margin: "0 auto", padding: "0 8px", boxSizing: "border-box" }}>
@@ -60,6 +108,9 @@ const shelf = (jobs: readonly ProcessJobProjection[]) => (
 );
 
 const noOverflow = (element: Element) => expect(element.scrollWidth).toBeLessThanOrEqual(element.clientWidth + 1);
+const frames = async (count = 3) => {
+  for (let index = 0; index < count; index += 1) await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+};
 
 beforeEach(async () => {
   vi.mocked(api.threadJob).mockImplementation(() => new Promise(() => undefined));
@@ -120,7 +171,14 @@ describe("the background jobs shelf in Chromium", () => {
     const many = Array.from({ length: 128 }, (_, index) => running(`job-${String(index)}`));
     const view = render(shelf([...many, failed]));
     const toggle = view.container.querySelector<HTMLElement>(".process-job-stack-toggle")!;
-    expect(toggle.querySelector(".process-job-chip-count")).toHaveTextContent("128");
+    // Closed, the rows are named and the rest is a three-digit "+n".
+    expect(namedList(toggle).rest).toBeGreaterThanOrEqual(100);
+    expectBestFit(toggle, 128);
+    expect(toggle.getBoundingClientRect().height).toBeLessThanOrEqual(46);
+    noOverflow(toggle);
+    // Open, the count chip carries the three digits.
+    fireEvent.click(toggle);
+    expect(toggle.querySelector(".process-job-chip.is-running .process-job-chip-count")).toHaveTextContent("128");
     expect(toggle.getBoundingClientRect().height).toBeLessThanOrEqual(46);
     noOverflow(toggle);
     cleanup();
@@ -130,6 +188,114 @@ describe("the background jobs shelf in Chromium", () => {
     expect(quiet).toHaveClass("is-quiet");
     expect(quiet.getBoundingClientRect().height).toBeLessThanOrEqual(40);
     noOverflow(quiet);
+  });
+
+  it("keeps the named list and settled chips, then all five two-digit chips, on one 320 px line", async () => {
+    for (const scheme of ["light", "dark"] as const) {
+      await page.viewport(320, 720);
+      await commands.emulateColorScheme(scheme);
+      const view = render(shelf(everyCount));
+      const stack = view.container.querySelector<HTMLElement>(".process-job-stack")!;
+      const toggle = view.container.querySelector<HTMLElement>(".process-job-stack-toggle")!;
+      const oneLine = (counts: readonly string[], tones: readonly string[]) => {
+        const chips = [...toggle.querySelectorAll<HTMLElement>(".process-job-chip")];
+        expect(chips.map((chip) => chip.querySelector(".process-job-chip-count")?.textContent)).toEqual(counts);
+        expect(chips.map((chip) => [...chip.classList].find((name) => name.startsWith("is-")))).toEqual(tones);
+        expect(toggle.getBoundingClientRect().height).toBeLessThanOrEqual(46);
+        noOverflow(toggle);
+        noOverflow(stack);
+        const bar = toggle.getBoundingClientRect();
+        const chevron = toggle.querySelector(":scope > .process-job-stack-chevron")!.getBoundingClientRect();
+        const top = chips[0]!.getBoundingClientRect().top;
+        for (const chip of chips) {
+          const box = chip.getBoundingClientRect();
+          expect(Math.abs(box.top - top)).toBeLessThanOrEqual(1);
+          expect(box.left).toBeGreaterThanOrEqual(bar.left - 1);
+          expect(box.right).toBeLessThanOrEqual(chevron.left + 1);
+          // Glyph and number only: no words on screen.
+          expect(chip.getBoundingClientRect().width).toBeLessThan(60);
+        }
+      };
+      // Closed: the question and the running rows are named (the question first), the settled rows counted.
+      oneLine(["14", "11", "23"], ["is-danger", "is-neutral", "is-success"]);
+      expectBestFit(toggle, 13);
+      expect(namedList(toggle).names[0]).toBe("seed-bank");
+      await capture(`job-stack-counts-closed-narrow-${scheme}`, stack);
+      fireEvent.click(toggle);
+      // Open: every bucket as a chip, left-aligned; the chevron ends the bar.
+      oneLine(["1", "12", "14", "11", "23"], ["is-question", "is-running", "is-danger", "is-neutral", "is-success"]);
+      const first = toggle.querySelector<HTMLElement>(".process-job-chip")!;
+      expect(first.getBoundingClientRect().left - toggle.getBoundingClientRect().left).toBeLessThanOrEqual(14);
+      await capture(`job-stack-counts-open-narrow-${scheme}`, stack);
+      cleanup();
+    }
+
+    // One current row beside three settled chips: the purpose yields, never a chip or its own glyph.
+    const view = render(shelf([running("solo", "Purpose: Regenerate every raised-bed planting map for the community garden"), ...settledMany]));
+    const toggle = view.container.querySelector<HTMLElement>(".process-job-stack-toggle")!;
+    const single = toggle.querySelector<HTMLElement>(".process-job-stack-single")!;
+    const chips = [...toggle.querySelectorAll<HTMLElement>(".process-job-chip")];
+    expect(chips).toHaveLength(3);
+    expect(toggle.getBoundingClientRect().height).toBeLessThanOrEqual(46);
+    noOverflow(toggle);
+    const purpose = single.querySelector<HTMLElement>(".process-job-stack-purpose")!;
+    expect(purpose.scrollWidth).toBeGreaterThan(purpose.clientWidth);
+    const kind = single.querySelector(".process-job-stack-kind")!.getBoundingClientRect();
+    expect(kind.right).toBeLessThanOrEqual(chips[0]!.getBoundingClientRect().left);
+    expect(chips.at(-1)!.getBoundingClientRect().right).toBeLessThanOrEqual(toggle.getBoundingClientRect().right + 1);
+    await capture("job-stack-counts-single-narrow", view.container.querySelector(".process-job-stack")!);
+  });
+
+  it.each([
+    { name: "desktop", width: 1280, height: 850 },
+    { name: "phone", width: 390, height: 844 },
+    { name: "narrow", width: 320, height: 720 },
+  ])("names as many whole current rows as fit at $name and says \"+n\" for the rest", async ({ width, height }) => {
+    for (const scheme of ["light", "dark"] as const) {
+      await page.viewport(width, height);
+      await commands.emulateColorScheme(scheme);
+      const view = render(shelf(sevenCurrent));
+      const toggle = view.container.querySelector<HTMLElement>(".process-job-stack-toggle")!;
+      expectBestFit(toggle, 7);
+      const { names, rest } = namedList(toggle);
+      // The question first, then work in progress in shelf order: a prefix of the full order.
+      expect(names).toEqual(sevenOrder.slice(0, names.length));
+      expect(toggle.getBoundingClientRect().height).toBeLessThanOrEqual(46);
+      noOverflow(toggle);
+      // The settled rows' chips stay right of the list, before the chevron.
+      const list = toggle.querySelector(".process-job-stack-current")!.getBoundingClientRect();
+      const chips = [...toggle.querySelectorAll<HTMLElement>(".process-job-chip")];
+      expect(chips.map((chip) => chip.className)).toEqual(["process-job-chip is-danger", "process-job-chip is-success"]);
+      expect(chips[0]!.getBoundingClientRect().left).toBeGreaterThanOrEqual(list.right - 1);
+      // Spoken: what is shown, then how many more, then the counts.
+      const words = [
+        ...names.map((name, index) => `${name!} ${index === 0 ? "question pending" : "running"}`),
+        ...(rest > 0 ? [`${String(rest)} more`] : []),
+      ].join(", ");
+      expect(toggle).toHaveAccessibleName(`Background jobs ${words}, 1 issue 1 done`);
+      if (width === 1280) expect(names.length).toBeGreaterThanOrEqual(5);
+      // Narrow, the "+n" branch (and its best-fit check) certainly runs.
+      if (width === 320) expect(rest).toBeGreaterThan(0);
+      cleanup();
+    }
+  });
+
+  it("re-measures the named list when the bar narrows and when the rows change", async () => {
+    await page.viewport(1280, 850);
+    const view = render(shelf(sevenCurrent));
+    const toggle = view.container.querySelector<HTMLElement>(".process-job-stack-toggle")!;
+    const wide = namedList(toggle).entries.length;
+    await page.viewport(320, 720);
+    await frames();
+    expectBestFit(toggle, 7);
+    expect(namedList(toggle).entries.length).toBeLessThan(wide);
+    // Fewer rows: measured again before paint, and "+n" goes once everything fits.
+    view.rerender(shelf([asking, agent("garden-helper", 1), failed]));
+    expectBestFit(toggle, 2);
+    await page.viewport(1280, 850);
+    await frames();
+    expect(namedList(toggle).names).toEqual(["seed-bank", "garden-helper"]);
+    expect(namedList(toggle).more).toBeNull();
   });
 
   it("truncates a single job's purpose before it hides any count", async () => {
@@ -148,7 +314,9 @@ describe("the background jobs shelf in Chromium", () => {
     const pair = [running("one"), running("two")];
     const view = render(shelf(pair));
     const stack = view.container.querySelector<HTMLElement>(".process-job-stack")!;
-    const spinner = view.container.querySelector<HTMLElement>(".process-job-chip .process-job-glyph.is-spinner")!;
+    // Two running rows are named; the first one's glyph is the bar's one spinner.
+    expect(view.container.querySelectorAll(".process-job-stack-toggle .is-spinner")).toHaveLength(1);
+    const spinner = view.container.querySelector<HTMLElement>(".process-job-stack-current .process-job-glyph.is-spinner")!;
     const style = getComputedStyle(spinner);
     expect(style.animationName).toBe("spin");
     // Continuous while work runs: never a bounded start-up cue that stops after
@@ -161,7 +329,7 @@ describe("the background jobs shelf in Chromium", () => {
     // A poll hands the shelf new projection objects: the same element keeps
     // the same running animation, never restarted from zero.
     view.rerender(shelf(pair.map((job) => JSON.parse(JSON.stringify(job)) as ProcessJobProjection)));
-    expect(view.container.querySelector(".process-job-chip .is-spinner")).toBe(spinner);
+    expect(view.container.querySelector(".process-job-stack-current .is-spinner")).toBe(spinner);
     expect(spinner.getAnimations()[0]).toBe(animation);
     expect(Number(animation!.currentTime)).toBeGreaterThanOrEqual(before);
 
@@ -174,9 +342,10 @@ describe("the background jobs shelf in Chromium", () => {
       expect(getComputedStyle(glyph).animationName).toBe("none");
       expect(glyph.getAnimations({ subtree: true })).toHaveLength(0);
     }
-    // Open, the header says the counts in words and the spinner goes with the
-    // chips: nothing in the open shelf animates (the chevron only eases
-    // through its transition).
+    // Open, the header keeps its chips but the in-progress one holds still as
+    // the rows' half-filled ring: nothing in the open shelf animates (the
+    // chevron only eases through its transition).
+    expect(view.container.querySelector(".process-job-chip.is-running .process-job-glyph")).toHaveClass("is-half");
     expect(stack.getAnimations({ subtree: true }).filter((moving) => moving instanceof CSSAnimation)).toEqual([]);
     cleanup();
 
@@ -190,7 +359,7 @@ describe("the background jobs shelf in Chromium", () => {
 
     await commands.emulateReducedMotion("reduce");
     const reduced = render(shelf([running("one"), running("two")]));
-    const still = reduced.container.querySelector<HTMLElement>(".process-job-chip .is-spinner")!;
+    const still = reduced.container.querySelector<HTMLElement>(".process-job-stack-current .is-spinner")!;
     expect(getComputedStyle(still).animationName).toBe("none");
     // At rest it is the rows' half-filled ring, never a frozen arc.
     expect(getComputedStyle(still.querySelector(".process-job-spinner-arc")!).display).toBe("none");
