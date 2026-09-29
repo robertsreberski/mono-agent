@@ -1080,6 +1080,78 @@ describe("managed detached production execution", () => {
       expect((await f.service.get(original.details.jobId))?.state).toBe("timed_out"); expect(f.wake).toHaveBeenCalledTimes(admissionRejected ? 3 : 2);
     } finally { release.resolve(); }
   }, 30_000);
+  it("restores a continuing instance's acknowledgement and route when cancellation follows begin but precedes provider admission", async () => {
+    const f = await managedFixture(undefined, { maxRuntimeMs: 3_000 });
+    const releasePublication = deferred<void>(); let delayed = false;
+    const run = vi.fn(async () => ({ text: "clean durable result" }));
+    f.service.bindManagedSubagents!({ root: resolve(f.root, "children"),
+      verify: async (identity) => await (await f.registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
+      publish: async (phase, publication) => {
+        if (!delayed && phase === "confirm" && !publication.released && publication.disposition.status === "ok") {
+          delayed = true; await releasePublication.promise;
+        }
+        await (await f.registry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication);
+      },
+    });
+    const { agent } = tools(f, run, { timeoutMs: 3_000 });
+    const original = await agent.execute("original", { persist: true, background: true, id: "helper", prompt: "work" });
+    try {
+      await vi.waitFor(async () => expect((await f.store.get(original.details.jobId))?.subagentOwnership?.disposition)
+        .toMatchObject({ reason: "timeout", continuity: "retained" }), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+      releasePublication.resolve(); await done(f.service, original.details.jobId);
+      const { send } = tools(f, run, { timeoutMs: 3_000 });
+      const inspected = await send.execute("inspection", { id: "helper", inspect: true });
+      const before = (await f.instances.get("helper"))!;
+      const request = { id: "helper", ack: inspected.details.recovery.ack, background: true,
+        effort: "high", message: "Verify and continue." };
+      const began = deferred<void>(); const releaseBegin = deferred<void>();
+      const instances = { ...f.instances, begin: async (...args: Parameters<typeof f.instances.begin>) => {
+        const result = await f.instances.begin(...args);
+        began.resolve(); await releaseBegin.promise;
+        return result;
+      } };
+      const gated = tools(f, run, { instances, timeoutMs: 3_000 });
+      const second = await gated.send.execute("gated", request);
+      await began.promise;
+      expect((await f.instances.get("helper"))?.definition.effort).toBe("high");
+      await f.service.cancel(second.details.jobId);
+      releaseBegin.resolve();
+      await done(f.service, second.details.jobId);
+      expect(run).toHaveBeenCalledOnce();
+      expect(await f.instances.get("helper")).toMatchObject({ status: "idle", turns: before.turns,
+        definition: before.definition, recovery: before.recovery });
+      const retry = await send.execute("retry", request);
+      await done(f.service, retry.details.jobId);
+      expect(run).toHaveBeenCalledTimes(2);
+    } finally { releasePublication.resolve(); }
+  }, 40_000);
+
+  it("retires a new instance cancelled after begin but before provider admission", async () => {
+    const f = await managedFixture();
+    const began = deferred<void>(); const releaseBegin = deferred<void>();
+    const instances = { ...f.instances, begin: async (...args: Parameters<typeof f.instances.begin>) => {
+      const result = await f.instances.begin(...args);
+      began.resolve(); await releaseBegin.promise;
+      return result;
+    } };
+    const run = vi.fn(async () => ({ text: "must not run" }));
+    const { agent } = tools(f, run, { instances });
+    const started = await agent.execute("gated", { persist: true, background: true, id: "new-child", prompt: "work" });
+    try {
+      await began.promise;
+      expect((await f.instances.get("new-child"))?.status).toBe("running");
+      await f.service.cancel(started.details.jobId);
+      releaseBegin.resolve();
+      await done(f.service, started.details.jobId);
+      expect(run).not.toHaveBeenCalled();
+      expect(await f.instances.get("new-child")).toMatchObject({ status: "closed", turns: 0 });
+      expect((await f.instances.get("new-child"))?.recovery).toBeUndefined();
+      const { agent: retry } = tools(f, run);
+      const next = await retry.execute("retry", { persist: true, background: true, id: "new-child", prompt: "work" });
+      await done(f.service, next.details.jobId);
+    } finally { releaseBegin.resolve(); }
+  }, 30_000);
+
   it("names the live-instance limit and remedy before a new child can be admitted", async () => {
     const f = await managedFixture();
     for (let index = 0; index < 8; index++) await f.instances.create({ ...spec, id: `idle-${index}` });
@@ -1374,7 +1446,7 @@ describe("detached persistent subagents", () => {
     await expect(send.execute("c", { id: "helper", message: "duplicate", background: true })).rejects.toThrow(/busy/);
     const denied = tools(f, run, { backgroundSubagentController: { startInternal: async () => { throw new Error("admission rejected"); } } });
     await expect(denied.agent.execute("d", { persist: true, background: true, id: "denied", prompt: "reject" })).rejects.toThrow("controller is unavailable");
-    expect(await f.instances.get("denied")).toMatchObject({ status: "idle", turns: 0 });
+    expect(await f.instances.get("denied")).toMatchObject({ status: "closed", turns: 0 });
     await f.service.cancel(queued.details.jobId); await done(f.service, queued.details.jobId);
     expect(await f.instances.get("helper")).toMatchObject({ status: "idle", turns: 0 });
     expect(run).toHaveBeenCalledOnce();
@@ -1428,7 +1500,7 @@ describe("detached persistent subagents", () => {
     const agent = createAgentTool(options, { recoveryAccess: { workspace: f.root, readableRoots: [], sandboxPolicy: createSandboxPolicy({ root: f.root }) } });
     const first = await agent.execute("slow-admission", { persist: true, background: true, id: "helper", prompt: "work" });
     await done(f.service, first.details.jobId);
-    await vi.waitFor(async () => expect((await f.instances.get("helper"))?.status).toBe("idle"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+    await vi.waitFor(async () => expect((await f.instances.get("helper"))?.status).toBe("closed"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
     expect((await f.instances.get("helper"))?.activeTurn).toBeUndefined();
     expect(run).not.toHaveBeenCalled();
   }, 25_000);
@@ -1929,7 +2001,7 @@ it("queue expiry releases the reservation without invoking the child", async () 
   const first = await agent.execute("a", { persist: true, id: "first", prompt: "hold", background: true });
   const queued = await agent.execute("b", { persist: true, id: "second", prompt: "expire", background: true });
   expect((await done(f.service, queued.details.jobId)).state).toBe("queue_expired");
-  expect(await f.instances.get("second")).toMatchObject({ status: "idle", turns: 0 });
+  expect(await f.instances.get("second")).toMatchObject({ status: "closed", turns: 0 });
   expect(run).toHaveBeenCalledOnce();
   gate.resolve({ text: "done" }); await done(f.service, first.details.jobId);
 });
@@ -1971,7 +2043,7 @@ it("rolls failed internal running publication back and drains the next queued ch
   expect(await done(f.service, failed.details.jobId)).toMatchObject({ state: "spawn_failed" });
   expect(await done(f.service, next.details.jobId)).toMatchObject({ state: "succeeded" });
   expect(run.mock.calls.map(([r]) => r.instance.id)).toEqual(["first", "next"]);
-  expect((await f.instances.get("helper"))?.status).toBe("idle");
+  expect((await f.instances.get("helper"))?.status).toBe("closed");
   expect((f.service as any).pending.has(failed.details.jobId)).toBe(false);
   expect(f.wake.mock.calls.filter(([w]: any) => w.projection.jobId === failed.details.jobId)).toHaveLength(1);
 });

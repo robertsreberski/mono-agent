@@ -52,7 +52,14 @@ export interface SubagentInstance {
   lastStatus?: string;
   lastAnswerHead?: string;
 }
-interface StoredSubagentInstance extends SubagentInstance { createdForAdmission?: boolean; verificationTarget?: SubagentVerificationTarget; recoveryBinding?: SubagentRecoveryBinding; ownerLink?: SubagentOwnerLink; ownerReceipt?: { jobId: string; storeRoot: string; turnToken: string; sequence: number; finalized: boolean; acknowledged: boolean } }
+interface PreProviderState {
+  turnToken: string;
+  model: RuntimeModelReference | null;
+  effort: string | null;
+  recovery?: SubagentRecoveryFence;
+  recoveryBinding?: SubagentRecoveryBinding;
+}
+interface StoredSubagentInstance extends SubagentInstance { createdForAdmission?: boolean; preProvider?: PreProviderState; verificationTarget?: SubagentVerificationTarget; recoveryBinding?: SubagentRecoveryBinding; ownerLink?: SubagentOwnerLink; ownerReceipt?: { jobId: string; storeRoot: string; turnToken: string; sequence: number; finalized: boolean; acknowledged: boolean } }
 
 export interface SubagentRecoverySubject {
   readonly conversationId: string;
@@ -136,8 +143,8 @@ function validModelReference(value: unknown): value is RuntimeModelReference {
  * therefore intentionally OUTSIDE the digest — single-use consumption already
  * prevents replaying one acknowledgement on a differently routed turn.
  *
- * Idempotent: a detached turn applies the same route at `reserve` and again at
- * `begin`.
+ * Detached reservation defers the route until `begin`. The pre-provider snapshot
+ * stays reversible until durable owner settlement proves the provider started.
  */
 function applyRoute(record: StoredSubagentInstance, route: InstanceRoute | undefined): void {
   if (!route || (route.model === undefined && route.effort === undefined)) return;
@@ -150,8 +157,33 @@ function applyRoute(record: StoredSubagentInstance, route: InstanceRoute | undef
     ...(route.effort === undefined ? {} : { effort: route.effort }) };
 }
 
+function restoreNeverStarted(record: StoredSubagentInstance): void {
+  const prior = record.preProvider;
+  if (prior) {
+    if (record.activeTurn?.token !== prior.turnToken) throw new SubagentRecoveryError("subagent_stale_turn");
+    const { model: _model, effort: _effort, ...definition } = record.definition;
+    record.definition = { ...definition,
+      ...(prior.model === null ? {} : { model: structuredClone(prior.model) }),
+      ...(prior.effort === null ? {} : { effort: prior.effort }) };
+    if (prior.recovery) record.recovery = structuredClone(prior.recovery);
+    else delete record.recovery;
+    if (prior.recoveryBinding) record.recoveryBinding = structuredClone(prior.recoveryBinding);
+    else delete record.recoveryBinding;
+    delete record.preProvider;
+  }
+}
+
 function validRecord(value: unknown, conversationId: string, sessionsRoot: string): value is StoredSubagentInstance {
-  if (!object(value) || !keys(value, ["id", "conversationId", "name", "systemPrompt", "definition", "sessionId", "sessionsRoot", "status", "turns", "usage", "createdAt", "updatedAt", "lastStatus", "lastAnswerHead", "pendingQuestion", "reservation", "incarnation", "activeTurn", "recovery", "ownerLink", "ownerReceipt", "recoveryBinding", "verificationTarget", "createdForAdmission"])) return false;
+  if (!object(value) || !keys(value, ["id", "conversationId", "name", "systemPrompt", "definition", "sessionId", "sessionsRoot", "status", "turns", "usage", "createdAt", "updatedAt", "lastStatus", "lastAnswerHead", "pendingQuestion", "reservation", "incarnation", "activeTurn", "recovery", "ownerLink", "ownerReceipt", "recoveryBinding", "verificationTarget", "createdForAdmission", "preProvider"])) return false;
+  if (value.preProvider !== undefined && (!object(value.preProvider)
+    || !keys(value.preProvider, ["turnToken", "model", "effort", "recovery", "recoveryBinding"])
+    || !isSubagentUuid(value.preProvider.turnToken)
+    || value.preProvider.model !== null && !validModelReference(value.preProvider.model)
+    || value.preProvider.effort !== null && (typeof value.preProvider.effort !== "string" || !EFFORTS.includes(value.preProvider.effort))
+    || value.preProvider.recovery !== undefined && !isSubagentRecoveryFence(value.preProvider.recovery)
+    || value.preProvider.recoveryBinding !== undefined && !isSubagentRecoveryBinding(value.preProvider.recoveryBinding)
+    || !object(value.activeTurn) || value.activeTurn.token !== value.preProvider.turnToken
+    || value.activeTurn.kind !== "detached" || value.status !== "running")) return false;
   if (value.createdForAdmission !== undefined && value.createdForAdmission !== true) return false;
   if (value.verificationTarget !== undefined && !isSubagentVerificationTarget(value.verificationTarget)) return false;
   if (value.recoveryBinding !== undefined && !isSubagentRecoveryBinding(value.recoveryBinding)) return false;
@@ -343,6 +375,7 @@ export function createSubagentInstanceRegistry(options: {
         if ((proof.state !== "released" && proof.state !== "not_admitted") || !sameSubagentOwner(identity, proof.identity)
           || !Number.isSafeInteger(proof.sequence) || proof.sequence < 1) return;
         if (proof.neverStarted) {
+          restoreNeverStarted(record);
           record.status = record.pendingQuestion ? "awaiting_reply" : "idle";
           delete record.activeTurn; delete record.ownerLink; delete record.reservation;
           if (record.createdForAdmission) { delete record.createdForAdmission; record.status = "closed"; await retire(record); }
@@ -359,6 +392,7 @@ export function createSubagentInstanceRegistry(options: {
         else record.recovery = fence;
         record.status = record.pendingQuestion ? "awaiting_reply" : "idle";
         record.lastStatus = "interrupted";
+        delete record.preProvider; delete record.createdForAdmission;
         delete record.activeTurn;
         delete record.ownerLink;
         delete record.reservation;
@@ -432,7 +466,7 @@ export function createSubagentInstanceRegistry(options: {
           const project = (value: unknown): unknown => {
             if (Array.isArray(value)) return value.map(project);
             if (value && typeof value === "object" && "sessionId" in value) {
-              const { ownerLink: _owner, ownerReceipt: _receipt, recoveryBinding: _binding, verificationTarget: _verification, createdForAdmission: _newAdmission, ...publicRecord } = value as StoredSubagentInstance;
+              const { ownerLink: _owner, ownerReceipt: _receipt, recoveryBinding: _binding, verificationTarget: _verification, createdForAdmission: _newAdmission, preProvider: _preProvider, ...publicRecord } = value as StoredSubagentInstance;
               return structuredClone({ ...publicRecord,
                 ...(_receipt ? { settledTurnToken: _receipt.turnToken } : {}),
                 ...(publicRecord.recovery || (_receipt && !_receipt.acknowledged) ? { recoveryBlocked: true } : {}),
@@ -538,6 +572,7 @@ export function createSubagentInstanceRegistry(options: {
             if (disposition.resumeAfterStop && disposition.continuity === "retained"
               && record.recovery?.turnToken === identity.turnToken) delete record.recovery;
             if (publication.neverStarted) {
+              restoreNeverStarted(record);
               released = turns.get(turnPath(record.id));
               delete record.activeTurn; delete record.ownerLink; delete record.reservation;
               record.status = record.pendingQuestion ? "awaiting_reply" : "idle";
@@ -559,6 +594,7 @@ export function createSubagentInstanceRegistry(options: {
               if (Number.isFinite(amount) && amount >= 0) record.usage[key] += amount;
             }
             released = turns.get(turnPath(record.id));
+            delete record.preProvider; delete record.createdForAdmission;
             delete record.activeTurn; delete record.ownerLink; delete record.reservation;
             if (disposition.status === "ok" && disposition.closeAfterSuccess && !record.recovery) {
               record.status = "closed"; delete record.pendingQuestion; await retire(record);
@@ -641,9 +677,11 @@ export function createSubagentInstanceRegistry(options: {
               if (record.activeTurn) throw new SubagentRecoveryError("subagent_owner_unavailable");
             }
             released = turns.get(turnPath(id));
+            restoreNeverStarted(record);
             delete record.activeTurn;
             record.status = record.pendingQuestion ? "awaiting_reply" : "idle";
             delete record.reservation;
+            if (record.createdForAdmission) { delete record.createdForAdmission; record.status = "closed"; await retire(record); }
           }); } finally {
             if (released && turns.get(turnPath(id)) === released) {
               try { await released.release(); } finally { turns.delete(turnPath(id)); }
@@ -664,8 +702,14 @@ export function createSubagentInstanceRegistry(options: {
           if (!lock) throw new Error("Subagent reservation ownership was lost.");
           acquired = lock;
           turns.set(turnPath(id), lock);
+          if (token !== undefined && record.ownerLink && record.activeTurn?.kind === "detached") {
+            record.preProvider = { turnToken: token,
+              model: record.definition.model ? structuredClone(record.definition.model) : null,
+              effort: record.definition.effort ?? null,
+              ...(record.recovery ? { recovery: structuredClone(record.recovery) } : {}),
+              ...(record.recoveryBinding ? { recoveryBinding: structuredClone(record.recoveryBinding) } : {}) };
+          }
           if (record.recovery?.certifiedTimeout) delete record.recovery;
-          delete record.createdForAdmission;
           record.incarnation ??= randomUUID();
           record.activeTurn ??= { token: randomUUID(), kind: "foreground", settlementPending: true };
           if (acknowledgement) {
