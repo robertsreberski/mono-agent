@@ -3853,7 +3853,7 @@ describe("WebService", () => {
     const image = replyImage();
     const service = await createService({
       fetchImpl: operatorFetch({
-        ...imageTurn(image),
+        ...imageTurn(image, { expiresAt: new Date(Date.now() + 60 * 60_000).toISOString() }),
         onReplyArtifact: () => artifactResponse(image, Buffer.alloc(image.bytes.byteLength, 9)),
       }),
     });
@@ -3892,7 +3892,7 @@ describe("WebService", () => {
     const image = replyImage();
     const service = await createService({
       fetchImpl: operatorFetch({
-        ...imageTurn(image),
+        ...imageTurn(image, { expiresAt: new Date(Date.now() + 60 * 60_000).toISOString() }),
         onReplyArtifact: () => new Response("gone", { status: 503 }),
       }),
     });
