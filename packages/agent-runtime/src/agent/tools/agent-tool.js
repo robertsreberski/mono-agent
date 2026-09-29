@@ -17,6 +17,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 
 import { createCountingSemaphore } from "./shared/semaphore.js";
+import { publicBackgroundStartFailure } from "./shared/process-jobs.js";
 
 /** @typedef {import('../../ai/types.js').RuntimeSubagentDefinition} RuntimeSubagentDefinition */
 /** @typedef {import('../../ai/types.js').RuntimeSubagentsOptions} RuntimeSubagentsOptions */
@@ -439,10 +440,20 @@ export function createAgentTool(subagents, context = {}, continuation) {
         return params.verification ? await instances.create({ ...spec, verification: params.verification }, context.recoveryAccess) : await instances.create(spec);
       };
       if (detached) {
-        const retained = continuation?.record ?? await createInstance();
+        let retained;
+        try { retained = continuation?.record ?? await createInstance(); }
+        catch (error) {
+          if (error?.code === "subagent_instance_capacity" && Number.isSafeInteger(error.occupancy) && Number.isSafeInteger(error.limit)) {
+            throw new Error(`Subagent live instances full: ${error.occupancy}/${error.limit} (subagents.instances.maxPerConversation); close idle instances or raise the configured limit.`);
+          }
+          if (["subagent_ownership_held", "subagent_owner_unavailable", "subagent_recovery_required", "subagent_stale_turn"].includes(error?.code)) {
+            throw Object.assign(new Error(error.code), { code: error.code });
+          }
+          throw new Error("Subagent instance could not be created; check the instance id, recovery state, and configured limits.");
+        }
         instance = continuation?.acknowledgement
           ? await instances.reserve(retained.id, reservation, continuation.acknowledgement, context.recoveryAccess, route)
-          : await instances.reserve(retained.id, reservation, undefined, context.recoveryAccess, route);
+          : await instances.reserve(retained.id, reservation, undefined, context.recoveryAccess, route, !continuation);
         try {
           const started = await background.startInternal({ kind: "internal", tool: continuation ? "AgentManage" : "Agent",
             jobId: reservation, instanceId: retained.id,
@@ -463,12 +474,17 @@ export function createAgentTool(subagents, context = {}, continuation) {
               } finally { await instances.releaseReservation(retained.id, reservation); }
             },
           });
-          return { content: [{ type: "text", text: `Background subagent started. This conversation will wake on completion or AskParent. Do not poll, replay, or report completion yet.\n${JSON.stringify({ jobId: started.jobId, instanceId: retained.id, state: started.state })}` }],
+          return { content: [{ type: "text", text: `Background subagent ${started.state === "queued" ? "queued; no child or provider has started" : "running"}. This conversation will wake on completion or AskParent. Do not poll, replay, or report completion yet.\n${JSON.stringify({ jobId: started.jobId, instanceId: retained.id, state: started.state, ...(started.queuePosition === undefined ? {} : { queuePosition: started.queuePosition }), ...(started.queueDeadlineAt === undefined ? {} : { queueDeadlineAt: started.queueDeadlineAt }) })}` }],
             details: { tool: continuation ? "AgentManage" : "Agent", jobId: started.jobId, instanceId: retained.id, state: started.state,
               outcome: { status: "ok", code: "background_started", retryable: false, attempts: 1, durationMs: 0,
                 bytes: 0, truncated: false, exitCode: null, signal: null, timedOut: false, background: true,
                 job_id: started.jobId, state: started.state, started_at: started.startedAt } } };
-        } catch (error) { await instances.releaseReservation(retained.id, reservation); throw error; }
+        } catch (error) {
+          try { await instances.releaseReservation(retained.id, reservation); }
+          catch { throw Object.assign(new Error("Subagent ownership is unavailable; the turn remains fenced."), { code: "subagent_owner_unavailable" }); }
+          const failure = publicBackgroundStartFailure(error);
+          throw Object.assign(new Error(failure.message), { code: failure.code });
+        }
       }
       return await runTurn(signal);
 
@@ -498,7 +514,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
         let begun = false;
         let timeoutMs;
         try {
-          if (detached) { instance = await instances.begin(instance.id, reservation, undefined, undefined, route); begun = true; }
+          if (detached) { instance = await instances.begin(instance.id, reservation, continuation?.acknowledgement, context.recoveryAccess, route); begun = true; }
           else if (continuation) {
             instance = continuation.acknowledgement
               ? await instances.begin(continuation.record.id, undefined, continuation.acknowledgement, context.recoveryAccess, route)

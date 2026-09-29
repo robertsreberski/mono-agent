@@ -32,6 +32,8 @@ export interface SubagentRegistryPublication {
   readonly sequence: number;
   readonly disposition: SubagentDisposition;
   readonly released: boolean;
+  /** Durable owner settlement proves the provider and child commands never started. */
+  readonly neverStarted?: true;
   readonly outcome?: InstanceOutcome;
 }
 export interface ManagedSubagentRegistry {

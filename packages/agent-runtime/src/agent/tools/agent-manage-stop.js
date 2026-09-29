@@ -60,7 +60,7 @@ export async function stopSubagent(subagents, params, signal, recoveryAccess) {
         || (!current.activeTurn && current.settledTurnToken !== jobId) || current.turns > record.turns + 1) return error("subagent_stale_turn");
       if (!proof.childStillBusy && (!proof.resumable || blocked(current)) && !(await certifiedResumable(current))) return error("subagent_stop_recovery_required");
       if (proof.childStillBusy && (!stopRequested || !["queued", "running"].includes(current.status))) return error("subagent_stop_unavailable");
-      if (!proof.childStillBusy && !["idle", "awaiting_reply"].includes(current.status)) return error("subagent_stale_turn");
+      if (!proof.childStillBusy && !["idle", "awaiting_reply", "closed"].includes(current.status)) return error("subagent_stale_turn");
       return receipt({ instanceId: current.id, jobId, status: proof.childStillBusy ? "stop_requested" : "stopped",
         instanceStatus: current.status, turns: current.turns, disposition: proof.disposition, stopRequested,
         childStillBusy: proof.childStillBusy, resumable: !proof.childStillBusy });

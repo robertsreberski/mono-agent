@@ -77,6 +77,9 @@ export interface ProcessJobStartResult {
    * requested one.
    */
   readonly maxRuntimeMs?: number;
+  /** Admission-time snapshot; later cancellations may change the position. */
+  readonly queuePosition?: number;
+  readonly queueDeadlineAt?: string;
 }
 
 /** Host budget a background job is bounded by, independent of any one request. */
