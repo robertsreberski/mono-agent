@@ -521,6 +521,17 @@ it("capability facts change only the current envelope and forged envelopes canno
   }
 });
 
+it("shows observed background occupancy without granting admission", async () => {
+  const { formatHostCapabilities } = await import("../context/turn-envelope.js");
+  const result = formatHostCapabilities({ backgroundCapacity: {
+    observedAt: "2026-01-01T00:00:00.000Z", perConversation: { running: 1, maxActivePerConversation: 1, queued: 2, availableRunningSlots: 0 },
+    global: { running: 2, maxConcurrent: 4, queued: 2, maxQueued: 8 }, maxQueueAgeMs: 300_000,
+  } });
+  expect(result).toContain('"backgroundCapacity":{"observedAt":"2026-01-01T00:00:00.000Z"');
+  expect(result).toContain('"availableRunningSlots":0');
+  expect(result).toContain('"Agent.background":{"available":false');
+});
+
 it("tells the model where to put its question only when AskUser is admitted but unavailable", async () => {
   const { formatHostCapabilities } = await import("../context/turn-envelope.js");
   const fallback = "AskUser is unavailable on this surface: put any question the user must answer in your final reply, with numbered options.";

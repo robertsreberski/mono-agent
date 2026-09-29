@@ -104,12 +104,12 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `openaiApi.port` | `integer` | `MONO_AGENT_OPENAI_API_PORT` | 0 | `0` | Configures port for the openaiApi section. |
 | `peers` | `object` | `--` | none | `{"finance":{"sourceId":"finance-ai"}}` | Named local ACP peers for PeerAgent. Each sourceId must resolve to a running compatible mono-agent. Names and source IDs must be unique; this does not grant the peer owner approval. |
 | `processJobs.enabled` | `boolean` | `--` | false | `true` | Opt in to owner-private Pi-native Exec/Bash background process jobs (unsupported on Windows). |
-| `processJobs.maxActivePerConversation` | `integer` | `--` | 2 | `2` | Maximum non-terminal process jobs admitted from one conversation (compiled cap 8). |
+| `processJobs.maxActivePerConversation` | `integer` | `--` | 2 | `2` | Maximum simultaneously running or starting jobs per conversation (compiled cap 8); waiting jobs use the global queue. Nested child launches may borrow their running ancestor's conversation slot. |
 | `processJobs.maxChainDepth` | `integer` | `--` | 4 | `4` | Maximum host-owned background wake chain depth (compiled cap 64). |
 | `processJobs.maxConcurrent` | `integer` | `--` | 4 | `4` | Maximum simultaneously running process jobs (compiled cap 32). |
 | `processJobs.maxOutputBytes` | `integer` | `--` | 1048576 | `1048576` | Combined retained process-output ceiling (compiled cap 8 MiB). |
 | `processJobs.maxQueueAgeMs` | `integer` | `--` | 300000 | `300000` | Maximum admission-to-spawn queue age (compiled cap one hour). |
-| `processJobs.maxQueued` | `integer` | `--` | 8 | `8` | Maximum queued process jobs after running capacity is full (compiled cap 64). |
+| `processJobs.maxQueued` | `integer` | `--` | 8 | `8` | Maximum waiting process jobs globally, including jobs waiting on a conversation slot (compiled cap 64). |
 | `processJobs.maxRuntimeMs` | `integer` | `--` | 1800000 | `1800000` | Host runtime ceiling per owned process group (compiled cap 24 hours; calls may narrow it). |
 | `processJobs.previewChars` | `integer` | `--` | 2000 | `2000` | Bound for redacted wake/operator output previews (compiled cap 8000; calls may narrow it). |
 | `processJobs.retention.artifactMaxBytes` | `integer` | `--` | 268435456 | `268435456` | Aggregate retained terminal output artifact budget (compiled cap 1 GiB). |

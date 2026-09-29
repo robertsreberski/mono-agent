@@ -54,6 +54,37 @@ describe("Exec", () => {
       expect((await run({ ...params, background: true }, options(workspace))).outcome.code).toBe("background_unsupported");
     },
   );
+  it.each([["Exec", execToolRun, { executable: process.execPath }], ["Bash", bashToolRun, { command: "true" }]])(
+    "reports %s queued position and deadline without claiming a process started",
+    async (_name, run, params) => {
+      const workspace = tempWorkspace();
+      const result = await run({ ...params, background: true }, { ...options(workspace), processJobsController: {
+        start: async (request) => {
+          await request.prepared.cleanup?.();
+          return { jobId: "queued-job", state: "queued", startedAt: null, queuePosition: 2,
+            queueDeadlineAt: "2026-01-01T00:00:00.000Z" };
+        },
+      } });
+      expect(result.text).toContain("no child or provider has started");
+      expect(JSON.parse(result.text.split("\n").at(-1))).toMatchObject({
+        job_id: "queued-job", state: "queued", queue_position: 2, queue_deadline_at: "2026-01-01T00:00:00.000Z",
+      });
+    },
+  );
+
+  it("renders only allowlisted capacity metadata and remedies", async () => {
+    const workspace = tempWorkspace();
+    const result = await execToolRun({ executable: process.execPath, background: true }, {
+      ...options(workspace), processJobsController: { start: async () => {
+        throw Object.assign(new Error("private command description"), { code: "process_job_queue_full", occupancy: 3,
+          limit: 3, limitKey: "processJobs.maxQueued", conversationOccupancy: 1, conversationLimit: 1 });
+      } },
+    });
+    expect(result.text).toContain("3/3 (processJobs.maxQueued)");
+    expect(result.text).toContain("1/1 (processJobs.maxActivePerConversation)");
+    expect(result.text).not.toContain("private command description");
+  });
+
   it("keeps definitions byte-identical with and without a controller", () => {
     const withoutController = getPiBuiltinTools(["Exec", "Bash"], { ctx });
     const baseline = Object.fromEntries(withoutController.map((tool) => [tool.name, JSON.stringify(tool.parameters)]));
