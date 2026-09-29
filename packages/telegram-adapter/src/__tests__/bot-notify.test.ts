@@ -64,9 +64,11 @@ function buildNotifiableBot(
       bot.api.config.use(async (_prev, method, payload) => {
         const typedPayload = payload as Record<string, unknown>;
         calls.push({ method, payload: typedPayload });
-        if (method === "sendMessage") {
+        if (method === "sendMessage" || method === "sendRichMessage") {
           await behavior.beforeSend?.();
-          const sends = calls.filter((call) => call.method === "sendMessage").length;
+          const sends = calls.filter(
+            (call) => call.method === "sendMessage" || call.method === "sendRichMessage",
+          ).length;
           if (behavior.failSendAfter !== undefined && sends > behavior.failSendAfter) {
             throw new Error("send failed");
           }
@@ -74,7 +76,9 @@ function buildNotifiableBot(
             message_id: nextMessageId++,
             date: 0,
             chat: { id: typedPayload.chat_id, type: "private" },
-            text: typedPayload.text,
+            ...(method === "sendRichMessage"
+              ? { rich_message: typedPayload.rich_message }
+              : { text: typedPayload.text }),
           });
         }
         if (method === "editMessageText") {
@@ -92,6 +96,15 @@ function buildNotifiableBot(
     },
   });
   return { controller, calls };
+}
+
+function messageSends(calls: readonly RecordedCall[]): RecordedCall[] {
+  return calls.filter((call) => call.method === "sendMessage" || call.method === "sendRichMessage");
+}
+
+function callText(call: RecordedCall): unknown {
+  const richMessage = call.payload.rich_message as { markdown?: unknown } | undefined;
+  return richMessage?.markdown ?? call.payload.text;
 }
 
 describe("createTelegramBot notify (proactive)", () => {
@@ -116,12 +129,15 @@ describe("createTelegramBot notify (proactive)", () => {
     expect(Reflect.get(captured?.metadata ?? {}, Symbol.for("mono-agent.process-job-wake.delivery-key.v1")))
       .toBe("process-job:telegram-wake");
     expect(JSON.stringify(captured?.metadata)).not.toContain("process-job:telegram-wake");
-    const sent = calls.filter((call) => call.method === "sendMessage");
+    const sent = messageSends(calls);
     expect(sent).toHaveLength(1);
     expect(calls.filter((call) => call.method === "editMessageText")).toEqual([]);
-    expect(sent.at(-1)?.payload).toMatchObject({
-      chat_id: 42,
-      text: "Morning brief ready",
+    expect(sent.at(-1)).toMatchObject({
+      method: "sendRichMessage",
+      payload: {
+        chat_id: 42,
+        rich_message: { markdown: "Morning brief ready" },
+      },
     });
   });
 
@@ -141,9 +157,8 @@ describe("createTelegramBot notify (proactive)", () => {
 
     await controller.notify(42, "Research this in the background.");
 
-    expect(calls.filter((call) => call.method === "sendMessage").map((call) => call.payload.text))
-      .toEqual(["Research complete"]);
-    expect(calls.some((call) => String(call.payload.text).includes("Searching the web")))
+    expect(messageSends(calls).map(callText)).toEqual(["Research complete"]);
+    expect(calls.some((call) => String(callText(call)).includes("Searching the web")))
       .toBe(false);
   });
 
@@ -191,12 +206,11 @@ describe("createTelegramBot notify (proactive)", () => {
     const result = await controller.notify(42, "Your morning brief: all clear.", { verbatim: true });
 
     expect(result).toEqual({ delivered: true });
-    // No model turn ran — the body is posted through the normal stream (markdown
-    // rendering still applies, so punctuation may be MarkdownV2-escaped).
+    // No model turn ran — the body is posted through the normal rich stream.
     expect(responded).toBe(false);
-    const sent = calls.filter((call) => call.method === "sendMessage");
+    const sent = messageSends(calls);
     expect(sent).toHaveLength(1);
-    expect(String(sent.at(-1)?.payload.text)).toContain("Your morning brief");
+    expect(String(callText(sent.at(-1)!))).toContain("Your morning brief");
     // The UNrendered body is recorded to history so a later reply resumes with it in context.
     expect(verbatimCalls).toEqual([["telegram:42", "Your morning brief: all clear."]]);
   });
@@ -215,9 +229,11 @@ describe("createTelegramBot notify (proactive)", () => {
       stream: { maxSendRetries: 0 },
       botFactory: () => {
         const bot = new Bot("test-token", { botInfo: FAKE_BOT_INFO });
-        bot.api.config.use(async (_prev, method) => (method === "sendMessage"
-          ? { ok: false, error_code: 400, description: "Bad Request: message thread not found" }
-          : ok(true)) as never);
+        bot.api.config.use(async (_prev, method) => (
+          method === "sendMessage" || method === "sendRichMessage"
+            ? { ok: false, error_code: 400, description: "Bad Request: message thread not found" }
+            : ok(true)
+        ) as never);
         return bot;
       },
     });
@@ -237,7 +253,7 @@ describe("createTelegramBot notify (proactive)", () => {
 
     await controller.notify(42, "Overnight digest.", { verbatim: true, silent: true });
 
-    const sent = calls.filter((call) => call.method === "sendMessage");
+    const sent = messageSends(calls);
     expect(sent).toHaveLength(1);
     expect(sent.at(-1)?.payload).toMatchObject({ disable_notification: true });
   });
@@ -252,7 +268,7 @@ describe("createTelegramBot notify (proactive)", () => {
 
     await controller.notify(42, "Anything urgent?");
 
-    const sent = calls.filter((call) => call.method === "sendMessage");
+    const sent = messageSends(calls);
     expect(sent.at(-1)?.payload.disable_notification).toBeUndefined();
   });
 

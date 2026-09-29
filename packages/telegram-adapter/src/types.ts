@@ -147,6 +147,25 @@ export interface TelegramInlineKeyboardMarkup {
   inline_keyboard: TelegramInlineKeyboardButton[][];
 }
 
+export interface TelegramInputRichMessage {
+  /** Telegram Rich Markdown (GitHub-Flavored Markdown where supported). */
+  markdown: string;
+}
+
+export interface TelegramSendRichMessageParams {
+  chat_id: TelegramChatId;
+  /** Forum topic to post into; omit for private chats, non-forum groups and the General topic. */
+  message_thread_id?: number;
+  rich_message: TelegramInputRichMessage;
+  reply_to_message_id?: number;
+  /** Deliver even if the referenced reply parent was deleted before this send. */
+  allow_sending_without_reply?: boolean;
+  /** Send silently — message arrives without a push notification sound. */
+  disable_notification?: boolean;
+  /** Inline keyboard to attach below the message. */
+  reply_markup?: TelegramInlineKeyboardMarkup;
+}
+
 export interface TelegramSendMessageParams {
   chat_id: TelegramChatId;
   /** Forum topic to post into; omit for private chats, non-forum groups and the General topic. */
@@ -226,6 +245,15 @@ export interface TelegramEditMessageTextParams {
   reply_markup?: TelegramInlineKeyboardMarkup;
 }
 
+export interface TelegramEditRichMessageParams {
+  chat_id?: TelegramChatId;
+  message_id?: number;
+  inline_message_id?: string;
+  rich_message: TelegramInputRichMessage;
+  /** Inline keyboard to keep (or replace) on the edited message. */
+  reply_markup?: TelegramInlineKeyboardMarkup;
+}
+
 export interface TelegramDeleteMessageParams {
   chat_id: TelegramChatId;
   message_id: number;
@@ -244,16 +272,26 @@ export interface TelegramDeleteWebhookParams {
 
 /**
  * The minimal Telegram surface the streaming delivery layer needs: sending a
- * message and editing it in place. Update polling lives in the grammY runner, so
- * the delivery layer depends only on these two calls.
+ * message and editing it in place, with optional native rich-message methods.
+ * Update polling lives in the grammY runner, so delivery stays client-agnostic.
  */
 export interface TelegramMessageSender {
   sendMessage(
     params: TelegramSendMessageParams,
     options?: TelegramRequestOptions,
   ): Promise<TelegramSentMessage>;
+  /** Optional for custom clients; built-in clients use Telegram native rich Markdown. */
+  sendRichMessage?(
+    params: TelegramSendRichMessageParams,
+    options?: TelegramRequestOptions,
+  ): Promise<TelegramSentMessage>;
   editMessageText(
     params: TelegramEditMessageTextParams,
+    options?: TelegramRequestOptions,
+  ): Promise<TelegramSentMessage | true>;
+  /** Optional for custom clients; built-in clients edit final answers as rich messages. */
+  editRichMessage?(
+    params: TelegramEditRichMessageParams,
     options?: TelegramRequestOptions,
   ): Promise<TelegramSentMessage | true>;
   /** Optional for custom clients; built-in clients use it to clear transient status. */

@@ -9,10 +9,12 @@ import type {
   TelegramBotApi,
   TelegramDeleteMessageParams,
   TelegramEditMessageTextParams,
+  TelegramEditRichMessageParams,
   TelegramGetUpdatesParams,
   TelegramRequestOptions,
   TelegramSendChatActionParams,
   TelegramSendMessageParams,
+  TelegramSendRichMessageParams,
   TelegramSentMessage,
   TelegramUpdate,
 } from "../types.js";
@@ -88,6 +90,43 @@ class FakeTelegramApi implements TelegramBotApi {
 
   async getUpdates(_params: TelegramGetUpdatesParams): Promise<TelegramUpdate[]> {
     return [];
+  }
+}
+
+class FakeRichTelegramApi extends FakeTelegramApi {
+  readonly sendRichMessageCalls: TelegramSendRichMessageParams[] = [];
+  readonly editRichMessageCalls: TelegramEditRichMessageParams[] = [];
+  failRichSendWith: Error | undefined;
+  failRichEditWith: Error | undefined;
+
+  async sendRichMessage(
+    params: TelegramSendRichMessageParams,
+  ): Promise<TelegramSentMessage> {
+    this.sendRichMessageCalls.push(params);
+    this.writeOperations.push(`send-rich:${params.rich_message.markdown}`);
+    if (this.failRichSendWith !== undefined) {
+      throw this.failRichSendWith;
+    }
+    return {
+      message_id: this.nextMessageId++,
+      chat: { id: params.chat_id },
+      rich_message: params.rich_message,
+    };
+  }
+
+  async editRichMessage(
+    params: TelegramEditRichMessageParams,
+  ): Promise<TelegramSentMessage | true> {
+    this.editRichMessageCalls.push(params);
+    this.writeOperations.push(`edit-rich:${params.rich_message.markdown}`);
+    if (this.failRichEditWith !== undefined) {
+      throw this.failRichEditWith;
+    }
+    return {
+      message_id: params.message_id ?? 0,
+      chat: { id: params.chat_id ?? 0 },
+      rich_message: params.rich_message,
+    };
   }
 }
 
@@ -506,6 +545,83 @@ describe("TelegramMessageStream", () => {
     expect(api.editMessageTextCalls).toEqual([
       { chat_id: 42, message_id: 100, text: "final answer" },
       { chat_id: 42, message_id: 100, text: "final answer", parse_mode: "MarkdownV2" },
+    ]);
+  });
+
+  it("sends tables and emphasis as native Rich Markdown", async () => {
+    const api = new FakeRichTelegramApi();
+    const stream = new TelegramMessageStream({
+      api,
+      chatId: -1001,
+      messageThreadId: 77,
+      replyToMessageId: 9,
+      finalOnly: true,
+      silent: true,
+      editDebounceMs: 0,
+    });
+    const answer = [
+      "**Recommended**",
+      "",
+      "| Option | Nights |",
+      "|---|---|",
+      "| **A** | 26 |",
+    ].join("\n");
+
+    await stream.finish(answer);
+
+    expect(api.sendMessageCalls).toEqual([]);
+    expect(api.sendRichMessageCalls).toEqual([{
+      chat_id: -1001,
+      message_thread_id: 77,
+      reply_to_message_id: 9,
+      allow_sending_without_reply: true,
+      disable_notification: true,
+      rich_message: { markdown: answer },
+    }]);
+  });
+
+  it("falls back to safe MarkdownV2 when Telegram rejects Rich Markdown", async () => {
+    const api = new FakeRichTelegramApi();
+    api.failRichSendWith = new TelegramApiError("rich markdown rejected", {
+      kind: "telegram",
+      method: "sendRichMessage",
+      errorCode: 400,
+      telegramDescription: "Bad Request: can't parse rich message",
+    });
+    const stream = new TelegramMessageStream({ api, chatId: 42, finalOnly: true });
+    const answer = "**Recommended**\n\n| Option | Nights |\n|---|---|\n| **A** | 26 |";
+
+    await stream.finish(answer);
+
+    expect(api.sendRichMessageCalls).toHaveLength(1);
+    expect(api.sendMessageCalls).toEqual([{
+      chat_id: 42,
+      parse_mode: "MarkdownV2",
+      text: [
+        "*Recommended*",
+        "",
+        "```",
+        "Option │ Nights",
+        "───────┼───────",
+        "A      │ 26",
+        "```",
+      ].join("\n"),
+    }]);
+  });
+
+  it("edits a streamed placeholder into native Rich Markdown", async () => {
+    const api = new FakeRichTelegramApi();
+    const stream = new TelegramMessageStream({ api, chatId: 42, editDebounceMs: 0 });
+    const answer = "**Bold**\n\n| A | B |\n|---|---|\n| 1 | 2 |";
+
+    await stream.append(answer);
+    await stream.finish(answer);
+
+    expect(api.editMessageTextCalls).toEqual([
+      { chat_id: 42, message_id: 100, text: answer },
+    ]);
+    expect(api.editRichMessageCalls).toEqual([
+      { chat_id: 42, message_id: 100, rich_message: { markdown: answer } },
     ]);
   });
 
