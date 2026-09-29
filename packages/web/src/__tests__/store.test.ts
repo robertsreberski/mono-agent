@@ -7143,7 +7143,7 @@ describe("parent turn interruption ledger", () => {
     store.failTurn(cancelled.turnId, { message: "terminated", cancelled: true });
     store.close();
     const raw = new DatabaseSync(join(stateDir, "state.sqlite"));
-    raw.exec("DROP TABLE parent_turn_interruptions; ALTER TABLE turns DROP COLUMN dispatch_generation; PRAGMA user_version = 38;");
+    raw.exec("DROP TABLE parent_turn_interruptions; ALTER TABLE turns DROP COLUMN web_recovery_generation_confirmed_at; ALTER TABLE turns DROP COLUMN dispatch_generation; PRAGMA user_version = 38;");
     // The pre-migration schema has no marker; only newly dispatched turns can be proven.
     raw.close();
     const migrated = await WebStore.open({ stateDir });
@@ -7227,8 +7227,10 @@ describe("web startup versus agent process loss", () => {
         part.type === "text" && part.text.includes("AgentManage inspect")))).toBe(false);
       const db = new DatabaseSync(reopened.paths.database);
       try {
-        expect(db.prepare("SELECT dispatch_generation FROM turns WHERE id = ?").get(sameTurn.turnId))
-          .toMatchObject({ dispatch_generation: null });
+        expect(db.prepare("SELECT dispatch_generation, web_recovery_generation_confirmed_at FROM turns WHERE id = ?")
+          .get(sameTurn.turnId)).toMatchObject({
+            dispatch_generation: "generation-a", web_recovery_generation_confirmed_at: expect.any(String),
+          });
       } finally { db.close(); }
     } finally { reopened.close(); }
   });
