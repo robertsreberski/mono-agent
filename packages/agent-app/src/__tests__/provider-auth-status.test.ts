@@ -60,6 +60,23 @@ describe("provider auth status", () => {
     ]);
   });
 
+  it("does not offer OpenAI ChatGPT OAuth in provider settings before device IDs exist", async () => {
+    // Pi 0.99 adds this OAuth method, but the runtime facade must suppress
+    // unusable login while retaining OpenAI API keys and Codex OAuth.
+    const config = { ...configWith("/missing"), runtime: {
+      model: parseMonoRuntimeModelReference("openai:gpt-5.5"),
+      fallbacks: [{ model: parseMonoRuntimeModelReference("openai-codex:gpt-5.5") }],
+    } } as unknown as MonoAgentConfig;
+    const snapshot = await providerAuthStatusSnapshot({ config, env: {}, drivers: [],
+      input: { cwd: "/tmp", configPath: "/tmp/config.json", env: {} },
+      observations: createProviderAuthObservationTracker(),
+    });
+    expect(snapshot.providers.find((provider) => provider.providerId === "openai")?.methods.map((method) => method.authType))
+      .toEqual(["api_key"]);
+    expect(snapshot.providers.find((provider) => provider.providerId === "openai-codex")?.methods.map((method) => method.authType))
+      .toContain("oauth");
+  });
+
   it("tracks classifier credentials as a separate memory usage", async () => {
     const base = configWith("/missing");
     const config = { ...base, memory: { ...base.memory,

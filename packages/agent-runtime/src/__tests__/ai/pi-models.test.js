@@ -11,7 +11,7 @@ import { reasoningLevelsForPiModel, resolvePiRuntimeModel } from "../../ai/provi
 import { retryableProviderFailureInfo } from "../../ai/failure.js";
 import { thinkingLevelForEffort } from "../../ai/providers/pi-native/turn-runner.js";
 import { getBuiltinModel, getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
-import { getPiBuiltinModel, listPiBuiltinModels } from "../../ai/pi-interop.js";
+import { describePiProviderAuth, getPiBuiltinModel, listPiBuiltinModels } from "../../ai/pi-interop.js";
 import { estimateCost } from "../../ai/cost.js";
 
 // Exercise the real pinned 0.99.1 chat catalog, rather than a mock or a copied
@@ -47,6 +47,15 @@ describe("Pi 0.99.1 native model integration", () => {
         .toBeCloseTo((input + output) / 1_000, 6);
     });
   }
+
+  it("keeps shipped OpenAI API-key auth separate from Codex OAuth", () => {
+    // Pi 0.99 now advertises ChatGPT sign-in on `openai`, but its device-ID
+    // contract is not supported by this app. Do not offer a failing login.
+    expect(describePiProviderAuth("openai")?.methods.map((method) => method.type))
+      .toEqual(["api_key"]);
+    expect(describePiProviderAuth("openai-codex")?.methods.map((method) => method.type))
+      .toContain("oauth");
+  });
 
   it("keeps unqualified catalog discovery chat-only after Pi's v6 catalog adds images/classifiers", () => {
     // Pi 0.99 includes non-chat entries under the same provider; the runtime

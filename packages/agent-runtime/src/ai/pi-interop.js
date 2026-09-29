@@ -207,6 +207,17 @@ export function describePiBuiltinProvider(providerId) {
  * @param {string} providerId
  * @returns {PiProviderAuthDescription|undefined}
  */
+/**
+ * Pi 0.99's OpenAI ChatGPT sign-in requires a stable installation device ID.
+ * Until mono-agent owns that lifecycle, never advertise or start this OAuth
+ * login; OpenAI API keys and the separate openai-codex OAuth remain available.
+ * @param {string} providerId
+ * @returns {boolean}
+ */
+export function isPiOAuthLoginEnabled(providerId) {
+  return providerId !== "openai";
+}
+
 export function describePiProviderAuth(providerId) {
   let provider;
   try {
@@ -216,7 +227,7 @@ export function describePiProviderAuth(providerId) {
   }
   if (provider === undefined) return undefined;
   const methods = [];
-  if (provider.auth.oauth !== undefined) {
+  if (isPiOAuthLoginEnabled(provider.id) && provider.auth.oauth !== undefined) {
     methods.push({
       type: /** @type {const} */ ("oauth"),
       label: provider.auth.oauth.loginLabel ?? provider.auth.oauth.name,
@@ -292,6 +303,9 @@ export async function loginPiProviderAuth(providerId, type, interaction) {
   if (type !== "oauth" && type !== "api_key") {
     throw new TypeError("Pi provider auth type must be oauth or api_key");
   }
+  if (type === "oauth" && !isPiOAuthLoginEnabled(providerId)) {
+    throw new Error(`Pi OAuth login for ${providerId} is unavailable until installation device IDs are supported`);
+  }
   if (typeof interaction?.prompt !== "function" || typeof interaction?.notify !== "function") {
     throw new TypeError("Pi provider auth interaction requires prompt() and notify()");
   }
@@ -363,6 +377,9 @@ export async function resolvePiOAuthApiKey(providerId, credentials) {
  * @returns {Promise<PiOAuthCredentialsSnapshot>}
  */
 export async function loginPiOAuth(providerId, callbacks) {
+  if (!isPiOAuthLoginEnabled(providerId)) {
+    throw new Error(`Pi OAuth login for ${providerId} is unavailable until installation device IDs are supported`);
+  }
   const oauth = getPiOAuthAuth(providerId);
   if (!oauth || typeof oauth.login !== "function") {
     throw new Error(`Pi OAuth provider is unavailable: ${providerId}`);

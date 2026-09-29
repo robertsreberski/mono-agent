@@ -10,9 +10,12 @@
   outcome-unknown marker, wait up to 15 minutes, and cancel uncommitted agent
   compaction when its client disconnects.
 
-- Let Pi 0.99.1 provide Claude Sonnet 5.5 directly instead of a local catalog
-  supplement, and expose its new GPT-6.1 Sol chat catalog rows through existing
-  discovery without changing configured routes or login flows.
+- Let Pi 0.99.1 provide Claude Sonnet 5.5 natively and list GPT-6.1 Sol
+  through existing chat discovery. Pi also retires catalog rows including
+  `opencode-go:kimi-k2.6`, `glm-5.1`, `qwen3.6-plus` and `qwen3.7-max` on
+  OpenCode-Go: replace removed `model` or fallback references when doctor
+  reports them. `openai-codex` now displays as "OpenAI Codex (legacy)" under
+  the same id; the new ChatGPT sign-in on `openai` is not offered yet.
 
 - Keep every in-progress Background jobs shelf indicator static, using the same
   half-filled circle in the closed bar and open rows.

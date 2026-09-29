@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
+import { isPiOAuthLoginEnabled } from "@mono-agent/agent-runtime/ai";
 
 import { inspectPiAuthStore, MAX_PI_AUTH_STORE_BYTES } from "./pi-auth-store-inspection.js";
 
@@ -407,9 +408,7 @@ export function planProviderSetup(options: PlanProviderSetupOptions): ProviderSe
   // property of the provider itself, alongside the `auth.apiKey` read below.
   const piOAuthProviders = new Set(
     piProviders.getProviders()
-      // Pi 0.99 adds ChatGPT OAuth to `openai`, but this wizard has no
-      // device-id lifecycle yet. Keep its existing API-key setup path.
-      .filter((provider) => provider.id !== "openai" && provider.auth.oauth !== undefined)
+      .filter((provider) => isPiOAuthLoginEnabled(provider.id) && provider.auth.oauth !== undefined)
       .map((provider) => provider.id),
   );
   const authAlreadyDetected = (keys: readonly string[]): boolean =>

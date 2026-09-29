@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { EFFORT_LEVELS, type EffortLevel } from "@mono-agent/config";
+import { isPiOAuthLoginEnabled } from "@mono-agent/agent-runtime/ai";
 import {
   inspectPiAuthStore as inspectDefaultPiAuthStore,
   type PiAuthStoreInspection,
@@ -249,9 +250,7 @@ async function discoverPiModels(
   const models = builtinModels();
   const oauthProviders = new Set(
     models.getProviders()
-      // Pi 0.99 adds ChatGPT OAuth to `openai`; onboarding does not implement
-      // its device-id contract, so continue to advertise API-key setup only.
-      .filter((provider) => provider.id !== "openai" && provider.auth.oauth !== undefined)
+      .filter((provider) => isPiOAuthLoginEnabled(provider.id) && provider.auth.oauth !== undefined)
       .map((provider) => provider.id),
   );
   const providerNames = new Map(models.getProviders().map((provider) => [provider.id, provider.name]));

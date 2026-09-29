@@ -35,6 +35,7 @@ import {
   checkPiProviderAuth,
   describePiProviderAuth,
   getPiBuiltinModel,
+  isPiOAuthLoginEnabled,
   listPiBuiltinModels,
   loginPiProviderAuth,
   loginPiOAuth,
@@ -217,6 +218,43 @@ describe("Pi interoperability facade", () => {
       methods: [{ type: "api_key", label: "OpenCode API key", interactive: true }],
     });
     expect(describePiProviderAuth("missing")).toBeUndefined();
+  });
+
+  it("hides Pi's new OpenAI ChatGPT OAuth but keeps OpenAI API keys and Codex OAuth", () => {
+    piMocks.builtinProviders.mockReturnValue([
+      {
+        id: "openai", name: "OpenAI", auth: {
+          oauth: { name: "Sign in with ChatGPT" },
+          apiKey: { name: "OpenAI API key" },
+        },
+      },
+      {
+        id: "openai-codex", name: "OpenAI Codex (legacy)", auth: {
+          oauth: { name: "Codex sign-in" },
+        },
+      },
+    ]);
+
+    expect(isPiOAuthLoginEnabled("openai")).toBe(false);
+    expect(isPiOAuthLoginEnabled("openai-codex")).toBe(true);
+    expect(describePiProviderAuth("openai")).toEqual({
+      providerId: "openai", label: "OpenAI",
+      methods: [{ type: "api_key", label: "OpenAI API key", interactive: false }],
+    });
+    expect(describePiProviderAuth("openai-codex")).toEqual({
+      providerId: "openai-codex", label: "OpenAI Codex (legacy)",
+      methods: [{ type: "oauth", label: "Codex sign-in", interactive: true }],
+    });
+  });
+
+  it("rejects unsupported OpenAI OAuth before constructing Pi Models or starting login", async () => {
+    const interaction = { prompt: vi.fn(), notify: vi.fn() };
+    await expect(loginPiProviderAuth("openai", "oauth", interaction))
+      .rejects.toThrow("Pi OAuth login for openai is unavailable until installation device IDs are supported");
+    await expect(loginPiOAuth("openai", {}))
+      .rejects.toThrow("Pi OAuth login for openai is unavailable until installation device IDs are supported");
+    expect(piMocks.builtinModels).not.toHaveBeenCalled();
+    expect(piMocks.getPiOAuthAuth).not.toHaveBeenCalled();
   });
 
   it("checks auth through Pi Models without refreshing or exposing credentials", async () => {

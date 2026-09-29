@@ -76,9 +76,12 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
   `getBuiltinModel(s)` and `Models.getModel(s)` still return chat only.
   `gpt-6.1-sol` appears on `openai`, `openai-codex` and
   `azure-openai-responses`; do not change the default route to adopt it.
-  `openai-codex` keeps its id while its display name becomes
-  "OpenAI Codex (legacy)". The new `openai` ChatGPT OAuth flow is not
-  automatically enabled by mono-agent onboarding. AgentHarness's public
+  Pi also retires chat rows such as `opencode-go:kimi-k2.6`, `glm-5.1`,
+  `qwen3.6-plus` and `qwen3.7-max`; existing routes must switch to listed
+  models or doctor reports a catalog miss. `openai-codex` keeps its id while
+  its display name becomes "OpenAI Codex (legacy)". The new `openai` ChatGPT
+  OAuth flow needs a stable device ID and stays disabled in the runtime auth
+  facade and onboarding (API keys and Codex OAuth still work). AgentHarness's public
   create/prompt/compaction/abort/wait surface is unchanged; Agent Core adds
   optional provider stream events and assistant `thinkingLevel` metadata.
 - Pi's standalone OAuth registry remains unavailable at runtime.
