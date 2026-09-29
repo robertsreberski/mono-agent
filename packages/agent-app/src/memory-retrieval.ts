@@ -317,8 +317,8 @@ export class MemoryRetrievalService implements MemoryStore {
     return this.store.labelsForEntity !== undefined && this.store.guidanceForScope !== undefined;
   }
 
-  labelSectionsForTurn(turnId: string, request: LabelSectionRequest) {
-    return readLabelSections(this.store, request, this.turns.get(turnId)?.context);
+  labelSectionsForTurn(turnId: string, request: LabelSectionRequest, candidates: readonly SharedRecallHit[] = []) {
+    return readLabelSections(this.store, request, this.turns.get(turnId)?.context, candidates);
   }
 
   supportsJournalBrowse(): boolean {
@@ -493,7 +493,7 @@ export function createSharedMemoryRecallRuntimeExtension(
     const boundStore: RecallCapableStore = {
       recall: (query, options) => service.recallForTurn(runId, query, options),
       ...(service.supportsLabelSections() ? {
-        labelSections: (request: LabelSectionRequest) => service.labelSectionsForTurn(runId, request),
+        labelSections: (request: LabelSectionRequest, candidates: readonly SharedRecallHit[]) => service.labelSectionsForTurn(runId, request, candidates),
       } : {}),
       recallWithOutcome: (query, options) => service.recallOutcomeForTurn(runId, query, options),
       recallOriginalWithOutcome: (originalOptions) => service.recallOriginalOutcomeForTurn(runId, {

@@ -288,7 +288,9 @@ The BuJo chat model used by capture comes from the tier's required `memory.llm` 
 
 The agent performs targeted durable-memory search through the read-only `MemoryRecall` tool: hybrid **keyword (FTS) + vector** search over the same memory it writes to. Coverage: **config** .
 
-`MemoryRecall` runs **no chat LLM** — recall is embeddings + full-text search only. Durable writes stay in-app on the agent-host LLM via [per-turn capture](#capture--per-turn-intelligent-capture-bujo); recall just reads.
+`MemoryRecall` runs **no chat LLM** — recall is embeddings + full-text search only. Durable writes stay in-app on the agent-host LLM via [per-turn capture](#capture--per-turn-intelligent-capture-bujo); recall just reads. Search one short, specific topic per call; use several calls for several topics instead of a keyword list. Leave the owner's name out unless the question is specifically about the owner. Weak or related hits alone are not answers.
+
+Local labelled **Preferences & lessons** appear only when their memory lines rank in the effective query's top eight retrieved candidates and clear the automatic background guidance score floor. Within that window, higher-scoring lines rank first *within* each scope; scope precedence is user, then conversation, then agent, with six lines at most. Explicit `kind: "preference"` or `kind: "lesson"` requests keep the query ranking and scope precedence but may display retrieved lines below the score floor. If no eligible lines were retrieved, the section is omitted. The entity-driven fact sheet and ordinary dated hits are unchanged; `about` requests have no guidance section.
 
 Recall returns live records, which includes completed, scheduled, and migrated
 items — not only open ones. Terminal `dropped`/`invalidated` records stay

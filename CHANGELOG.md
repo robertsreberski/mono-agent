@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix `MemoryRecall` guidance sections to show only query-ranked preferences and
+  verified lessons, with a score floor unless the kind is requested explicitly;
+  guide agents to search one topic per call and treat weak hits as context.
+
 - Add `memory.capture.webhook: false` to skip automatic BuJo capture on
   host-identified webhook turns, leaving other turns and explicit writes unchanged.
 - Give cron and webhook turns with automatic capture off short host-owned,
