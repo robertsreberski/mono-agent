@@ -18,6 +18,7 @@ import {
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import type { ChannelDriver } from "./channels.js";
 import { inspectPiAuthStore } from "./pi-auth-store-inspection.js";
+import { hasUsablePiOAuthClientId } from "./provider-setup.js";
 import type { ProviderAuthObservationTracker } from "./provider-auth-observations.js";
 import { configuredRuntimeModels } from "./runtime-routes.js";
 
@@ -173,6 +174,9 @@ export async function providerAuthStatusSnapshot(
         if (!nonEmpty(entry.access) && !nonEmpty(entry.refresh)) {
           state = "missing";
           unavailableReason = "Stored OAuth credential is unusable.";
+        } else if (!hasUsablePiOAuthClientId(providerId, entry)) {
+          state = "missing";
+          unavailableReason = "Stored ChatGPT sign-in is missing its issued client ID; reconnect ChatGPT.";
         } else if (entry.expires !== undefined && isoFromEpochMillis(entry.expires) === undefined) {
           state = "missing";
           unavailableReason = "Stored OAuth credential has an invalid expiry.";
@@ -243,6 +247,8 @@ function methodsFor(
         { authType: method.type, strategy: "device_code", label: `${method.label} (device code)`, recommended: true },
         { authType: method.type, strategy: "paste_back", label: `${method.label} (paste redirect)`, recommended: false },
       );
+    } else if (providerId === "openai") {
+      result.push({ authType: "oauth", strategy: "paste_back", label: "Sign in with ChatGPT", recommended: false });
     } else if (providerId === "github-copilot") {
       result.push({ authType: method.type, strategy: "device_code", label: method.label, recommended: true });
     } else if (providerId === "anthropic") {

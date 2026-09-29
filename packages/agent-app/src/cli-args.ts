@@ -87,6 +87,7 @@ export interface ParsedCliArgs {
   readonly piAuthPath?: string;
   /** auth: explicitly read one API key from redirected standard input. */
   readonly apiKeyStdin?: boolean;
+  readonly authMethod?: "oauth" | "api-key";
   /** Non-flag arguments (e.g. `presets show <id>`). */
   readonly positionals: readonly string[];
   readonly envFile?: string;
@@ -261,6 +262,7 @@ const CLI_VALUE_FLAGS = new Set([
   "--memory",
   "--preset",
   "--pi-auth-path",
+  "--auth-method",
   "--with",
   "--env-file",
   "--controller-cli",
@@ -393,6 +395,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let auth = false;
   let piAuthPath: string | undefined;
   let apiKeyStdin = false;
+  let authMethod: "oauth" | "api-key" | undefined;
   const positionals: string[] = [];
   let envFile: string | undefined;
   let controllerCliPath: string | undefined;
@@ -760,6 +763,12 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       case "--api-key-stdin":
         apiKeyStdin = true;
         break;
+      case "--auth-method": {
+        const method = requireValue(rest, ++i, flag);
+        if (method !== "oauth" && method !== "api-key") throw new Error("--auth-method must be oauth or api-key.");
+        authMethod = method;
+        break;
+      }
       case "--with":
         withChannels = requireValue(rest, ++i, flag)
           .split(",")
@@ -936,6 +945,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (piAuthPath !== undefined && cmd !== "auth") {
     throw new Error("--pi-auth-path is only supported for `mono-agent auth`.");
   }
+  if (authMethod !== undefined && cmd !== "auth") {
+    throw new Error("--auth-method is only supported for `mono-agent auth login <provider>`.");
+  }
   if (apiKeyStdin && cmd !== "auth") {
     throw new Error("--api-key-stdin is only supported for `mono-agent auth login <provider>`.");
   }
@@ -1062,6 +1074,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(auth ? { auth } : {}),
     ...(piAuthPath === undefined ? {} : { piAuthPath }),
     ...(apiKeyStdin ? { apiKeyStdin } : {}),
+    ...(authMethod === undefined ? {} : { authMethod }),
     positionals,
     ...(envFile === undefined ? {} : { envFile }),
     ...(controllerCliPath === undefined ? {} : { controllerCliPath }),

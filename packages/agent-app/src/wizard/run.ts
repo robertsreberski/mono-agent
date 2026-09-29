@@ -78,6 +78,7 @@ export type WizardOutcome =
       readonly providerSetupSecrets: Readonly<Record<string, string>>;
       readonly providerEnvironmentSecrets: Readonly<Record<string, string>>;
       readonly piApiKeyPersistenceByProvider: Readonly<Record<string, "secure-store" | "environment">>;
+      readonly piAuthMethods: Readonly<Record<string, "oauth" | "api-key">>;
       readonly credentialStates: Readonly<Record<string, ProviderCredentialState>>;
       /** Required selected module secrets, kept in memory until secure init persists them. */
       readonly moduleSecrets: Readonly<Record<string, string>>;
@@ -101,6 +102,7 @@ export interface SetupRepairRunContext extends WizardRunContext {
   readonly providerSetupSecrets: Readonly<Record<string, string>>;
   readonly providerEnvironmentSecrets: Readonly<Record<string, string>>;
   readonly piApiKeyPersistenceByProvider: Readonly<Record<string, "secure-store" | "environment">>;
+  readonly piAuthMethods?: Readonly<Record<string, "oauth" | "api-key">>;
   readonly credentialStates: Readonly<Record<string, ProviderCredentialState>>;
   readonly moduleSecrets: Readonly<Record<string, string>>;
 }
@@ -277,6 +279,7 @@ interface CollectedAnswers {
   readonly providerSetupSecrets: Readonly<Record<string, string>>;
   readonly providerEnvironmentSecrets: Readonly<Record<string, string>>;
   readonly piApiKeyPersistenceByProvider: Readonly<Record<string, "secure-store" | "environment">>;
+  readonly piAuthMethods: Readonly<Record<string, "oauth" | "api-key">>;
   readonly credentialStates: Readonly<Record<string, ProviderCredentialState>>;
   readonly moduleSecrets: Readonly<Record<string, string>>;
 }
@@ -305,6 +308,7 @@ export async function runInitWizard(ctx: WizardRunContext): Promise<WizardOutcom
       providerSetupSecrets: result.providerSetupSecrets,
       providerEnvironmentSecrets: result.providerEnvironmentSecrets,
       piApiKeyPersistenceByProvider: result.piApiKeyPersistenceByProvider,
+      piAuthMethods: result.piAuthMethods,
       credentialStates: result.credentialStates,
       moduleSecrets: result.moduleSecrets,
     };
@@ -339,6 +343,7 @@ export async function runSetupRepairWizard(ctx: SetupRepairRunContext): Promise<
       providerSetupSecrets: result.providerSetupSecrets,
       providerEnvironmentSecrets: result.providerEnvironmentSecrets,
       piApiKeyPersistenceByProvider: result.piApiKeyPersistenceByProvider,
+      piAuthMethods: result.piAuthMethods,
       credentialStates: result.credentialStates,
       moduleSecrets: result.moduleSecrets,
     };
@@ -459,7 +464,7 @@ async function promptManualPiModelRef(): Promise<string> {
       validate: (v) => {
         const value = (v ?? "").trim();
         if (value.length === 0) {
-          return "Enter a supported Pi provider id (anthropic, github-copilot, openai-codex, opencode-go, ollama, or lmstudio)";
+          return "Enter a supported Pi provider id (anthropic, github-copilot, openai, openai-codex, opencode-go, ollama, or lmstudio)";
         }
         if (value.includes(":")) return "Provider id cannot contain ':'.";
         return guidedPiProviderProblem(value);
@@ -1330,6 +1335,7 @@ type CreationReviewResult =
         readonly providerSetupSecrets: Readonly<Record<string, string>>;
         readonly providerEnvironmentSecrets: Readonly<Record<string, string>>;
         readonly piApiKeyPersistenceByProvider: Readonly<Record<string, "secure-store" | "environment">>;
+        readonly piAuthMethods: Readonly<Record<string, "oauth" | "api-key">>;
       };
     }
   | { readonly status: "edit"; readonly step: number };
@@ -1352,10 +1358,24 @@ async function confirmSummary(
   const preserveProviderSetup = options !== undefined
     && existingSetupModelRefs !== undefined
     && sameOrderedValues(setupModelRefs, existingSetupModelRefs);
-  const preliminarySetupPlan = providerSetupPlan(plan, ctx, draft.credentialStates);
+  const usesOpenAI = setupModelRefs.some((model) => model.startsWith("openai:"));
+  const piAuthMethods: Record<string, "oauth" | "api-key"> = usesOpenAI
+    ? { openai: preserveProviderSetup && options !== undefined && options.existing.piAuthMethods?.openai !== undefined
+      ? options.existing.piAuthMethods?.openai
+      : await select({
+        message: "How should OpenAI authenticate? One credential per provider; a successful login replaces the previous method.",
+        options: [
+          { value: "oauth", label: "Sign in with ChatGPT" },
+          { value: "api-key", label: "OpenAI API key" },
+        ],
+      }) }
+    : {};
+  const keepPreviousSetup = preserveProviderSetup
+    && (!usesOpenAI || options?.existing.piAuthMethods?.openai === piAuthMethods.openai);
+  const preliminarySetupPlan = providerSetupPlan(plan, ctx, draft.credentialStates, {}, piAuthMethods);
   // Resolve destinations before the final review; collect masked values only
   // after the operator chooses Create.
-  const piApiKeyPersistenceByProvider = preserveProviderSetup
+  const piApiKeyPersistenceByProvider = keepPreviousSetup
     ? { ...options.existing.piApiKeyPersistenceByProvider }
     : await selectPiApiKeyPersistence(
         preliminarySetupPlan,
@@ -1366,6 +1386,7 @@ async function confirmSummary(
     ctx,
     draft.credentialStates,
     piApiKeyPersistenceByProvider,
+    piAuthMethods,
   );
 
   if (setupModelRefs.some((model) => /^(?:ollama|lmstudio):/u.test(model))) {
@@ -1475,7 +1496,7 @@ async function confirmSummary(
     message: `Create “${draft.name}”?`,
     options: creationReviewOptions({
       setupRequired:
-        (preserveProviderSetup
+        (keepPreviousSetup
           ? options.existing.runProviderSetup
           : setupPlan.actions.length > 0) || draft.sandbox,
     }),
@@ -1513,7 +1534,7 @@ async function confirmSummary(
       throw error;
     }
   }
-  if (preserveProviderSetup) {
+  if (keepPreviousSetup) {
     return {
       status: "create",
       providerSetup: {
@@ -1521,18 +1542,22 @@ async function confirmSummary(
         providerSetupSecrets: { ...options.existing.providerSetupSecrets },
         providerEnvironmentSecrets: { ...options.existing.providerEnvironmentSecrets },
         piApiKeyPersistenceByProvider: { ...options.existing.piApiKeyPersistenceByProvider },
+        piAuthMethods: { ...options.existing.piAuthMethods },
       },
     };
   }
   let providerSetup;
   try {
-    providerSetup = await collectProviderSetup(
-      setupPlan,
-      setupPlan.actions.length > 0,
-      piApiKeyPersistenceByProvider,
-      options?.existing.providerSetupSecrets,
-      options?.existing.providerEnvironmentSecrets,
-    );
+    providerSetup = {
+      ...await collectProviderSetup(
+        setupPlan,
+        setupPlan.actions.length > 0,
+        piApiKeyPersistenceByProvider,
+        options?.existing.providerSetupSecrets,
+        options?.existing.providerEnvironmentSecrets,
+      ),
+      piAuthMethods,
+    };
   } catch (error) {
     if (error instanceof WizardBack) {
       if (options !== undefined) throw error;
@@ -1577,6 +1602,7 @@ function providerSetupPlan(
   ctx: { readonly cwd: string; readonly piAuthPath?: string },
   credentialStates: Readonly<Record<string, ProviderCredentialState>> = {},
   piApiKeyPersistenceByProvider: Readonly<Record<string, "secure-store" | "environment">> = {},
+  piAuthMethods: Readonly<Record<string, "oauth" | "api-key">> = {},
 ): PlannedProviderSetup {
   const modelRefs = referencedSetupModelRefs(plan);
   const configuredPiAuthPath = typeof plan.configJson.providers?.piAuthPath === "string"
@@ -1588,6 +1614,7 @@ function providerSetupPlan(
     cwd: ctx.cwd,
     credentialStates,
     piApiKeyPersistenceByProvider,
+    piAuthMethods,
     ...(piAuthPath === undefined ? {} : { piAuthPath }),
   });
 }

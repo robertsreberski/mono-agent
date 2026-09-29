@@ -70,13 +70,14 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
     group: "Setup",
     short: "auth login <provider>",
     summary: "Log in to a bundled Pi provider.",
-    signature: "mono-agent auth login <provider> [--pi-auth-path <path>] [--api-key-stdin] [--config <path>]",
+    signature: "mono-agent auth login <provider> [--pi-auth-path <path>] [--auth-method oauth|api-key] [--api-key-stdin] [--config <path>]",
     lines: [
       "Run a supported bundled Pi provider login.",
       "Pi credentials are promoted with owner-only no-clobber checks.",
       "API-key providers prompt securely on a TTY; --api-key-stdin explicitly reads a redirected secret.",
       "Path precedence: --pi-auth-path, providers.piAuthPath, then Pi's default.",
-      "Supported Pi targets: anthropic, github-copilot, openai-codex, and opencode-go.",
+      "OpenAI offers Sign in with ChatGPT or an API key; choose --auth-method when headless (--api-key-stdin implies api-key).",
+      "Supported Pi targets: anthropic, github-copilot, openai, openai-codex, and opencode-go.",
     ],
   },
   {

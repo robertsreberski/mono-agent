@@ -911,6 +911,21 @@ describe("wizard production flow", () => {
     expect(promptMock.confirmCalls).toHaveLength(0);
   });
 
+  it("asks for OpenAI's method before the creation review and carries OAuth through repair", async () => {
+    promptMock.selectAnswers.push("oauth", "create");
+    const result = await runSetupRepairWizard({
+      cwd: "/tmp/fictional-wizard", answers: defaultAnswers({ name: "Fictional Agent", model: "openai:gpt-5.5" }),
+      runProviderSetup: false, providerSetupSecrets: {}, providerEnvironmentSecrets: {},
+      piApiKeyPersistenceByProvider: {}, credentialStates: { openai: "auth_required" }, moduleSecrets: {},
+    });
+    expect(result.status).toBe("answers");
+    if (result.status !== "answers") return;
+    expect(result.piAuthMethods).toEqual({ openai: "oauth" });
+    expect(result.runProviderSetup).toBe(true);
+    expect(promptMock.selectCalls[0]?.message).toMatch(/How should OpenAI authenticate/u);
+    expect(promptMock.notes.some((note) => note.message.includes("Pi login for openai"))).toBe(true);
+  });
+
   it("returns Escape from seeded setup repair to recovery without changing state", async () => {
     promptMock.selectAnswers.push(ESCAPE);
     await withTtyStdin(async () => {

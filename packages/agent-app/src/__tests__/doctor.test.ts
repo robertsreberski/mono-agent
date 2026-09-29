@@ -4411,6 +4411,19 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     expect(credentials.details.join("\n")).not.toContain("hidden-opencode-key");
   });
 
+  it("asks to reconnect an OpenAI OAuth credential missing its issued client ID", async () => {
+    const authPath = await writeAuthStore({ openai: {
+      type: "oauth", access: "fake-access", refresh: "fake-refresh", expires: FUTURE,
+    } });
+    const configPath = await writeCredConfig({ runtime: { model: "openai:gpt-5.5" }, providers: { piAuthPath: authPath } });
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const section = sectionById(report, "credentials");
+    expect(section.status).toBe("waiting");
+    expect(section.details.join("\n")).toContain("missing its issued client ID");
+    expect(section.details.join("\n")).toContain("--auth-method oauth");
+    expect(section.details.join("\n")).not.toContain("fake-access");
+  });
+
   it("does not treat an empty Pi auth object as an authenticated API-key provider", async () => {
     const authPath = await writeAuthStore({ "opencode-go": {} });
     const configPath = await writeCredConfig({

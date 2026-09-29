@@ -4,6 +4,7 @@ import { createInterface } from "node:readline";
 
 import type { OAuthAuth, ProviderAuthInteraction } from "@earendil-works/pi-ai";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import { getOrCreatePiInstallationId } from "./pi-installation-id.js";
 
 export interface PiOAuthLoginIo {
   readonly ask: (question: string) => Promise<string>;
@@ -12,6 +13,8 @@ export interface PiOAuthLoginIo {
 
 export interface RunPiOAuthLoginOptions {
   readonly authPath?: string;
+  /** Effective durable Pi auth path; never the temporary staged auth.json. */
+  readonly deviceIdAuthPath?: string;
   readonly provider?: OAuthAuth;
   readonly io?: PiOAuthLoginIo;
   readonly signal?: AbortSignal;
@@ -47,6 +50,11 @@ export async function runPiOAuthLogin(
     throw new Error(`Unknown bundled Pi OAuth provider: ${providerId}`);
   }
   assertPiOAuthLoginPersistenceSupported(process.platform);
+  if (providerId === "openai" && options.deviceIdAuthPath === undefined) {
+    throw new Error("ChatGPT sign-in requires the effective durable Pi auth path.");
+  }
+  const deviceId = providerId === "openai"
+    ? await getOrCreatePiInstallationId(options.deviceIdAuthPath!) : undefined;
 
   const readline = options.io === undefined
     ? createInterface({ input: process.stdin, output: process.stdout })
@@ -76,8 +84,10 @@ export async function runPiOAuthLogin(
       prompt: async (prompt) => {
         if (prompt.type === "manual_code") {
           return await io.ask(
-            "Paste the final redirect URL or authorization code " +
-            "(its OAuth state will be validated), or wait for the localhost callback:\n> ",
+            providerId === "openai"
+              ? "If the localhost:1455 callback does not complete (including remote browsers or a busy port), paste the entire final redirect URL from the browser address bar:\n> "
+              : "Paste the final redirect URL or authorization code " +
+                "(its OAuth state will be validated), or wait for the localhost callback:\n> ",
           );
         }
         if (prompt.type === "select") {
@@ -98,7 +108,7 @@ export async function runPiOAuthLogin(
     // 0.83.0's OAuthCredential already carries `type: "oauth"`. Drop it from the
     // spread so the tag can stay written first, keeping the on-disk key order
     // byte-identical to what earlier versions produced.
-    const { type: _tagged, ...credentials } = await oauth.login(interaction);
+    const { type: _tagged, ...credentials } = await oauth.login(interaction, deviceId === undefined ? undefined : { getDeviceId: () => deviceId });
     const authPath = options.authPath ?? "auth.json";
     const auth = await readAuth(authPath);
     await writeAuth(authPath, `${JSON.stringify({

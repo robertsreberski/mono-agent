@@ -103,6 +103,14 @@ describe("parseCliArgs preset flags & alias normalization", () => {
 });
 
 describe("init provider setup gate", () => {
+  it("never starts ChatGPT OAuth implicitly for headless OpenAI init --auth", async () => {
+    const execute = vi.fn(async () => []);
+    expect(await runProviderSetupBeforeInit({
+      modelRefs: ["openai:gpt-5.5"], cwd: "/fictional-agent", auth: true,
+      dryRun: false, forceAuthentication: true, execute,
+    })).toBe("skipped");
+    expect(execute).not.toHaveBeenCalled();
+  });
   it("does not execute provider setup during dry-run even with --auth", async () => {
     const execute = vi.fn(async () => []);
     const status = await runProviderSetupBeforeInit({

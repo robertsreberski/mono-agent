@@ -122,7 +122,7 @@ import {
   DEFAULT_MEMORY_EMBEDDING_ENDPOINTS,
   probeMemoryEmbeddingSelection,
 } from "./memory-embedding-service.js";
-import { piAuthRecoveryCommand } from "./provider-setup.js";
+import { hasUsablePiOAuthClientId, piAuthRecoveryCommand } from "./provider-setup.js";
 import { collectUsedProviderReferences } from "./provider-auth-status.js";
 import { inspectPiAuthStore, type PiAuthStoreInspection, type PiAuthStoreUnsafeReason } from "./pi-auth-store-inspection.js";
 import {
@@ -758,10 +758,12 @@ interface PiAuthEntry {
   readonly access?: string;
   readonly expires?: number;
   readonly refresh?: string;
+  readonly clientId?: string;
 }
 
 const PI_API_KEY_ENV_BY_PROVIDER: Readonly<Record<string, string>> = {
   "opencode-go": "OPENCODE_API_KEY",
+  openai: "OPENAI_API_KEY",
 };
 
 /** Inspects Pi credentials without following aliases or reading unbounded input. */
@@ -860,7 +862,12 @@ async function appendPiCredentialDetails(
   env: Readonly<Record<string, string | undefined>>,
 ): Promise<ValidationStatus> {
   const authPath = config.providers?.piAuthPath;
-  const authInspection = authPath === undefined ? undefined : await readPiAuthProviders(authPath);
+  const needsStoredCredential = piRefs.some(({ ref }) => {
+    const provider = ref.provider as string;
+    const key = PI_API_KEY_ENV_BY_PROVIDER[provider];
+    return provider === "openai" || key === undefined || !hasNonEmptyCredentialValue(env[key]);
+  });
+  const authInspection = authPath === undefined || !needsStoredCredential ? undefined : await readPiAuthProviders(authPath);
   const authProviders = authInspection?.status === "ok" ? authInspection.providers : undefined;
   // A matching `providers.local` entry owns the runtime route, even when its ID
   // collides with a Pi built-in provider. Report the local entry's declared auth
@@ -913,7 +920,8 @@ async function appendPiCredentialDetails(
       continue;
     }
     const apiKeyEnv = PI_API_KEY_ENV_BY_PROVIDER[provider];
-    if (apiKeyEnv !== undefined && hasNonEmptyCredentialValue(env[apiKeyEnv])) {
+    if (apiKeyEnv !== undefined && hasNonEmptyCredentialValue(env[apiKeyEnv])
+      && (provider !== "openai" || authProviders?.[provider] === undefined)) {
       details.push(
         `${label} ${refStr}: Pi API-key credential for \`${providerLabel}\` present in the resolved environment (${apiKeyEnv}); credential detected, live model verification is still pending.`,
       );
@@ -951,6 +959,11 @@ async function appendPiCredentialDetails(
       details.push(
         `[WARN] ${label} ${refStr}: stored OAuth credential for \`${providerLabel}\` has no usable access or refresh token. Re-authenticate with \`${loginCommand}\`; no secret value was displayed.`,
       );
+      continue;
+    }
+    if (isOAuth && !hasUsablePiOAuthClientId(provider, entry)) {
+      status = "waiting";
+      details.push(`[WARN] ${label} ${refStr}: ChatGPT sign-in for \`${providerLabel}\` is missing its issued client ID. Reconnect with \`${piAuthRecoveryCommand(providerLabel, authPath)} --auth-method oauth\`; no credential value was displayed.`);
       continue;
     }
     if (!isOAuth && !isApiKey) {
