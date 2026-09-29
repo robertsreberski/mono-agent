@@ -18,6 +18,9 @@ export function boundSubagentSalvage(raw: DurableSessionSalvage): SubagentSalvag
       fallback: "[unavailable]", environment: process.env, maxChars: 32 * 1024 * 1024,
     });
     return redacted
+      // Over-redact through the next quote/delimiter: Windows path components
+      // can contain spaces, and leaving a suffix is worse than dropping prose.
+      .replace(/(?:\b[A-Za-z]:\\|\\\\[^\s\\]+\\[^\s\\]+)[^"'<>|\r\n]*/gu, "[path]")
       .replace(/(?:\/[\w.~-]+){2,}/gu, "[path]")
       .replace(/[\u0000-\u001f\u007f]/gu, " ")
       .replaceAll("<untrusted_process_job_result>", "[untrusted_process_job_result]")
