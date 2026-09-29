@@ -15,6 +15,7 @@ interface RecordedCall {
 function recordingApi(
   handlers: {
     sendMessage?: (...args: unknown[]) => unknown;
+    sendRichMessage?: (...args: unknown[]) => unknown;
     editMessageText?: (...args: unknown[]) => unknown;
     editMessageTextInline?: (...args: unknown[]) => unknown;
     deleteMessage?: (...args: unknown[]) => unknown;
@@ -25,6 +26,10 @@ function recordingApi(
     async sendMessage(...args: unknown[]) {
       calls.push({ args });
       return handlers.sendMessage?.(...args);
+    },
+    async sendRichMessage(...args: unknown[]) {
+      calls.push({ args });
+      return handlers.sendRichMessage?.(...args);
     },
     async editMessageText(...args: unknown[]) {
       calls.push({ args });
@@ -47,7 +52,9 @@ describe("createGrammyTelegramApi", () => {
     const client = createTelegramMessageSender(" 123:abc ");
 
     expect(typeof client.sendMessage).toBe("function");
+    expect(typeof client.sendRichMessage).toBe("function");
     expect(typeof client.editMessageText).toBe("function");
+    expect(typeof client.editRichMessage).toBe("function");
     expect(typeof client.deleteMessage).toBe("function");
   });
 
@@ -63,6 +70,7 @@ describe("createGrammyTelegramApi", () => {
     };
     const api = {
       sendMessage: record("sendMessage"),
+      sendRichMessage: record("sendRichMessage"),
       sendChatAction: record("sendChatAction"),
       sendDocument: record("sendDocument"),
       sendPhoto: record("sendPhoto"),
@@ -70,6 +78,11 @@ describe("createGrammyTelegramApi", () => {
     const client = createGrammyTelegramApi(api);
 
     await client.sendMessage({ chat_id: -1001, message_thread_id: 77, text: "hi" });
+    await client.sendRichMessage?.({
+      chat_id: -1001,
+      message_thread_id: 77,
+      rich_message: { markdown: "**hi**" },
+    });
     await client.sendChatAction?.({ chat_id: -1001, message_thread_id: 77, action: "typing" });
     await client.sendDocument?.({ chat_id: -1001, message_thread_id: 77, document: "file-id" });
     await client.sendPhoto?.({ chat_id: -1001, message_thread_id: 77, photo: new Uint8Array([1]) });
@@ -77,6 +90,7 @@ describe("createGrammyTelegramApi", () => {
 
     expect(calls.map((call) => [call.method, (call.args[2] as Record<string, unknown>).message_thread_id])).toEqual([
       ["sendMessage", 77],
+      ["sendRichMessage", 77],
       ["sendChatAction", 77],
       ["sendDocument", 77],
       ["sendPhoto", 77],
@@ -113,6 +127,35 @@ describe("createGrammyTelegramApi", () => {
     expect(message.message_id).toBe(7);
   });
 
+  it("translates sendRichMessage params into grammY positional args plus options", async () => {
+    const { api, calls } = recordingApi({
+      sendRichMessage: (chat_id, rich_message) => ({
+        message_id: 8,
+        chat: { id: chat_id },
+        rich_message,
+      }),
+    });
+    const client = createGrammyTelegramApi(api);
+
+    const message = await client.sendRichMessage!({
+      chat_id: 42,
+      message_thread_id: 77,
+      rich_message: { markdown: "**hi**" },
+      reply_to_message_id: 5,
+      allow_sending_without_reply: true,
+      disable_notification: true,
+    });
+
+    expect(calls[0]?.args[0]).toBe(42);
+    expect(calls[0]?.args[1]).toEqual({ markdown: "**hi**" });
+    expect(calls[0]?.args[2]).toEqual({
+      message_thread_id: 77,
+      reply_parameters: { message_id: 5, allow_sending_without_reply: true },
+      disable_notification: true,
+    });
+    expect(message.message_id).toBe(8);
+  });
+
   it("translates editMessageText params into grammY positional args", async () => {
     const { api, calls } = recordingApi({ editMessageText: () => true });
     const client = createGrammyTelegramApi(api);
@@ -126,6 +169,25 @@ describe("createGrammyTelegramApi", () => {
 
     expect(calls[0]?.args.slice(0, 3)).toEqual([1, 9, "x"]);
     expect(calls[0]?.args[3]).toEqual({ parse_mode: "MarkdownV2" });
+    expect(result).toBe(true);
+  });
+
+  it("forwards native rich content through editMessageText", async () => {
+    const { api, calls } = recordingApi({ editMessageText: () => true });
+    const client = createGrammyTelegramApi(api);
+
+    const result = await client.editRichMessage!({
+      chat_id: 1,
+      message_id: 9,
+      rich_message: { markdown: "| A | B |\n|---|---|\n| 1 | 2 |" },
+    });
+
+    expect(calls[0]?.args.slice(0, 3)).toEqual([
+      1,
+      9,
+      { markdown: "| A | B |\n|---|---|\n| 1 | 2 |" },
+    ]);
+    expect(calls[0]?.args[3]).toEqual({});
     expect(result).toBe(true);
   });
 

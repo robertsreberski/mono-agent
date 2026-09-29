@@ -147,6 +147,14 @@ function buildTestBot(
             text: typedPayload.text,
           });
         }
+        if (method === "sendRichMessage") {
+          return ok({
+            message_id: nextMessageId++,
+            date: 0,
+            chat: { id: typedPayload.chat_id, type: "private" },
+            rich_message: typedPayload.rich_message,
+          });
+        }
         if (method === "editMessageText") {
           return ok({
             message_id: typedPayload.message_id ?? 0,
@@ -539,8 +547,20 @@ function reactionEmojis(calls: RecordedCall[]): Array<string | undefined> {
     .map((call) => (call.payload.reaction as Array<{ emoji: string }>)[0]?.emoji);
 }
 
+function messageSendCalls(calls: RecordedCall[]): RecordedCall[] {
+  return calls.filter((call) => call.method === "sendMessage" || call.method === "sendRichMessage");
+}
+
+function callText(call: RecordedCall): unknown {
+  const richMessage = call.payload.rich_message as { markdown?: unknown } | undefined;
+  return richMessage?.markdown ?? call.payload.text;
+}
+
 function texts(calls: RecordedCall[], method: string): unknown[] {
-  return calls.filter((call) => call.method === method).map((call) => call.payload.text);
+  const matching = method === "sendMessage"
+    ? messageSendCalls(calls)
+    : calls.filter((call) => call.method === method);
+  return matching.map(callText);
 }
 
 function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
@@ -587,7 +607,7 @@ describe("createTelegramBot", () => {
       });
       expect(calls.filter((call) => call.method === "sendChatAction")).toHaveLength(1);
       expect(texts(calls, "sendMessage")).toEqual(["Answer"]);
-      expect(JSON.stringify(calls.filter((call) => call.method === "sendMessage"))).not.toContain("report.txt");
+      expect(JSON.stringify(messageSendCalls(calls))).not.toContain("report.txt");
     } finally {
       vi.useRealTimers();
     }
@@ -1296,16 +1316,17 @@ describe("createTelegramBot", () => {
     });
     expect(requests[0]?.abortSignal).toBeInstanceOf(AbortSignal);
 
-    // Final-only delivery: no interim edits. The single sendMessage at finish()
-    // carries the final answer (the lazy first send happens at finish), rendered
-    // as MarkdownV2, and replies to the inbound message.
+    // Final-only delivery: no interim edits. The lazy first send at finish uses
+    // native Rich Markdown and replies to the inbound message.
     expect(texts(calls, "editMessageText")).toEqual([]);
-    const finalSend = calls.filter((call) => call.method === "sendMessage").at(-1);
-    expect(finalSend?.payload).toMatchObject({
-      chat_id: 42,
-      text: "final",
-      parse_mode: "MarkdownV2",
-      reply_parameters: { message_id: 10, allow_sending_without_reply: true },
+    const finalSend = messageSendCalls(calls).at(-1);
+    expect(finalSend).toMatchObject({
+      method: "sendRichMessage",
+      payload: {
+        chat_id: 42,
+        rich_message: { markdown: "final" },
+        reply_parameters: { message_id: 10, allow_sending_without_reply: true },
+      },
     });
   });
 
@@ -1697,12 +1718,14 @@ describe("createTelegramBot", () => {
 
     await bot.handleUpdate(textUpdate("hello"));
 
-    // The reasoning is never rendered. Final-only delivery: no interim edits;
-    // the answer arrives as a single sendMessage rendered as MarkdownV2.
+    // The reasoning is never rendered. Final-only delivery has no interim edits;
+    // the answer arrives as one native rich message.
     expect(texts(calls, "editMessageText")).toEqual([]);
-    const finalSend = calls.filter((call) => call.method === "sendMessage").at(-1);
-    expect(finalSend?.payload.text).toBe("the answer");
-    expect(finalSend?.payload.parse_mode).toBe("MarkdownV2");
+    const finalSend = messageSendCalls(calls).at(-1);
+    expect(finalSend).toMatchObject({
+      method: "sendRichMessage",
+      payload: { rich_message: { markdown: "the answer" } },
+    });
     expect(calls.some((call) => String(call.payload.text).includes("secret"))).toBe(false);
   });
 
@@ -1751,11 +1774,11 @@ describe("createTelegramBot", () => {
 
     expect(texts(calls, "sendMessage")).toEqual([
       "🔧 Todoist",
-      "No response text was returned\\.",
+      "No response text was returned.",
     ]);
     expect(texts(calls, "editMessageText")).toEqual([]);
-    const finalSend = calls.filter((call) => call.method === "sendMessage").at(-1);
-    expect(finalSend?.payload.parse_mode).toBe("MarkdownV2");
+    const finalSend = messageSendCalls(calls).at(-1);
+    expect(finalSend?.method).toBe("sendRichMessage");
     expect(calls.filter((call) => call.method === "deleteMessage").map((call) => call.payload))
       .toEqual([{ chat_id: 42, message_id: 1000 }]);
   });
@@ -1771,12 +1794,14 @@ describe("createTelegramBot", () => {
 
     await bot.handleUpdate(textUpdate("stream only"));
 
-    // Final-only delivery: the streamed answer is held back and delivered as a
-    // single sendMessage at finish(), rendered as MarkdownV2 (no interim edits).
+    // Final-only delivery: the streamed answer is held back and delivered as one
+    // native rich message at finish(), with no interim edits.
     expect(texts(calls, "editMessageText")).toEqual([]);
-    const finalSend = calls.filter((call) => call.method === "sendMessage").at(-1);
-    expect(finalSend?.payload.text).toBe("streamed answer");
-    expect(finalSend?.payload.parse_mode).toBe("MarkdownV2");
+    const finalSend = messageSendCalls(calls).at(-1);
+    expect(finalSend).toMatchObject({
+      method: "sendRichMessage",
+      payload: { rich_message: { markdown: "streamed answer" } },
+    });
   });
 
   it("does not reject a second concurrent message in the same chat (admits it in order)", async () => {
@@ -2384,8 +2409,9 @@ describe("createTelegramBot", () => {
     // Editing always fails fatally (no retry, no recreate) — final-only mode does
     // not edit, but this guards any future interim path too.
     failures.set("editMessageText", () => err(403, "Forbidden: bot was blocked by the user"));
-    // Final-only delivery posts the answer with a single sendMessage at finish();
-    // every send fails, so there is no delivery path left.
+    // Native rich delivery and its MarkdownV2 fallback both fail, so there is no
+    // delivery path left.
+    failures.set("sendRichMessage", () => err(403, "Forbidden: bot was blocked by the user"));
     failures.set("sendMessage", () => err(403, "Forbidden: bot was blocked by the user"));
 
     // The AI run succeeded, so a delivery failure must not throw out of the handler.
@@ -2515,13 +2541,18 @@ describe("createTelegramBot", () => {
         const bot = new Bot("test-token", { botInfo: FAKE_BOT_INFO });
         bot.api.config.use(async (_prev, method, payload) => {
           const typedPayload = payload as Record<string, unknown>;
-          if (method === "sendMessage") {
-            sent.push(typedPayload.text);
+          if (method === "sendMessage" || method === "sendRichMessage") {
+            const text = method === "sendRichMessage"
+              ? (typedPayload.rich_message as { markdown?: unknown } | undefined)?.markdown
+              : typedPayload.text;
+            sent.push(text);
             return ok({
               message_id: 1,
               date: 0,
               chat: { id: typedPayload.chat_id, type: "private" },
-              text: typedPayload.text,
+              ...(method === "sendRichMessage"
+                ? { rich_message: typedPayload.rich_message }
+                : { text: typedPayload.text }),
             });
           }
           return ok(true);

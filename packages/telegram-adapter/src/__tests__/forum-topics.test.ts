@@ -57,7 +57,7 @@ function harness(options: Partial<CreateTelegramBotOptions> & { responder: Agent
       bot.api.config.use(async (_prev, method, payload) => {
         const typed = payload as Record<string, unknown>;
         calls.push({ method, payload: typed });
-        if (method === "sendMessage" || method === "sendDocument") {
+        if (method === "sendMessage" || method === "sendRichMessage" || method === "sendDocument") {
           const thread = typed.message_thread_id;
           return {
             ok: true,
@@ -66,7 +66,9 @@ function harness(options: Partial<CreateTelegramBotOptions> & { responder: Agent
               date: 0,
               chat: { id: typed.chat_id, type: "supergroup" },
               ...(typeof thread === "number" ? { message_thread_id: thread, is_topic_message: true } : {}),
-              text: typed.text,
+              ...(method === "sendRichMessage"
+                ? { rich_message: typed.rich_message }
+                : { text: typed.text }),
             },
           } as never;
         }
@@ -187,7 +189,14 @@ function generalMessage(
 }
 
 function sends(calls: readonly RecordedCall[], method = "sendMessage"): RecordedCall[] {
-  return calls.filter((call) => call.method === method);
+  return calls.filter((call) =>
+    call.method === method || (method === "sendMessage" && call.method === "sendRichMessage")
+  );
+}
+
+function callText(call: RecordedCall): unknown {
+  const richMessage = call.payload.rich_message as { markdown?: unknown } | undefined;
+  return richMessage?.markdown ?? call.payload.text;
 }
 
 function askSnapshot(): ChannelAskSnapshot {
@@ -275,7 +284,7 @@ describe("createTelegramBot forum topics", () => {
     for (const call of posted) {
       expect(call.payload.message_thread_id).toBe(TOPIC);
     }
-    expect(posted.map((call) => call.payload.text)).toContain("Topic answer");
+    expect(posted.map(callText)).toContain("Topic answer");
     for (const call of calls.filter((entry) => entry.method === "sendChatAction")) {
       expect(call.payload.message_thread_id).toBe(TOPIC);
     }
@@ -379,7 +388,7 @@ describe("createTelegramBot forum topics", () => {
     await bot.handleUpdate(topicMessage("let me in", { chat: outsider }));
 
     expect(requests).toHaveLength(0);
-    expect(sends(calls).map((call) => call.payload.text)).toEqual([
+    expect(sends(calls).map(callText)).toEqual([
       "This Telegram chat is not authorized to use this bot.",
     ]);
     expect(sends(calls)[0]?.payload.message_thread_id).toBe(TOPIC);
@@ -437,7 +446,7 @@ describe("createTelegramBot forum topics", () => {
     expect(deliverVerbatim.mock.calls.map((call) => call[0])).toEqual(["telegram:-1001:77", "telegram:-1001"]);
     expect(requests[0]?.conversationId).toBe("telegram:-1001:77");
     expect(requests[0]?.metadata.telegram.messageThreadId).toBe(TOPIC);
-    const posted = sends(calls).map((call) => [call.payload.text, call.payload.message_thread_id]);
+    const posted = sends(calls).map((call) => [callText(call), call.payload.message_thread_id]);
     expect(posted).toContainEqual(["Verbatim report", TOPIC]);
     expect(posted).toContainEqual(["Daily digest", TOPIC]);
     expect(posted).toContainEqual(["General nudge", undefined]);
@@ -574,7 +583,7 @@ describe("createTelegramBot forum topics", () => {
     // The topic id stays host-owned: the model-visible surface id is the chat.
     expect(requests.map((request) => request.surface?.id)).toEqual(["-1001", "-1001", "-1001", "-1001"]);
     // The rename service message is neither a turn nor an "unsupported" reply.
-    expect(sends(calls).map((call) => call.payload.text)).not.toContain(
+    expect(sends(calls).map(callText)).not.toContain(
       expect.stringContaining("I can handle text"),
     );
     expect(requests).toHaveLength(4);

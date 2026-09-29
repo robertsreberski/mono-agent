@@ -316,7 +316,12 @@ The request lifecycle is:
    responder request. `transcription.ts` optionally enriches supported audio.
 4. The host responder returns normal stream events. `message-stream.ts` renders
    Telegram-safe final-only delivery, retries, activity, and cleanup; the
-   Markdown translator runs only at this transport boundary.
+   Markdown translator runs only at this transport boundary. The built-in client
+   sends final answers as Telegram Rich Markdown, so GFM tables, headings, lists,
+   bold, italics, links, and code use Telegram's native rich-message renderer.
+   Custom clients that omit the rich methods—and a built-in client whose Bot API
+   endpoint rejects rich content—use the MarkdownV2 compatibility path, where
+   unsupported tables become aligned monospaced code blocks.
 5. Host-owned process-job projections bypass the responder and use the
    adapter-local monotonic lifecycle-message path.
 6. `stop()` ends polling and waits for the runner to settle.
@@ -416,10 +421,12 @@ TelegramDestination
 TelegramDocument
 TelegramDocumentAttachment
 TelegramEditMessageTextParams
+TelegramEditRichMessageParams
 TelegramFileDownloader
 TelegramFileReference
 TelegramGetUpdatesParams
 TelegramGroupTriggerMode
+TelegramInputRichMessage
 TelegramKnownTopicName
 TelegramMessage
 TelegramMessageEntity
@@ -442,6 +449,7 @@ TelegramSendDocumentParams
 TelegramSendMessageParams
 TelegramSendOutcome
 TelegramSendPhotoParams
+TelegramSendRichMessageParams
 TelegramSendToolsConfig
 TelegramSentMessage
 TelegramTextQuote

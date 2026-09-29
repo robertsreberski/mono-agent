@@ -47,14 +47,16 @@ function recordingBot(): { bot: Bot; calls: RecordedCall[] } {
   bot.api.config.use(async (_prev, method, payload) => {
     const typedPayload = payload as Record<string, unknown>;
     calls.push({ method, payload: typedPayload });
-    if (method === "sendMessage") {
+    if (method === "sendMessage" || method === "sendRichMessage") {
       return {
         ok: true,
         result: {
           message_id: nextMessageId++,
           date: 0,
           chat: { id: typedPayload.chat_id, type: "private" },
-          text: typedPayload.text,
+          ...(method === "sendRichMessage"
+            ? { rich_message: typedPayload.rich_message }
+            : { text: typedPayload.text }),
         },
       } as never;
     }
@@ -137,8 +139,11 @@ describe("startTelegramAdapter", () => {
     const outcome = await result.notify(99, "say hi");
 
     expect(outcome).toEqual({ delivered: true });
-    const sent = calls.filter((call) => call.method === "sendMessage");
-    expect(sent.at(-1)?.payload).toMatchObject({ chat_id: 99, text: "ping delivered" });
+    const sent = calls.filter((call) => call.method === "sendRichMessage");
+    expect(sent.at(-1)?.payload).toMatchObject({
+      chat_id: 99,
+      rich_message: { markdown: "ping delivered" },
+    });
     await result.stop();
   });
 

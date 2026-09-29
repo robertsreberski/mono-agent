@@ -18,8 +18,10 @@ import { renderTelegramMarkdown } from "./telegram-markdown.js";
 import type {
   TelegramChatId,
   TelegramEditMessageTextParams,
+  TelegramEditRichMessageParams,
   TelegramMessageSender,
   TelegramSendMessageParams,
+  TelegramSendRichMessageParams,
 } from "./types.js";
 
 export interface AgentMessageStream extends AgentMessageStreamBase {
@@ -54,7 +56,7 @@ export interface TelegramMessageStreamOptions {
    * the agent works, before any answer text has arrived. Default true.
    */
   showHints?: boolean;
-  /** Render the final answer as Telegram MarkdownV2 (plain fallback). Default true. */
+  /** Render the final answer as native Rich Markdown (MarkdownV2 compatibility fallback). Default true. */
   formatMarkdown?: boolean;
   /**
    * Deliver only the final answer: suppress streaming interim edits and show a
@@ -124,12 +126,22 @@ function isMarkdownOverflowError(error: unknown): error is TelegramMarkdownOverf
   );
 }
 
+/** A rejected 4xx rich request is known not to have landed and can use the compatibility path. */
+function shouldFallbackFromRich(error: unknown): boolean {
+  if (!(error instanceof TelegramApiError) || error.kind !== "telegram") {
+    return false;
+  }
+  const code = error.errorCode;
+  return code !== undefined && code >= 400 && code < 500 && code !== 429;
+}
+
 /**
  * Telegram-specific {@link ChannelTransport}. Wraps the {@link TelegramMessageSender}
- * (sendMessage / editMessageText), renders MarkdownV2, and maps Telegram failures
- * onto {@link ChannelSendOutcome}. Markdown rendering and `parse_mode` are gated by
- * a mutable `markdownEnabled` flag so the wrapper can deliver fixed system copy
- * (e.g. "Cancelled.") as plain text without re-rendering it.
+ * (sendMessage / sendRichMessage / editMessageText), prefers native Rich Markdown
+ * for final answers, and maps Telegram failures onto {@link ChannelSendOutcome}.
+ * Custom clients without rich-message support retain the MarkdownV2 compatibility
+ * renderer. Formatting is gated by a mutable `markdownEnabled` flag so the wrapper
+ * can deliver fixed system copy (e.g. "Cancelled.") as plain text.
  */
 class TelegramChannelTransport implements ChannelTransport {
   readonly maxMessageChars: number;
@@ -178,7 +190,7 @@ class TelegramChannelTransport implements ChannelTransport {
   }
 
   renderMarkdown(text: string): string {
-    if (!this.markdownEnabled) {
+    if (!this.markdownEnabled || this.supportsRichMessages()) {
       return text;
     }
     return renderTelegramMarkdown(text);
@@ -190,7 +202,25 @@ class TelegramChannelTransport implements ChannelTransport {
   ): Promise<MessageRef> {
     const useMarkdown = options.markdown && this.markdownEnabled;
     this.assertWithinLimit(text, useMarkdown);
-    const sent = await this.api.sendMessage(this.buildSendParams(text, useMarkdown, options.contentKind));
+    let sent: Awaited<ReturnType<TelegramMessageSender["sendMessage"]>>;
+    if (useMarkdown && this.api.sendRichMessage !== undefined && this.api.editRichMessage !== undefined) {
+      try {
+        sent = await this.api.sendRichMessage(this.buildSendRichParams(text, options.contentKind));
+      } catch (error) {
+        if (!shouldFallbackFromRich(error)) {
+          throw error;
+        }
+        const compatibilityText = renderTelegramMarkdown(text);
+        this.assertWithinLimit(compatibilityText, true);
+        sent = await this.api.sendMessage(this.buildSendParams(
+          compatibilityText,
+          true,
+          options.contentKind,
+        ));
+      }
+    } else {
+      sent = await this.api.sendMessage(this.buildSendParams(text, useMarkdown, options.contentKind));
+    }
     const ref = { id: String(sent.message_id), message_id: sent.message_id };
     if (options.contentKind === "status") {
       this.transientStatusMessage = ref;
@@ -215,6 +245,20 @@ class TelegramChannelTransport implements ChannelTransport {
     }
     const useMarkdown = options.markdown && this.markdownEnabled;
     this.assertWithinLimit(text, useMarkdown);
+    if (useMarkdown && this.api.sendRichMessage !== undefined && this.api.editRichMessage !== undefined) {
+      try {
+        await this.api.editRichMessage(this.buildEditRichParams(ref, text));
+        return;
+      } catch (error) {
+        if (!shouldFallbackFromRich(error)) {
+          throw error;
+        }
+        const compatibilityText = renderTelegramMarkdown(text);
+        this.assertWithinLimit(compatibilityText, true);
+        await this.api.editMessageText(this.buildEditParams(ref, compatibilityText, true));
+        return;
+      }
+    }
     await this.api.editMessageText(this.buildEditParams(ref, text, useMarkdown));
   }
 
@@ -249,13 +293,10 @@ class TelegramChannelTransport implements ChannelTransport {
   }
 
   /**
-   * MarkdownV2 escaping can expand a chunk past Telegram's size limit even though
-   * the plain source is within it (chunks are split on the source length). Rather
-   * than send and fail with "message is too long", we signal a reformat-to-plain
-   * recovery; the substrate then re-delivers the plain source within the limit.
-   * (We never test renderedText === source to decide this: telegramify renders
-   * inline code / links back to identical bytes that still need parse_mode, so
-   * equality is not a plain-text signal.)
+   * The MarkdownV2 compatibility renderer can expand a chunk past Telegram's
+   * size limit even though the plain source is within it. Rather than send and
+   * fail with "message is too long", signal a reformat-to-plain recovery. Native
+   * Rich Markdown stays source-sized, so the same guard is harmless there.
    */
   private assertWithinLimit(text: string, useMarkdown: boolean): void {
     if (useMarkdown && countCodePoints(text) > this.maxMessageChars) {
@@ -276,6 +317,40 @@ class TelegramChannelTransport implements ChannelTransport {
     };
     if (useMarkdown) {
       params.parse_mode = "MarkdownV2";
+    }
+    return params;
+  }
+
+  private buildEditRichParams(
+    ref: MessageRef,
+    markdown: string,
+  ): TelegramEditRichMessageParams {
+    return {
+      chat_id: this.chatId,
+      message_id: messageIdOf(ref),
+      rich_message: { markdown },
+    };
+  }
+
+  private buildSendRichParams(
+    markdown: string,
+    contentKind?: ChannelMessageContentKind,
+  ): TelegramSendRichMessageParams {
+    const params: TelegramSendRichMessageParams = {
+      chat_id: this.chatId,
+      rich_message: { markdown },
+    };
+    if (this.messageThreadId !== undefined) {
+      params.message_thread_id = this.messageThreadId;
+    }
+    if (this.replyToMessageId !== undefined) {
+      params.reply_to_message_id = this.replyToMessageId;
+      if (contentKind === "answer" && this.postFinalAnswerSeparately) {
+        params.allow_sending_without_reply = true;
+      }
+    }
+    if (this.silent) {
+      params.disable_notification = true;
     }
     return params;
   }
@@ -302,6 +377,10 @@ class TelegramChannelTransport implements ChannelTransport {
       params.disable_notification = true;
     }
     return params;
+  }
+
+  private supportsRichMessages(): boolean {
+    return this.api.sendRichMessage !== undefined && this.api.editRichMessage !== undefined;
   }
 
   private async dismissTransientStatus(): Promise<void> {
@@ -336,7 +415,7 @@ function messageIdOf(ref: MessageRef): number {
  * substrate, preserving this adapter's public API and no-labels + activity-hints
  * behavior. Telegram additionally keeps final-only tool ledgers transient by
  * posting the completed answer separately and deleting the ledger. The per-call
- * `finish(text, { format })` toggle lets fixed system copy bypass MarkdownV2.
+ * `finish(text, { format })` toggle lets fixed system copy bypass rich/MarkdownV2 formatting.
  */
 export class TelegramMessageStream implements AgentMessageStream {
   private readonly transport: TelegramChannelTransport;

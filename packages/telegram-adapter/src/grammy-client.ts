@@ -13,6 +13,7 @@ import {
 } from "./telegram-error.js";
 import type {
   TelegramEditMessageTextParams,
+  TelegramEditRichMessageParams,
   TelegramDeleteMessageParams,
   TelegramMessageSender,
   TelegramRequestOptions,
@@ -20,11 +21,13 @@ import type {
   TelegramSendDocumentParams,
   TelegramSendMessageParams,
   TelegramSendPhotoParams,
+  TelegramSendRichMessageParams,
   TelegramSentMessage,
   TelegramSetMessageReactionParams,
 } from "./types.js";
 
 type SendOther = NonNullable<Parameters<Api["sendMessage"]>[2]>;
+type SendRichOther = NonNullable<Parameters<Api["sendRichMessage"]>[2]>;
 type EditOther = NonNullable<Parameters<Api["editMessageText"]>[3]>;
 
 // grammY's `Api` types its `signal` parameter with the `abort-controller` shim's
@@ -63,6 +66,23 @@ export function createGrammyTelegramApi(api: Api): TelegramMessageSender {
       }
     },
 
+    async sendRichMessage(
+      params: TelegramSendRichMessageParams,
+      options?: TelegramRequestOptions,
+    ): Promise<TelegramSentMessage> {
+      try {
+        const message = await api.sendRichMessage(
+          params.chat_id,
+          params.rich_message,
+          buildSendRichOther(params),
+          asGrammySignal(options?.signal),
+        );
+        return message as unknown as TelegramSentMessage;
+      } catch (error) {
+        throw toTelegramApiError("sendRichMessage", error, options?.signal);
+      }
+    },
+
     async editMessageText(
       params: TelegramEditMessageTextParams,
       options?: TelegramRequestOptions,
@@ -83,6 +103,39 @@ export function createGrammyTelegramApi(api: Api): TelegramMessageSender {
             params.message_id,
             params.text,
             buildEditOther(params),
+            asGrammySignal(options?.signal),
+          );
+          return result === true ? true : (result as unknown as TelegramSentMessage);
+        }
+      } catch (error) {
+        throw toTelegramApiError("editMessageText", error, options?.signal);
+      }
+      throw new TelegramApiError(
+        "grammY editMessageText requires inline_message_id, or chat_id and message_id.",
+        { kind: "telegram", method: "editMessageText" },
+      );
+    },
+
+    async editRichMessage(
+      params: TelegramEditRichMessageParams,
+      options?: TelegramRequestOptions,
+    ): Promise<TelegramSentMessage | true> {
+      try {
+        if (params.inline_message_id !== undefined) {
+          const result = await api.editMessageTextInline(
+            params.inline_message_id,
+            params.rich_message,
+            buildEditRichOther(params),
+            asGrammySignal(options?.signal),
+          );
+          return result === true ? true : (result as unknown as TelegramSentMessage);
+        }
+        if (params.chat_id !== undefined && params.message_id !== undefined) {
+          const result = await api.editMessageText(
+            params.chat_id,
+            params.message_id,
+            params.rich_message,
+            buildEditRichOther(params),
             asGrammySignal(options?.signal),
           );
           return result === true ? true : (result as unknown as TelegramSentMessage);
@@ -262,6 +315,36 @@ function buildSendOther(params: TelegramSendMessageParams): SendOther {
   }
   if (params.reply_markup !== undefined) {
     other.reply_markup = params.reply_markup as NonNullable<SendOther["reply_markup"]>;
+  }
+  return other;
+}
+
+function buildSendRichOther(params: TelegramSendRichMessageParams): SendRichOther {
+  const other: SendRichOther = {};
+  if (params.message_thread_id !== undefined) {
+    other.message_thread_id = params.message_thread_id;
+  }
+  if (params.reply_to_message_id !== undefined) {
+    other.reply_parameters = {
+      message_id: params.reply_to_message_id,
+      ...(params.allow_sending_without_reply === undefined
+        ? {}
+        : { allow_sending_without_reply: params.allow_sending_without_reply }),
+    };
+  }
+  if (params.disable_notification !== undefined) {
+    other.disable_notification = params.disable_notification;
+  }
+  if (params.reply_markup !== undefined) {
+    other.reply_markup = params.reply_markup as NonNullable<SendRichOther["reply_markup"]>;
+  }
+  return other;
+}
+
+function buildEditRichOther(params: TelegramEditRichMessageParams): EditOther {
+  const other: EditOther = {};
+  if (params.reply_markup !== undefined) {
+    other.reply_markup = params.reply_markup as NonNullable<EditOther["reply_markup"]>;
   }
   return other;
 }
