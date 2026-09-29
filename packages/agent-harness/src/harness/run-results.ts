@@ -152,7 +152,7 @@ export function responseMetadata(
 ): AgentHarnessResponse["metadata"] {
   const externalSummary = summary === undefined ? undefined : externalResponseSummary(summary);
   const disposition = runtimeResult?.turnDisposition === "silent"
-    && (summary?.status !== "succeeded" || runtimeResult.cancelled === true || !!runtimeResult.error)
+    && ((summary !== undefined && summary.status !== "succeeded") || runtimeResult.cancelled === true || !!runtimeResult.error)
     ? "visible" : runtimeResult?.turnDisposition;
   return {
     runId,

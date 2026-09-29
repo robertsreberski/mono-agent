@@ -87,6 +87,22 @@ describe("host wake terminal reply persistence", () => {
     } finally { s.store.close(); }
   });
 
+  it("honors a recorded visible disposition on late wake settlement", async () => {
+    const s = await setup();
+    try {
+      s.reserve();
+      s.store.associateProcessJobWakeTurn(s.deliveryKey, s.turn.turnId, true);
+      s.store.applyStreamFrames(s.turn.turnId, [text("NOTHING_TO_REPORT"), boundary]);
+      s.store.completeTurn(s.turn.turnId, "NOTHING_TO_REPORT", { turnDisposition: "visible" });
+      s.settle();
+      expect(s.parts()).toContainEqual({ type: "text", text: "NOTHING_TO_REPORT" });
+      const raw = new DatabaseSync(s.store.paths.database, { readOnly: true });
+      expect(raw.prepare("SELECT reply_disposition FROM turns WHERE id = ?").get(s.turn.turnId))
+        .toMatchObject({ reply_disposition: "visible" });
+      raw.close();
+    } finally { s.store.close(); }
+  });
+
   it("suppresses an already pending sentinel-only push on late settlement", async () => {
     const s = await setup();
     try {

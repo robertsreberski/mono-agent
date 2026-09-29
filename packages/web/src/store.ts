@@ -415,6 +415,7 @@ interface TurnRow {
   requested_model: string | null;
   requested_effort: string | null;
   effective_effort: string | null;
+  reply_disposition: "silent" | "visible" | null;
   routing_json: string;
   assistant_message_id: string;
   started_at: string;
@@ -2582,7 +2583,7 @@ export class WebStore {
       const turn = this.requireTurn(input.turnId);
       if (turn.status === "complete" && this.hasProcessJobTurnAssociation(input.turnId)) {
         const message = this.requireMessage(turn.assistant_message_id);
-        const normalized = normalizeWakeTerminalReply(message.parts, true);
+        const normalized = normalizeWakeTerminalReply(message.parts, true, turn.reply_disposition ?? undefined);
         if (normalized.changed) this.writeMessageParts(message.id, normalized.parts, this.now());
         this.repairWakeResponsePush(input.turnId, normalized.parts);
         return normalized.changed ? this.requireMessage(message.id) : undefined;
@@ -6734,7 +6735,8 @@ export class WebStore {
         UPDATE turns SET status = ?, finished_at = ?, error_code = ?, error_message = ?,
           model = CASE WHEN ? IS NULL THEN model ELSE ? END,
           effort = CASE WHEN ? IS NULL THEN effort ELSE ? END,
-          effective_effort = CASE WHEN ? IS NULL THEN effective_effort ELSE ? END
+          effective_effort = CASE WHEN ? IS NULL THEN effective_effort ELSE ? END,
+          reply_disposition = ?
         WHERE id = ?
     `).run(
         status,
@@ -6747,6 +6749,7 @@ export class WebStore {
         runtime?.effort ?? null,
         runtime?.effectiveEffort ?? null,
         runtime?.effectiveEffort ?? null,
+        status === "complete" ? runtime?.turnDisposition ?? null : null,
         turnId,
       );
     const delta = this.writeMessageDelta(existing, parts, now, { status });

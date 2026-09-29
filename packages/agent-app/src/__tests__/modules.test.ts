@@ -107,10 +107,10 @@ describe("baseConfig", () => {
 
 describe("known-tools", () => {
   it("lists all built-in tools", () => {
-    expect(BUILTIN_TOOL_NAMES).toHaveLength(13);
+    expect(BUILTIN_TOOL_NAMES).toHaveLength(14);
     for (const name of [
       "Read", "Write", "Edit", "Glob", "Grep", "Bash", "Exec", "NodeRepl",
-      "WebFetch", "WebSearch", "Agent", "AgentManage",
+      "WebFetch", "WebSearch", "Agent", "AgentManage", "FinishSilently",
     ]) {
       expect(BUILTIN_TOOL_NAMES).toContain(name);
     }
