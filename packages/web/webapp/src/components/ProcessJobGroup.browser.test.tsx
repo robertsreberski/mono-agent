@@ -3,7 +3,7 @@ import { commands, page } from "@vitest/browser/context";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { collectProcessJobParentCalls, type ProcessJobParentCall } from "../process-job-presentation";
-import { agentTurn, launchCall, manageCall, parentMessage } from "../test/agent-group-fixtures";
+import { agentTurn, launchCall, manageCall, parentMessage, peerCall, peerStarted } from "../test/agent-group-fixtures";
 import { processJob } from "../test/fixtures";
 import type { ProcessJobProjection } from "../types";
 import "../styles.css";
@@ -151,6 +151,47 @@ describe("agent groups in Chromium", () => {
       await capture(`job-group-open-${name}-${scheme}`, stack);
       cleanup();
     }
+  });
+
+  it("keeps a pending peer question visible outside the fold and hands focus on when the fold opens", async () => {
+    await page.viewport(390, 844);
+    const expiresAt = new Date(Date.now() + 20 * 60_000).toISOString();
+    const threads = ["spring-orders", "autumn-bulbs", "autumn-bulbs", "winter-garlic"];
+    const jobs = threads.map((thread, index) => agentTurn(`5c4b3a29-1807-4f6e-9d5c-4b3a2918070${String(index)}`, "seed-bank", minutesAgo(40 - index * 10), {
+      tool: "PeerAgent", durationMinutes: 2, summary: ["Ask about the heirlooms", "Ask about the bulbs", "Confirm the bulb order", "Check the garlic stock"][index],
+      ...(index === 0 ? { extra: { peerQuestion: { state: "awaiting_answer", questionId: "q-oldest", peer: "seed-bank", thread,
+        message: "Reserve the heirloom tomato seeds now?", requestedSchema: {}, expiresAt } } } : {}),
+    }));
+    const peerCalls = collectProcessJobParentCalls(jobs.map((job, index) => parentMessage(`p${String(index)}`, minutesAgo(40 - index * 10) - 0.1, [
+      peerCall(`send-${String(index)}`, { action: "send", peer: "seed-bank", thread: threads[index], message: `Message ${String(index + 1)}`, background: true },
+        peerStarted("seed-bank", threads[index]!, job.jobId)),
+    ])), "thread");
+    const view = render(
+      <ProcessJobPresentationProvider threadId="thread" messages={[]} historyIsBounded={false} parentCalls={peerCalls}
+        jobs={jobs.map((job) => ({ messageId: `message-${job.jobId}`, part: { type: "process-job" as const, job } }))}>
+        <ProcessJobStack />
+      </ProcessJobPresentationProvider>,
+    );
+    // The ? chip counts the question even though the lone row already says it.
+    expect(shelfToggle().querySelector(".process-job-chip.is-question")).not.toBeNull();
+    fireEvent.click(shelfToggle());
+    const bank = screen.getByRole("group", { name: /^seed-bank peer agent, 4 turns: Check the garlic stock$/u });
+    fireEvent.click(bank.querySelector(":scope > summary")!);
+    await frames();
+    const ask = within(bank).getByRole("note", { name: "seed-bank asks the agent" });
+    expect(ask).toBeVisible();
+    expect(ask.getBoundingClientRect().height).toBeGreaterThan(0);
+    const oldest = within(bank).getByTitle("Ask about the heirlooms");
+    expect(oldest).toBeVisible();
+    const fold = within(bank).getByRole("button", { name: /^Show 1 earlier turn/u });
+    expect(fold).toBeVisible();
+    fold.focus();
+    fireEvent.click(fold);
+    await frames();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(bank).toContainElement(document.activeElement as HTMLElement);
+    expect(within(bank).getByTitle("Ask about the heirlooms")).toBe(oldest);
+    noOverflow(view.container.querySelector(".process-job-stack-body")!);
   });
 
   it.each([

@@ -62,10 +62,15 @@ export interface ProcessJobGroupItem {
   readonly steps: readonly ProcessJobTimelineStep[];
   /** The last admitted turn: its outcome alone decides whether the group is an issue. */
   readonly newest: ProcessJobProjection;
-  /** The parent closed the instance after its newest turn. */
+  /**
+   * The host confirmed the instance closed, and nothing since reopened it:
+   * a requested, failed or unconfirmed close never counts.
+   */
   readonly closed: boolean;
   /** The parent's newest brief or message, on one line: the task when a job's own label is generic. */
   readonly task?: string;
+  /** One peer serves several threads here, so rows name the thread they belong to. */
+  readonly showThreads: boolean;
 }
 
 export interface ProcessJobSingleItem {
@@ -139,25 +144,40 @@ function buildGroup(
   turns: readonly ProcessJobShelfEntry[],
   allCalls: readonly ProcessJobParentCall[],
 ): ProcessJobGroupItem {
-  const turnIds = new Set(turns.map((turn) => turn.job.jobId));
-  const calls = allCalls.filter((call) => call.family === family
-    && (call.instanceId === instanceId || (call.launchedJobId !== undefined && turnIds.has(call.launchedJobId))));
-  const launched = new Set(calls.flatMap((call) => call.launchedJobId !== undefined && turnIds.has(call.launchedJobId) ? [call.launchedJobId] : []));
   const byId = new Map(turns.map((turn) => [turn.job.jobId, turn]));
-  // A turn whose launching call is not loaded (paged out, or an ambiguous
-  // receipt) goes before the first call made after it was admitted.
+  // A call belongs to the group it ADDRESSED. Only a launch that named no id
+  // (a generated instance id) is joined through its receipt's job, and a
+  // receipt never pulls a call into another child's group.
+  const calls = allCalls.filter((call) => call.family === family && (call.instanceId !== undefined
+    ? call.instanceId === instanceId
+    : call.launchedJobId !== undefined && byId.has(call.launchedJobId)));
+  // A launch pairs with its turn only inside that turn's own group and tool.
+  const launchOf = (call: ProcessJobParentCall): ProcessJobShelfEntry | undefined => {
+    const turn = call.launchedJobId === undefined ? undefined : byId.get(call.launchedJobId);
+    return turn !== undefined && turn.job.tool === call.tool ? turn : undefined;
+  };
+  const launched = new Set(calls.flatMap((call) => launchOf(call)?.job.jobId ?? []));
+  // A turn whose launching call is not loaded (paged out, an ambiguous or
+  // conflicting claim) goes before the first call made after it was admitted.
   const unpaired = turns.filter((turn) => !launched.has(turn.job.jobId))
     .sort((left, right) => time(left.job.timestamps.admittedAt) - time(right.job.timestamps.admittedAt));
 
   const steps: ProcessJobTimelineStep[] = [];
+  const placed = new Set<string>();
   let asked = false;
   let turnAbove = false;
+  let closed = false;
   const pushTurn = (turn: ProcessJobShelfEntry) => {
+    // Every turn appears once, whatever claims it.
+    if (placed.has(turn.job.jobId)) return;
+    placed.add(turn.job.jobId);
     steps.push({ kind: "turn", key: turn.job.jobId, entry: turn });
     const question = questionOf(turn.job);
     if (question !== undefined) steps.push({ kind: "question", key: `question:${turn.job.jobId}`, job: question });
     asked = turn.job.kind === "internal" && turn.job.subagentQuestion !== undefined;
     turnAbove = true;
+    // A turn after a close means the instance lives again.
+    closed = false;
   };
   let next = 0;
   for (const call of calls) {
@@ -167,37 +187,41 @@ function buildGroup(
     steps.push({ kind: "call", key: `call:${call.messageId}:${call.toolCallId}`, call, label: reply ? "reply" : call.action, nested });
     if (call.action === "message" || call.action === "brief") asked = false;
     if (call.action === "close" || call.action === "brief" || call.action === "message" || call.action === "answer" || call.action === "decline") turnAbove = false;
-    const turn = call.launchedJobId === undefined ? undefined : byId.get(call.launchedJobId);
+    // A foreground turn that answered also proves the instance lives again.
+    if (call.answered === true) closed = false;
+    const turn = launchOf(call);
     if (turn !== undefined) pushTurn(turn);
+    if (call.closed === true) closed = true;
   }
   while (next < unpaired.length) pushTurn(unpaired[next++]!);
 
   const newest = turns.at(-1)!.job;
-  const newestIndex = steps.findIndex((step) => step.kind === "turn" && step.entry.job.jobId === newest.jobId);
-  const closedAfter = steps.slice(newestIndex + 1).some((step) => step.kind === "call" && step.call.action === "close");
-  const newestLaunch = calls.find((call) => call.launchedJobId === newest.jobId);
-  const closed = family === "agent"
-    && (closedAfter || (newestLaunch?.closes === true && newest.state === "succeeded"));
   const task = [...calls].reverse().find((call) => (call.action === "brief" || call.action === "message") && call.text !== undefined)?.text;
-  return { kind: "group", key, family, instanceId, turns, steps, newest, closed,
-    ...(task === undefined ? {} : { task: task.replace(/\s+/gu, " ").trim() }) };
+  const threads = new Set([
+    ...calls.flatMap((call) => call.thread ?? []),
+    ...turns.flatMap((turn) => turn.job.kind === "internal" && turn.job.peerQuestion !== undefined ? [turn.job.peerQuestion.thread] : []),
+  ]);
+  return { kind: "group", key, family, instanceId, turns, steps, newest, closed: family === "agent" && closed,
+    ...(task === undefined ? {} : { task: task.replace(/\s+/gu, " ").trim() }),
+    showThreads: family === "peer" && threads.size > 1 };
 }
 
 /** The host's own label for a PeerAgent job, which names only the peer and thread. */
 const GENERIC_PEER_LABEL = /^Peer \S+ thread \S+( question continuation)?$/u;
 
 /**
- * The purpose a group's row shows beside its id: the speaking turn's own label,
- * unless that label is the host's generic one (`Persistent subagent <id>`,
- * `Peer <peer> thread <thread>`), in which case the parent's newest brief or
- * message says what the child is doing.
+ * The newest task, shown beside the group's id: the NEWEST turn's own label,
+ * whichever turn speaks for the status (an older pending question keeps the
+ * glyph and state word, never the title). When that label is the host's
+ * generic one (`Persistent subagent <id>`, `Peer <peer> thread <thread>`),
+ * the parent's newest brief or message says what the child is doing.
  */
-export const processJobGroupPurpose = (group: ProcessJobGroupItem, lead: ProcessJobProjection): string => {
-  const label = processJobDisplayTitle(lead);
+export const processJobGroupPurpose = (group: ProcessJobGroupItem): string => {
+  const label = processJobDisplayTitle(group.newest);
   const generic = group.family === "peer"
     ? GENERIC_PEER_LABEL.test(label)
     : label === `Persistent subagent ${group.instanceId}`;
-  return generic && group.task !== undefined ? group.task : processJobPurposeInGroup(lead, group.instanceId);
+  return generic && group.task !== undefined ? group.task : processJobPurposeInGroup(group.newest, group.instanceId);
 };
 
 /** Every job an item holds. */

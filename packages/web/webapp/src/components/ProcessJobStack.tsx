@@ -250,10 +250,6 @@ export function ProcessJobStack() {
     </span>
   );
   const singleState = single === undefined ? undefined : processJobDisplayState(single, now);
-  // A lone current row names its own question only when its state word IS the
-  // question; a failed or cancelled peer with an open question keeps its
-  // outcome, so the question chip must still say it.
-  const singleSaysQuestion = singleState?.tone === "question";
   const chips: ReactNode[] = [];
   if (single === undefined && counts.active > 0) {
     // The bar's one spinner turns while any of these jobs is in progress.
@@ -261,7 +257,9 @@ export function ProcessJobStack() {
     chips.push(chip("active", active.tone, active.spinning ? <ProcessJobSpinner /> : <ProcessJobGlyph small tone={active.tone} mark={active.mark} />,
       counts.active, processJobCountWords.active(counts.active)));
   }
-  if (!singleSaysQuestion && counts.questions > 0) {
+  // A question awaiting the agent is always counted, even when the lone
+  // current row's own glyph already says it.
+  if (counts.questions > 0) {
     chips.push(chip("questions", "question", <ProcessJobGlyph small tone="question" mark="question" />, counts.questions, processJobCountWords.questions(counts.questions)));
   }
   if (counts.issues > 0) {
@@ -313,8 +311,9 @@ export function ProcessJobStack() {
                     ? `${singleItem.family === "peer" ? "peer agent" : "agent"} ${singleItem.instanceId}:`
                     : `${single.tool} job:`}`}</span>
                 {singleItem?.kind === "group" ? <span className="process-job-stack-agent" aria-hidden="true">{singleItem.instanceId}</span> : null}
-                <span className="process-job-stack-purpose" title={single.summary}>
-                  {singleItem?.kind === "group" ? processJobGroupPurpose(singleItem, single) : processJobDisplayTitle(single)}
+                {/* A group's status is its lead turn's; its title is always the newest task. */}
+                <span className="process-job-stack-purpose" title={singleItem?.kind === "group" ? singleItem.newest.summary : single.summary}>
+                  {singleItem?.kind === "group" ? processJobGroupPurpose(singleItem) : processJobDisplayTitle(single)}
                 </span>
               </span>
             ) : null}

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { collectProcessJobParentCalls, type ProcessJobParentCall } from "../process-job-presentation";
-import { agentTurn, at, launchCall, manageCall, parentMessage, T0 } from "../test/agent-group-fixtures";
+import { agentTurn, at, launchCall, manageCall, parentMessage, peerCall, peerStarted, T0 } from "../test/agent-group-fixtures";
 import { processJob } from "../test/fixtures";
 import type { ProcessJobProjection } from "../types";
 import {
@@ -32,6 +32,9 @@ const command = (jobId: string, state: ProcessJobProjection["state"] = "running"
   ...(state === "running" ? { timestamps: { ...processJob().timestamps, completedAt: null }, exitCode: null, durationMs: null } : {}),
 });
 const NOW = T0 + 60 * 60_000;
+const PEER_JOB_A = "0d6f3a2e-6c1b-4f7e-9a51-3b2c1d0e9f8a";
+const PEER_JOB_B = "7e2d9c41-58a3-4b6f-a0c2-9d8e7f6a5b4c";
+const CLOSED = (id: string) => `<subagent: helper · instance ${id} · turn 1 · closed>`;
 
 describe("processJobShelfItems", () => {
   it("makes every subagent instance and every peer one group, keyed by family and id, and leaves commands alone", () => {
@@ -98,12 +101,12 @@ describe("processJobShelfItems", () => {
     expect(outline(items([early, later], calls)[0])).toEqual(["turn:early", "message:fg", "message:call-later", "turn:later"]);
   });
 
-  it("keeps a reused id as one group, showing the close before the new brief", () => {
+  it("keeps a reused id as one group, showing the close before the new brief, and reopens it", () => {
     const first = agentTurn("first", "helper", 0, { durationMinutes: 2 });
     const second = agentTurn("second", "helper", 10);
     const calls = collectProcessJobParentCalls([
       parentMessage("m1", 0, [launchCall(first, { prompt: "Tidy the shed list.", id: "helper", persist: true })]),
-      parentMessage("m2", 5, [manageCall("close", { id: "helper", close: true })]),
+      parentMessage("m2", 5, [manageCall("close", { id: "helper", close: true }, CLOSED("helper"))]),
       parentMessage("m3", 10, [launchCall(second, { prompt: "Plan the compost bays.", id: "helper", persist: true })]),
     ], "thread");
     const list = items([first, second], calls);
@@ -112,19 +115,61 @@ describe("processJobShelfItems", () => {
     expect(group(list[0]).closed).toBe(false);
   });
 
-  it("marks an instance closed after its newest turn, by a close call or a message that closes after it succeeds", () => {
+  it("marks an instance closed only after a close the host confirmed", () => {
     const stopped = agentTurn("s1", "soil-analyst", 0, { state: "cancelled", durationMinutes: 3 });
-    const closeCall = collectProcessJobParentCalls([
-      parentMessage("m1", 0, [launchCall(stopped, { prompt: "Compare the soil tests." })]),
-      parentMessage("m2", 5, [manageCall("close", { id: "soil-analyst", close: true })]),
-    ], "thread");
-    expect(group(items([stopped], closeCall)[0]).closed).toBe(true);
+    const closedAfter = (...parts: Parameters<typeof manageCall>[]) => group(items([stopped], collectProcessJobParentCalls([
+      parentMessage("m1", 0, [launchCall(stopped, { prompt: "Compare the soil tests.", id: "soil-analyst", persist: true })]),
+      ...parts.map((call, index) => parentMessage(`m${String(index + 2)}`, 5 + index, [manageCall(...call)])),
+    ], "thread"))[0]).closed;
 
+    expect(closedAfter(["close", { id: "soil-analyst", close: true }, CLOSED("soil-analyst")])).toBe(true);
+    // Rejected (the instance was busy), unanswered, or answered by anything but the host's header: not closed.
+    expect(closedAfter(["close", { id: "soil-analyst", close: true }, "Error: instance \"soil-analyst\" is busy.", { status: "failed" }])).toBe(false);
+    expect(closedAfter(["close", { id: "soil-analyst", close: true }, undefined, { status: "running" }])).toBe(false);
+    expect(closedAfter(["close", { id: "soil-analyst", close: true }, "I closed it."])).toBe(false);
+    // A confirmed close, then a foreground recreation that answered, reopens it; a failed one does not.
+    expect(closedAfter(
+      ["close", { id: "soil-analyst", close: true }, CLOSED("soil-analyst")],
+      ["again", { id: "soil-analyst", message: "Start over with the new samples." }, "<subagent: analyst · instance soil-analyst · turn 1 · ok · 3 calls · 20s>\nStarted."],
+    )).toBe(false);
+    expect(closedAfter(
+      ["close", { id: "soil-analyst", close: true }, CLOSED("soil-analyst")],
+      ["again", { id: "soil-analyst", message: "Start over." }, "Error: unknown, closed or expired instance \"soil-analyst\".", { status: "failed" }],
+    )).toBe(true);
+  });
+
+  it("does not claim a close a detached message only asked for", () => {
     const last = agentTurn("l1", "helper", 0, { tool: "AgentManage", durationMinutes: 2 });
     const closing = collectProcessJobParentCalls([parentMessage("m1", 0, [launchCall(last, { id: "helper", message: "Finish up.", close: true })])], "thread");
-    expect(group(items([last], closing)[0]).closed).toBe(true);
-    const failed = { ...last, state: "failed" as const };
-    expect(group(items([failed], closing)[0]).closed).toBe(false);
+    expect(group(items([last], closing)[0]).closed).toBe(false);
+  });
+
+  it("never moves or repeats another child's turn, whatever a call's receipt claims", () => {
+    const a = agentTurn(PEER_JOB_A, "seed-bank", 0, { tool: "PeerAgent" });
+    const b = agentTurn(PEER_JOB_B, "bulb-club", 2, { tool: "PeerAgent", durationMinutes: 1 });
+    const calls = collectProcessJobParentCalls([
+      // Peer B's detached thread returns a well-formed receipt that names A's job
+      // (the only claim on it, so the collector cannot tell it is wrong).
+      parentMessage("m1", 1, [peerCall("b-send", { action: "send", peer: "bulb-club", thread: "autumn", message: "Tulip stock?", background: true },
+        peerStarted("bulb-club", "autumn", PEER_JOB_A))]),
+    ], "thread");
+    expect(calls[0]).toMatchObject({ instanceId: "bulb-club", launchedJobId: PEER_JOB_A });
+    const list = items([a, b], calls);
+    // B's row stays in B's group without a turn; A's turn is in A's group once, unpaired.
+    expect(outline(list.find((item) => item.key === "peer:seed-bank"))).toEqual([`turn:${PEER_JOB_A}`]);
+    expect(outline(list.find((item) => item.key === "peer:bulb-club"))).toEqual(["message:b-send", `turn:${PEER_JOB_B}`]);
+    const turns = list.flatMap((item) => item.kind === "group" ? group(item).steps.flatMap((step) => step.kind === "turn" ? [step.entry.job.jobId] : []) : []);
+    expect(turns).toHaveLength(new Set(turns).size);
+  });
+
+  it("pairs a launch only with a turn of its own tool", () => {
+    const managed = agentTurn("m1", "helper", 1, { tool: "AgentManage" });
+    const calls = collectProcessJobParentCalls([
+      // An Agent receipt naming an AgentManage job is a conflict: no pairing,
+      // so the turn is placed by its own admission time, before the call.
+      parentMessage("m1", 5, [launchCall({ ...managed, tool: "Agent" }, { prompt: "Brief", id: "helper", persist: true })]),
+    ], "thread");
+    expect(outline(items([managed], calls)[0])).toEqual(["turn:m1", "brief:call-m1"]);
   });
 
   it("never joins a call to another family's group with the same id", () => {
@@ -183,18 +228,31 @@ describe("agent group state and counts", () => {
     expect(processJobItemCounts(list, NOW)).toEqual({ active: 2, finished: 2, issues: 1, questions: 1 });
   });
 
-  it("names a group by its speaking turn, or by the parent's newest task when the host label is generic", () => {
+  it("names a group by its NEWEST task, whichever turn speaks for its status", () => {
     const generic = agentTurn("g", "helper-3", 0, { summary: "Persistent subagent helper-3" });
     const calls = collectProcessJobParentCalls([parentMessage("m1", 0, [launchCall(generic, { prompt: "Water the\n north beds." })])], "thread");
     const [helper] = items([generic], calls);
-    expect(processJobGroupPurpose(group(helper), generic)).toBe("Water the north beds.");
+    expect(processJobGroupPurpose(group(helper))).toBe("Water the north beds.");
 
     const peer = agentTurn("p", "seed-bank", 0, { tool: "PeerAgent", summary: "Peer seed-bank thread spring-orders" });
-    const [bank] = items([peer]);
-    expect(processJobGroupPurpose(group(bank), peer)).toBe("thread spring-orders");
+    expect(processJobGroupPurpose(group(items([peer])[0]))).toBe("thread spring-orders");
 
-    const named = agentTurn("n", "helper-4", 0, { summary: "Draft the planting plan" });
-    const [plain] = items([named], calls);
-    expect(processJobGroupPurpose(group(plain), named)).toBe("Draft the planting plan");
+    // An older pending question speaks for the status; the title stays the newest task.
+    const [bank] = items([
+      pendingPeer("older", 0, 90),
+      agentTurn("newer", "seed-bank", 5, { tool: "PeerAgent", durationMinutes: 1, summary: "Check the bulb order" }),
+    ]);
+    expect(processJobItemLead(bank!, NOW).jobId).toBe("older");
+    expect(processJobGroupPurpose(group(bank))).toBe("Check the bulb order");
+  });
+
+  it("names threads only when one peer serves several", () => {
+    const one = items([pendingPeer("p1", 0, 90), agentTurn("p2", "seed-bank", 5, { tool: "PeerAgent", durationMinutes: 1 })]);
+    expect(group(one[0]).showThreads).toBe(false);
+    const calls = collectProcessJobParentCalls([parentMessage("m1", 6, [
+      peerCall("autumn", { action: "send", peer: "seed-bank", thread: "autumn", message: "Bulbs?" }, "Plenty."),
+    ])], "thread");
+    const two = items([pendingPeer("p1", 0, 90)], calls);
+    expect(group(two[0]).showThreads).toBe(true);
   });
 });

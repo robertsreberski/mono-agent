@@ -1,4 +1,4 @@
-import { type ReactNode, useId, useRef, useState } from "react";
+import { type ReactNode, useId, useLayoutEffect, useRef, useState } from "react";
 
 import type { ProcessJobParentCall } from "../process-job-presentation";
 import type { ProcessJobProjection } from "../types";
@@ -46,7 +46,7 @@ const CALL_ICON: Readonly<Record<ProcessJobParentCallLabel, IconName>> = {
   brief: "send", message: "send", reply: "send", steer: "send", answer: "send", decline: "close", stop: "stop", close: "close",
 };
 
-const OUTCOME_WORDS: Readonly<Record<string, string>> = {
+const OUTCOME_WORDS: Readonly<Record<NonNullable<ProcessJobParentCall["outcome"]>, string>> = {
   applied: "applied",
   pending: "pending",
   not_applied: "not applied",
@@ -56,24 +56,33 @@ const OUTCOME_WORDS: Readonly<Record<string, string>> = {
   already_idle: "already idle",
 };
 
-/** The parent call's own result in words, when the row has no turn to show it. */
+/**
+ * The parent call's own result in words, when the row has no turn to show it.
+ * Only what the host confirmed is said: a steer or stop shows its receipt's
+ * known status, a close says "instance closed" only when the host's result
+ * confirms it, and a foreground call says it was answered only when it
+ * returned a result. Anything unknown says nothing.
+ */
 const callStatus = (call: ProcessJobParentCall): { readonly words: string; readonly tone: "neutral" | "success" | "danger" | "muted" } | undefined => {
   if (call.status === "failed") return { words: "failed", tone: "danger" };
   if (call.action === "steer") {
     if (call.status === "running") return { words: "sending", tone: "muted" };
-    return call.outcome === undefined ? undefined
-      : { words: OUTCOME_WORDS[call.outcome] ?? call.outcome.replaceAll("_", " "), tone: call.outcome === "applied" ? "success" : "muted" };
+    return call.outcome === undefined ? undefined : { words: OUTCOME_WORDS[call.outcome], tone: call.outcome === "applied" ? "success" : "muted" };
   }
   if (call.action === "stop") {
     if (call.status === "running") return { words: "stopping", tone: "muted" };
-    return { words: call.outcome === undefined ? "stop sent" : OUTCOME_WORDS[call.outcome] ?? call.outcome.replaceAll("_", " "), tone: "neutral" };
+    return call.outcome === undefined ? undefined : { words: OUTCOME_WORDS[call.outcome], tone: "neutral" };
   }
-  if (call.action === "close") return { words: call.status === "running" ? "closing" : "instance closed", tone: "neutral" };
+  if (call.action === "close") {
+    if (call.status === "running") return { words: "closing", tone: "muted" };
+    return call.closed === true ? { words: "instance closed", tone: "neutral" } : undefined;
+  }
   if (call.launchedJobId !== undefined) return call.closes === true ? { words: "then close", tone: "muted" } : undefined;
-  // No detached turn follows: a foreground call answered inside the conversation.
+  if (call.foreground !== true) return undefined;
+  // A foreground call ran inside the parent's own turn.
   if (call.status === "running") return { words: "running in the conversation", tone: "muted" };
   if (call.action === "decline") return { words: "declined", tone: "neutral" };
-  return { words: "answered in the conversation", tone: "muted" };
+  return call.answered === true ? { words: "answered in the conversation", tone: "muted" } : undefined;
 };
 
 /**
@@ -81,10 +90,12 @@ const callStatus = (call: ProcessJobParentCall): { readonly words: string; reado
  * what the call was, and what it said. A call with text opens to the whole of
  * it; a preview the server cut short offers the transcript's own repair.
  */
-function ProcessJobParentCallRow({ call, label, at }: {
+function ProcessJobParentCallRow({ call, label, at, showThread }: {
   readonly call: ProcessJobParentCall;
   readonly label: ProcessJobParentCallLabel;
   readonly at?: string;
+  /** One peer serves several threads: say which one this call went to. */
+  readonly showThread: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const repair = useToolCallRepair();
@@ -97,6 +108,7 @@ function ProcessJobParentCallRow({ call, label, at }: {
     <span className="process-job-call-icon" aria-hidden="true"><Icon name={CALL_ICON[label]} size={11} /></span>
     <strong className="process-job-call-tool">{call.tool}</strong>
     <span className="process-job-call-word">{label}</span>
+    {showThread && call.thread !== undefined ? <span className="process-job-call-thread">{`thread ${call.thread}`}</span> : null}
     {text === undefined ? null : <span className="process-job-call-text">{oneLine(text)}</span>}
     {status === undefined ? null : <span className={`process-job-call-status is-${status.tone}`}>{status.words}</span>}
     <span className="process-job-call-spacer" aria-hidden="true" />
@@ -130,9 +142,10 @@ function ProcessJobParentCallRow({ call, label, at }: {
 }
 
 /** The question a turn ended with: a subagent asking its parent, or a peer's form awaiting the agent. */
-function ProcessJobAsk({ job, instanceId }: {
+function ProcessJobAsk({ job, instanceId, showThread }: {
   readonly job: Extract<ProcessJobProjection, { kind: "internal" }>;
   readonly instanceId: string;
+  readonly showThread: boolean;
 }) {
   const now = useProcessJobNow();
   if (job.peerQuestion !== undefined) {
@@ -145,6 +158,7 @@ function ProcessJobAsk({ job, instanceId }: {
         </span>
         <span className="process-job-ask-body">
           <span className="process-job-ask-label">{instanceId} asks</span>
+          {showThread ? <span className="process-job-ask-thread">{`thread ${question.thread}`}</span> : null}
           <span className="process-job-ask-text">{question.message}</span>
           <span className="process-job-ask-state">
             {pending ? peerQuestionExpiryLabel(question.expiresAt, now) : peerQuestionStateLabel(question.state)}
@@ -200,8 +214,10 @@ export function ProcessJobGroup({ group, threadId, shown, onProjectionChange, on
   const now = useProcessJobNow();
   const ids = useId();
   const groupRef = useRef<HTMLDetailsElement>(null);
+  const timelineRef = useRef<HTMLOListElement>(null);
   const [open, setOpen] = useState(false);
   const [unfolded, setUnfolded] = useState(false);
+  const focusAfterUnfold = useRef(false);
   const lead = processJobItemLead(group, now);
   const display = processJobDisplayState(lead, now);
   const terminal = processJobIsTerminal(lead);
@@ -210,7 +226,8 @@ export function ProcessJobGroup({ group, threadId, shown, onProjectionChange, on
     && (!terminal || (lead.timestamps.startedAt !== null && timing.finishedAt !== undefined));
   const preview = processJobPreview(lead, now);
   const outcomes = terminal ? [] : processJobCallOutcomes(lead);
-  const purpose = processJobGroupPurpose(group, lead);
+  // The status speaks for the lead turn; the title always names the newest task.
+  const purpose = processJobGroupPurpose(group);
   const turns = group.turns.length;
   const turnWords = `${String(turns)} ${turns === 1 ? "turn" : "turns"}`;
   const kindWord = group.family === "peer" ? "peer agent" : "agent";
@@ -224,7 +241,9 @@ export function ProcessJobGroup({ group, threadId, shown, onProjectionChange, on
   const metaId = `${ids}-meta`;
 
   // Long-lived children fold their older turns behind one row, so the newest
-  // exchange stays in view inside the shelf's height cap.
+  // exchange stays in view inside the shelf's height cap. A question still
+  // awaiting an answer never folds: its turn, the call that started it and its
+  // callout stay in place (the same keyed rows, only not hidden).
   const turnSteps = group.steps.flatMap((step, index) => step.kind === "turn" ? [index] : []);
   const foldable = !unfolded && turnSteps.length > FOLD_AFTER_TURNS;
   let foldAt = 0;
@@ -234,13 +253,35 @@ export function ProcessJobGroup({ group, threadId, shown, onProjectionChange, on
     const above = group.steps[keepFrom - 1];
     foldAt = above?.kind === "call" && above.call.launchedJobId !== undefined ? keepFrom - 1 : keepFrom;
   }
-  const folded = group.steps.slice(0, foldAt);
+  const pinned = new Set<number>();
+  group.steps.forEach((item, index) => {
+    if (index >= foldAt || item.kind !== "question" || !pendingPeerQuestion(item.job, now)) return;
+    pinned.add(index);
+    const turnIndex = group.steps.findIndex((other) => other.kind === "turn" && other.entry.job.jobId === item.job.jobId);
+    if (turnIndex < 0) return;
+    pinned.add(turnIndex);
+    const launch = group.steps[turnIndex - 1];
+    if (launch?.kind === "call" && launch.call.launchedJobId === item.job.jobId) pinned.add(turnIndex - 1);
+  });
+  const isFolded = (index: number) => index < foldAt && !pinned.has(index);
+  const folded = group.steps.filter((_, index) => isFolded(index));
   const foldedTurns = folded.filter((step) => step.kind === "turn");
   const foldedCalls = folded.filter((step) => step.kind === "call").length;
   const foldedFailed = foldedTurns.filter((step) => step.kind === "turn" && processJobDisplayState(step.entry.job, now).tone === "danger").length;
 
+  // "Show earlier turns" removes its own button: hand focus to the first step
+  // it revealed, or the group's own header, never the page body.
+  useLayoutEffect(() => {
+    if (!focusAfterUnfold.current) return;
+    focusAfterUnfold.current = false;
+    const first = timelineRef.current?.querySelector<HTMLElement>(
+      ":scope > li:not([hidden]) :is(button, summary, [tabindex='0'])",
+    );
+    (first ?? groupRef.current?.querySelector<HTMLElement>(":scope > summary"))?.focus();
+  });
+
   const step = (item: ProcessJobTimelineStep, index: number) => {
-    const hidden = index < foldAt;
+    const hidden = isFolded(index);
     if (item.kind === "turn") {
       return (
         <li key={`${threadId}:${item.entry.job.jobId}`} className="process-job-step is-turn" hidden={hidden}>
@@ -256,15 +297,15 @@ export function ProcessJobGroup({ group, threadId, shown, onProjectionChange, on
     if (item.kind === "question") {
       return (
         <li key={item.key} className="process-job-step is-ask" hidden={hidden}>
-          <ProcessJobAsk job={item.job} instanceId={group.instanceId} />
+          <ProcessJobAsk job={item.job} instanceId={group.instanceId} showThread={group.showThreads} />
         </li>
       );
     }
     const launchedTurn = item.call.launchedJobId === undefined ? undefined
-      : group.turns.find((turn) => turn.job.jobId === item.call.launchedJobId);
+      : group.turns.find((turn) => turn.job.jobId === item.call.launchedJobId && turn.job.tool === item.call.tool);
     return (
       <li key={item.key} className={`process-job-step is-call${item.nested ? " is-nested" : ""}`} hidden={hidden}>
-        <ProcessJobParentCallRow call={item.call} label={item.label}
+        <ProcessJobParentCallRow call={item.call} label={item.label} showThread={group.showThreads}
           {...(launchedTurn === undefined ? {} : { at: launchedTurn.job.timestamps.admittedAt })} />
       </li>
     );
@@ -293,7 +334,7 @@ export function ProcessJobGroup({ group, threadId, shown, onProjectionChange, on
         }}
       >
         <ProcessJobGlyph tone={display.tone} mark={display.mark} />
-        <span id={titleId} className="process-job-group-title" title={lead.summary}>
+        <span id={titleId} className="process-job-group-title" title={group.newest.summary}>
           <span className="process-job-group-name">{group.instanceId}</span>
           <span className="process-job-group-purpose">{purpose}</span>
         </span>
@@ -322,10 +363,13 @@ export function ProcessJobGroup({ group, threadId, shown, onProjectionChange, on
           </>}
         </span>
       </summary>
-      <ol className="process-job-timeline" aria-label={`${group.instanceId} timeline`}>
-        {foldAt > 0 ? (
+      <ol ref={timelineRef} className="process-job-timeline" aria-label={`${group.instanceId} timeline`}>
+        {foldedTurns.length > 0 ? (
           <li key="fold" className="process-job-step is-fold">
-            <button type="button" className="process-job-fold" onClick={() => setUnfolded(true)}>
+            <button type="button" className="process-job-fold" onClick={() => {
+              focusAfterUnfold.current = true;
+              setUnfolded(true);
+            }}>
               <span className="process-job-fold-icon" aria-hidden="true"><Icon name="more" size={12} /></span>
               <span>{`Show ${String(foldedTurns.length)} earlier ${foldedTurns.length === 1 ? "turn" : "turns"}`}</span>
               <span className="process-job-fold-note">

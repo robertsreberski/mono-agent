@@ -214,11 +214,11 @@ export const stewardSingle = turn("job-steward-1", "running", "Log this week's c
 const bankForm = { type: "object", required: ["question_1"], properties: {
   question_1: { type: "string", title: "Heirloom tomatoes", description: "Reserve 40 packets now?",
     oneOf: [{ const: "reserve", title: "Reserve now" }, { const: "wait", title: "Wait for the vote" }] } } };
-export const bankAsk = settledTurn("job-bank-1", "Peer seed-bank thread spring-orders", 900, 130, "PeerAgent", {
+export const bankAsk = settledTurn("4f1c2b3a-5d6e-4f70-8a91-b2c3d4e5f601", "Peer seed-bank thread spring-orders", 900, 130, "PeerAgent", {
   peerQuestion: { state: "answered", questionId: "5d2e8f10-3c4b-4a1e-9f2d-6b7c8d9e0f1a", peer: "seed-bank", thread: "spring-orders",
     message: "Which order window do you want: this week or next week?", requestedSchema: bankForm, expiresAt: ago(400) },
 }, "seed-bank");
-export const bankFollowUp = settledTurn("job-bank-2", "Peer seed-bank thread spring-orders question continuation", 420, 95, "PeerAgent", {
+export const bankFollowUp = settledTurn("4f1c2b3a-5d6e-4f70-8a91-b2c3d4e5f602", "Peer seed-bank thread spring-orders question continuation", 420, 95, "PeerAgent", {
   peerQuestion: { state: "awaiting_answer", questionId: "3f6c9a2e-1b4d-4c8e-9a70-2d5e6f7a8b9c", peer: "seed-bank", thread: "spring-orders",
     message: "Should I reserve the heirloom tomato seeds now or wait for the member vote?", requestedSchema: bankForm, expiresAt: later(18 * 60) },
 }, "seed-bank");
@@ -299,3 +299,22 @@ const longLivedMessages: readonly WebMessage[] = longLivedJobs.map((job, index) 
     : { id: "compost-keeper", message: STEWARD_ASKS[index]![1], background: true, description: job.summary }),
 ]));
 export const longLivedParentCalls = collectProcessJobParentCalls(longLivedMessages, "example");
+
+// ── One peer, several threads: the oldest thread still awaits an answer, so
+// its question stays outside the fold, and every row names its thread.
+const threadAsks = [
+  ["spring-orders", "Ask whether the heirloom tomato packets can be reserved", 5_400, "Should I reserve the heirloom tomato seeds now or wait for the member vote?"],
+  ["autumn-bulbs", "Ask how many tulip bulbs are left", 4_200, undefined],
+  ["autumn-bulbs", "Confirm the tulip order", 3_000, undefined],
+  ["winter-garlic", "Check the seed garlic stock", 600, undefined],
+] as const;
+export const peerThreadsJobs: readonly Job[] = threadAsks.map(([thread, summary, secondsAgo, question], index) =>
+  settledTurn(`8a7b6c5d-4e3f-4a1b-9c2d-3e4f5a6b7c${String(index).padStart(2, "0")}`, summary, secondsAgo, 110, "PeerAgent", {
+    ...(question === undefined ? {} : { peerQuestion: { state: "awaiting_answer", questionId: "9b8c7d6e-5f4a-4b3c-8d2e-1f0a9b8c7d6e", peer: "seed-bank", thread,
+      message: question, requestedSchema: bankForm, expiresAt: later(25 * 60) } }),
+  }, "seed-bank"));
+const peerThreadsMessages: readonly WebMessage[] = peerThreadsJobs.map((job, index) => parent(`t${String(index)}`, threadAsks[index]![2] + 5, [
+  { ...peerCall(`call-thread-${String(index)}`, { action: "send", peer: "seed-bank", thread: threadAsks[index]![0], message: threadAsks[index]![1], background: true }, job),
+    result: [{ type: "text", text: JSON.stringify({ peer: "seed-bank", thread: threadAsks[index]![0], jobId: job.jobId, state: "started" }) }] },
+]));
+export const peerThreadsParentCalls = collectProcessJobParentCalls(peerThreadsMessages, "example");

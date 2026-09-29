@@ -8,7 +8,7 @@ import {
   type ProcessJobParentCall,
   type ProcessJobPresentationEntry,
 } from "../process-job-presentation";
-import { agentTurn, launchCall, manageCall, parentMessage } from "../test/agent-group-fixtures";
+import { agentTurn, launchCall, manageCall, parentMessage, peerCall, peerStarted } from "../test/agent-group-fixtures";
 import { processJob } from "../test/fixtures";
 import type { ProcessJobProjection, ProcessJobState } from "../types";
 import { ProcessJobStack } from "./ProcessJobStack";
@@ -402,13 +402,13 @@ describe("ProcessJobStack", () => {
     expect(toggle).toHaveAccessibleName(new RegExp(`^Background jobs ${word}, Question pending peer agent seed-bank: Ask the seed-bank agent about heirloom stock 1 question awaiting the agent`, "u"));
   });
 
-  it("does not repeat the question chip when the lone row's state already is the question", () => {
+  it("counts a pending question in its chip even when the lone row's state already is the question", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-17T10:00:00.000Z"));
     render(<StackHarness threadId="thread" jobs={[entry(peerJob("2026-07-17T10:20:00.000Z"))]} />);
     const toggle = shelfToggle();
-    expect(toggle.querySelector(".process-job-chip.is-question")).toBeNull();
-    expect(toggle).toHaveAccessibleName("Background jobs Question pending peer agent seed-bank: Ask the seed-bank agent about heirloom stock");
+    expect(toggle.querySelector(".process-job-chip.is-question .process-job-chip-count")).toHaveTextContent("1");
+    expect(toggle).toHaveAccessibleName("Background jobs Question pending peer agent seed-bank: Ask the seed-bank agent about heirloom stock 1 question awaiting the agent");
   });
 
   it("keeps a failed peer job's outcome while its question is pending", () => {
@@ -551,7 +551,8 @@ describe("ProcessJobStack", () => {
     const calls = collectProcessJobParentCalls([
       parentMessage("m1", 0, [launchCall(brief, { prompt: "Find the frost dates for the allotment.", persist: true, background: true }, { argsTruncated: true, argsBytes: 5_214 })]),
       parentMessage("m2", 5, [{ type: "subagent", toolCallId: "fg", name: "researcher", status: "complete", calls: [],
-        args: { id: "helper", message: "Which source do you trust more?" } }]),
+        args: { id: "helper", message: "Which source do you trust more?" },
+        result: "<subagent: researcher · instance helper · turn 2 · ok · 1 call · 4s>\nThe county guide." }]),
       parentMessage("m3", 10, [launchCall(follow, { id: "helper", message: "Summarise the three safest sowing windows.", background: true })]),
     ], "thread");
 
@@ -644,9 +645,9 @@ describe("ProcessJobStack", () => {
       const stopped = agentTurn("s1", "soil-analyst", 0, { state: "cancelled", durationMinutes: 4, summary: "Compare soil tests", extra: { cancelRequested: true } });
       const soilCalls = collectProcessJobParentCalls([
         parentMessage("m1", 0, [launchCall(stopped, { prompt: "Compare the soil tests.", id: "soil-analyst", persist: true })]),
-        parentMessage("m2", 1, [manageCall("steer", { id: "soil-analyst", steer: "Skip the south bed." }, { jobId: "s1", status: "applied" })]),
-        parentMessage("m3", 2, [manageCall("stop", { id: "soil-analyst", stop: true }, { jobId: "s1", status: "stopped" })]),
-        parentMessage("m4", 3, [manageCall("close", { id: "soil-analyst", close: true }, "<subagent: analyst · closed>")]),
+        parentMessage("m2", 1, [manageCall("steer", { id: "soil-analyst", steer: "Skip the south bed." }, { instanceId: "soil-analyst", jobId: "s1", status: "applied" })]),
+        parentMessage("m3", 2, [manageCall("stop", { id: "soil-analyst", stop: true }, { instanceId: "soil-analyst", jobId: "s1", status: "stopped" })]),
+        parentMessage("m4", 3, [manageCall("close", { id: "soil-analyst", close: true }, "<subagent: analyst · instance soil-analyst · turn 1 · closed>")]),
       ], "thread");
       render(<StackHarness threadId="thread" parentCalls={soilCalls} jobs={[entry(stopped)]} />);
       openShelf();
@@ -662,6 +663,101 @@ describe("ProcessJobStack", () => {
       expect(timeline.children[4]).toHaveTextContent(/AgentManage\s*close\s*instance closed/u);
       // Rows without text are not buttons.
       expect(within(timeline.children[3] as HTMLElement).queryByRole("button")).toBeNull();
+    });
+
+    it("shows neither closed nor a status for a close the host rejected", () => {
+      const stopped = agentTurn("s1", "soil-analyst", 0, { state: "cancelled", durationMinutes: 4, summary: "Compare soil tests" });
+      const rejected = collectProcessJobParentCalls([
+        parentMessage("m1", 0, [launchCall(stopped, { prompt: "Compare the soil tests.", id: "soil-analyst", persist: true })]),
+        parentMessage("m2", 5, [manageCall("close", { id: "soil-analyst", close: true }, "Error: instance \"soil-analyst\" is busy.", { status: "failed" })]),
+        parentMessage("m3", 6, [manageCall("close-2", { id: "soil-analyst", close: true }, "Maybe closed.")]),
+      ], "thread");
+      render(<StackHarness threadId="thread" parentCalls={rejected} jobs={[entry(stopped)]} />);
+      openShelf();
+      fireEvent.click(historyToggle());
+      const group = openGroup("soil-analyst");
+      expect(group.querySelector(".process-job-group-closed")).toBeNull();
+      const rows = within(group).getByRole("list", { name: "soil-analyst timeline" }).children;
+      expect(rows[2]).toHaveTextContent(/AgentManage\s*close\s*failed/u);
+      // An unconfirmed close says nothing at all about its outcome.
+      expect(rows[3]!.querySelector(".process-job-call-status")).toBeNull();
+    });
+
+    it("mounts one card per job when another peer's reply claims its receipt", () => {
+      const consoleError = vi.spyOn(console, "error");
+      const jobA = "0d6f3a2e-6c1b-4f7e-9a51-3b2c1d0e9f8a";
+      const jobB = "7e2d9c41-58a3-4b6f-a0c2-9d8e7f6a5b4c";
+      const a = agentTurn(jobA, "seed-bank", 0, { tool: "PeerAgent", summary: "Ask about the heirlooms" });
+      const b = agentTurn(jobB, "bulb-club", 2, { tool: "PeerAgent", summary: "Ask about the tulips", durationMinutes: 1 });
+      const forged = collectProcessJobParentCalls([
+        parentMessage("m1", 0, [peerCall("a-send", { action: "send", peer: "seed-bank", thread: "spring", message: "Reserve the heirlooms?", background: true }, peerStarted("seed-bank", "spring", jobA))]),
+        // Peer B's foreground reply quotes A's started receipt word for word.
+        parentMessage("m2", 1, [peerCall("b-send", { action: "send", peer: "bulb-club", thread: "autumn", message: "Tulip stock?" }, peerStarted("seed-bank", "spring", jobA))]),
+      ], "thread");
+      const poll = vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+      const view = render(<StackHarness threadId="thread" parentCalls={forged} jobs={[entry(a), entry(b)]} />);
+      openShelf();
+      const titles = [...view.container.querySelectorAll(".process-job-card .process-job-title")].map((title) => title.getAttribute("title"));
+      expect(titles.filter((title) => title === "Ask about the heirlooms")).toHaveLength(1);
+      expect(view.container.querySelectorAll(".process-job-card")).toHaveLength(2);
+      // One poller for A's running job, and React never saw a duplicate key.
+      expect(poll.mock.calls.filter(([, jobId]) => jobId === jobA)).toHaveLength(1);
+      expect(consoleError.mock.calls.some((call) => String(call[0]).includes("same key"))).toBe(false);
+      // A's row is in A's group with its turn; B's row stays in B's group, with no turn of A's.
+      const bank = openGroup("seed-bank");
+      expect(within(bank).getByRole("list", { name: "seed-bank timeline" }).children).toHaveLength(2);
+      fireEvent.click(historyToggle());
+      const club = openGroup("bulb-club");
+      const clubSteps = within(club).getByRole("list", { name: "bulb-club timeline" }).children;
+      expect([...clubSteps].map((step) => step.className)).toEqual(["process-job-step is-call", "process-job-step is-turn"]);
+      expect(club).not.toContainElement(within(bank).getByRole("group", { name: "PeerAgent background job running" }));
+    });
+
+    it("keeps a pending peer question outside the fold, titles the group by its newest task and names threads", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-07-17T10:00:00.000Z"));
+      const turn = (jobId: string, minute: number, thread: string, summary: string, pending = false) => agentTurn(jobId, "seed-bank", minute, {
+        tool: "PeerAgent", durationMinutes: 1, summary,
+        extra: pending ? { peerQuestion: { state: "awaiting_answer", questionId: "q-old", peer: "seed-bank", thread,
+          message: "Reserve the heirloom tomatoes now?", requestedSchema: {}, expiresAt: "2026-07-17T10:30:00.000Z" } } : {},
+      });
+      const jobs = [
+        turn("p1", 0, "spring", "Ask about the heirlooms", true),
+        turn("p2", 10, "autumn", "Ask about the bulbs"),
+        turn("p3", 20, "autumn", "Confirm the bulb order"),
+        turn("p4", 30, "winter", "Check the garlic stock"),
+      ];
+      const calls = collectProcessJobParentCalls(jobs.map((job, index) => parentMessage(`m${String(index)}`, index * 10, [
+        peerCall(`call-${job.jobId}`, { action: "send", peer: "seed-bank", thread: ["spring", "autumn", "autumn", "winter"][index], message: `Message ${String(index + 1)}` }, "Noted."),
+      ])), "thread");
+      render(<StackHarness threadId="thread" parentCalls={calls} jobs={jobs.map(entry)} />);
+      const toggle = shelfToggle();
+      // One current row: its status is the question, its title the newest task, and the ? chip still counts it.
+      expect(toggle).toHaveAccessibleName("Background jobs Question pending peer agent seed-bank: Check the garlic stock 1 question awaiting the agent");
+      openShelf();
+      const group = openGroup("seed-bank");
+      expect(group).toHaveAccessibleName("seed-bank peer agent, 4 turns: Check the garlic stock");
+      expect(within(group.querySelector("summary")!).getByText("Question pending")).toBeVisible();
+      const fold = within(group).getByRole("button", { name: /^Show 1 earlier turn/u });
+      expect(fold).toBeVisible();
+      // The oldest turn is pinned in place with its question, outside the fold.
+      const ask = within(group).getByRole("note", { name: "seed-bank asks the agent" });
+      expect(ask).toBeVisible();
+      expect(ask).toHaveTextContent("Reserve the heirloom tomatoes now?");
+      expect(ask).toHaveTextContent("thread spring");
+      const oldest = [...group.querySelectorAll<HTMLElement>(".process-job-card .process-job-title")].find((title) => title.textContent === "Ask about the heirlooms")!;
+      expect(oldest.closest("li")).not.toHaveAttribute("hidden");
+      const card = oldest.closest(".process-job-card");
+      // The rows name their threads, since this peer serves three.
+      expect(within(group).getByText("thread winter")).toBeVisible();
+
+      // Unfolding reveals the rest without remounting the pinned card, and hands focus on.
+      fireEvent.click(fold);
+      expect(within(group).queryByRole("button", { name: /^Show \d+ earlier/u })).toBeNull();
+      expect(document.activeElement).not.toBe(document.body);
+      expect(group).toContainElement(document.activeElement as HTMLElement);
+      expect(document.activeElement).toBe(group.querySelector(".process-job-timeline > li:not([hidden]) :is(button, summary)"));
+      expect(oldest.closest(".process-job-card")).toBe(card);
     });
 
     it("groups peer jobs by peer and never merges them with a subagent of the same name", () => {

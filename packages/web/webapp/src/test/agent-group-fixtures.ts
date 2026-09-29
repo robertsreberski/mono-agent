@@ -75,3 +75,13 @@ export const parentMessage = (id: string, minute: number, parts: MessagePart[], 
   id, threadId, role: "assistant", status: "complete", createdAt: at(minute), updatedAt: at(minute),
   attachments: [], seq: 1, parts,
 });
+
+/** PeerAgent's started receipt, as a detached send or answer returns it. */
+export const peerStarted = (peer: string, thread: string, jobId: string) =>
+  [{ type: "text", text: JSON.stringify({ peer, thread, jobId, state: "started" }) }];
+
+/** A PeerAgent call through its MCP server name, as some runtimes report it. */
+export const peerCall = (toolCallId: string, args: Record<string, unknown>, result?: unknown, extra: Partial<ToolCallPart> = {}): ToolCallPart => ({
+  type: "tool-call", toolCallId, toolName: "mcp__mono-agent-peer-agent__PeerAgent", status: "complete", args,
+  ...(result === undefined ? {} : { result }), ...extra,
+});

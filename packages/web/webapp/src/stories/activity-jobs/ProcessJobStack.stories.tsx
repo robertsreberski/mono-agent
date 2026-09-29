@@ -105,6 +105,8 @@ export const GroupLongMessage: Story = { render: groups, play: open({ group: "re
 export const GroupTruncatedMessage: Story = { render: groups, play: open({ group: "seed-planner", call: "Plan the spring seed order" }) };
 export const GroupTurnOpen: Story = { render: groups, play: open({ group: "researcher-1", row: J.researcherWindows.summary }) };
 export const GroupFailedTurnOpen: Story = { render: groups, play: open({ group: "seed-planner", row: J.plannerPriced.summary }) };
+export const GroupPeerThreads: Story = { render: () => stack([...J.peerThreadsJobs, J.succeeded], false, J.peerThreadsParentCalls), play: open({ group: "seed-bank" }) };
+export const GlancePeerThreads: Story = { render: () => stack([...J.peerThreadsJobs, J.succeeded], false, J.peerThreadsParentCalls) };
 export const GroupManyTurns: Story = { render: () => stack([...J.longLivedJobs, J.succeeded], false, J.longLivedParentCalls), play: open({ group: "compost-keeper" }) };
 export const GroupResearcherPhone: Story = { render: groups, play: open({ group: "researcher-1" }), globals: { viewport: { value: "phone" } } };
 export const GroupResearcherDark: Story = { render: groups, play: open({ group: "researcher-1" }), globals: { scheme: "dark" } };

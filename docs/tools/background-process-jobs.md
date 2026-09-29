@@ -619,8 +619,12 @@ timeline: the parent's calls read from the loaded transcript as tool rows (the
 have no detached turn, steer, stop and close, and `PeerAgent` sends and
 answers), each opening to its whole text with the transcript's own **Load full
 message** for a preview the server shortened, and the child's turns as ordinary
-job rows between them, plus any question a turn ended with. After three turns
-the older ones fold behind one row. The shelf counts rows, not jobs: a group
+job rows between them, plus any question a turn ended with. A call is linked to
+the job it started only by the host's own start receipt; tool result text never
+moves a turn between groups, and a close is shown only once the host confirmed
+it. When one peer serves several threads, each row names its thread. After three
+turns the older ones fold behind one row, except a peer question still awaiting
+the agent, which stays in view. The shelf counts rows, not jobs: a group
 counts once in the chips, the open header, History and the polite
 announcement, and only its newest turn's outcome can make it an issue. Each row names its tool beside a terminal or agent icon, and a
 circular status glyph with the row's words gives the status: outlined rings for
