@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep a supervised agent running when console restart would relaunch it with
+  unapproved launchd inputs or invalid systemd inputs; show durable launchd
+  snapshot refusal in `mono-agent status` if inputs race after acceptance.
+
 - Keep every in-progress Background jobs shelf indicator static, using the same
   half-filled circle in the closed bar and open rows.
 

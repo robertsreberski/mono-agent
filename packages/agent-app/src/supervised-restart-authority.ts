@@ -4,6 +4,8 @@ import { verifySupervisedRestart, type SupervisedRestartDeps } from "./supervise
 
 const INSPECTION_TIMEOUT_MS = 1_000;
 const CAPABILITY_TTL_MS = 30_000;
+const INPUT_TIMEOUT_MS = 5_000;
+const INPUT_REFUSAL = "The old agent is still running. Run `mono-agent validate` then `mono-agent restart` from its folder.";
 const TIMED_OUT: TuiRestartSupport = { supported: false, reason: "Supervisor verification timed out." };
 const PENDING: TuiRestartSupport = { supported: false, reason: "Supervisor verification is pending." };
 
@@ -53,7 +55,21 @@ export function createSupervisedRestartAuthority(
     },
     async verifyFresh() {
       const ticket = ++revision;
-      const verdict = { ...await inspect() };
+      let verdict = { ...await inspect() };
+      if (verdict.supported && deps.verifyStartupInputs !== undefined) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          verdict = { ...await Promise.race([
+            deps.verifyStartupInputs().catch(() => ({ supported: false, reason: INPUT_REFUSAL })),
+            new Promise<TuiRestartSupport>((resolve) => {
+              timer = setTimeout(() => resolve({ supported: false, reason: INPUT_REFUSAL }), INPUT_TIMEOUT_MS);
+              timer.unref();
+            }),
+          ]) };
+        } finally {
+          if (timer !== undefined) clearTimeout(timer);
+        }
+      }
       // Cache a copy: the returned object is the single-use acceptance token,
       // and cached verify() results must never carry it.
       if (ticket === revision) cached = { verdict: { ...verdict }, expiresAt: Date.now() + CAPABILITY_TTL_MS };

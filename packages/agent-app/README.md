@@ -882,6 +882,16 @@ a restrictive `tools.allowedTools` list must explicitly include
 destination anyway, only a safe unsupported-part warning/outcome is delivered.
 
 A console restart does not run the existing `mono-agent restart` CLI command.
+Before stopping, launchd refuses changed approved config, dotenv, Identity, Soul,
+or MCP inputs; systemd refuses inputs that would fail its structural startup
+validation. A refusal leaves the current worker online: run `mono-agent validate`
+and then `mono-agent restart` from the agent folder to approve the new inputs.
+If a launchd input changes after acceptance but before the replacement boots,
+the worker refuses to load it and `mono-agent status` reports a durable
+`snapshot-refused` startup failure until an approved worker starts or the job is
+explicitly stopped. Linux's existing systemd failed-unit status applies to
+startup failures. A valid systemd edit may be loaded on supervised relaunch
+without a new fingerprint approval, matching its existing startup policy.
 On a verified launchd/systemd worker, one synchronous acceptance latches the
 operation id and exit code `42` before the operator route may return `202`;
 `app.stop()` and process-lifetime lease release still run gracefully. The

@@ -134,7 +134,12 @@ An adapter acceptance means only that shutdown was committed; **success** needs
 that same discovered source id to return as a *different process* and answer a
 ready `/v1/info` probe. A `degraded` discovery status still counts as ready
 when that info probe answered (for example, a stale heartbeat does not undo
-operator readiness). A definite refusal is **failure** with a short reason.
+operator readiness). A definite refusal is **failure** with a short reason. Changed approved
+launchd inputs or invalid systemd startup inputs refuse **before** stopping the
+old agent; run `mono-agent validate` and then `mono-agent restart` from its
+folder to apply changes. If inputs race after launchd acceptance, `mono-agent
+status` retains a snapshot-refusal failure until approved startup or explicit
+stop.
 A dropped reply, unknown acceptance, or no confirmed ready replacement within
 two minutes is **not confirmed**; observing a new process after a lost reply is
 not proof that this request caused it. The browser cannot infer success from

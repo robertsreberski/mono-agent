@@ -86,6 +86,8 @@ Keep bearer values out of source config when possible. Set
   host commitment of the id and nonzero exit disposition; it is acceptance,
   not proof that a replacement is online. A concurrent request returns `409`
   `restart_in_progress` with the same operation id, never a second shutdown.
+  Before acceptance, the host also checks current worker startup inputs;
+  unsupported or unsafe inputs return `409` and leave the old worker running.
   The host stops gracefully after response finish or a short bounded fallback
   even if a client disconnects. There is no hard busy inventory/confirm
   handshake: the web console warns about possible interruptions beforehand.
