@@ -789,6 +789,40 @@ describe("OperatorClient", () => {
     });
   });
 
+  it("waits for a live-input settlement beyond the parser headers timeout", async () => {
+    const server = createServer((request, response) => {
+      request.resume();
+      const settle = setTimeout(() => response.end(JSON.stringify({ status: "applied", runId: "run-1" })), 1_500);
+      response.once("close", () => clearTimeout(settle));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    const previousDispatcher = getGlobalDispatcher();
+    const testAgent = new Agent();
+    setGlobalDispatcher(testAgent.compose(
+      (dispatch) => (options, handler) => dispatch({
+        ...options,
+        // Fast parser timer: if liveInput uses ordinary fetch this fails before settlement.
+        headersTimeout: options.headersTimeout === 0 ? 0 : 100,
+      }, handler),
+    ));
+    try {
+      const client = new OperatorClient({ baseUrl: `http://127.0.0.1:${String(port)}` });
+      await expect(client.liveInput({
+        conversationId: "web:thread",
+        id: "input-1",
+        text: "Guide",
+        receivedAt: "2026-09-01T10:00:00.000Z",
+        signal: AbortSignal.timeout(4_000),
+      })).resolves.toEqual({ status: "applied", runId: "run-1" });
+    } finally {
+      setGlobalDispatcher(previousDispatcher);
+      await testAgent.close();
+      await new Promise<void>((resolve, reject) => server.close((error) => error === undefined ? resolve() : reject(error)));
+    }
+  });
+
   it("keeps a silent turn stream alive beyond the transport body timeout", async () => {
     const server = createServer((request, response) => {
       request.resume();

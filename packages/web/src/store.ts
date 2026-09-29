@@ -774,6 +774,8 @@ export interface StoredMessageWrite {
   /** UTF-8 snapshot size already measured during persistence; never serialize for pacing. */
   readonly serializedBytes?: number;
   readonly message: WebMessage;
+  /** User steers recovered by an authoritative receipt in this write. */
+  readonly recoveredSteers?: readonly WebMessage[];
   readonly delta?: WebMessageDelta;
   readonly attributionChanged?: true;
   /**
@@ -2674,10 +2676,11 @@ export class WebStore {
    * telemetry carries the `inputId`, so the mapping survives the `live_inputs`
    * row that `markLiveInputApplied` deletes. The `live_inputs` lookup below
    * covers only rows offered before this console learned to persist that
-   * marker. Anything else (queued, uncertain, cancelled, another turn) misses
-   * and keeps the legacy synthetic tool row.
+   * marker. An uncertain input lost its turn association when delivery failed;
+   * only a receipt in a running turn of the same thread can restore it. Queued,
+   * cancelled and otherwise unmatched receipts keep the legacy tool row.
    */
-  private steerForTurn(turnId: string, inputId: string): {
+  private steerForTurn(turnId: string, inputId: string, recovered: WebMessage[]): {
     readonly inputId: string;
     readonly messageId: string;
     readonly text: string;
@@ -2701,12 +2704,34 @@ export class WebStore {
       "SELECT message_id, thread_id, created_at FROM live_inputs WHERE id = ?",
     ).get(inputId) as unknown as
       { message_id: string; thread_id: string; created_at: string } | undefined;
-    if (legacy === undefined || legacy.thread_id !== turn.thread_id) return undefined;
-    const row = this.database.prepare(
-      "SELECT parts_json, created_at FROM messages WHERE id = ?",
-    ).get(legacy.message_id) as unknown as { parts_json: string; created_at: string } | undefined;
-    if (row === undefined) return undefined;
-    return steerMarkerFromUserParts(inputId, legacy.message_id, parseParts(row.parts_json), legacy.created_at);
+    if (legacy !== undefined && legacy.thread_id === turn.thread_id) {
+      const row = this.database.prepare(
+        "SELECT parts_json, created_at FROM messages WHERE id = ?",
+      ).get(legacy.message_id) as unknown as { parts_json: string; created_at: string } | undefined;
+      if (row !== undefined) {
+        return steerMarkerFromUserParts(inputId, legacy.message_id, parseParts(row.parts_json), legacy.created_at);
+      }
+    }
+    const uncertain = this.database.prepare(`
+      SELECT id, parts_json, created_at FROM messages
+      WHERE thread_id = ? AND turn_id IS NULL AND role = 'user'
+        AND json_extract(parts_json, '$[0].event') = 'live_input'
+        AND json_extract(parts_json, '$[0].data.status') = 'uncertain'
+        AND json_extract(parts_json, '$[0].data.inputId') = ?
+    `).get(turn.thread_id, inputId) as unknown as
+      { id: string; parts_json: string; created_at: string } | undefined;
+    if (uncertain === undefined) return undefined;
+    const parts = parseParts(uncertain.parts_json);
+    if (liveInputStatusFromParts(parts) !== "uncertain" || liveInputIdFromParts(parts) !== inputId) return undefined;
+    const marker = steerMarkerFromUserParts(inputId, uncertain.id, parts, uncertain.created_at);
+    if (marker === undefined) return undefined;
+    const now = this.now();
+    this.writeMessageParts(uncertain.id, withLiveInputStatus(parts, "applied", inputId), now, { turnId });
+    this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
+      .run(now, turn.thread_id);
+    this.recordThreadRevision(turn.thread_id, "live_input_applied", now);
+    recovered.push(this.requireMessage(uncertain.id));
+    return marker;
   }
 
   /**
@@ -5158,6 +5183,7 @@ export class WebStore {
       // A settled turn has no write (and therefore no delta) to announce.
       if (turn.status !== "running") return { message };
       const parts = [...message.parts];
+      const recoveredSteers: WebMessage[] = [];
       let actualModel: string | undefined;
       let actualEffort: string | undefined;
       let actualEffectiveEffort: string | undefined;
@@ -5177,7 +5203,7 @@ export class WebStore {
             parts,
             frame.event,
             (deliveryKey) => this.processJobWakeForTurn(turnId, deliveryKey),
-            (inputId) => this.steerForTurn(turnId, inputId),
+            (inputId) => this.steerForTurn(turnId, inputId, recoveredSteers),
           );
           if (frame.event.type === "runtime_telemetry" && frame.event.kind === "run_config") {
             const model = canonicalRouteString(frame.event.data?.model);
@@ -5301,6 +5327,7 @@ export class WebStore {
       const committed: WebMessage = { ...message, parts, updatedAt: now, seq: changed.seq, ...(attribution === undefined ? {} : { attribution }) };
       return {
         message: committed,
+        ...(recoveredSteers.length === 0 ? {} : { recoveredSteers }),
         serializedBytes: Buffer.byteLength(serialized),
         delta: { messageId: message.id, baseSeq: message.seq, seq: changed.seq,
           status: message.status, updatedAt: now, ...(attribution === undefined ? {} : { attribution }), ops: diffParts(message.parts, parts) },

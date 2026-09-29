@@ -4627,6 +4627,61 @@ describe("WebService", () => {
     await service.stop();
   });
 
+  it("announces an uncertain steer recovered by the running turn's receipt", async () => {
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let dispatchedId: string | undefined;
+    const events: Array<{ type: string; payload?: unknown }> = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsLiveInput: true,
+        turns: () => new ReadableStream<Uint8Array>({ start(controller) {
+          stream = controller;
+          controller.enqueue(encoder.encode(`${JSON.stringify({ kind: "status", text: "working" })}\n`));
+        } }),
+        onLiveInput(_conversationId, body) {
+          dispatchedId = body.id as string;
+          throw new Error("response lost after dispatch");
+        },
+      }),
+    });
+    const unsubscribe = service.subscribe((event) => { events.push(event); });
+    try {
+      const thread = service.createThread("agent-one");
+      await service.startTurn(thread.id, { text: "Initial task" });
+      const receipt = service.submitLiveInput(thread.id, "Use the API instead");
+      await waitFor(() => service.store.getMessage(receipt.message.id)?.liveInputStatus === "uncertain");
+      const turnId = service.store.activeTurn(thread.id)?.id;
+      const id = dispatchedId!;
+      events.length = 0;
+      for (const type of ["tool_call_started", "tool_call_completed"]) {
+        stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "event", event: {
+          type, id: `live-input:${id}`, name: "↪️ Steered: guide",
+          metadata: { liveInput: true, synthetic: true, inputId: id },
+        } })}\n`));
+      }
+      await waitFor(() => service.store.getMessage(receipt.message.id)?.liveInputStatus === "applied");
+      expect(service.store.getMessage(receipt.message.id)?.turnId).toBe(turnId);
+      expect(service.thread(thread.id).messages.find((message) => message.id === receipt.message.id)?.liveInputStatus).toBe("applied");
+      const assistant = service.thread(thread.id).messages.find((message) => message.turnId === turnId && message.role === "assistant");
+      expect(assistant?.parts).toContainEqual(expect.objectContaining({
+        type: "steer", inputId: id, messageId: receipt.message.id,
+      }));
+      expect(assistant?.parts.filter((part) => part.type === "tool-call")).toEqual([]);
+      expect(events).toContainEqual(expect.objectContaining({
+        type: "message.changed", payload: expect.objectContaining({ messageId: receipt.message.id }),
+      }));
+      expect(events.some((event) => event.type === "threads.changed")).toBe(true);
+      stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Done" })}\n`));
+      stream?.close();
+      await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    } finally {
+      unsubscribe();
+      try { stream?.close(); } catch { /* Already closed. */ }
+      await service.stop();
+    }
+  });
+
   it("persists dispatched live input as uncertain before the shutdown abort cut-point", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);

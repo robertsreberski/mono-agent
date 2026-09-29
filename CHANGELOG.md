@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep web live-input delivery open while a blocking agent operation delays its
+  response, and recover an uncertain steer inline when its exact receipt arrives
+  in the same conversation's running turn without resending the input.
+
 - Let conversation-limited background subagents and commands wait in a bounded
   queue for a running slot; show queue receipts and capacity, and release
   never-started subagent reservations without a recovery demand.

@@ -2655,6 +2655,10 @@ export class WebService {
       async (frames) => {
         const write = this.store.applyStreamFrames(started.turnId, frames);
         this.emitMessageWrite(started.thread.id, write);
+        for (const message of write.recoveredSteers ?? []) {
+          this.emit("message.changed", started.thread.id, { messageId: message.id, updatedAt: message.updatedAt });
+        }
+        if (write.recoveredSteers?.length) this.emitStoredThread(started.thread.id, ["threads.changed"]);
         return write.serializedBytes ?? 0;
       },
       (error) => controller.abort(error),
