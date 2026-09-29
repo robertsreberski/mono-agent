@@ -6,6 +6,16 @@
   verified lessons, with a score floor unless the kind is requested explicitly;
   guide agents to search one topic per call and treat weak hits as context.
 
+- Count every row of the web Background jobs shelf exactly once, so its numbers
+  add up: a question, work in progress, an issue (a success whose wake failed
+  included), a cancellation, or done. The closed bar and the open header show
+  these as glyph-and-number chips without words; while two or more rows are
+  current, the closed bar names them (agent id or command tool) with "+n" for
+  those that do not fit. History shows a bare count, a short note replaces the
+  bounded-history sentence, and the parent's calls in an agent group's timeline
+  lose their constant background, keeping a tint only when hovered, focused or
+  open.
+
 - Add `memory.capture.webhook: false` to skip automatic BuJo capture on
   host-identified webhook turns, leaving other turns and explicit writes unchanged.
 - Give cron and webhook turns with automatic capture off short host-owned,

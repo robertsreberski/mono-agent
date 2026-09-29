@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { commands, page } from "@vitest/browser/context";
+import { commands, page, userEvent } from "@vitest/browser/context";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { collectProcessJobParentCalls, type ProcessJobParentCall } from "../process-job-presentation";
@@ -153,6 +153,56 @@ describe("agent groups in Chromium", () => {
     }
   });
 
+  it("keeps the parent's calls on the shelf at rest and tints one only while highlighted or open", async () => {
+    const transparent = "rgba(0, 0, 0, 0)";
+    for (const scheme of ["light", "dark"] as const) {
+      await commands.emulateColorScheme(scheme);
+      render(shelf([brief, compare, command, windows]));
+      fireEvent.click(shelfToggle());
+      const researcher = group("researcher-1");
+      const summary = researcher.querySelector<HTMLElement>(":scope > summary")!;
+      fireEvent.click(summary);
+      await frames();
+      const heads = [...researcher.querySelectorAll<HTMLElement>(".process-job-call-head")];
+      // The brief, a foreground message, two messages and a steer: no block behind any of them.
+      expect(heads).toHaveLength(5);
+      for (const head of heads) expect(getComputedStyle(head).backgroundColor).toBe(transparent);
+      await capture(`job-group-calls-rest-${scheme}`, researcher);
+
+      const head = heads[0]!;
+      const rest = head.getBoundingClientRect().toJSON() as DOMRect;
+      const icon = head.querySelector(".process-job-call-icon")!.getBoundingClientRect().toJSON() as DOMRect;
+      await userEvent.hover(head);
+      const highlight = getComputedStyle(head).backgroundColor;
+      expect(highlight).not.toBe(transparent);
+      // Only the background changes: no size, position or icon shift.
+      expect(head.getBoundingClientRect().toJSON()).toEqual(rest);
+      expect(head.querySelector(".process-job-call-icon")!.getBoundingClientRect().toJSON()).toEqual(icon);
+      for (const other of heads.slice(1)) expect(getComputedStyle(other).backgroundColor).toBe(transparent);
+      await capture(`job-group-calls-hover-${scheme}`, researcher);
+      await userEvent.unhover(head);
+      expect(getComputedStyle(head).backgroundColor).toBe(transparent);
+
+      // Keyboard focus highlights the same way.
+      summary.focus();
+      await userEvent.tab();
+      expect(document.activeElement).toBe(head);
+      expect(head.matches(":focus-visible")).toBe(true);
+      expect(getComputedStyle(head).backgroundColor).toBe(highlight);
+
+      // Open, the call keeps a softer tint so it reads with its full text below.
+      fireEvent.click(head);
+      head.blur();
+      await userEvent.unhover(head);
+      expect(head).toHaveAttribute("aria-expanded", "true");
+      const open = getComputedStyle(head).backgroundColor;
+      expect(open).not.toBe(transparent);
+      expect(open).not.toBe(highlight);
+      expect(head.getBoundingClientRect().height).toBe(rest.height);
+      cleanup();
+    }
+  });
+
   it("keeps a pending peer question visible outside the fold and hands focus on when the fold opens", async () => {
     await page.viewport(390, 844);
     const expiresAt = new Date(Date.now() + 20 * 60_000).toISOString();
@@ -252,7 +302,7 @@ describe("agent groups in Chromium", () => {
     noOverflow(toggle);
     noOverflow(stack);
     // Something besides the chevron always says what the bar holds.
-    const visible = [...toggle.querySelectorAll<HTMLElement>(".process-job-stack-single, .process-job-chip")];
+    const visible = [...toggle.querySelectorAll<HTMLElement>(".process-job-stack-single, .process-job-stack-current, .process-job-chip")];
     expect(visible.length).toBeGreaterThan(0);
     for (const element of visible) expect(element.getBoundingClientRect().right).toBeLessThanOrEqual(toggle.getBoundingClientRect().right + 1);
     await capture(`job-group-closed-${name.replaceAll(" ", "-")}`, stack);

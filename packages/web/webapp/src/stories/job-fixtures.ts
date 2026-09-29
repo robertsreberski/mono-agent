@@ -131,12 +131,26 @@ export const idleThread: readonly Job[] = [succeeded, subagentDone, cancelled];
 /** Nothing current: every settled outcome, for the History glyphs. */
 export const finishedThread: readonly Job[] = [succeeded, subagentDone, failed, timedOut, cancelled, spawnFailed, queueExpired, interrupted, peerAnswered];
 export const idleWithIssueThread: readonly Job[] = [succeeded, failed, subagentDone];
+/** Nothing current and nothing wrong: every row done, so the bar is one ✓ chip. */
+export const idleDoneThread: readonly Job[] = [succeeded, subagentDone, peerAnswered];
+/** Nothing current: six finished rows, three done and three failed, so the chips read ✕ 3 and ✓ 3. */
+export const idleMixedThread: readonly Job[] = [succeeded, failed, subagentDone, timedOut, peerAnswered, interrupted];
+/** Nothing current: done, failed, cancelled, and a success whose wake failed (an issue, not done). */
+export const idleOutcomesThread: readonly Job[] = [succeeded, failed, cancelled, subagentDone, wakeFailed, timedOut];
+/** Every count at once: a question, work in progress, issues, a cancelled row and done rows. */
+export const runningMixThread: readonly Job[] = [succeeded, failed, queued, runningTail, peerPending, subagentRunning, cancelled, timedOut, subagentDone];
 export const questionOnlyThread: readonly Job[] = [succeeded, peerPending];
 export const agentsAndCommandsThread: readonly Job[] = [
   runningTail, subagentRunning, agentJob("job-agent-soil", "Compare soil test results across beds", 140, "soil-analyst"), runningSilent, queued,
 ];
 export const allStatesThread: readonly Job[] = [queued, starting, runningTail, runningSilent, stopping, subagentRunning, peerPending,
   succeeded, failed, timedOut, cancelled, cancelledWake, spawnFailed, queueExpired, interrupted, redacted, wakeFailed, childBusy, subagentDone, subagentAsked, peerAnswered];
+/** Two, four and seven current rows at once: the closed bar names them, then "+n" for what does not fit. */
+const soilAnalyst = agentJob("job-agent-soil-2", "Compare soil test results across beds", 140, "soil-analyst");
+const compostSteward = agentJob("job-agent-compost", "Log this week's compost temperatures", 75, "compost-steward");
+export const runningTwoThread: readonly Job[] = [succeeded, subagentRunning, runningTail];
+export const runningFourThread: readonly Job[] = [succeeded, failed, peerPending, subagentRunning, soilAnalyst, runningTail];
+export const runningSevenThread: readonly Job[] = [succeeded, failed, cancelled, peerPending, subagentRunning, soilAnalyst, runningTail, queued, stopping, compostSteward];
 export const manyThread: readonly Job[] = [queued, starting, runningTail, runningSilent, stopping, subagentRunning, longSummary, peerPending, succeeded, failed];
 
 // ── Agent groups: every detached child is one shelf row. Three subagent

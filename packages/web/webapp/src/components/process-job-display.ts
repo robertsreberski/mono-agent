@@ -230,15 +230,31 @@ export const processJobCallOutcomesLabel = (outcomes: readonly ProcessJobCallOut
   ].join(", ")}`;
 };
 
-/** The shelf's counts, one per row: see `processJobItemCounts`. */
-export interface ProcessJobStackCounts {
-  /** Lifecycle-active rows only; a pending question never inflates it. */
-  readonly active: number;
-  /** Rows in the Finished group (terminal and not waiting on a question). */
-  readonly finished: number;
-  readonly issues: number;
-  readonly questions: number;
-}
+/**
+ * The one bucket a shelf row counts in (see `processJobItemBucket`). Every row
+ * counts in exactly one, so the counts always add up to the rows.
+ */
+export type ProcessJobBucket =
+  /** A peer question awaits the agent, whatever the job's own outcome. */
+  | "question"
+  /** Queued, starting, running or stopping. */
+  | "active"
+  /** Failed, timed out, failed to start, expired, interrupted, or a wake or child problem even on a success. */
+  | "issue"
+  /** Cancelled as asked, with nothing wrong. */
+  | "cancelled"
+  /** Succeeded with nothing wrong. */
+  | "done";
+
+/** The shelf's one fixed order: its chips, left to right, and its announcement. */
+export const PROCESS_JOB_BUCKETS: readonly ProcessJobBucket[] = ["question", "active", "issue", "cancelled", "done"];
+
+/** Current rows sit above History; the other buckets are the finished rows behind it. */
+export const processJobBucketIsCurrent = (bucket: ProcessJobBucket): boolean =>
+  bucket === "question" || bucket === "active";
+
+/** Rows per bucket. They partition the shelf: the sum is its row count. */
+export type ProcessJobStackCounts = Readonly<Record<ProcessJobBucket, number>>;
 
 export interface ProcessJobActiveMark {
   readonly tone: ProcessJobTone;
@@ -262,27 +278,51 @@ export const processJobActiveMark = (jobs: readonly ProcessJobProjection[], now:
 const plural = (count: number, one: string, many: string): string =>
   `${String(count)} ${count === 1 ? one : many}`;
 
-export const processJobCountWords = {
-  active: (count: number): string => `${String(count)} active`,
-  finished: (count: number, bounded: boolean): string => `${String(count)} finished${bounded ? " shown" : ""}`,
-  issues: (count: number): string => plural(count, "issue", "issues"),
-  questions: (count: number): string => plural(count, "question awaiting the agent", "questions awaiting the agent"),
-} as const;
+/**
+ * Each bucket's count in words: a chip's tooltip and spoken name, and a part of
+ * the announcement. On screen a chip is only its glyph and number.
+ */
+export const processJobCountWords: Readonly<Record<ProcessJobBucket, (count: number) => string>> = {
+  question: (count) => plural(count, "question awaiting the agent", "questions awaiting the agent"),
+  active: (count) => `${String(count)} active`,
+  // Not "failed": a success whose wake failed is an issue, and its row still says Done.
+  issue: (count) => plural(count, "issue", "issues"),
+  cancelled: (count) => `${String(count)} cancelled`,
+  done: (count) => `${String(count)} done`,
+};
+
+/** The rows behind History, in words for assistive tech; on screen History shows the bare number. */
+export const processJobFinishedWords = (count: number): string => `${String(count)} finished`;
 
 /**
- * The shelf's visible wording summary (the legend at the top of the open
- * shelf) and, with a comma join, its one polite announcement. Counts only:
- * never elapsed time, expiry, purpose or output.
+ * Every non-zero bucket in words, in the chips' order. Counts only: never
+ * elapsed time, expiry, purpose or output, and never a word for what is absent.
  */
-export const processJobStackSummaryParts = (counts: ProcessJobStackCounts, bounded: boolean): readonly string[] => [
-  counts.active === 0 ? "No active jobs" : processJobCountWords.active(counts.active),
-  ...(counts.finished > 0 ? [processJobCountWords.finished(counts.finished, bounded)] : []),
-  ...(counts.issues > 0 ? [processJobCountWords.issues(counts.issues)] : []),
-  ...(counts.questions > 0 ? [processJobCountWords.questions(counts.questions)] : []),
-];
+export const processJobStackSummaryParts = (counts: ProcessJobStackCounts): readonly string[] =>
+  PROCESS_JOB_BUCKETS.filter((bucket) => counts[bucket] > 0).map((bucket) => processJobCountWords[bucket](counts[bucket]));
 
-export const processJobStackAnnouncement = (counts: ProcessJobStackCounts, bounded: boolean): string =>
-  `Background jobs: ${processJobStackSummaryParts(counts, bounded).join(", ")}.`;
+/**
+ * How many whole entries of the closed bar's current list fit in `available`
+ * pixels. `widths[i]` is entry i with the separator in front of it (none
+ * before the first); `more(rest)` is the width of the trailing "· +rest" that
+ * stands for the entries left out. The most entries that fit win, and at least
+ * one always shows: a single name too long for the bar ellipsizes instead.
+ */
+export function processJobFitCount(widths: readonly number[], more: (rest: number) => number, available: number): number {
+  const sums = widths.reduce<number[]>((total, width) => [...total, (total.at(-1) ?? 0) + width], []);
+  for (let shown = widths.length; shown > 1; shown -= 1) {
+    const rest = widths.length - shown;
+    // Half a pixel of slack absorbs sub-pixel rounding in measured widths.
+    if (sums[shown - 1]! + (rest > 0 ? more(rest) : 0) <= available + 0.5) return shown;
+  }
+  return Math.min(1, widths.length);
+}
+
+/** The shelf's one polite announcement. */
+export const processJobStackAnnouncement = (counts: ProcessJobStackCounts): string => {
+  const parts = processJobStackSummaryParts(counts);
+  return `Background jobs: ${parts.length === 0 ? "none" : parts.join(", ")}.`;
+};
 
 /**
  * A pending question's deadline in words. "<1 min" until the deadline itself,

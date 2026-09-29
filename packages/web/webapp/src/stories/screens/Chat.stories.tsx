@@ -101,6 +101,8 @@ export const WithBackgroundJobs: Story = { args: Desktop.args, parameters: { job
 export const WithBackgroundJobsOpen: Story = { args: Desktop.args, parameters: { jobs: J.busyThread }, play: openShelf };
 export const WithBackgroundJobsRow: Story = { args: Desktop.args, parameters: { jobs: J.busyThread }, play: openRow };
 export const WithBackgroundJobsIdle: Story = { args: Desktop.args, parameters: { jobs: J.idleThread } };
+export const WithBackgroundJobsIdleMixed: Story = { args: Desktop.args, parameters: { jobs: J.idleMixedThread } };
+export const WithBackgroundJobsIdleMixedPhone: Story = { args: Phone.args, globals: Phone.globals, parameters: { jobs: J.idleMixedThread } };
 export const WithBackgroundJobsPhone: Story = { args: Phone.args, globals: Phone.globals, parameters: { jobs: J.busyThread } };
 export const WithBackgroundJobsPhoneOpen: Story = { args: Phone.args, globals: Phone.globals, parameters: { jobs: J.busyThread }, play: openShelf };
 

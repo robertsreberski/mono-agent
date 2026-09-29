@@ -67,6 +67,19 @@ export const GlanceFailedPeerWithQuestion: Story = { render: () => stack([J.succ
 export const GlanceCancelledPeerWithQuestion: Story = { render: () => stack([J.succeeded, J.peerCancelledPending]) };
 export const GlanceIdle: Story = { render: () => stack(J.idleThread) };
 export const GlanceIdleWithIssue: Story = { render: () => stack(J.idleWithIssueThread) };
+export const GlanceIdleAllDone: Story = { render: () => stack(J.idleDoneThread) };
+// Each row counts once: six finished rows, three of them failed, read ✕ 3 and ✓ 3.
+export const GlanceIdleMixed: Story = { render: () => stack(J.idleMixedThread) };
+export const GlanceIdleMixedBounded: Story = { render: () => stack(J.idleMixedThread, true) };
+// Done, failed and cancelled apart; a success whose wake failed counts with the issues.
+export const GlanceIdleOutcomes: Story = { render: () => stack(J.idleOutcomesThread) };
+// Every count in its fixed order: question, in progress, issues, cancelled, done.
+export const GlanceRunningMix: Story = { render: () => stack(J.runningMixThread) };
+// Two or more current rows are named, questions first, then "+n" once they no longer fit.
+export const GlanceRunningTwo: Story = { render: () => stack(J.runningTwoThread) };
+export const GlanceRunningFour: Story = { render: () => stack(J.runningFourThread) };
+export const GlanceRunningSeven: Story = { render: () => stack(J.runningSevenThread) };
+export const GlanceRunningSevenPhone: Story = { render: () => stack(J.runningSevenThread), globals: { viewport: { value: "phone" } } };
 export const GlanceQuestionOnly: Story = { render: () => stack(J.questionOnlyThread) };
 export const GlanceAgentsAndCommands: Story = { render: () => stack(J.agentsAndCommandsThread) };
 export const GlanceMany: Story = { render: () => stack(J.manyThread) };
@@ -90,6 +103,9 @@ export const IssuesAndQuestions: Story = {
 export const AllStates: Story = { render: () => stack(J.allStatesThread), play: open({ history: true }) };
 export const Many: Story = { render: () => stack(J.manyThread), play: open() };
 export const NothingActive: Story = { render: () => stack(J.idleThread), play: open() };
+export const IdleMixed: Story = { render: () => stack(J.idleMixedThread), play: open() };
+export const IdleMixedHistoryBounded: Story = { render: () => stack(J.idleMixedThread, true), play: open({ history: true }) };
+export const RunningMix: Story = { render: () => stack(J.runningMixThread), play: open() };
 export const FinishedHistory: Story = { render: () => stack(J.finishedThread), play: open({ history: true }) };
 export const Bounded: Story = { render: () => stack([J.runningSilent, J.succeeded], true), play: open({ history: true }) };
 export const Stopping: Story = { render: () => stack([J.stopping, J.runningTail]), play: open() };

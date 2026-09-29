@@ -22,6 +22,11 @@ import {
   processJobPreview,
   processJobStackAnnouncement,
   processJobStackSummaryParts,
+  PROCESS_JOB_BUCKETS,
+  processJobBucketIsCurrent,
+  processJobCountWords,
+  processJobFinishedWords,
+  processJobFitCount,
 } from "./process-job-display";
 import { processJobItemCounts, processJobShelfItems } from "./process-job-groups";
 
@@ -153,18 +158,57 @@ describe("groups and counts", () => {
     expect(nextPeerQuestionDeadline([job], Date.parse("2026-07-17T10:21:00.000Z"))).toBeUndefined();
   });
 
-  it("never lets a question inflate the active count", () => {
+  it("counts each row once: a question before its outcome, never inside the active count", () => {
     const counts = processJobStackCounts([active("running"), active("queued"), peer("succeeded", "awaiting_answer"), processJob({ state: "failed" }), processJob()], NOW);
-    expect(counts).toEqual({ active: 2, finished: 2, issues: 1, questions: 1 });
-    expect(processJobStackSummaryParts(counts, false)).toEqual(["2 active", "2 finished", "1 issue", "1 question awaiting the agent"]);
-    expect(processJobStackAnnouncement(counts, false)).toBe("Background jobs: 2 active, 2 finished, 1 issue, 1 question awaiting the agent.");
+    expect(counts).toEqual({ question: 1, active: 2, issue: 1, cancelled: 0, done: 1 });
+    expect(processJobStackSummaryParts(counts)).toEqual(["1 question awaiting the agent", "2 active", "1 issue", "1 done"]);
+    expect(processJobStackAnnouncement(counts)).toBe("Background jobs: 1 question awaiting the agent, 2 active, 1 issue, 1 done.");
   });
 
-  it("says when nothing is active and scopes a bounded count", () => {
-    const counts = processJobStackCounts([processJob(), processJob({ state: "cancelled" })], NOW);
-    expect(processJobStackSummaryParts(counts, true)).toEqual(["No active jobs", "2 finished shown"]);
-    expect(processJobStackSummaryParts({ active: 0, finished: 0, issues: 2, questions: 2 }, false))
-      .toEqual(["No active jobs", "2 issues", "2 questions awaiting the agent"]);
+  it("names only the buckets that hold rows, in the chips' order, and never a word for what is absent", () => {
+    const counts = processJobStackCounts([processJob({ jobId: "done" }), processJob({ jobId: "stopped", state: "cancelled" })], NOW);
+    expect(counts).toEqual({ question: 0, active: 0, issue: 0, cancelled: 1, done: 1 });
+    expect(processJobStackAnnouncement(counts)).toBe("Background jobs: 1 cancelled, 1 done.");
+    expect(processJobStackSummaryParts({ question: 2, active: 0, issue: 2, cancelled: 0, done: 0 }))
+      .toEqual(["2 questions awaiting the agent", "2 issues"]);
+    expect(processJobStackAnnouncement({ question: 0, active: 0, issue: 0, cancelled: 0, done: 0 })).toBe("Background jobs: none.");
+    expect(PROCESS_JOB_BUCKETS).toEqual(["question", "active", "issue", "cancelled", "done"]);
+    expect(PROCESS_JOB_BUCKETS.filter(processJobBucketIsCurrent)).toEqual(["question", "active"]);
+    // No bounded wording anywhere: counts count what is loaded.
+    for (const bucket of PROCESS_JOB_BUCKETS) {
+      expect(processJobCountWords[bucket](1)).not.toMatch(/shown|finished/u);
+    }
+    expect(processJobFinishedWords(6)).toBe("6 finished");
+  });
+});
+
+describe("the closed bar's named list", () => {
+  // Entry widths include the dot in front of every entry but the first; "· +n" is 26 px.
+  const more = () => 26;
+  it("shows every entry that fits, and no \"+n\" when all of them do", () => {
+    expect(processJobFitCount([100, 80, 80], more, 260)).toBe(3);
+    expect(processJobFitCount([100, 80, 80], more, 259.6)).toBe(3);
+  });
+
+  it("keeps room for \"+n\" and shows the most whole entries that fit beside it", () => {
+    // 100 + 80 + 26 = 206 fits; 100 + 80 + 80 = 260 does not.
+    expect(processJobFitCount([100, 80, 80], more, 230)).toBe(2);
+    expect(processJobFitCount([100, 80, 80], more, 205)).toBe(1);
+    expect(processJobFitCount([100, 80, 80, 80, 80, 80, 80], more, 390)).toBe(4);
+  });
+
+  it("always shows one entry, even when a single name is too long for the bar", () => {
+    expect(processJobFitCount([400, 80], more, 120)).toBe(1);
+    expect(processJobFitCount([400], more, 120)).toBe(1);
+    expect(processJobFitCount([], more, 120)).toBe(0);
+  });
+
+  it("measures \"+n\" for the number it will show", () => {
+    const wide = (rest: number) => rest >= 10 ? 34 : 26;
+    const widths = [60, ...Array.from({ length: 11 }, () => 50)];
+    // Nine entries leave three: "+3" (26 px) beside 460 px of entries.
+    expect(processJobFitCount(widths, wide, 486)).toBe(9);
+    expect(processJobFitCount(widths, wide, 485)).toBe(8);
   });
 });
 

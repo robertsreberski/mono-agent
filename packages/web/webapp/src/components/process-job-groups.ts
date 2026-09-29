@@ -8,11 +8,13 @@ import {
 import type { ProcessJobProjection } from "../types";
 import {
   pendingPeerQuestion,
+  processJobBucketIsCurrent,
   processJobDisplayTitle,
   processJobIsCurrent,
   processJobIsIssue,
   processJobIsTerminal,
   processJobPurposeInGroup,
+  type ProcessJobBucket,
   type ProcessJobStackCounts,
 } from "./process-job-display";
 
@@ -245,22 +247,63 @@ export const processJobItemLead = (item: ProcessJobShelfItem, now: number): Proc
 export const processJobItemIsCurrent = (item: ProcessJobShelfItem, now: number): boolean =>
   processJobItemJobs(item).some((job) => processJobIsCurrent(job, now));
 
+/** The job whose outcome is the item's once nothing in it is current: a group's newest turn. */
+const outcomeOf = (item: ProcessJobShelfItem): ProcessJobProjection => item.kind === "job" ? item.entry.job : item.newest;
+
 /**
  * Only the newest turn's outcome makes a group an issue: a later turn that
  * succeeded, or still runs, answers an earlier failure, which keeps its own
  * red glyph inside the timeline.
  */
-export const processJobItemIsIssue = (item: ProcessJobShelfItem): boolean =>
-  processJobIsIssue(item.kind === "job" ? item.entry.job : item.newest);
+export const processJobItemIsIssue = (item: ProcessJobShelfItem): boolean => processJobIsIssue(outcomeOf(item));
 
 /**
- * The shelf's counts, one per ITEM: an agent group counts once, however many
- * turns it holds. Chips, legend, History and the polite announcement all read
- * these, so every number counts rows the operator can see.
+ * The ONE bucket an item counts in, first match wins: a peer question awaiting
+ * the agent (even on a failed or cancelled job), then work in progress, then
+ * the settled outcome — an issue (see `processJobIsIssue`: a success whose wake
+ * failed is one too), a clean cancellation, or done. A group's outcome is its
+ * newest turn's. Current rows are exactly the question and active buckets.
  */
-export const processJobItemCounts = (items: readonly ProcessJobShelfItem[], now: number): ProcessJobStackCounts => ({
-  active: items.filter((item) => processJobItemJobs(item).some((job) => !processJobIsTerminal(job))).length,
-  finished: items.filter((item) => !processJobItemIsCurrent(item, now)).length,
-  issues: items.filter(processJobItemIsIssue).length,
-  questions: items.filter((item) => processJobItemJobs(item).some((job) => pendingPeerQuestion(job, now))).length,
-});
+export const processJobItemBucket = (item: ProcessJobShelfItem, now: number): ProcessJobBucket => {
+  const jobs = processJobItemJobs(item);
+  if (jobs.some((job) => pendingPeerQuestion(job, now))) return "question";
+  if (jobs.some((job) => !processJobIsTerminal(job))) return "active";
+  if (processJobItemIsIssue(item)) return "issue";
+  return outcomeOf(item).state === "cancelled" ? "cancelled" : "done";
+};
+
+/** The shelf's rows split once: the partition every count and list reads. */
+export interface ProcessJobShelfPartition {
+  /** Rows per bucket; they sum to the number of rows. */
+  readonly counts: ProcessJobStackCounts;
+  /** Question and active rows, in shelf order: above History. */
+  readonly current: readonly ProcessJobShelfItem[];
+  /** Issue, cancelled and done rows, in shelf order: behind History. */
+  readonly finished: readonly ProcessJobShelfItem[];
+  /** The active rows alone: the bar's in-progress mark reads only these. */
+  readonly active: readonly ProcessJobShelfItem[];
+}
+
+/**
+ * The shelf's one partition, per ITEM: an agent group counts once, however
+ * many turns it holds, and every row counts in exactly one bucket. The chips,
+ * the open header, History and the polite announcement all read it, so every
+ * number counts rows the operator can see and no two numbers overlap.
+ */
+export function processJobShelfPartition(items: readonly ProcessJobShelfItem[], now: number): ProcessJobShelfPartition {
+  const counts: Record<ProcessJobBucket, number> = { question: 0, active: 0, issue: 0, cancelled: 0, done: 0 };
+  const current: ProcessJobShelfItem[] = [];
+  const finished: ProcessJobShelfItem[] = [];
+  const active: ProcessJobShelfItem[] = [];
+  for (const item of items) {
+    const bucket = processJobItemBucket(item, now);
+    counts[bucket] += 1;
+    (processJobBucketIsCurrent(bucket) ? current : finished).push(item);
+    if (bucket === "active") active.push(item);
+  }
+  return { counts, current, finished, active };
+}
+
+/** Rows per bucket: see `processJobShelfPartition`. */
+export const processJobItemCounts = (items: readonly ProcessJobShelfItem[], now: number): ProcessJobStackCounts =>
+  processJobShelfPartition(items, now).counts;
