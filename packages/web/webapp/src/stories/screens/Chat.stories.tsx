@@ -10,7 +10,7 @@ import { useEffect } from "react";
 import { RecentFixtures } from "../screen-fixtures";
 import { waitForOverlay } from "../overlay-play";
 import { installWakeStoryApi, wakeFixtures, wakeSummary } from "../wake-api";
-import { ProcessJobPresentationProvider } from "../../process-job-presentation";
+import { ProcessJobPresentationProvider, type ProcessJobParentCall } from "../../process-job-presentation";
 import * as J from "../job-fixtures";
 
 const streamingMessages: readonly ThreadMessageLike[] = [sampleMessages[0]!, {
@@ -20,7 +20,7 @@ const streamingMessages: readonly ThreadMessageLike[] = [sampleMessages[0]!, {
   ],
 }];
 
-function ConsoleShell({ children, phone = false, streaming = false, compacting = false, jobs }: { readonly children: React.ReactNode; readonly phone?: boolean; readonly streaming?: boolean; readonly compacting?: boolean; readonly jobs?: readonly J.Job[] }) {
+function ConsoleShell({ children, phone = false, streaming = false, compacting = false, jobs, parentCalls = [] }: { readonly children: React.ReactNode; readonly phone?: boolean; readonly streaming?: boolean; readonly compacting?: boolean; readonly jobs?: readonly J.Job[]; readonly parentCalls?: readonly ProcessJobParentCall[] }) {
   if (streaming) Object.assign(storyStore, { selectedThread: { ...runningThread, title: gardenThread.title }, selectedThreadId: runningThread.id });
   if (compacting) Object.assign(storyStore, { selectedThread: { ...gardenThread, compaction: { status: "running", trigger: "manual", startedAt: "2026-09-28T10:00:00Z" } }, selectedThreadId: gardenThread.id });
   useEffect(() => () => { if (streaming || compacting) Object.assign(storyStore, { selectedThread: gardenThread, selectedThreadId: gardenThread.id }); }, [streaming, compacting]);
@@ -30,14 +30,14 @@ function ConsoleShell({ children, phone = false, streaming = false, compacting =
     </div>
     <div className="chat-region is-open">{jobs === undefined ? children : (
       // The real app mounts this provider in its runtime; here it carries fictional jobs.
-      <ProcessJobPresentationProvider threadId={gardenThread.id} messages={[]} jobs={jobs.map(J.entry)} historyIsBounded={false}>{children}</ProcessJobPresentationProvider>
+      <ProcessJobPresentationProvider threadId={gardenThread.id} messages={[]} jobs={jobs.map(J.entry)} parentCalls={parentCalls} historyIsBounded={false}>{children}</ProcessJobPresentationProvider>
     )}</div>
   </div></StoryRuntime>;
 }
 export default {
   title: "Screens/Chat", component: Chat, tags: ["autodocs"],
   parameters: { layout: "fullscreen" },
-  decorators: [(Story, context) => <ConsoleShell phone={context.globals.viewport?.value === "phone"} streaming={context.parameters.streaming === true} compacting={context.parameters.compacting === true} jobs={context.parameters.jobs as readonly J.Job[] | undefined}><Story /></ConsoleShell>],
+  decorators: [(Story, context) => <ConsoleShell phone={context.globals.viewport?.value === "phone"} streaming={context.parameters.streaming === true} compacting={context.parameters.compacting === true} jobs={context.parameters.jobs as readonly J.Job[] | undefined} parentCalls={context.parameters.parentCalls as readonly ProcessJobParentCall[] | undefined}><Story /></ConsoleShell>],
 } satisfies Meta<typeof Chat>;
 type Story = StoryObj<typeof Chat>;
 export const Desktop: Story = { args: { onBack: () => {} } };
@@ -103,3 +103,18 @@ export const WithBackgroundJobsRow: Story = { args: Desktop.args, parameters: { 
 export const WithBackgroundJobsIdle: Story = { args: Desktop.args, parameters: { jobs: J.idleThread } };
 export const WithBackgroundJobsPhone: Story = { args: Phone.args, globals: Phone.globals, parameters: { jobs: J.busyThread } };
 export const WithBackgroundJobsPhoneOpen: Story = { args: Phone.args, globals: Phone.globals, parameters: { jobs: J.busyThread }, play: openShelf };
+
+// Agent groups in the real dock: every detached child is one row.
+const openGroup = (id: string): NonNullable<Story["play"]> => async (context) => {
+  await openShelf(context);
+  const group = [...context.canvasElement.querySelectorAll<HTMLElement>(".process-job-group")]
+    .find((node) => node.querySelector(".process-job-group-name")?.textContent === id);
+  const summary = group?.querySelector<HTMLElement>(":scope > summary");
+  if (!summary) throw new Error(`Agent group ${id} missing`);
+  await userEvent.click(summary);
+};
+const agentGroups = { jobs: J.groupJobs, parentCalls: J.groupParentCalls };
+export const WithAgentGroups: Story = { args: Desktop.args, parameters: agentGroups };
+export const WithAgentGroupsOpen: Story = { args: Desktop.args, parameters: agentGroups, play: openGroup("researcher-1") };
+export const WithAgentGroupsPhone: Story = { args: Phone.args, globals: Phone.globals, parameters: agentGroups };
+export const WithAgentGroupsPhoneOpen: Story = { args: Phone.args, globals: Phone.globals, parameters: agentGroups, play: openGroup("seed-planner") };

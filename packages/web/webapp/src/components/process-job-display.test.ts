@@ -21,9 +21,13 @@ import {
   processJobOutputIsEmpty,
   processJobPreview,
   processJobStackAnnouncement,
-  processJobStackCounts,
   processJobStackSummaryParts,
 } from "./process-job-display";
+import { processJobItemCounts, processJobShelfItems } from "./process-job-groups";
+
+/** Command jobs are single rows, so item counts are job counts here. */
+const processJobStackCounts = (jobs: readonly ProcessJobProjection[], now: number) =>
+  processJobItemCounts(processJobShelfItems(jobs.map((job) => ({ part: { type: "process-job" as const, job }, job })), []), now);
 
 const NOW = Date.parse("2026-07-17T10:00:00.000Z");
 const base = processJob();

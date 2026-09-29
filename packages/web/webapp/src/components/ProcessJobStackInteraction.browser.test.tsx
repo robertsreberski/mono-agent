@@ -100,7 +100,7 @@ describe("background jobs shelf interaction in Chromium", () => {
     expect(document.activeElement).toBe(textbox);
   });
 
-  it("hands focus to History when a focused question row reaches its deadline", async () => {
+  it("hands focus to History when a focused question group reaches its deadline", async () => {
     const peer = processJob({
       jobId: "peer", tool: "PeerAgent", kind: "internal", instanceId: "seed-bank", childStillBusy: false,
       summary: "Ask the seed-bank agent", peerQuestion: {
@@ -110,8 +110,10 @@ describe("background jobs shelf interaction in Chromium", () => {
     } as Parameters<typeof processJob>[0]);
     const view = render(shelf([peer]));
     fireEvent.click(shelfToggle());
-    const summary = view.container.querySelector<HTMLElement>(".process-job-card > summary")!;
+    // The peer is one agent group; its header holds the focus.
+    const summary = view.container.querySelector<HTMLElement>(".process-job-group > summary")!;
     summary.focus();
+    expect(document.activeElement).toBe(summary);
     await new Promise((resolve) => setTimeout(resolve, 1_600));
     await frames();
     expect(summary.closest(".process-job-stack-item")).toHaveAttribute("hidden");
@@ -195,10 +197,16 @@ describe("background jobs shelf interaction in Chromium", () => {
     const runningAgent = backgroundSubagentJob();
     const finishedAgent = backgroundSubagentJob(true);
     const agentCard = (container: HTMLElement) => container.querySelector<HTMLElement>(".process-job-card[data-kind='agent']")!;
+    // The agent's turn lives in its group's timeline: open the group first.
+    const openGroup = (container: HTMLElement) => {
+      const group = container.querySelector<HTMLElement>(".process-job-group")!;
+      if (!group.hasAttribute("open")) fireEvent.click(group.querySelector(":scope > summary")!);
+    };
 
     // Following: the report that arrives behind a closed shelf is what shows on reveal.
     const view = render(shelf([runningAgent]));
     fireEvent.click(shelfToggle());
+    openGroup(view.container);
     fireEvent.click(agentCard(view.container).querySelector("summary")!);
     await frames();
     const rail = agentCard(view.container).querySelector<HTMLElement>(".process-job-subagent-progress")!;
@@ -218,6 +226,7 @@ describe("background jobs shelf interaction in Chromium", () => {
     // Reading: a scrolled-up position survives the same sequence.
     const reading = render(shelf([runningAgent]));
     fireEvent.click(shelfToggle());
+    openGroup(reading.container);
     fireEvent.click(agentCard(reading.container).querySelector("summary")!);
     await frames();
     const readerRail = agentCard(reading.container).querySelector<HTMLElement>(".process-job-subagent-progress")!;

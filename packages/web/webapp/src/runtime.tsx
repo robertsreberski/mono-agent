@@ -857,6 +857,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
       threadId={store.selectedThreadId}
       messages={presentation.messages}
       jobs={presentation.jobs}
+      parentCalls={presentation.parentCalls}
       historyIsBounded={store.hasOlderMessages}
     >
       <AssistantRuntimeProvider runtime={runtime}>

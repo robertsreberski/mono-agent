@@ -5,6 +5,7 @@ import { useProcessJobPresentation } from "../process-job-presentation";
 import type { ProcessJobProjection } from "../types";
 import { Icon } from "./Icon";
 import { ProcessJobCard, mergeProcessJobProjection } from "./ProcessJob";
+import { ProcessJobGroup } from "./ProcessJobGroup";
 import { ProcessJobGlyph, ProcessJobSpinner } from "./ProcessJobGlyph";
 import { ProcessJobClockProvider, useProcessJobShelfClock } from "./process-job-clock";
 import {
@@ -12,12 +13,18 @@ import {
   processJobCountWords,
   processJobDisplayState,
   processJobDisplayTitle,
-  processJobIsCurrent,
   processJobKind,
   processJobStackAnnouncement,
-  processJobStackCounts,
   processJobStackSummaryParts,
 } from "./process-job-display";
+import {
+  processJobGroupPurpose,
+  processJobItemCounts,
+  processJobItemIsCurrent,
+  processJobItemLead,
+  processJobShelfItems,
+  type ProcessJobShelfItem,
+} from "./process-job-groups";
 
 /**
  * Live projections are keyed by thread AND job: the shelf can outlive a thread
@@ -35,16 +42,23 @@ const isHidden = (element: HTMLElement): boolean =>
  * The conversation's background jobs as a compact shelf above the composer.
  *
  * Three tiers, each asked for by the operator: the closed bar is a glance
- * (counts as marked chips, or the one job's purpose), the open shelf lists the
- * current rows purpose-first with finished jobs behind History, and an open row
- * shows the detail. Nothing opens by itself. Every card stays mounted in ONE
- * keyed sequence, so a settling job moves between groups without remounting
- * its poll, its disclosure state or the element under the operator's focus.
+ * (counts as marked chips, or the one current item's purpose), the open shelf
+ * lists the current rows purpose-first with finished ones behind History, and
+ * an open row shows the detail. Every detached child is ONE row: all turns of
+ * a subagent instance or of a peer form an agent group whose timeline shows
+ * the parent's calls between the child's turns. Nothing opens by itself.
+ * Every row stays mounted in ONE keyed sequence, so a settling job moves
+ * between current work and History without remounting its poll, its
+ * disclosure state or the element under the operator's focus.
+ *
+ * The bar carries no visible title: its chips and chevron are the control,
+ * and its accessible name still starts with "Background jobs".
  */
 export function ProcessJobStack() {
   const {
     threadId,
     jobs,
+    parentCalls,
     historyIsBounded,
     historyOpen,
     setHistoryOpen,
@@ -151,24 +165,38 @@ export function ProcessJobStack() {
   if (threadId === null || jobs.length === 0) return null;
 
   const entries = jobs.map(({ part }, index) => ({ part, job: projections[index] ?? part.job }));
-  const current = entries.filter(({ job }) => processJobIsCurrent(job, now));
-  const finished = entries.filter(({ job }) => !processJobIsCurrent(job, now));
-  const counts = processJobStackCounts(projections, now);
+  // Items, not jobs: an agent group is one row and one count, whatever its turns.
+  const shelf = processJobShelfItems(entries, parentCalls);
+  const current = shelf.filter((item) => processJobItemIsCurrent(item, now));
+  const finished = shelf.filter((item) => !processJobItemIsCurrent(item, now));
+  const counts = processJobItemCounts(shelf, now);
   const summaryParts = processJobStackSummaryParts(counts, historyIsBounded);
   const hasHistory = historyIsBounded || finished.length > 0;
-  const single = current.length === 1 ? current[0]!.job : undefined;
+  const singleItem = current.length === 1 ? current[0]! : undefined;
+  const single = singleItem === undefined ? undefined : processJobItemLead(singleItem, now);
   const quiet = current.length === 0 && counts.issues === 0;
   const bodyId = `${stackId}-body`;
   const labelId = `${stackId}-label`;
 
   // One flat keyed sequence: current rows, the History row, the bounded note,
-  // then finished rows. Keys never depend on position or group. With nothing
-  // current, the legend above already says "No active jobs".
+  // then finished rows. Keys never depend on position: a job row is keyed by
+  // thread and job, an agent group by thread, family and id, and each turn
+  // inside a group keeps its own thread and job key.
   const items: ReactNode[] = [];
-  const row = ({ part }: (typeof entries)[number], hidden: boolean) => (
-    <div key={`${threadId}:${part.job.jobId}`} className="process-job-stack-item" hidden={hidden}>
+  const row = (item: ProcessJobShelfItem, hidden: boolean) => item.kind === "group" ? (
+    <div key={`${threadId}:group:${item.key}`} className="process-job-stack-item" hidden={hidden}>
+      <ProcessJobGroup
+        group={item}
+        threadId={threadId}
+        onProjectionChange={onProjectionChange}
+        onOpen={revealRow}
+        shown={shelfOpen && !hidden}
+      />
+    </div>
+  ) : (
+    <div key={`${threadId}:${item.entry.job.jobId}`} className="process-job-stack-item" hidden={hidden}>
       <ProcessJobCard
-        part={part}
+        part={item.entry.part}
         onProjectionChange={onProjectionChange}
         onOpen={revealRow}
         shown={shelfOpen && !hidden}
@@ -209,18 +237,19 @@ export function ProcessJobStack() {
 
   // The closed bar: marked counts are always paired with a readable number,
   // the words live in the button's accessible name and in the open shelf.
+  // With nothing current the bar has room, and a bare number would not say
+  // what it counts, so its chips carry their words on screen.
+  const worded = current.length === 0;
   const chip = (key: string, tone: string, mark: ReactNode, value: number, words: string) => (
-    <span key={key} className={`process-job-chip is-${tone}`} title={words}>
+    <span key={key} className={`process-job-chip is-${tone}${worded ? " is-worded" : ""}`} title={words}>
       <span className="process-job-chip-mark" aria-hidden="true">{mark}</span>
-      <span className="process-job-chip-count" aria-hidden="true">{value}</span>
-      <span className="sr-only">{words}</span>
+      {worded ? <span className="process-job-chip-words">{words}</span> : <>
+        <span className="process-job-chip-count" aria-hidden="true">{value}</span>
+        <span className="sr-only">{words}</span>
+      </>}
     </span>
   );
   const singleState = single === undefined ? undefined : processJobDisplayState(single, now);
-  // A lone current row names its own question only when its state word IS the
-  // question; a failed or cancelled peer with an open question keeps its
-  // outcome, so the question chip must still say it.
-  const singleSaysQuestion = singleState?.tone === "question";
   const chips: ReactNode[] = [];
   if (single === undefined && counts.active > 0) {
     // The bar's one spinner turns while any of these jobs is in progress.
@@ -228,7 +257,9 @@ export function ProcessJobStack() {
     chips.push(chip("active", active.tone, active.spinning ? <ProcessJobSpinner /> : <ProcessJobGlyph small tone={active.tone} mark={active.mark} />,
       counts.active, processJobCountWords.active(counts.active)));
   }
-  if (!singleSaysQuestion && counts.questions > 0) {
+  // A question awaiting the agent is always counted, even when the lone
+  // current row's own glyph already says it.
+  if (counts.questions > 0) {
     chips.push(chip("questions", "question", <ProcessJobGlyph small tone="question" mark="question" />, counts.questions, processJobCountWords.questions(counts.questions)));
   }
   if (counts.issues > 0) {
@@ -255,31 +286,45 @@ export function ProcessJobStack() {
           aria-controls={bodyId}
           onClick={() => setShelfOpen(!shelfOpen)}
         >
-          <span id={labelId} className="process-job-stack-title">Background jobs</span>
-          {single !== undefined && singleState !== undefined ? (
-            <span className="process-job-stack-single">
-              {singleState.mark === "half"
-                ? <ProcessJobSpinner />
-                : <ProcessJobGlyph small tone={singleState.tone} mark={singleState.mark} />}
-              {/* Kind at a glance, as on the row's status line: a terminal or an agent. */}
-              <Icon
-                className={`process-job-stack-kind is-${processJobKind(single)}`}
-                name={processJobKind(single) === "agent" ? "agent" : "terminal"}
-                size={14}
-              />
-              {/* The glyph's state and the icon's kind, in words: "Running Bash job:". */}
-              <span className="sr-only">{`${[singleState.word, ...(singleState.pending === undefined ? [] : [singleState.pending])].join(", ")} ${single.tool} job:`}</span>
-              <span className="process-job-stack-purpose" title={single.summary}>{processJobDisplayTitle(single)}</span>
-            </span>
-          ) : null}
-          {chips.length > 0 ? <span className="process-job-stack-chips">{chips}</span> : null}
+          {/* No visible title: the bar is its chips and chevron. The name
+              still starts with it, for the region and for assistive tech. */}
+          <span id={labelId} className="sr-only">Background jobs</span>
+          {shelfOpen ? (
+            // Open, the header says the counts in words; the rows are below.
+            <span className="process-job-stack-summary">{summaryParts.join(" · ")}</span>
+          ) : <>
+            {single !== undefined && singleState !== undefined ? (
+              <span className="process-job-stack-single">
+                {singleState.mark === "half"
+                  ? <ProcessJobSpinner />
+                  : <ProcessJobGlyph small tone={singleState.tone} mark={singleState.mark} />}
+                {/* Kind at a glance, as on the row's status line: a terminal or an agent. */}
+                <Icon
+                  className={`process-job-stack-kind is-${processJobKind(single)}`}
+                  name={processJobKind(single) === "agent" ? "agent" : "terminal"}
+                  size={14}
+                />
+                {/* The glyph's state and the icon's kind, in words: "Running Bash job:",
+                    or for an agent group "Running agent researcher-1:". */}
+                <span className="sr-only">{`${[singleState.word, ...(singleState.pending === undefined ? [] : [singleState.pending])].join(", ")} ${
+                  singleItem?.kind === "group"
+                    ? `${singleItem.family === "peer" ? "peer agent" : "agent"} ${singleItem.instanceId}:`
+                    : `${single.tool} job:`}`}</span>
+                {singleItem?.kind === "group" ? <span className="process-job-stack-agent" aria-hidden="true">{singleItem.instanceId}</span> : null}
+                {/* A group's status is its lead turn's; its title is always the newest task. */}
+                <span className="process-job-stack-purpose" title={singleItem?.kind === "group" ? singleItem.newest.summary : single.summary}>
+                  {singleItem?.kind === "group" ? processJobGroupPurpose(singleItem) : processJobDisplayTitle(single)}
+                </span>
+              </span>
+            ) : null}
+            {chips.length > 0 ? <span className="process-job-stack-chips">{chips}</span> : null}
+          </>}
           <Icon className="process-job-stack-chevron" name="chevron-down" size={15} />
         </button>
         <span className="sr-only" aria-live="polite" aria-atomic="true">
           {processJobStackAnnouncement(counts, historyIsBounded)}
         </span>
         <div ref={bodyRef} id={bodyId} className="process-job-stack-body" hidden={!shelfOpen}>
-          <p className="process-job-stack-legend">{summaryParts.join(" · ")}</p>
           <div className="process-job-stack-list">{items}</div>
         </div>
       </section>
