@@ -239,6 +239,8 @@ describe("MemoryRecall MCP tool (FTS, hermetic)", () => {
     await client.connect(clientTransport);
     try {
       const tools = await client.listTools();
+      expect(tools.tools[0]?.description).toMatch(/one short, specific topic per query.*several times for several topics/iu);
+      expect(tools.tools[0]?.description).toMatch(/owner's name unless asking about the owner.*Weak or merely related hits are not answers/iu);
       expect(tools.tools[0]?.description).toMatch(/Do not use MemoryRecall.*current or last message/iu);
       expect(tools.tools[0]?.description).toMatch(/pick up, continue, or recover interrupted work.*RunHistory with \{\} first/iu);
       expect(tools.tools[0]?.description).not.toMatch(/original.*automatic lookup/iu);
@@ -634,12 +636,57 @@ describe("backend-agnostic recall server", () => {
         label: { v: 1 as const, kind: "preference" as const, scope, attribution: "user-stated" as const },
       })),
     };
+    const candidates = [`user:${token}`, "conversation:conv", "agent"].flatMap((scope, scopeIndex) =>
+      Array.from({ length: 5 }, (_, index) => ({ score: 0.95 - scopeIndex * 0.1 - index * 0.01,
+        record: { id: `${scope}-${index}`, text: `Guidance ${index} for ${scope}.` } })));
     const result = readLabelSections(store, { query: "notes", kind: "preference" },
-      { conversationId: "conv", senderToken: token, hostDate: "2026-09-24" });
+      { conversationId: "conv", senderToken: token, hostDate: "2026-09-24" }, candidates);
     expect(result?.preferencesAndLessons?.[0]?.scope).toBe(`user:${token}`);
     expect(result?.preferencesAndLessons?.[5]?.scope).toBe("conversation:conv");
     expect(result?.preferencesAndLessonsTruncated).toBe(true);
     expect(result?.text).toContain("Preferences & lessons truncated");
+  });
+  it("filters guidance by the query's retrieved scores while retaining scope precedence and explicit-kind fallback", () => {
+    const token = "a".repeat(32);
+    const labels = [
+      { id: "music", scope: "agent", kind: "preference" as const, text: "Prefer Maple music." },
+      { id: "map", scope: "agent", kind: "preference" as const, text: "Prefer Maple maps." },
+      { id: "route", scope: `user:${token}`, kind: "preference" as const, text: "Prefer Maple routes." },
+      { id: "lesson", scope: "conversation:conv", kind: "lesson" as const, text: "Verify Maple routes." },
+    ];
+    const store = {
+      labelsForEntity: () => [],
+      guidanceForScope: (scope: string) => labels.filter((entry) => entry.scope === scope).map((entry) => ({
+        memoryId: entry.id, ordinal: 0, text: entry.text, status: "open", active: true,
+        conflict: false, createdAt: "2026-09-06T00:00:00.000Z",
+        label: entry.kind === "lesson"
+          ? { v: 1 as const, kind: "lesson" as const, scope, verified: true, attribution: "user-stated" as const }
+          : { v: 1 as const, kind: "preference" as const, scope, attribution: "user-stated" as const },
+      })),
+    };
+    const context = { conversationId: "conv", senderToken: token, hostDate: "2026-09-24" };
+    const candidates = [
+      { score: 0.92, record: { id: "map", text: "Prefer Maple maps." } },
+      { score: 0.88, record: { id: "route", text: "Prefer Maple routes." } },
+      { score: 0.86, record: { id: "lesson", text: "Verify Maple routes." } },
+      ...Array.from({ length: 5 }, (_, index) => ({ score: 0.66 - index * 0.01,
+        record: { id: `other-${index}`, text: "Other context." } })),
+      { score: 0.4, record: { id: "music", text: "Prefer Maple music." } },
+    ];
+    const result = readLabelSections(store, { query: "Maple routes" }, context, candidates);
+    expect(result?.preferencesAndLessons?.map((entry) => entry.text)).toEqual([
+      "Prefer Maple routes.", "Verify Maple routes.", "Prefer Maple maps.",
+    ]);
+    expect(result?.text).not.toContain("Maple music");
+    const explicit = readLabelSections(store, { query: "Maple music", kind: "preference" }, context,
+      [{ score: 0.2, record: { id: "music", text: "Prefer Maple music." } }]);
+    expect(explicit?.preferencesAndLessons?.map((entry) => entry.text)).toEqual(["Prefer Maple music."]);
+    expect(readLabelSections(store, { query: "Maple routes", kind: "lesson" }, context, candidates)
+      ?.preferencesAndLessons?.map((entry) => entry.text)).toEqual(["Verify Maple routes."]);
+    const empty = readLabelSections(store, { query: "unrelated" }, context,
+      [{ score: 0.95, record: { id: "other", text: "Unrelated context." } }]);
+    expect(empty?.preferencesAndLessons).toBeUndefined();
+    expect(empty?.text).not.toContain("Preferences & lessons:");
   });
   it("prepends labelled fact/history/conflicts and scoped guidance in both modes without filtering ordinary hits", async () => {
     const birth = (id: string, active: boolean) => ({ memoryId: id, ordinal: 0,
@@ -648,9 +695,11 @@ describe("backend-agnostic recall server", () => {
       label: { v: 1 as const, kind: "fact" as const, entityId: "person:morgan", key: "birth_date",
         value: { type: "date" as const, date: "1990-05-17" }, attribution: "user-stated" as const } });
     const store = {
-      recall: async () => [{ score: 0.9, record: { id: "hit", text: "Morgan's birthday was noted.", createdAt: "2026-09-06" } }],
+      recall: async () => [{ score: 0.9, record: { id: "hit", text: "Morgan's birthday was noted.", createdAt: "2026-09-06" } },
+        { score: 0.5, record: { id: "guidance", text: "Keep reports concise." } }],
       recallOriginalWithOutcome: async () => ({ available: true as const, query: "Morgan birthday",
-        outcome: { hits: [{ score: 0.9, record: { id: "hit", text: "Morgan's birthday was noted." } }], retrievalMode: "hybrid" as const } }),
+        outcome: { hits: [{ score: 0.9, record: { id: "hit", text: "Morgan's birthday was noted." } },
+          { score: 0.5, record: { id: "guidance", text: "Keep reports concise." } }], retrievalMode: "hybrid" as const } }),
       labelsForEntity: () => [birth("current", true), birth("past", false)],
       guidanceForScope: (scope: string) => scope === "agent" ? [{ memoryId: "guidance", ordinal: 0,
         text: "Keep reports concise.", status: "open", active: true, conflict: false,
@@ -666,12 +715,12 @@ describe("backend-agnostic recall server", () => {
     await server.connect(st); await client.connect(ct);
     try {
       const factResult = await client.callTool({ name: "MemoryRecall", arguments: { query: "Morgan birthday", about: "morgan", kind: "fact" } });
-      expect(factResult.structuredContent).toMatchObject({ hits: [{ id: "hit" }], factSheet: [
+      expect(factResult.structuredContent).toMatchObject({ hits: [{ id: "hit" }, { id: "guidance" }], factSheet: [
         { current: true, conflict: true, attribution: "user-stated" }, { current: false, conflict: false }],
       });
       expect(factResult.structuredContent).not.toHaveProperty("preferencesAndLessons");
       const lessonResult = await client.callTool({ name: "MemoryRecall", arguments: { useOriginalQuery: true, kind: "preference" } });
-      expect(lessonResult.structuredContent).toMatchObject({ queryMode: "original", hits: [{ id: "hit" }],
+      expect(lessonResult.structuredContent).toMatchObject({ queryMode: "original", hits: [{ id: "hit" }, { id: "guidance" }],
         preferencesAndLessons: [{ scope: "agent", text: "Keep reports concise." }] });
       expect(lessonResult.structuredContent).not.toHaveProperty("factSheet");
       expect(JSON.stringify(lessonResult.content)).toContain("Preferences & lessons:");

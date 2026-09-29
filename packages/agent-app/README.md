@@ -740,7 +740,12 @@ attribution, date, current/historical state and conflicts; a keyless coarse
 person fact is a `FactSheetEntry` with the stored line as `text` and no
 `key`/`value`, rendered as `fact: <line>`. Structured rows rank before keyless
 ones so a structured conflict is never cut, plus
-scoped preferences and verified lessons. Ambiguous names display entity IDs;
+scoped preferences and verified lessons only when ranked among the effective
+query's first eight candidates and above the background guidance floor. A
+specific `kind: "preference"` or `kind: "lesson"` request can show retrieved
+lines below that floor; an empty guidance selection omits the section. Within
+each scope guidance ranks by query score, with user > conversation > agent
+precedence and a six-line cap. Ambiguous names display entity IDs;
 `factSheetTruncated` and `preferencesAndLessonsTruncated` flag capped views.
 An explicit `about` focuses on facts, not guidance. Remote stores without labels keep their
 existing response shape. The CLI `mono-agent memory labels [--kind k] [--about

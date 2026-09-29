@@ -64,7 +64,7 @@ export interface MemoryRecallOutcome {
 
 /** Read-only recall surface the MCP server formats. Both backend stores satisfy it structurally. */
 export interface RecallCapableStore extends LabelRecallStore {
-  labelSections?(request: LabelSectionRequest): LabelSections | undefined;
+  labelSections?(request: LabelSectionRequest, candidates: readonly MemoryRecallHit[]): LabelSections | undefined;
   recall(
     query: string,
     options?: { readonly topK?: number; readonly trackAccess?: boolean },
@@ -248,7 +248,7 @@ export async function createMemoryEmbeddingProvider(
 export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
   const server = new McpServer({ name: "agent-memory", version: "0.3.0" });
   const supportsOriginalQuery = store.recallOriginalWithOutcome !== undefined;
-  const baseDescription = "Read-only hybrid (keyword + semantic) targeted search over intentionally captured durable preferences, facts, decisions, and qualified archived history. For a broad retrospective over an explicit period, use MemoryJournal when available; its curated chronology is distinct from targeted search and exact execution evidence. For a request to pick up, continue, or recover interrupted work, do not search MemoryRecall: call RunHistory with {} first when that tool is available, because exact prior-run evidence does not belong to durable memory. Do not use MemoryRecall for unqualified questions about what you or the user just said or sent in the current or last message; use the active conversation history for those questions.";
+  const baseDescription = "Read-only hybrid (keyword + semantic) targeted search over intentionally captured durable preferences, facts, decisions, and qualified archived history. For a broad retrospective over an explicit period, use MemoryJournal when available; its curated chronology is distinct from targeted search and exact execution evidence. For a request to pick up, continue, or recover interrupted work, do not search MemoryRecall: call RunHistory with {} first when that tool is available, because exact prior-run evidence does not belong to durable memory. Use one short, specific topic per query; call several times for several topics instead of sending a keyword list. Omit the owner's name unless asking about the owner specifically. Weak or merely related hits are not answers. Do not use MemoryRecall for unqualified questions about what you or the user just said or sent in the current or last message; use the active conversation history for those questions.";
   const description = supportsOriginalQuery
     ? `${baseDescription} When a rephrased targeted search loses relevant candidates, use original-query mode deliberately to inspect the current logical turn's unchanged automatic lookup question; this does not broaden automatic memory injection.`
     : baseDescription;
@@ -367,10 +367,10 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
     try {
       sections = store.labelSections?.({ query: effectiveQuery,
         ...(args.kind === undefined ? {} : { kind: args.kind }),
-        ...(args.about === undefined ? {} : { about: args.about }) })
+        ...(args.about === undefined ? {} : { about: args.about }) }, candidates)
         ?? readLabelSections(store, { query: effectiveQuery,
           ...(args.kind === undefined ? {} : { kind: args.kind }),
-          ...(args.about === undefined ? {} : { about: args.about }) }, { hostLocalDate: today });
+          ...(args.about === undefined ? {} : { about: args.about }) }, { hostLocalDate: today }, candidates);
     } catch { /* A bad label cannot discard the normal dated hits. */ }
     const sectionPrefix = sections?.text ? `${sections.text}\n\n` : "";
     const sectionFields = sections === undefined ? {} : {

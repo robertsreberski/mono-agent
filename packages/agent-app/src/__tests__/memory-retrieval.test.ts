@@ -101,11 +101,13 @@ describe("MemoryRetrievalService", () => {
     });
     const service = new MemoryRetrievalService(store);
     await service.load("conv", "Morgan launch color", { turnId: "turn", senderToken, hostDate: "2026-09-24" });
-    expect(service.labelSectionsForTurn("turn", { query: "Morgan launch color", kind: "preference" })?.preferencesAndLessons)
+    expect(service.labelSectionsForTurn("turn", { query: "Morgan launch color", kind: "preference" },
+      [{ score: 0.8, record: { id: "guidance", text: "Keep reports concise." } }])?.preferencesAndLessons)
       .toMatchObject([{ scope: `user:${senderToken}` }]);
     service.releaseTurn("turn");
-    expect(service.labelSectionsForTurn("turn", { query: "Morgan launch color", kind: "preference" })?.preferencesAndLessons)
-      .toEqual([]);
+    expect(service.labelSectionsForTurn("turn", { query: "Morgan launch color", kind: "preference" },
+      [{ score: 0.8, record: { id: "guidance", text: "Keep reports concise." } }])?.preferencesAndLessons)
+      .toBeUndefined();
   });
   it("forwards chronological browse only when the local store affirms the capability", async () => {
     const absent = new MemoryRetrievalService(fakeStore());

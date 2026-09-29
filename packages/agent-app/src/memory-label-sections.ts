@@ -1,6 +1,7 @@
 import type { MemoryLoadOptions } from "@mono-agent/agent-contracts";
 import type { MemoryDb } from "@mono-agent/memory/store";
-import { factKeyLabel, factValueText, memoryGuidanceScopes, resolveMemoryEntities, safeLine, type LabelRecallStore } from "./memory-guidance.js";
+import { factKeyLabel, factValueText, guidanceScoreFloor, GUIDANCE_MAX_RANK, memoryGuidanceScopes, resolveMemoryEntities, safeLine, type LabelRecallStore } from "./memory-guidance.js";
+import type { MemoryRecallHit } from "./memory-recall.js";
 
 type LabelHit = ReturnType<MemoryDb["labelsForEntity"]>[number];
 export type LabelKind = "fact" | "preference" | "lesson";
@@ -40,8 +41,8 @@ export interface LabelSections {
   readonly text: string;
 }
 
-/** Deliberate views retain history and conflicts; no extra lookup/model call beyond the label index. */
-export function readLabelSections(store: LabelRecallStore, request: LabelSectionRequest, context: LabelContext = {}): LabelSections | undefined {
+/** Deliberate views retain history and conflicts; guidance uses the effective query's retrieved candidates, with no extra lookup. */
+export function readLabelSections(store: LabelRecallStore, request: LabelSectionRequest, context: LabelContext = {}, candidates: readonly MemoryRecallHit[] = []): LabelSections | undefined {
   if (store.labelsForEntity === undefined || store.guidanceForScope === undefined) return undefined;
   const date = context.hostLocalDate ?? context.hostDate ?? new Date().toISOString().slice(0, 10);
   const lines: string[] = [];
@@ -80,11 +81,23 @@ export function readLabelSections(store: LabelRecallStore, request: LabelSection
   if (request.kind === undefined || request.kind !== "fact") {
     const guidance: GuidanceEntry[] = [];
     let guidanceTruncated = false;
-    // User > conversation > agent: a global backlog cannot displace this speaker's guidance.
+    const scores = new Map(candidates.map((hit) => [hit.record.id, hit.score]));
+    const floor = guidanceScoreFloor(candidates.map((hit) => hit.score));
+    const ranked = new Set([...candidates].sort((a, b) => b.score - a.score)
+      .slice(0, GUIDANCE_MAX_RANK).map((hit) => hit.record.id));
+    // Explicit guidance-kind requests can inspect the best retrieved guidance below
+    // the background floor; ordinary recall uses the same floor and rank window.
+    const explicitGuidance = request.kind === "preference" || request.kind === "lesson";
+    // User > conversation > agent: rank by query within each scope, not by insertion order.
     for (const scope of request.about === undefined ? memoryGuidanceScopes(context.conversationId, context).reverse() : []) {
-      for (const hit of store.guidanceForScope(scope)) {
-        if (!hit.active || hit.label.kind === "fact" || (hit.label.kind === "lesson" && !hit.label.verified)
-          || (request.kind !== undefined && hit.label.kind !== request.kind)) continue;
+      const scoped = store.guidanceForScope(scope).filter((hit) => hit.active && hit.label.kind !== "fact"
+        && (hit.label.kind !== "lesson" || hit.label.verified)
+        && (request.kind === undefined || hit.label.kind === request.kind)
+        && ranked.has(hit.memoryId) && (explicitGuidance || (scores.get(hit.memoryId) ?? 0) >= floor))
+        .sort((a, b) => (scores.get(b.memoryId) ?? 0) - (scores.get(a.memoryId) ?? 0)
+          || a.memoryId.localeCompare(b.memoryId));
+      for (const hit of scoped) {
+        if (hit.label.kind === "fact") continue;
         if (guidance.length === 6) { guidanceTruncated = true; break; }
         guidance.push({ kind: hit.label.kind, scope, text: safeLine(hit.text).slice(0, 240), recordedAt: hit.createdAt.slice(0, 10),
           ...(hit.sourceFile === undefined ? {} : { sourceFile: hit.sourceFile }),
@@ -92,7 +105,7 @@ export function readLabelSections(store: LabelRecallStore, request: LabelSection
       }
       if (guidanceTruncated) break;
     }
-    Object.assign(result, { preferencesAndLessons: guidance, preferencesAndLessonsTruncated: guidanceTruncated });
+    if (guidance.length > 0) Object.assign(result, { preferencesAndLessons: guidance, preferencesAndLessonsTruncated: guidanceTruncated });
     if (guidance.length > 0) lines.push("Preferences & lessons:", ...guidance.map((entry) =>
       `- [${entry.kind}; ${entry.scope}; recorded ${entry.recordedAt}] ${entry.text}`));
     if (guidanceTruncated) lines.push("Preferences & lessons truncated; inspect a narrower scope.");
