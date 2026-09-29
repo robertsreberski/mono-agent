@@ -1,6 +1,6 @@
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 
-import { ProcessJobGlyph, ProcessJobSpinner } from "./ProcessJobGlyph";
+import { ProcessJobGlyph } from "./ProcessJobGlyph";
 import { processJobFitCount, type ProcessJobKind, type ProcessJobMark, type ProcessJobTone } from "./process-job-display";
 
 /** One current row as the closed bar names it: its status and a short name, never its task title. */
@@ -15,15 +15,14 @@ export interface ProcessJobCurrentEntry {
   readonly word: string;
 }
 
-function Entry({ entry, first, spinning }: {
+function Entry({ entry, first }: {
   readonly entry: ProcessJobCurrentEntry;
   readonly first: boolean;
-  readonly spinning: boolean;
 }) {
   return (
     <span className={`process-job-stack-entry is-${entry.kind}${first ? " is-first" : ""}`}>
       {first ? null : <span className="process-job-stack-dot">·</span>}
-      {spinning ? <ProcessJobSpinner /> : <ProcessJobGlyph small tone={entry.tone} mark={entry.mark} />}
+      <ProcessJobGlyph small tone={entry.tone} mark={entry.mark} />
       <span className="process-job-stack-entry-name">{entry.name}</span>
     </span>
   );
@@ -37,8 +36,8 @@ function Entry({ entry, first, spinning }: {
  * change and whenever its own width changes. Its width never depends on how
  * many entries show, so measuring cannot loop.
  *
- * The first in-progress entry carries the bar's one spinner; the others hold
- * still. Assistive tech reads the same list in words, "+n" as "n more".
+ * Every entry holds still. Assistive tech reads the same list in words,
+ * "+n" as "n more".
  */
 export function ProcessJobStackCurrent({ entries, trailing }: {
   readonly entries: readonly ProcessJobCurrentEntry[];
@@ -74,7 +73,6 @@ export function ProcessJobStackCurrent({ entries, trailing }: {
   const count = Math.min(Math.max(shown, 1), entries.length);
   const visible = entries.slice(0, count);
   const hidden = entries.slice(count);
-  const spinning = visible.findIndex((entry) => entry.mark === "half");
   const words = [
     ...visible.map((entry) => `${entry.name} ${entry.word}`),
     ...(hidden.length > 0 ? [`${String(hidden.length)} more`] : []),
@@ -85,7 +83,7 @@ export function ProcessJobStackCurrent({ entries, trailing }: {
       <span className="sr-only">{`${words}${trailing ? "," : ""}`}</span>
       <span className="process-job-stack-entries" aria-hidden="true">
         {visible.map((entry, index) => (
-          <Entry key={entry.key} entry={entry} first={index === 0} spinning={index === spinning} />
+          <Entry key={entry.key} entry={entry} first={index === 0} />
         ))}
         {hidden.length > 0 ? (
           <span className="process-job-stack-more" title={hidden.map((entry) => `${entry.name} ${entry.word}`).join(", ")}>
@@ -96,7 +94,7 @@ export function ProcessJobStackCurrent({ entries, trailing }: {
       </span>
       {/* Every entry, laid out but never shown, so the fit reads real widths. */}
       <span ref={rulerRef} className="process-job-stack-ruler" aria-hidden="true">
-        {entries.map((entry, index) => <Entry key={entry.key} entry={entry} first={index === 0} spinning={false} />)}
+        {entries.map((entry, index) => <Entry key={entry.key} entry={entry} first={index === 0} />)}
         <span className="process-job-stack-more">
           <span className="process-job-stack-dot">·</span>
           {`+${String(Math.max(entries.length - 1, 1))}`}

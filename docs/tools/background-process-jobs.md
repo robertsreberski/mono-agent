@@ -639,9 +639,8 @@ circular status glyph with the row's words gives the status: outlined rings for
 current work (empty when queued, half-filled while in progress, a square while
 stopping, a question mark for a pending question) and solid discs for outcomes
 (a check, a cross, a clock or a square). In progress is yellow and done is
-green in every console theme. Only the closed shelf's indicator moves: it spins
-while a job is in progress and holds still as a half-filled ring under reduced
-motion; rows never animate. Every terminal
+green in every console theme. The closed bar and rows use the same static
+half-filled ring while work is in progress; shelf glyphs never animate. Every terminal
 outcome remains mounted but hidden behind **History** inside the shelf, except
 a PeerAgent job whose question still awaits the agent's answer, which stays
 with current work (and keeps a question count in the closed shelf, even when

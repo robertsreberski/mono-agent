@@ -90,9 +90,7 @@ const chips = () => [...shelfToggle().querySelectorAll<HTMLElement>(".process-jo
 }));
 /** The closed bar's named current rows, as shown: [glyph mark, name]. */
 const listed = () => [...shelfToggle().querySelectorAll<HTMLElement>(".process-job-stack-entries > .process-job-stack-entry")].map((entry) => [
-  // The bar's one spinner is the in-progress mark that moves.
-  entry.querySelector(".process-job-glyph.is-spinner") !== null ? "half"
-    : [...entry.querySelector(".process-job-glyph")!.classList].find((name) => ["is-half", "is-empty", "is-stop", "is-question", "is-cross"].includes(name))?.slice(3),
+  [...entry.querySelector(".process-job-glyph")!.classList].find((name) => ["is-half", "is-empty", "is-stop", "is-question", "is-cross"].includes(name))?.slice(3),
   entry.querySelector(".process-job-stack-entry-name")?.textContent,
 ]);
 /** The text a sighted operator reads: without visually hidden words or hidden rows. */
@@ -351,10 +349,10 @@ describe("ProcessJobStack", () => {
     render(<StackHarness threadId="thread" jobs={[entry(running), entry(processJob({ jobId: "done" }))]} />);
     const toggle = shelfToggle();
     expect(within(toggle).getByText("Water the north beds")).toBeInTheDocument();
-    // State and kind are spoken with the purpose; on screen the spinner says
-    // the state and a terminal icon the kind.
+    // State and kind are spoken with the purpose; on screen the half glyph
+    // says the state and a terminal icon the kind.
     expect(toggle).toHaveAccessibleName("Background jobs Running Exec job: Water the north beds 1 done");
-    expect(toggle.querySelector(".process-job-stack-single .process-job-glyph")).toHaveClass("is-spinner");
+    expect(toggle.querySelector(".process-job-stack-single .process-job-glyph")).toHaveClass("is-running", "is-half");
     expect(toggle.querySelector(".process-job-stack-kind")).toHaveClass("is-command");
     // The lone current row stands for itself: no in-progress chip beside it, only the done row's.
     expect(chips()).toEqual([{ tone: "success", count: "1", title: "1 done" }]);
@@ -375,7 +373,7 @@ describe("ProcessJobStack", () => {
 
     render(<StackHarness threadId="thread" jobs={[entry(activeJob("thread", "queued", { jobId: "waiting" }))]} />);
     const glyph = shelfToggle().querySelector(".process-job-stack-single .process-job-glyph");
-    expect(glyph).not.toHaveClass("is-spinner");
+    expect(glyph).toHaveClass("is-waiting", "is-empty");
     expect(glyph).toHaveClass("is-waiting", "is-empty");
   });
 
@@ -394,9 +392,8 @@ describe("ProcessJobStack", () => {
     // The names stand in for the in-progress count; the settled rows keep their chips.
     expect(chips().map((chip) => [chip.tone, chip.count])).toEqual([["danger", "1"], ["success", "1"]]);
     expect(toggle).toHaveAccessibleName("Background jobs Exec running, Exec queued, 1 issue 1 done");
-    // One of them runs, so its glyph is the bar's one spinner.
-    expect(toggle.querySelectorAll(".process-job-glyph.is-spinner")).toHaveLength(1);
-    expect(toggle.querySelector(".process-job-stack-entry.is-first .process-job-glyph")).toHaveClass("is-spinner");
+    // Every running entry uses the same half-filled mark as an open row.
+    expect(toggle.querySelector(".process-job-stack-entry.is-first .process-job-glyph")).toHaveClass("is-running", "is-half");
     // Middle dots between the names, one fewer than the names.
     expect(toggle.querySelectorAll(".process-job-stack-entries .process-job-stack-dot")).toHaveLength(1);
   });
@@ -421,9 +418,9 @@ describe("ProcessJobStack", () => {
     // Everything fits here (jsdom lays nothing out), so no "+n".
     expect(toggle.querySelector(".process-job-stack-entries > .process-job-stack-more")).toBeNull();
     expect(chips().map((chip) => chip.tone)).toEqual(["success"]);
-    // Only the first in-progress entry spins.
-    expect(toggle.querySelectorAll(".process-job-stack-entries .is-spinner")).toHaveLength(1);
-    expect(toggle.querySelectorAll(".process-job-stack-entries .process-job-stack-entry")[1]!.querySelector(".process-job-glyph")).toHaveClass("is-spinner");
+    // Both in-progress entries carry the same half-filled glyph, not just the first.
+    const runningGlyphs = toggle.querySelectorAll(".process-job-stack-entries .process-job-glyph.is-running.is-half");
+    expect(runningGlyphs).toHaveLength(2);
     // Open, the header is chips again and the rows below carry their titles.
     openShelf();
     expect(toggle.querySelector(".process-job-stack-current")).toBeNull();
@@ -437,7 +434,6 @@ describe("ProcessJobStack", () => {
       entry(activeJob("thread", "queued", { jobId: "two" })),
     ]} />);
     expect(listed()).toEqual([["empty", "Exec"], ["empty", "Exec"]]);
-    expect(shelfToggle().querySelector(".is-spinner")).toBeNull();
     expect(shelfToggle()).toHaveAccessibleName("Background jobs Exec queued, Exec queued");
     // Open, the count holds the queued ring too.
     openShelf();
@@ -616,14 +612,13 @@ describe("ProcessJobStack", () => {
     expect(within(toggle).getByText("Background jobs")).toHaveClass("sr-only");
     expect(screen.getByRole("region", { name: "Background jobs" })).toContainElement(toggle);
     expect(toggle).toHaveAccessibleName("Background jobs Exec running, Exec queued");
-    expect(toggle.querySelector(".process-job-stack-current .process-job-glyph.is-spinner")).not.toBeNull();
+    expect(toggle.querySelector(".process-job-stack-current .process-job-glyph")).toHaveClass("is-running", "is-half");
 
     fireEvent.click(toggle);
     expect(toggle).toHaveAccessibleName("Background jobs 2 active");
     expect(chips()).toEqual([{ tone: "running", count: "2", title: "2 active" }]);
-    // Open, nothing moves: the chip holds the rows' still half-filled ring, and no sentence stands in for it.
-    expect(toggle.querySelector(".process-job-chip .process-job-glyph")).toHaveClass("is-half");
-    expect(toggle.querySelector(".process-job-glyph.is-spinner")).toBeNull();
+    // Open, the chip holds the rows' same half-filled ring, and no sentence stands in for it.
+    expect(toggle.querySelector(".process-job-chip .process-job-glyph")).toHaveClass("is-running", "is-half");
     expect(visibleText(toggle)).toBe("2");
   });
 

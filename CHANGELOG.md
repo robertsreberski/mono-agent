@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep every in-progress Background jobs shelf indicator static, using the same
+  half-filled circle in the closed bar and open rows.
+
 - Fix `MemoryRecall` guidance sections to show only query-ranked preferences and
   verified lessons, with a score floor unless the kind is requested explicitly;
   guide agents to search one topic per call and treat weak hits as context.

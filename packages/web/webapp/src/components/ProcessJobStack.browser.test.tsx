@@ -309,65 +309,47 @@ describe("the background jobs shelf in Chromium", () => {
     expect(chip.getBoundingClientRect().right).toBeLessThanOrEqual(toggle.getBoundingClientRect().right + 1);
   });
 
-  it("spins only the closed bar's indicator, for as long as work runs, and nothing under reduced motion", async () => {
+  it("uses the same static half-filled glyph for every running mark, closed and open", async () => {
     await page.viewport(1280, 850);
+    const assertStill = async (container: HTMLElement, selector: string, count: number) => {
+      const stack = container.querySelector<HTMLElement>(".process-job-stack")!;
+      const glyphs = [...stack.querySelectorAll<SVGElement>(selector)];
+      expect(glyphs).toHaveLength(count);
+      for (const glyph of glyphs) {
+        expect(glyph).toHaveClass("is-running", "is-half");
+        expect(getComputedStyle(glyph).animationName).toBe("none");
+      }
+      // Give opening transitions time to settle; no CSS animation remains anywhere in the shelf.
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      expect(stack.getAnimations({ subtree: true })).toHaveLength(0);
+    };
+
+    // Test normal motion preferences, not only reduced motion.
+    await commands.emulateReducedMotion("no-preference");
     const pair = [running("one"), running("two")];
     const view = render(shelf(pair));
-    const stack = view.container.querySelector<HTMLElement>(".process-job-stack")!;
-    // Two running rows are named; the first one's glyph is the bar's one spinner.
-    expect(view.container.querySelectorAll(".process-job-stack-toggle .is-spinner")).toHaveLength(1);
-    const spinner = view.container.querySelector<HTMLElement>(".process-job-stack-current .process-job-glyph.is-spinner")!;
-    const style = getComputedStyle(spinner);
-    expect(style.animationName).toBe("spin");
-    // Continuous while work runs: never a bounded start-up cue that stops after
-    // a few seconds (the computed count says so without waiting 5 s).
-    expect(style.animationIterationCount).toBe("infinite");
-    const [animation] = spinner.getAnimations();
-    expect(animation).toBeDefined();
-    await new Promise((resolve) => setTimeout(resolve, 120));
-    const before = Number(animation!.currentTime);
-    // A poll hands the shelf new projection objects: the same element keeps
-    // the same running animation, never restarted from zero.
+    await assertStill(view.container, ".process-job-stack-entries .process-job-glyph", 2);
     view.rerender(shelf(pair.map((job) => JSON.parse(JSON.stringify(job)) as ProcessJobProjection)));
-    expect(view.container.querySelector(".process-job-stack-current .is-spinner")).toBe(spinner);
-    expect(spinner.getAnimations()[0]).toBe(animation);
-    expect(Number(animation!.currentTime)).toBeGreaterThanOrEqual(before);
-
-    // Rows never spin: each shows a still, half-filled ring.
+    await assertStill(view.container, ".process-job-stack-entries .process-job-glyph", 2);
     fireEvent.click(view.container.querySelector(".process-job-stack-toggle")!);
-    const rows = [...view.container.querySelectorAll<SVGElement>(".process-job-card .process-job-glyph")];
-    expect(rows).toHaveLength(2);
-    for (const glyph of rows) {
-      expect(glyph).toHaveClass("is-half");
-      expect(getComputedStyle(glyph).animationName).toBe("none");
-      expect(glyph.getAnimations({ subtree: true })).toHaveLength(0);
-    }
-    // Open, the header keeps its chips but the in-progress one holds still as
-    // the rows' half-filled ring: nothing in the open shelf animates (the
-    // chevron only eases through its transition).
-    expect(view.container.querySelector(".process-job-chip.is-running .process-job-glyph")).toHaveClass("is-half");
-    expect(stack.getAnimations({ subtree: true }).filter((moving) => moving instanceof CSSAnimation)).toEqual([]);
+    await assertStill(view.container, ".process-job-chip.is-running .process-job-glyph, .process-job-card .process-job-glyph", 3);
     cleanup();
 
-    // One current job: its own bar glyph is the spinner.
     const single = render(shelf([running("solo")]));
-    const solo = single.container.querySelector<HTMLElement>(".process-job-stack-single .process-job-glyph")!;
-    expect(solo).toHaveClass("is-spinner");
-    expect(getComputedStyle(solo).animationName).toBe("spin");
-    expect(getComputedStyle(solo).animationIterationCount).toBe("infinite");
+    await assertStill(single.container, ".process-job-stack-single .process-job-glyph", 1);
+    fireEvent.click(single.container.querySelector(".process-job-stack-toggle")!);
+    await assertStill(single.container, ".process-job-chip.is-running .process-job-glyph, .process-job-card .process-job-glyph", 2);
+    cleanup();
+
+    const four = render(shelf([running("one"), running("two"), running("three"), running("four")]));
+    await assertStill(four.container, ".process-job-stack-entries .process-job-glyph", 4);
     cleanup();
 
     await commands.emulateReducedMotion("reduce");
-    const reduced = render(shelf([running("one"), running("two")]));
-    const still = reduced.container.querySelector<HTMLElement>(".process-job-stack-current .is-spinner")!;
-    expect(getComputedStyle(still).animationName).toBe("none");
-    // At rest it is the rows' half-filled ring, never a frozen arc.
-    expect(getComputedStyle(still.querySelector(".process-job-spinner-arc")!).display).toBe("none");
-    expect(getComputedStyle(still.querySelector(".process-job-spinner-rest")!).display).not.toBe("none");
-    expect(getComputedStyle(still.querySelector(".process-job-spinner-track")!).opacity).toBe("1");
+    const reduced = render(shelf(pair));
+    await assertStill(reduced.container, ".process-job-stack-entries .process-job-glyph", 2);
     fireEvent.click(reduced.container.querySelector(".process-job-stack-toggle")!);
-    expect(reduced.container.querySelector(".process-job-stack")!.getAnimations({ subtree: true })
-      .filter((moving) => moving instanceof CSSAnimation)).toHaveLength(0);
+    await assertStill(reduced.container, ".process-job-chip.is-running .process-job-glyph, .process-job-card .process-job-glyph", 3);
   });
 
   it("keeps in progress yellow and done green in every console theme, never the accent", async () => {

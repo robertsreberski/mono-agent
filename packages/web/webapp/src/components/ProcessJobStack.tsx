@@ -6,7 +6,7 @@ import type { ProcessJobProjection } from "../types";
 import { Icon } from "./Icon";
 import { ProcessJobCard, mergeProcessJobProjection } from "./ProcessJob";
 import { ProcessJobGroup } from "./ProcessJobGroup";
-import { ProcessJobGlyph, ProcessJobSpinner } from "./ProcessJobGlyph";
+import { ProcessJobGlyph } from "./ProcessJobGlyph";
 import { ProcessJobStackCurrent, type ProcessJobCurrentEntry } from "./ProcessJobStackCurrent";
 import { ProcessJobClockProvider, useProcessJobShelfClock } from "./process-job-clock";
 import {
@@ -255,9 +255,8 @@ export function ProcessJobStack() {
   // One chip per non-empty bucket, in one fixed order, open or closed: a
   // glyph and a number on screen, the words in its tooltip and in the
   // button's accessible name. The glyphs are the rows' own, so they need no
-  // words. Only the closed bar's in-progress chip spins; open, it holds still
-  // like the rows below it.
-  const chip = (bucket: ProcessJobBucket, open: boolean) => {
+  // words. Every glyph holds still, both closed and open.
+  const chip = (bucket: ProcessJobBucket) => {
     const value = counts[bucket];
     const words = processJobCountWords[bucket](value);
     let tone: ProcessJobTone;
@@ -265,7 +264,7 @@ export function ProcessJobStack() {
     if (bucket === "active") {
       const state = processJobActiveMark(active.flatMap(processJobItemJobs), now);
       tone = state.tone;
-      mark = state.spinning && !open ? <ProcessJobSpinner /> : <ProcessJobGlyph small tone={state.tone} mark={state.mark} />;
+      mark = <ProcessJobGlyph small tone={state.tone} mark={state.mark} />;
     } else {
       const [faceTone, faceMark] = CHIP_FACE[bucket];
       tone = faceTone;
@@ -307,7 +306,7 @@ export function ProcessJobStack() {
     .filter((bucket) => counts[bucket] > 0
       && !(showSingle && bucket === "active")
       && !(listed.length > 0 && (bucket === "question" || bucket === "active")))
-    .map((bucket) => chip(bucket, shelfOpen));
+    .map(chip);
 
   return (
     <ProcessJobClockProvider value={now}>
@@ -334,9 +333,7 @@ export function ProcessJobStack() {
               the rows are below. */}
           {!shelfOpen && single !== undefined && singleState !== undefined ? (
             <span className="process-job-stack-single">
-              {singleState.mark === "half"
-                ? <ProcessJobSpinner />
-                : <ProcessJobGlyph small tone={singleState.tone} mark={singleState.mark} />}
+              <ProcessJobGlyph small tone={singleState.tone} mark={singleState.mark} />
               {/* Kind at a glance, as on the row's status line: a terminal or an agent. */}
               <Icon
                 className={`process-job-stack-kind is-${processJobKind(single)}`}

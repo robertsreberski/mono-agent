@@ -37,7 +37,7 @@ export type ProcessJobTone = "waiting" | "running" | "stopping" | "question" | "
 export type ProcessJobMark =
   /** Queued: an empty ring, nothing started yet. */
   | "empty"
-  /** Starting or running: a ring half filled. Static; only the bar's spinner moves. */
+  /** Starting or running: a static ring half filled everywhere. */
   | "half"
   /** A stop was asked for and the job is still winding down: a square in a ring. */
   | "stop"
@@ -259,20 +259,17 @@ export type ProcessJobStackCounts = Readonly<Record<ProcessJobBucket, number>>;
 export interface ProcessJobActiveMark {
   readonly tone: ProcessJobTone;
   readonly mark: ProcessJobMark;
-  /** The bar's one spinner: only while a job is actually starting or running. */
-  readonly spinning: boolean;
 }
 
 /**
- * The closed bar's mark for its active count. It spins while any active job is
- * in progress; active jobs that are only queued or stopping show that state's
- * still mark instead of claiming work that is not happening.
+ * The bar's mark for its active count. Running work takes precedence; jobs
+ * that are only queued or stopping show their own static marks instead.
  */
 export const processJobActiveMark = (jobs: readonly ProcessJobProjection[], now: number): ProcessJobActiveMark => {
   const marks = jobs.filter((job) => !processJobIsTerminal(job)).map((job) => processJobDisplayState(job, now).mark);
-  if (marks.includes("half")) return { tone: "running", mark: "half", spinning: true };
-  if (marks.includes("stop")) return { tone: "stopping", mark: "stop", spinning: false };
-  return { tone: "waiting", mark: "empty", spinning: false };
+  if (marks.includes("half")) return { tone: "running", mark: "half" };
+  if (marks.includes("stop")) return { tone: "stopping", mark: "stop" };
+  return { tone: "waiting", mark: "empty" };
 };
 
 const plural = (count: number, one: string, many: string): string =>

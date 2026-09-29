@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { ProcessJobGlyph, ProcessJobSpinner } from "../../components/ProcessJobGlyph";
+import { ProcessJobGlyph } from "../../components/ProcessJobGlyph";
 import { processJobDisplayState } from "../../components/process-job-display";
 import * as J from "../job-fixtures";
 
@@ -36,9 +36,9 @@ function StatusGallery() {
         <Column title="Settled (solid)" jobs={SETTLED} />
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 16, paddingTop: 12, borderTop: "1px solid var(--line)", color: "var(--text-muted)", fontSize: 11.5 }}>
-        <span className="process-job-chip is-running"><span className="process-job-chip-mark"><ProcessJobSpinner /></span><span className="process-job-chip-count">3</span></span>
-        <ProcessJobSpinner />
-        <span>The closed bar's spinner: the only mark that moves. Rows hold the half-filled ring.</span>
+        <span className="process-job-chip is-running"><span className="process-job-chip-mark"><ProcessJobGlyph small tone="running" mark="half" /></span><span className="process-job-chip-count">3</span></span>
+        <ProcessJobGlyph small tone="running" mark="half" />
+        <span>The closed bar and rows share the same static half-filled ring.</span>
       </div>
     </div>
   );

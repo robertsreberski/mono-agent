@@ -78,13 +78,19 @@ export const GlanceRunningMix: Story = { render: () => stack(J.runningMixThread)
 // Two or more current rows are named, questions first, then "+n" once they no longer fit.
 export const GlanceRunningTwo: Story = { render: () => stack(J.runningTwoThread) };
 export const GlanceRunningFour: Story = { render: () => stack(J.runningFourThread) };
+export const GlanceRunningFourOnly: Story = { render: () => stack([
+  J.subagentRunning,
+  J.activeJob("job-agent-soil-3", "running", "Compare the soil test results", 140, { tool: "Agent", kind: "internal", instanceId: "soil-analyst" }),
+  J.activeJob("job-agent-compost-3", "running", "Log the compost temperatures", 75, { tool: "Agent", kind: "internal", instanceId: "compost-steward" }),
+  J.runningTail,
+]) };
 export const GlanceRunningSeven: Story = { render: () => stack(J.runningSevenThread) };
 export const GlanceRunningSevenPhone: Story = { render: () => stack(J.runningSevenThread), globals: { viewport: { value: "phone" } } };
 export const GlanceQuestionOnly: Story = { render: () => stack(J.questionOnlyThread) };
 export const GlanceAgentsAndCommands: Story = { render: () => stack(J.agentsAndCommandsThread) };
 export const GlanceMany: Story = { render: () => stack(J.manyThread) };
 export const GlanceGroups: Story = { render: groups };
-// Active but nothing in progress: the count holds still instead of spinning.
+// Active but nothing in progress: the count uses queued's empty ring.
 export const GlanceQueued: Story = { render: () => stack([J.succeeded, J.queued, J.activeJob("job-queued-2", "queued", "Purpose: Resize the seed-packet photos", 12, { tool: "Bash" })]) };
 export const GlanceBounded: Story = { render: () => stack([J.succeeded, J.failed], true) };
 export const GlanceDark: Story = { render: () => stack(J.busyThread), globals: { scheme: "dark" } };
