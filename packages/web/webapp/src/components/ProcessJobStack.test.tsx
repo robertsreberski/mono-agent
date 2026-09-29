@@ -760,6 +760,42 @@ describe("ProcessJobStack", () => {
       expect(oldest.closest(".process-job-card")).toBe(card);
     });
 
+    it("keeps a fold reachable when pinned questions leave only parent messages behind it", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-07-17T10:00:00.000Z"));
+      const jobIds = ["0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c40", "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c41", "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c42", "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c43"];
+      const threads = ["spring", "summer", "winter", "winter"];
+      const minutes = [0, 10, 20, 30];
+      const jobs = jobIds.map((jobId, index) => agentTurn(jobId, "seed-bank", minutes[index]!, {
+        tool: "PeerAgent", durationMinutes: 1, summary: `Peer task ${String(index + 1)}`,
+        // The two oldest turns still await an answer, so both stay pinned.
+        extra: index < 2 ? { peerQuestion: { state: "awaiting_answer", questionId: `q-${String(index)}`, peer: "seed-bank", thread: threads[index]!,
+          message: `Question ${String(index + 1)}?`, requestedSchema: {}, expiresAt: "2026-07-17T10:30:00.000Z" } } : {},
+      }));
+      const send = (index: number) => peerCall(`send-${String(index)}`, { action: "send", peer: "seed-bank", thread: threads[index], message: `Send ${String(index + 1)}`, background: true },
+        peerStarted("seed-bank", threads[index]!, jobIds[index]!));
+      const calls = collectProcessJobParentCalls([
+        parentMessage("m0", 0, [send(0)]),
+        // A foreground message between the two pinned turns: the only step left to fold.
+        parentMessage("m1", 5, [peerCall("between", { action: "send", peer: "seed-bank", thread: "autumn", message: "Any bulbs left?" }, "Plenty.")]),
+        parentMessage("m2", 10, [send(1)]),
+        parentMessage("m3", 20, [send(2)]),
+        parentMessage("m4", 30, [send(3)]),
+      ], "thread");
+      render(<StackHarness threadId="thread" parentCalls={calls} jobs={jobs.map(entry)} />);
+      openShelf();
+      const group = openGroup("seed-bank");
+      const between = within(group).getByRole("button", { name: /^From the parent agent: PeerAgent message thread autumn Any bulbs left\?/u, hidden: true });
+      expect(between.closest("li")).toHaveAttribute("hidden");
+      const fold = within(group).getByRole("button", { name: "Show 1 earlier message from the parent" });
+      expect(fold).toBeVisible();
+      expect(within(group).getAllByRole("note", { name: "seed-bank asks the agent" }).filter((note) => !note.closest("li")?.hasAttribute("hidden"))).toHaveLength(2);
+      fireEvent.click(fold);
+      expect(between.closest("li")).not.toHaveAttribute("hidden");
+      expect(within(group).queryByRole("button", { name: /^Show \d+ earlier/u })).toBeNull();
+      expect(group).toContainElement(document.activeElement as HTMLElement);
+    });
+
     it("groups peer jobs by peer and never merges them with a subagent of the same name", () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-07-17T10:00:00.000Z"));

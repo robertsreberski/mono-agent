@@ -364,17 +364,23 @@ export function ProcessJobGroup({ group, threadId, shown, onProjectionChange, on
         </span>
       </summary>
       <ol ref={timelineRef} className="process-job-timeline" aria-label={`${group.instanceId} timeline`}>
-        {foldedTurns.length > 0 ? (
+        {/* Offered whenever anything is folded: pinned questions can leave
+            only parent messages behind it, and those must stay reachable. */}
+        {folded.length > 0 ? (
           <li key="fold" className="process-job-step is-fold">
             <button type="button" className="process-job-fold" onClick={() => {
               focusAfterUnfold.current = true;
               setUnfolded(true);
             }}>
               <span className="process-job-fold-icon" aria-hidden="true"><Icon name="more" size={12} /></span>
-              <span>{`Show ${String(foldedTurns.length)} earlier ${foldedTurns.length === 1 ? "turn" : "turns"}`}</span>
-              <span className="process-job-fold-note">
-                {`${String(foldedCalls)} from the parent · ${foldedFailed > 0 ? `${String(foldedFailed)} failed` : "none failed"}`}
-              </span>
+              {foldedTurns.length > 0 ? <>
+                <span>{`Show ${String(foldedTurns.length)} earlier ${foldedTurns.length === 1 ? "turn" : "turns"}`}</span>
+                <span className="process-job-fold-note">
+                  {`${String(foldedCalls)} from the parent · ${foldedFailed > 0 ? `${String(foldedFailed)} failed` : "none failed"}`}
+                </span>
+              </> : (
+                <span>{`Show ${String(foldedCalls)} earlier ${foldedCalls === 1 ? "message" : "messages"} from the parent`}</span>
+              )}
             </button>
           </li>
         ) : null}

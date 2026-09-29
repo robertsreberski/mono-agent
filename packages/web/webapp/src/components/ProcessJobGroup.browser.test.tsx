@@ -194,6 +194,47 @@ describe("agent groups in Chromium", () => {
     noOverflow(view.container.querySelector(".process-job-stack-body")!);
   });
 
+  it("keeps a call-only fold reachable when two pinned questions surround it", async () => {
+    await page.viewport(1280, 850);
+    const expiresAt = new Date(Date.now() + 20 * 60_000).toISOString();
+    const threads = ["spring", "summer", "winter", "winter"];
+    const jobs = threads.map((thread, index) => agentTurn(`6d5c4b3a-2918-4f07-8e6d-5c4b3a29180${String(index)}`, "seed-bank", minutesAgo(40 - index * 10), {
+      tool: "PeerAgent", durationMinutes: 2, summary: `Peer task ${String(index + 1)}`,
+      ...(index < 2 ? { extra: { peerQuestion: { state: "awaiting_answer", questionId: `q-${String(index)}`, peer: "seed-bank", thread,
+        message: `Question ${String(index + 1)}?`, requestedSchema: {}, expiresAt } } } : {}),
+    }));
+    const send = (index: number) => parentMessage(`s${String(index)}`, minutesAgo(40 - index * 10) - 0.1, [
+      peerCall(`send-${String(index)}`, { action: "send", peer: "seed-bank", thread: threads[index], message: `Send ${String(index + 1)}`, background: true },
+        peerStarted("seed-bank", threads[index]!, jobs[index]!.jobId)),
+    ]);
+    const peerCalls = collectProcessJobParentCalls([
+      send(0),
+      parentMessage("between", minutesAgo(35), [peerCall("between", { action: "send", peer: "seed-bank", thread: "autumn", message: "Any bulbs left?" }, "Plenty.")]),
+      send(1), send(2), send(3),
+    ], "thread");
+    render(
+      <ProcessJobPresentationProvider threadId="thread" messages={[]} historyIsBounded={false} parentCalls={peerCalls}
+        jobs={jobs.map((job) => ({ messageId: `message-${job.jobId}`, part: { type: "process-job" as const, job } }))}>
+        <ProcessJobStack />
+      </ProcessJobPresentationProvider>,
+    );
+    fireEvent.click(shelfToggle());
+    const bank = screen.getByRole("group", { name: /^seed-bank peer agent, 4 turns:/u });
+    fireEvent.click(bank.querySelector(":scope > summary")!);
+    await frames();
+    const fold = within(bank).getByRole("button", { name: "Show 1 earlier message from the parent" });
+    expect(fold).toBeVisible();
+    const between = within(bank).getByRole("button", { name: /^From the parent agent: PeerAgent message thread autumn Any bulbs left\?/u, hidden: true });
+    expect(between).not.toBeVisible();
+    await capture("job-group-fold-messages-only", bank);
+    fireEvent.click(fold);
+    await frames();
+    expect(between).toBeVisible();
+    await capture("job-group-fold-messages-only-open", bank);
+    expect(document.activeElement).not.toBe(document.body);
+    expect(bank).toContainElement(document.activeElement as HTMLElement);
+  });
+
   it.each([
     { name: "running", jobs: [brief, compare, command, windows] },
     { name: "single agent", jobs: [brief, compare, windows] },

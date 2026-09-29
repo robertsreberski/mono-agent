@@ -315,10 +315,10 @@ type ToolCallValue = Extract<MessagePart, { type: "tool-call" }>;
 
 /**
  * Every call the parent made to its detached children, in transcript order:
- * Agent/AgentManage launches and PeerAgent detached sends and answers (each
- * paired with the job it started only through a host receipt that is the one
- * claim on that job), foreground continuations, and controls addressed by
- * instance id or peer.
+ * Agent/AgentManage launches and PeerAgent sends and answers confirmed to have
+ * detached (each paired with the job it started only through a host receipt
+ * that is the one claim on that job), foreground continuations, and controls
+ * addressed by instance id or peer.
  *
  * Read-only presentation data: nothing here is fetched or stored, and only the
  * prompt, message, steer and answer texts are read from the arguments. Result
@@ -332,10 +332,18 @@ export const collectProcessJobParentCalls = (
   const parts = inThread.flatMap((message) => message.parts.flatMap((part) =>
     part.type === "tool-call" || part.type === "subagent" ? [{ message, part }] : []));
 
-  // Which peer threads were opened detached: a PeerAgent answer or decline is
-  // detached exactly when the send that opened its thread was.
-  const detachedThreads = new Map<string, boolean>();
-  const detachedPeerCalls = new Set<ToolCallValue>();
+  // How each PeerAgent call ran, as far as the transcript CONFIRMS it.
+  // - A send states its own mode (`background: true` detaches it). A thread's
+  //   mode is set only by a send that completed: detached when its result is
+  //   the host's exact started receipt, foreground otherwise. A failed,
+  //   running or unconfirmed send never sets or overwrites it.
+  // - An answer or decline runs in the mode of the relay its thread's last
+  //   confirmed send opened. With no such send loaded its mode is unknown: it
+  //   pairs no job and makes no claim about how it ended.
+  // Only a detached call's result is host text; a foreground result is the
+  // peer's own reply, which may look like anything, so it is never read.
+  const threadModes = new Map<string, "detached" | "foreground">();
+  const peerModes = new Map<ToolCallValue, "detached" | "foreground">();
   const peerJobByCall = new Map<ToolCallValue, string>();
   for (const { part } of parts) {
     if (part.type !== "tool-call" || !isPeerAgentToolName(part.toolName)) continue;
@@ -344,14 +352,25 @@ export const collectProcessJobParentCalls = (
     const thread = nonEmptyText(args?.thread);
     if (peer === undefined || thread === undefined) continue;
     const key = `${peer}\0${thread}`;
-    if (args?.action === "send") detachedThreads.set(key, args.background === true);
-    const detached = args?.action === "send" ? args.background === true
-      : (args?.action === "answer" || args?.action === "decline") && detachedThreads.get(key) === true;
-    if (!detached) continue;
-    detachedPeerCalls.add(part);
-    if (part.status !== "complete") continue;
-    const jobId = peerStartedJobId(part.result, peer, thread);
-    if (jobId !== undefined) peerJobByCall.set(part, jobId);
+    if (args?.action === "send") {
+      if (args.background === true) {
+        peerModes.set(part, "detached");
+        const jobId = part.status === "complete" ? peerStartedJobId(part.result, peer, thread) : undefined;
+        if (jobId === undefined) continue;
+        peerJobByCall.set(part, jobId);
+        threadModes.set(key, "detached");
+      } else {
+        peerModes.set(part, "foreground");
+        if (part.status === "complete") threadModes.set(key, "foreground");
+      }
+    } else if (args?.action === "answer" || args?.action === "decline") {
+      const mode = threadModes.get(key);
+      if (mode === undefined) continue;
+      peerModes.set(part, mode);
+      if (mode !== "detached" || part.status !== "complete") continue;
+      const jobId = peerStartedJobId(part.result, peer, thread);
+      if (jobId !== undefined) peerJobByCall.set(part, jobId);
+    }
   }
 
   // Every claim on a job id, from either receipt kind. A job claimed twice is
@@ -448,7 +467,8 @@ export const collectProcessJobParentCalls = (
       if (peer === undefined) continue;
       const thread = nonEmptyText(args?.thread);
       const started = unique(peerJobByCall.get(part));
-      const inConversation = detachedPeerCalls.has(part) ? {} : foregroundTurn;
+      // Only a call confirmed to run in the conversation says how it ended there.
+      const inConversation = peerModes.get(part) === "foreground" ? foregroundTurn : {};
       const peerCall = { ...base, tool: "PeerAgent", family: "peer" as const, instanceId: peer, ...(thread === undefined ? {} : { thread }) };
       if (args?.action === "send") {
         const text = nonEmptyText(args.message);

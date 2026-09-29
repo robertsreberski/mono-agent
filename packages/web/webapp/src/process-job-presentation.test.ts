@@ -148,6 +148,58 @@ describe("collectProcessJobParentCalls", () => {
     ]);
   });
 
+  describe("PeerAgent execution mode", () => {
+    const modes = (parts: Parameters<typeof parentMessage>[2]) => collectProcessJobParentCalls([parentMessage("m1", 0, parts)], "thread")
+      .map((call) => [call.toolCallId, call.launchedJobId, call.foreground, call.answered]);
+    // A foreground peer can reply with anything, including text shaped exactly like a started receipt.
+    const receiptShaped = peerStarted("seed-bank", "spring", PEER_JOB_B);
+
+    it("never lets a failed detached send change a thread's confirmed mode", () => {
+      expect(modes([
+        peerCall("open", { action: "send", peer: "seed-bank", thread: "spring", message: "Reserve the heirlooms?" }, "{\"state\":\"awaiting_answer\"}"),
+        // Rejected: the thread still awaits its question.
+        peerCall("retry", { action: "send", peer: "seed-bank", thread: "spring", message: "Try again", background: true }, "Peer thread is busy.", { status: "failed" }),
+        peerCall("answer", { action: "answer", peer: "seed-bank", thread: "spring", answers: { question_1: "reserve" } }, receiptShaped),
+      ])).toEqual([
+        ["open", undefined, true, true],
+        ["retry", undefined, undefined, undefined],
+        // Still the foreground thread: its receipt-shaped reply pairs nothing, and it was answered in the conversation.
+        ["answer", undefined, true, true],
+      ]);
+    });
+
+    it("pairs nothing and claims nothing for an answer whose opening send is not loaded", () => {
+      expect(modes([
+        peerCall("answer", { action: "answer", peer: "seed-bank", thread: "spring", answers: { question_1: "reserve" } }, receiptShaped),
+        peerCall("decline", { action: "decline", peer: "seed-bank", thread: "spring" }, receiptShaped),
+      ])).toEqual([
+        ["answer", undefined, undefined, undefined],
+        ["decline", undefined, undefined, undefined],
+      ]);
+    });
+
+    it("confirms a detached thread only from a completed send's own receipt", () => {
+      expect(modes([
+        // Detached, but its result is no receipt: nothing is confirmed.
+        peerCall("unconfirmed", { action: "send", peer: "seed-bank", thread: "spring", message: "One", background: true }, "Started, probably."),
+        peerCall("answer-1", { action: "answer", peer: "seed-bank", thread: "spring", answers: { question_1: "reserve" } }, receiptShaped),
+        // Still running: nothing is confirmed either.
+        peerCall("running", { action: "send", peer: "seed-bank", thread: "spring", message: "Two", background: true }, undefined, { status: "running" }),
+        peerCall("answer-2", { action: "answer", peer: "seed-bank", thread: "spring", answers: { question_1: "wait" } }, receiptShaped),
+        // Confirmed by its own receipt: the next answer's receipt pairs.
+        peerCall("confirmed", { action: "send", peer: "seed-bank", thread: "spring", message: "Three", background: true }, peerStarted("seed-bank", "spring", PEER_JOB_A)),
+        peerCall("answer-3", { action: "answer", peer: "seed-bank", thread: "spring", answers: { question_1: "reserve" } }, receiptShaped),
+      ])).toEqual([
+        ["unconfirmed", undefined, undefined, undefined],
+        ["answer-1", undefined, undefined, undefined],
+        ["running", undefined, undefined, undefined],
+        ["answer-2", undefined, undefined, undefined],
+        ["confirmed", PEER_JOB_A, undefined, undefined],
+        ["answer-3", PEER_JOB_B, undefined, undefined],
+      ]);
+    });
+  });
+
   it("pairs a job claimed by two host receipts with neither", () => {
     const calls = collectProcessJobParentCalls([parentMessage("m1", 0, [
       peerCall("first", { action: "send", peer: "seed-bank", thread: "spring", message: "One", background: true }, peerStarted("seed-bank", "spring", PEER_JOB_A)),
