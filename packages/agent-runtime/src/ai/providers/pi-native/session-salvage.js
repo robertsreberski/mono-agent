@@ -1,8 +1,8 @@
 // Read-only, best-effort evidence from Pi v4 JSONL. Never open through the Pi repo:
 // its cold-open path repairs torn transactions by rewriting the source file.
 import { constants } from "node:fs";
-import { lstat, open, readdir } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { lstat, open, readdir, realpath, stat as statPath } from "node:fs/promises";
+import { join, resolve, sep } from "node:path";
 
 const MAX_FILE = 32 * 1024 * 1024;
 const MAX_LINE = 2 * 1024 * 1024;
@@ -15,6 +15,7 @@ export async function salvageDurableNativeSession(sessionId, sessionsRoot) {
   if (typeof sessionId !== "string" || !safeId.test(sessionId) || typeof sessionsRoot !== "string" || !sessionsRoot) fail();
   const root = resolve(sessionsRoot);
   if (!(await lstat(root)).isDirectory()) fail();
+  const canonicalRoot = await realpath(root);
   const suffix = `_${encodeURIComponent(sessionId)}.jsonl`;
   const matches = [];
   for (const dir of await readdir(root, { withFileTypes: true })) {
@@ -36,6 +37,13 @@ export async function salvageDurableNativeSession(sessionId, sessionsRoot) {
   try {
     const stat = await handle.stat();
     if (!stat.isFile() || stat.dev !== before.dev || stat.ino !== before.ino || stat.size > MAX_FILE) fail();
+    // O_NOFOLLOW protects the last component only. A session directory may have
+    // been swapped for a symlink since readdir; re-resolve the opened pathname and
+    // require its canonical target to remain within the trusted sessions root.
+    const canonicalFile = await realpath(path);
+    if (!canonicalFile.startsWith(`${canonicalRoot}${sep}`)) fail();
+    const current = await statPath(canonicalFile);
+    if (!current.isFile() || current.dev !== stat.dev || current.ino !== stat.ino) fail();
     bytes = Buffer.alloc(stat.size);
     let offset = 0;
     while (offset < bytes.length) {
@@ -56,6 +64,7 @@ export async function salvageDurableNativeSession(sessionId, sessionsRoot) {
   const entries = new Map();
   const ids = new Set();
   const values = new Map();
+  const pending = new Map();
   let seq = 0;
   for (const line of lines) {
     const transaction = JSON.parse(line);
@@ -76,6 +85,11 @@ export async function salvageDurableNativeSession(sessionId, sessionsRoot) {
         if (write.kind === "value" && write.namespace === "pi.branch.tip") {
           if (write.op === "delete") values.delete(write.key);
           else values.set(write.key, write.value);
+        }
+        if (write.namespace.startsWith("pi.pending.")) {
+          const address = `${write.namespace}\0${write.key}`;
+          if (write.op === "delete") pending.delete(address);
+          else pending.set(address, write);
         }
       } else fail();
     }
@@ -113,6 +127,54 @@ export async function salvageDurableNativeSession(sessionId, sessionsRoot) {
       results.set(message.toolCallId, { message, seq: entry.seq });
     }
   }
+  // Pi can durably stage an assistant message before placing it on a branch.
+  // Its calls have no branch-placed result even if a result is staged too.
+  const stagedCalls = new Map();
+  let unclassifiedPending = false;
+  const stageAssistant = (message) => {
+    if (message.role !== "assistant" || !Array.isArray(message.content)) {
+      unclassifiedPending = true;
+      return;
+    }
+    for (const block of message.content) if (block?.type === "toolCall") {
+      if (typeof block.id !== "string" || typeof block.name !== "string" || !block.id || !block.name) {
+        unclassifiedPending = true;
+      } else if (!calls.has(block.id)) {
+        if (stagedCalls.has(block.id) && stagedCalls.get(block.id) !== block.name) unclassifiedPending = true;
+        stagedCalls.set(block.id, block.name);
+      }
+    }
+  };
+  for (const write of pending.values()) {
+    if (write.namespace !== "pi.pending.entry" || write.kind !== "value"
+      || !valid(write.value) || write.value.type !== "message" || !valid(write.value.payload)) {
+      unclassifiedPending = true;
+      continue;
+    }
+    stageAssistant(write.value.payload);
+  }
+  // A committed entry may have been inserted before a tip advance. Exclude
+  // messages reachable from explicit sibling branches, but conservatively
+  // classify unattached assistant calls as unknown, never as completed.
+  const attached = new Set(seen);
+  for (const [name, otherTip] of values) if (name !== "main") {
+    if (typeof otherTip !== "string" || !entries.has(otherTip)) fail();
+    const walked = new Set();
+    for (let id = otherTip; id !== null;) {
+      if (walked.has(id)) fail();
+      walked.add(id);
+      const entry = entries.get(id);
+      if (!entry) fail();
+      attached.add(id);
+      id = entry.parentId;
+    }
+  }
+  for (const [id, entry] of entries) {
+    if (attached.has(id) || entry.type !== "message") continue;
+    if (!valid(entry.message)) { unclassifiedPending = true; continue; }
+    if (entry.message.role === "assistant") stageAssistant(entry.message);
+    else if (entry.message.role === "toolResult") unclassifiedPending = true;
+  }
   const completed = [];
   const outcomeUnknown = [];
   for (const [id, call] of calls) {
@@ -123,8 +185,9 @@ export async function salvageDurableNativeSession(sessionId, sessionsRoot) {
       completed.push({ name: call.name, result: content });
     } else outcomeUnknown.push({ name: call.name });
   }
+  for (const name of stagedCalls.values()) outcomeUnknown.push({ name });
   // Orphaned or mismatched results cannot attest to a call's outcome.
   return { completed: completed.slice(-8), outcomeUnknown: outcomeUnknown.slice(-8),
     omittedCompleted: Math.max(0, completed.length - 8), omittedUnknown: Math.max(0, outcomeUnknown.length - 8),
-    ...(draftText ? { draftText } : {}), additionalOutcomesUnknown: torn || results.size > completed.length || tip === undefined };
+    ...(draftText ? { draftText } : {}), additionalOutcomesUnknown: torn || unclassifiedPending || results.size > completed.length || tip === undefined };
 }

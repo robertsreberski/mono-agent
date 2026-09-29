@@ -1,11 +1,24 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { mkdtemp, mkdir, readFile, stat, symlink, writeFile, rm } from "node:fs/promises";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, mkdir, readFile, rename, stat, symlink, writeFile, rm } from "node:fs/promises";
+
+// Deterministic directory-swap window: enumerate a real directory, replace it
+// before the reader opens the child. A final-component no-follow flag alone
+// cannot detect this redirect.
+const swapRead = vi.hoisted(() => ({ handler: null }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const fs = await importOriginal();
+  return { ...fs, readdir: async (...args) => {
+    const listing = await fs.readdir(...args);
+    if (swapRead.handler) await swapRead.handler(args[0]);
+    return listing;
+  } };
+});
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { salvageDurableNativeSession } from "../../ai/providers/pi-native/session-salvage.js";
 
 const roots = [];
-afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => { swapRead.handler = null; await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 const assistant = { role: "assistant", content: [{ type: "text", text: "Draft only" }, { type: "toolCall", id: "call-1", name: "Write", arguments: { path: "/private/never" } }, { type: "toolCall", id: "call-2", name: "Exec", arguments: {} }] };
 const result = { role: "toolResult", toolCallId: "call-1", toolName: "Write", content: [{ type: "text", text: "done" }] };
 const row = (seq, kind, rest) => ({ seq, kind, ...rest });
@@ -37,6 +50,33 @@ describe("read-only Pi v4 salvage", () => {
       expect(JSON.stringify(snapshot)).not.toContain("/private/never");
     });
   });
+  it("reports staged-only assistant calls as unknown and flags unclassifiable pending state", async () => {
+    const user = entry(1, "u", null, { role: "user", content: [{ type: "text", text: "Do work" }] });
+    const staged = row(3, "value", { op: "set", namespace: "pi.pending.entry", key: "assistant-a",
+      value: { type: "message", payload: assistant } });
+    const stagedResult = row(4, "value", { op: "set", namespace: "pi.pending.entry", key: "result-r",
+      value: { type: "message", payload: result } });
+    const f = await fixture([[user, tip(2, "u")], staged, stagedResult]);
+    await unchanged(f.path, async () => {
+      const snapshot = await salvageDurableNativeSession(f.id, f.root);
+      expect(snapshot.completed).toEqual([]);
+      expect(snapshot.outcomeUnknown).toEqual([{ name: "Write" }, { name: "Exec" }]);
+      expect(snapshot.additionalOutcomesUnknown).toBe(true);
+      expect(snapshot.draftText).toBeUndefined();
+      expect(JSON.stringify(snapshot)).not.toContain("/private/never");
+    });
+  });
+  it("keeps unattached assistant calls unknown without counting explicit sibling branches", async () => {
+    const user = entry(1, "u", null, { role: "user", content: [] });
+    const f = await fixture([[user, tip(2, "u"), entry(3, "orphan", "u", assistant)]]);
+    await unchanged(f.path, async () => {
+      const snapshot = await salvageDurableNativeSession(f.id, f.root);
+      expect(snapshot.outcomeUnknown).toEqual([{ name: "Write" }, { name: "Exec" }]);
+      expect(snapshot.completed).toEqual([]);
+    });
+    const other = await fixture([[user, entry(2, "sibling", "u", assistant), tip(3, "u"), tip(4, "sibling", "other")]]);
+    await unchanged(other.path, async () => expect((await salvageDurableNativeSession(other.id, other.root)).outcomeUnknown).toEqual([]));
+  });
   it("ignores non-main branch results and torn final transactions without repairing the file", async () => {
     const { root, path, id } = await fixture([entry(1, "a", null, assistant), tip(2, "a"), entry(3, "r", "a", result), tip(4, "r", "other")], '{"seq":5');
     await unchanged(path, async () => {
@@ -67,6 +107,26 @@ describe("read-only Pi v4 salvage", () => {
     await unchanged(oversized.path, async () => expect(salvageDurableNativeSession(oversized.id, oversized.root)).rejects.toThrow());
     const linked = await fixture([placed]); await symlink(linked.path, join(linked.root, "2026-01-01", `link_${linked.id}.jsonl`));
     await unchanged(linked.path, async () => expect(salvageDurableNativeSession(linked.id, linked.root)).rejects.toThrow());
+  });
+  it("refuses a session directory switched to an outside symlink after enumeration", async () => {
+    const original = await fixture([placed]);
+    const external = await fixture([placed]);
+    const parent = join(original.root, "2026-01-01");
+    const parked = join(original.root, "parked");
+    const originalBytes = await readFile(original.path);
+    const originalMtime = (await stat(original.path)).mtimeMs;
+    swapRead.handler = async (path) => {
+      if (path !== original.root) return;
+      swapRead.handler = null;
+      await rename(parent, parked);
+      await symlink(join(external.root, "2026-01-01"), parent, "dir");
+    };
+    await unchanged(external.path, async () => {
+      await expect(salvageDurableNativeSession(original.id, original.root)).rejects.toThrow();
+    });
+    const moved = join(parked, `2026-01-01_${original.id}.jsonl`);
+    expect(await readFile(moved)).toEqual(originalBytes);
+    expect((await stat(moved)).mtimeMs).toBe(originalMtime);
   });
   it("does not present failed assistant text as a draft and does not pair orphan results preceding a call", async () => {
     const failed = { role: "assistant", stopReason: "error", content: [{ type: "text", text: "failed answer" }, { type: "toolCall", id: "call-1", name: "Write" }] };
