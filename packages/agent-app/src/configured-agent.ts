@@ -1232,6 +1232,10 @@ async function createConfiguredAgentHarnessInternal(
             || processJobsRegistry.roots.some((root) => root.canonicalPath !== service.settings.stateDir)) return "unavailable";
           return await service.checkSubagentOwnerIndex(conversationId, known);
         },
+        salvageSession: async (id, root) => {
+          if (!runtime.salvageDurableSession) throw new Error("Runtime cannot salvage durable sessions.");
+          return runtime.salvageDurableSession(id, root);
+        },
         retireSession: async (id, root) => {
           if (!runtime.retireDurableSession) throw new Error("Runtime cannot retire durable subagent sessions.");
           await runtime.retireDurableSession(id, root);
@@ -1240,6 +1244,7 @@ async function createConfiguredAgentHarnessInternal(
     : undefined;
   if (instanceRegistry && internalHooks.processJobs?.service?.bindManagedSubagents) {
     internalHooks.processJobs.service.bindManagedSubagents({ root: subagentInstancesRoot(config),
+      salvage: async (identity) => await (await instanceRegistry.open(identity.conversationId, { existingOnly: true })).salvageReleased(identity),
       verify: async (identity) => await (await instanceRegistry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
       publish: async (phase, publication) => await (await instanceRegistry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication),
     });
