@@ -398,3 +398,59 @@ describe("operator connection loss", () => {
     } finally { await s.service.stop(); }
   });
 });
+
+describe("console-requested restart parent interruption", () => {
+  it("emits exactly one independent notice and wake only after the replacement generation is observed", async () => {
+    const encoder = new TextEncoder();
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    let release!: (response: Response) => void;
+    let turnCalls = 0;
+    const s = await scenario({
+      turns: () => {
+        turnCalls++;
+        return turnCalls === 1
+          ? new Response(new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }),
+            { headers: { "content-type": "application/x-ndjson" } })
+          : new Response(JSON.stringify({ kind: "finish", finalText: "ready" }) + "\n",
+            { headers: { "content-type": "application/x-ndjson" } });
+      },
+      response: () => new Promise<Response>((resolve) => { release = resolve; }),
+    });
+    try {
+      const thread = s.service.createThread("agent-one");
+      await s.service.startTurn(thread.id, { text: "request" });
+      await vi.waitFor(() => expect(stream).toBeDefined());
+      const pending = s.service.requestAgentRestart("agent-one");
+      await vi.waitFor(() => expect(release).toBeDefined());
+      stream.enqueue(encoder.encode(JSON.stringify({ kind: "error", cancelled: true,
+        code: "cancelled", message: "Agent stopped." }) + "\n"));
+      stream.close();
+      await vi.waitFor(() => expect(s.service.store.getThread(thread.id)?.runState.error?.code)
+        .toBe("agent_restart_interrupted"));
+      const db = new DatabaseSync(s.service.store.paths.database);
+      try {
+        expect(db.prepare("SELECT turn_id FROM parent_turn_interruptions").all()).toHaveLength(0);
+        release(Response.json({ operation: { id: "host-1" }, process: {
+          pid: 123, startedAt: "2026-09-23T10:00:00.000Z",
+        } }, { status: 202 }));
+        await pending;
+        await settle(s.service);
+        expect(db.prepare("SELECT turn_id FROM parent_turn_interruptions").all()).toHaveLength(0);
+        expect(turnCalls).toBe(1);
+        s.updateAgent({ ...s.agent(), source: { ...s.agent().source, pid: 456,
+          startedAt: "2026-09-23T11:00:00.000Z" } });
+        await settle(s.service);
+        await vi.waitFor(() => expect(turnCalls).toBe(2));
+        expect(db.prepare("SELECT wake_key FROM parent_turn_interruptions").all()).toEqual([
+          { wake_key: expect.stringMatching(/^parent-interruption:agent-one:/u) },
+        ]);
+        await settle(s.service);
+        expect(db.prepare("SELECT turn_id FROM parent_turn_interruptions").all()).toHaveLength(1);
+        expect(turnCalls).toBe(2);
+        expect(s.service.store.getThreadDetail(thread.id)?.messages.filter((message) =>
+          message.parts.some((part) => part.type === "text" && part.text.includes("AgentManage inspect"))))
+          .toHaveLength(1);
+      } finally { db.close(); }
+    } finally { await s.service.stop(); }
+  });
+});

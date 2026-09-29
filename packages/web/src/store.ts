@@ -3952,7 +3952,7 @@ export class WebStore {
         WHERE th.source_id = ? AND t.dispatch_generation IS NOT NULL AND t.dispatch_generation <> ?
           AND t.web_recovery_generation_confirmed_at IS NULL AND t.cancel_origin IS NULL
           AND (t.status = 'running' OR (t.status = 'failed' AND t.error_code = 'agent_connection_lost')
-            OR (t.status = 'interrupted' AND t.error_code = 'interrupted'))
+            OR (t.status = 'interrupted' AND t.error_code IN ('interrupted', 'agent_restart_interrupted')))
           AND NOT EXISTS (SELECT 1 FROM parent_turn_interruptions n WHERE n.turn_id = t.id)`)
         .all(sourceId, currentGeneration) as Array<{ id: string; thread_id: string; status: string }>;
       for (const turn of turns) {
