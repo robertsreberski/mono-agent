@@ -6672,7 +6672,7 @@ export class WebStore {
     finalText?: string,
     errorCode?: string,
     errorMessage?: string,
-    runtime?: { readonly model?: string; readonly effort?: string; readonly effectiveEffort?: string },
+    runtime?: { readonly model?: string; readonly effort?: string; readonly effectiveEffort?: string; readonly turnDisposition?: "silent" | "visible" },
     replyParts?: readonly AgentReplyPart[],
     suppressResponsePush = false,
     hostWakeDeliveryKey?: string,
@@ -6706,7 +6706,7 @@ export class WebStore {
     finalText?: string,
     errorCode?: string,
     errorMessage?: string,
-    runtime?: { readonly model?: string; readonly effort?: string; readonly effectiveEffort?: string },
+    runtime?: { readonly model?: string; readonly effort?: string; readonly effectiveEffort?: string; readonly turnDisposition?: "silent" | "visible" },
     replyParts?: readonly AgentReplyPart[],
     suppressResponsePush = false,
     hostWakeDeliveryKey?: string,
@@ -6724,7 +6724,7 @@ export class WebStore {
     }
     const processJobAssociated = status === "complete" && this.hasProcessJobTurnAssociation(turnId, hostWakeDeliveryKey);
     if (processJobAssociated) {
-      parts = normalizeWakeTerminalReply(parts, true).parts;
+      parts = normalizeWakeTerminalReply(parts, true, runtime?.turnDisposition).parts;
       suppressResponsePush = !hasWakeReplyContent(parts);
     }
     const now = this.now();
@@ -7911,7 +7911,9 @@ function fullerStoredTextForTruncatedPrefix(
 }
 
 function definitelySilentCronRun(run: WebCronRun): boolean {
-  return run.status === "succeeded" && run.fieldsTruncated?.includes("text") !== true
+  if (run.status !== "succeeded" || run.replyPartOutcomes?.length) return false;
+  if (run.turnDisposition !== undefined) return run.turnDisposition === "silent";
+  return run.fieldsTruncated?.includes("text") !== true
     && classifyNotifySuppression(run.text) !== "none";
 }
 
@@ -10155,14 +10157,19 @@ function runAttribution(row: TurnRow): WebRunAttribution | undefined {
 
 function runtimeMetadata(
   metadata: Readonly<Record<string, unknown>> | undefined,
-): { readonly model?: string; readonly effort?: string; readonly effectiveEffort?: string } | undefined {
+): { readonly model?: string; readonly effort?: string; readonly effectiveEffort?: string; readonly turnDisposition?: "silent" | "visible" } | undefined {
   const runtime = metadata?.runtime;
-  if (typeof runtime !== "object" || runtime === null || Array.isArray(runtime)) return undefined;
+  const turnDisposition = metadata?.turnDisposition === "silent" || metadata?.turnDisposition === "visible"
+    ? metadata.turnDisposition : undefined;
+  if (typeof runtime !== "object" || runtime === null || Array.isArray(runtime)) {
+    return turnDisposition === undefined ? undefined : { turnDisposition };
+  }
   const record = runtime as Record<string, unknown>;
   const model = canonicalRouteString(record.model);
   const effort = canonicalRouteString(record.effort, 64);
   const effectiveEffort = canonicalRouteString(record.effectiveEffort, 64);
-  return model === undefined && effort === undefined && effectiveEffort === undefined ? undefined : {
+  return model === undefined && effort === undefined && effectiveEffort === undefined && turnDisposition === undefined ? undefined : {
+    ...(turnDisposition === undefined ? {} : { turnDisposition }),
     ...(model === undefined ? {} : { model }),
     ...(effort === undefined ? {} : { effort }),
     ...(effectiveEffort === undefined ? {} : { effectiveEffort }),

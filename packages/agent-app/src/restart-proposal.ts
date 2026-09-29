@@ -89,7 +89,9 @@ export function createRestartProposalService(input: {
             const part = proposals.get(runId);
             if (part === undefined) return result;
             const parts = mergeReplyParts(result.parts, [part] as AgentReplyPart[]);
-            return { ...result, parts };
+            return { ...result, parts,
+              ...(result.metadata?.turnDisposition === "silent"
+                ? { metadata: { ...result.metadata, turnDisposition: "visible" } } : {}) };
           } finally {
             for (const id of context.runIds) proposals.delete(id);
           }

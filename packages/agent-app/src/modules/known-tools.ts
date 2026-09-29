@@ -33,6 +33,7 @@ export const BUILTIN_TOOL_NAMES = [
   "Agent",
   "AgentManage",
   "AskParent",
+  "FinishSilently",
 ] as const;
 
 /** Known for policy validation, but never selectable for a parent run. */

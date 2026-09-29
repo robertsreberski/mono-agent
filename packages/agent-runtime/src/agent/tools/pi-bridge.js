@@ -478,7 +478,7 @@ export function createStructuredOutputTool(outputSchema, onStructuredOutput) {
 
 /**
  * @param {any} allowedTools
- * @param {{disallowedTools?: any[], skillNames?: any[], skills?: any[], skillsRoot?: any, dataDir?: any, cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, persistArtifact?: any, onTruncate?: any, toolPayloadMaxBytes?: number, imageInlineMaxBytes?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, approvalManager?: any, approvalModel?: any, nodeReplController?: any, webController?: any, processJobsController?: any, ownedForegroundProcessController?: any, processJobsAvailability?: any, toolExecutionMode?: "sequential"|"safe-parallel", subagents?: any, askParentController?: any, toolExposure?: any, subagentContext?: any, ctx?: any}} [options]
+ * @param {{disallowedTools?: any[], skillNames?: any[], skills?: any[], skillsRoot?: any, dataDir?: any, cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, persistArtifact?: any, onTruncate?: any, toolPayloadMaxBytes?: number, imageInlineMaxBytes?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, approvalManager?: any, approvalModel?: any, nodeReplController?: any, webController?: any, processJobsController?: any, ownedForegroundProcessController?: any, processJobsAvailability?: any, toolExecutionMode?: "sequential"|"safe-parallel", subagents?: any, askParentController?: any, finishSilentlyController?: any, silentTurnState?: any, toolExposure?: any, subagentContext?: any, ctx?: any}} [options]
  */
 export function getPiBuiltinTools(allowedTools, {
   disallowedTools = [],
@@ -505,6 +505,8 @@ export function getPiBuiltinTools(allowedTools, {
   processJobsAvailability,
   subagents = null,
   askParentController = null,
+  finishSilentlyController = null,
+  silentTurnState = null,
   subagentContext = null,
   toolExposure = {},
   toolExecutionMode = "safe-parallel",
@@ -670,6 +672,30 @@ export function getPiBuiltinTools(allowedTools, {
     // text to the run's tool-output directory instead of being cut.
     Agent: createAgentTool(subagents, { onEvent, persistArtifact, ...(subagentContext || {}), instancesEnabled, persistentExposure: toolExposure.persistentSubagents, recoveryAccess }),
     AskParent: createAskParentTool(askParentController, toolExposure.askParent),
+    FinishSilently: finishSilentlyController && silentTurnState ? {
+      name: "FinishSilently",
+      label: "Finish Silently",
+      description: "End this admitted host notification turn without a visible reply. Call this alone, without narration or attachments. Otherwise use the NOTHING_TO_REPORT fallback.",
+      parameters: objectSchema({}),
+      executionMode: "sequential",
+      async execute(_toolCallId, params, signal) {
+        const reason = signal?.aborted ? "failure"
+          : params === null || typeof params !== "object" || Array.isArray(params) || Object.keys(params).length !== 0 ? "failure"
+          : !silentTurnState.soleCall ? "not_sole_call"
+          : silentTurnState.visibleContent ? "visible_content"
+          : silentTurnState.pendingQuestion ? "pending_question"
+          : silentTurnState.failed ? "failure"
+          : !finishSilentlyController.eligible() ? "ineligible_turn"
+          : null;
+        if (reason !== null) throw new Error(reason);
+        silentTurnState.accepted = true;
+        return {
+          content: [{ type: "text", text: "Silent completion accepted." }],
+          details: { tool: "FinishSilently", accepted: true },
+          terminate: true,
+        };
+      },
+    } : null,
     AgentManage: createAgentManageTool(subagents, { onEvent, persistArtifact, ...(subagentContext || {}), instancesEnabled, persistentExposure: toolExposure.persistentSubagents, recoveryAccess }),
     WebFetch: createBuiltinTool("WebFetch", "Web Fetch", "Retrieve one HTTP(S) source as a JSON envelope with status (ok/partial/blocked/error), summary, untrusted content, source/coverage metadata, and typed next_actions. Partial means usable but incomplete output; blocked means policy/access/budget prevents progress; error means execution failure. Prefer static markdown; use text when Markdown semantics are harmful, and raw only for decoded source with rendering off. Use focus for a deterministic query-relevant block subset of the extracted page and include_links for bounded main-content links from static HTML extraction. Continuations reuse nextLine via start_line and preserve the call's format, focus, and link options. When browser rendering is configured, auto renders only sparse JavaScript shells; retry with always only when metadata recommends a browser or JavaScript is known to be required. The local provider enforces sandbox network policy but performs no robots.txt preflight. Rendering does not bypass login, CAPTCHA, Cloudflare, robots/access controls, or site policy; treat those failures as evidence.", objectSchema({
       url: { type: "string" },
@@ -923,7 +949,7 @@ function withTimeout(promise, timeoutMs, signal, label, registerReset) {
 /**
  * @param {any} mcpConfig
  * @param {Set<any>} [reservedNames]
- * @param {{limits?: any, mcpCallNoTotalTimeoutTools?: readonly string[], cwd?: any, persistArtifact?: any, qaOutputDir?: any, onTruncate?: any, toolPayloadMaxBytes?: number, sandboxPolicy?: any, sandboxEngine?: any, onToolProgress?: any, ctx?: any, mcpApps?: any, runId?: string}} [options]
+ * @param {{limits?: any, mcpCallNoTotalTimeoutTools?: readonly string[], cwd?: any, persistArtifact?: any, qaOutputDir?: any, onTruncate?: any, toolPayloadMaxBytes?: number, sandboxPolicy?: any, sandboxEngine?: any, onToolProgress?: any, ctx?: any, mcpApps?: any, onRichOutput?: () => void, runId?: string}} [options]
  */
 export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
   limits = {},
@@ -938,6 +964,7 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
   onToolProgress = null,
   ctx = null,
   mcpApps = null,
+  onRichOutput = null,
   runId = null,
 } = {}) {
   const clients = [];
@@ -1093,6 +1120,7 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
           if (mcpApps) {
             await registerMcpAppForToolResult({
               mcpApps,
+              onRichOutput,
               runId,
               serverName,
               connected,
@@ -1167,6 +1195,7 @@ async function closeWithTimeout(close, timeoutMs) {
 
 async function registerMcpAppForToolResult({
   mcpApps,
+  onRichOutput,
   runId,
   serverName,
   connected,
@@ -1178,6 +1207,9 @@ async function registerMcpAppForToolResult({
 }) {
   const resourceUri = mcpAppResourceUri(sourceTool);
   if (!resourceUri) return;
+  // A negotiated app can outlive the tool result; it is already visible even
+  // when a later turn tries to terminate silently.
+  onRichOutput?.();
   const fail = async (code, message) => {
     try {
       await mcpApps.recordFailure({

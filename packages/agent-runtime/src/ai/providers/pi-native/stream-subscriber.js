@@ -98,6 +98,8 @@ function toolResultOutcome(result) {
  * @property {number} toolExecutionsThisTurn
  * @property {boolean} toolFailureThisTurn
  * @property {boolean} structuredOutputCompletedThisTurn
+ * @property {boolean} silentCompletedThisTurn
+ * @property {{soleCall: boolean, visibleContent: boolean, pendingQuestion: boolean, failed: boolean, accepted: boolean, completed: boolean}} silentTurn
  * @property {unknown} structuredResult
  */
 
@@ -115,11 +117,13 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
       const streamEvent = event.assistantMessageEvent;
       if (streamEvent?.type === "text_delta" && streamEvent.delta) {
         runState.textDeltaIndexes.add(streamContentKey(streamEvent, "text"));
+        if (streamEvent.delta.trim() && runState.silentTurn) runState.silentTurn.visibleContent = true;
         runState.assistantTexts.push(streamEvent.delta);
         onEvent({ type: "assistant", message: { content: [{ type: "text", text: streamEvent.delta }] } });
       } else if (streamEvent?.type === "text_end" && streamEvent.content) {
         const key = streamContentKey(streamEvent, "text");
         if (!runState.textDeltaIndexes.has(key)) {
+          if (streamEvent.content.trim() && runState.silentTurn) runState.silentTurn.visibleContent = true;
           runState.assistantTexts.push(streamEvent.content);
           onEvent({ type: "assistant", message: { content: [{ type: "text", text: streamEvent.content }] } });
         }
@@ -200,7 +204,20 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
         partial_result: jsonSerializable(event.partialResult, String(event.partialResult ?? "")),
       });
     } else if (event.type === "tool_execution_end") {
-      if (event.isError) runState.toolFailureThisTurn = true;
+      if (event.isError) {
+        runState.toolFailureThisTurn = true;
+        if (runState.silentTurn) runState.silentTurn.failed = true;
+      }
+      if (event.toolName === "AskParent" && !event.isError && runState.silentTurn) runState.silentTurn.pendingQuestion = true;
+      if (!event.isError && runState.silentTurn
+        && /^(?:PublishReplyFile|ProposeRestart|mcp__[^\s]+__(?:PublishReplyFile|ProposeRestart))$/.test(event.toolName ?? "")) {
+        runState.silentTurn.visibleContent = true;
+      }
+      if (event.toolName === "FinishSilently" && !event.isError
+        && event.result?.details?.accepted === true && runState.silentTurn?.accepted === true) {
+        runState.silentCompletedThisTurn = true;
+        runState.silentTurn.completed = true;
+      }
       if (options.outputSchema !== undefined
         && options.outputSchema !== null
         && event.toolName === "StructuredOutput"
@@ -279,14 +296,19 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
       const completedOnlyTerminalStructuredOutput = runState.toolExecutionsThisTurn === 1
         && runState.toolFailureThisTurn === false
         && runState.structuredOutputCompletedThisTurn === true;
+      const completedOnlyTerminalSilence = runState.toolExecutionsThisTurn === 1
+        && runState.toolFailureThisTurn === false
+        && runState.silentCompletedThisTurn === true;
       runState.toolExecutionsThisTurn = 0;
       runState.toolFailureThisTurn = false;
       runState.structuredOutputCompletedThisTurn = false;
+      runState.silentCompletedThisTurn = false;
       if (Number.isFinite(Number(options.maxTurns))
         && Number(options.maxTurns) > 0
         && runState.turnCount >= Number(options.maxTurns)
         && event.message?.stopReason === "toolUse"
-        && !completedOnlyTerminalStructuredOutput) {
+        && !completedOnlyTerminalStructuredOutput
+        && !completedOnlyTerminalSilence) {
         runState.maxTurnsHit = true;
         void Promise.resolve(harness.abort()).catch(() => {});
       }

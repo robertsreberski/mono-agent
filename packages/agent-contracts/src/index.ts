@@ -12,7 +12,13 @@ export { assertMatchingReplyAttachment, collectExactReplyArtifactBytes } from ".
 export * from "./provider-auth.js";
 
 export type AgentRequestMetadata = Record<string, unknown>;
-export type AgentResponseMetadata = Record<string, unknown>;
+export { registerNativeNotifyRequest, isNativeNotifyRequest,
+  markSilentTurnAlreadyVisible, isSilentTurnAlreadyVisible } from "./silent-turn.js";
+
+export type AgentResponseMetadata = Record<string, unknown> & {
+  /** Host-certified terminal delivery intent; absence preserves legacy text classification. */
+  readonly turnDisposition?: "silent" | "visible";
+};
 export {
   MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES,
   PROCESS_JOB_ERROR_CODES,

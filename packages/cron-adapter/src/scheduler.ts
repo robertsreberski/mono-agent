@@ -2,6 +2,7 @@ import {
   BufferedMessageStream,
   isAgentResponseCancelledError,
   normalizeOptionalString,
+  registerNativeNotifyRequest,
   unsupportedReplyPartDeliveryOutcomes,
   type AgentMessageStream,
   type AgentReplyPartDeliveryOutcome,
@@ -1126,6 +1127,7 @@ function startRun(
           } satisfies CronRequestMetadata,
         },
       };
+      if (job.notify === true) registerNativeNotifyRequest(request);
       const response = await options.responder.respond(request, stream);
       return { response, notifyConversationId };
     })

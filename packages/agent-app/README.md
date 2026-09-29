@@ -200,7 +200,12 @@ holding those cards.
 Process-job chains keep the default depth budget of 4 and allow a configured
 ceiling of 64. Request diagnostics remain visible when the budget is exhausted.
 Background Exec/Bash accepts `wake_on_completion: false` for helpers that only
-need terminal card updates. Exact sentinel-only wakes suppress delivery; a
+need terminal card updates. A host-raised wake may call `FinishSilently({})` alone
+without narration or attachments; the host records silence as a typed terminal
+disposition and suppresses delivery. The exact sentinel-only
+`NOTHING_TO_REPORT` fallback still works. Web wake admission has the same
+exact-live-flight binding as the sentinel, not stronger authentication; an
+expired, missing, or ambiguous delivery key cannot grant silence. A
 receipt timeout before the destination confirms steering or durable follow-up
 admission settles as unknown and never automatically replays. A confirmed web
 follow-up receipt does not wait for that turn's later model outcome.
@@ -1112,8 +1117,10 @@ ten-minute idle timeout. See
 [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/)
 for native channel behavior, fallbacks, browser security, and limits.
 
-Successful cron answers suppressed by the shared notification classifier project
-`NOTHING_TO_REPORT` as operator summary and detail text. Classification uses the
+Successful legacy cron answers suppressed by the shared notification classifier
+project `NOTHING_TO_REPORT` as operator summary and detail text. Typed
+`FinishSilently` completions instead persist `turnDisposition: "silent"` and
+retain empty result text without synthesizing the sentinel. Classification uses the
 full stored answer before either byte limit, including a sentinel on the final
 line of long narration. Agent SQLite and retained activity keep the original
 text; failures and non-suppressed output retain their existing truncation rules.

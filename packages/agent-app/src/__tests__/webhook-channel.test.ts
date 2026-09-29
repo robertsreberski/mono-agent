@@ -36,7 +36,7 @@ const baseInput = {
   },
 } satisfies ChannelStartInput<WebhookAdapterConfig>;
 
-function succeededStatus(text?: string): WebhookInvocationStatus {
+function succeededStatus(text?: string): Extract<WebhookInvocationStatus, { status: "succeeded" }> {
   return {
     status: "succeeded",
     requestId: "req-1",
@@ -199,6 +199,18 @@ describe("webhook channel driver — native notification delivery", () => {
     const deliveredText = (notifyDestination.mock.calls[0] as [string, string, unknown] | undefined)?.[1];
     expect(deliveredText).toBe("Webhook digest");
     expect(deliveredText).not.toContain("Do not call tools");
+  });
+
+  it("skips native delivery for a typed silent webhook completion", async () => {
+    const notifyDestination = vi.fn(async () => ({ delivered: true }));
+    const captured = await startCapturingWebhook({ ...baseInput, notifyDestination, config: {
+      ...baseInput.config,
+      endpoints: [{ name: "digest", path: "/digest", mode: "sync", enabled: true,
+        notify: true, notifyConversationId: "telegram:42" }],
+    } });
+    captured.onResult?.({ ...succeededStatus(), metadata: { turnDisposition: "silent" } }, webhookRequest("digest", "telegram:42"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(notifyDestination).not.toHaveBeenCalled();
   });
 
   it("adds the stable request delivery key for web:new", async () => {

@@ -349,7 +349,9 @@ export function mapRunToSession(
     typeof summary.systemPrompt === "string" ? clampText(summary.systemPrompt, SYS_PROMPT_MAX_CHARS) : undefined;
 
   const finalClamp = clampText(walk.finalTextRaw, TEXT_MAX_CHARS);
-  const outcome = resolveOutcome(walk.finalTextRaw);
+  const outcome = summary.turnDisposition !== undefined
+    ? summary.status === "succeeded" && summary.turnDisposition === "silent" ? "silent" : "notified"
+    : resolveOutcome(walk.finalTextRaw);
 
   const instrClamp = clampText(instrRaw, TEXT_MAX_CHARS);
   const steps: SessionStep[] = [...walk.steps];
@@ -912,9 +914,8 @@ function coerceCtxMemory(value: unknown): { readonly text: string; readonly src?
 }
 
 /**
- * Silent when the final assistant text is empty or ends with the NOTHING_TO_REPORT
- * sentinel. Shares the delivery predicate deliberately: if the ledger and the
- * notifier disagree about what was suppressed, the operator view lies.
+ * Legacy success without a disposition: empty assistant text or a final
+ * NOTHING_TO_REPORT sentinel is silent. Recorded disposition takes precedence.
  */
 function resolveOutcome(finalTextRaw: string): SessionOutcome {
   return suppressesNotification(finalTextRaw) ? "silent" : "notified";

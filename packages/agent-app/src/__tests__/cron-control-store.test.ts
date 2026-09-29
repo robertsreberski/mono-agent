@@ -82,7 +82,7 @@ function terminal(
   } as CronJobResult;
 }
 
-function succeeded(firing: CronFiringIdentity, text = "done"): CronJobResult {
+function succeeded(firing: CronFiringIdentity, text = "done"): Extract<CronJobResult, { kind: "succeeded" }> {
   return {
     kind: "succeeded",
     cronRunId: firing.runId,
@@ -1275,6 +1275,26 @@ describe("cron control store", () => {
 });
 
 describe("silent operator text normalization", () => {
+  it("persists the typed disposition without rewriting empty text as a sentinel", async () => {
+    const { cwd, store } = await fixture();
+    const at = "2026-08-14T10:00:00.000Z";
+    const firing = store.allocateFiring({ jobId: "digest", scheduledAt: at, observedAt: at, trigger: "scheduled" });
+    store.recordResult({ ...succeeded(firing, ""), metadata: { turnDisposition: "silent" } });
+    expect(store.lastRun("digest")).toMatchObject({ status: "succeeded", turnDisposition: "silent" });
+    expect(store.lastRun("digest")?.text).toBe("");
+    const db = new DatabaseSync(resolveCronControlPaths(cwd).database, { readOnly: true });
+    try { expect(db.prepare("SELECT text, turn_disposition FROM cron_runs WHERE run_id = ?").get(firing.runId))
+      .toMatchObject({ text: "", turn_disposition: "silent" }); }
+    finally { db.close(); }
+  });
+  it("does not parse a sentinel when an explicit visible disposition is recorded", async () => {
+    const { store } = await fixture();
+    const at = "2026-08-14T11:00:00.000Z";
+    const firing = store.allocateFiring({ jobId: "digest", scheduledAt: at, observedAt: at, trigger: "scheduled" });
+    store.recordResult({ ...succeeded(firing, "Narration\nNOTHING_TO_REPORT"), metadata: { turnDisposition: "visible" } });
+    expect(store.lastRun("digest")).toMatchObject({ turnDisposition: "visible", text: "Narration\nNOTHING_TO_REPORT" });
+  });
+
   it.each(["", " nothing_to_report ", "Checked everything\nNOTHING_TO_REPORT", `${"Narration ".repeat(20000)}\nNOTHING_TO_REPORT`])("normalizes full suppressed text before summary/detail byte bounds", async (text) => {
     const { cwd, store } = await fixture();
     const at = "2026-08-14T10:00:00.000Z";

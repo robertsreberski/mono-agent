@@ -1398,6 +1398,74 @@ describe("pi-native AgentHarness bridge", () => {
     expect(result.diagnostics).toMatchObject({ max_turns_hit: false, turn_count: 1 });
   });
 
+  it("certifies a sole terminal FinishSilently call at the max-turn ceiling", async () => {
+    const model = setup();
+    faux.setResponses([fauxAssistantMessage([fauxToolCall("FinishSilently", {}, { id: "silent-1" })])]);
+    const result = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "Check the scheduled job" }],
+      allowedTools: ["FinishSilently"],
+      toolContext: createToolContext({ workspace: sessionsRoot }),
+      finishSilentlyController: { eligible: () => true },
+      maxTurns: 1,
+    }));
+    expect(result).toMatchObject({ text: "", error: null, turnDisposition: "silent" });
+    expect(result.diagnostics).toMatchObject({ max_turns_hit: false });
+    expect(result.events.some((event) => event.type === "user"
+      && event.message?.content?.some((part) => part.type === "tool_result"))).toBe(true);
+  });
+
+  it("never exposes FinishSilently on an interactive request without a controller", async () => {
+    const model = setup();
+    faux.setResponses([(context) => {
+      expect(getCurrentTools(context.messages).map((tool) => tool.name)).not.toContain("FinishSilently");
+      return fauxAssistantMessage([fauxText("Visible answer")]);
+    }]);
+    const result = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "Hello" }],
+      allowedTools: ["FinishSilently"],
+      toolContext: createToolContext({ workspace: sessionsRoot }),
+    }));
+    expect(result.turnDisposition).toBeUndefined();
+  });
+
+  it("refuses narrated and mixed-batch silent calls without certifying silence", async () => {
+    const model = setup();
+    for (const content of [
+      [fauxText("Earlier answer"), fauxToolCall("FinishSilently", {}, { id: "silent-narrated" })],
+      [fauxToolCall("FinishSilently", {}, { id: "silent-mixed" }), fauxToolCall("Read", { file_path: "unused" }, { id: "read-mixed" })],
+    ]) {
+      faux.setResponses([fauxAssistantMessage(content), fauxAssistantMessage([fauxText("Visible answer")])]);
+      const result = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "Check" }],
+        allowedTools: ["FinishSilently", "Read"],
+        toolContext: createToolContext({ workspace: sessionsRoot }),
+        finishSilentlyController: { eligible: () => true },
+      }));
+      expect(result.turnDisposition).toBeUndefined();
+      expect(result.events.some((event) => event.type === "user"
+        && event.message?.content?.some((part) => part.type === "tool_result"
+          && part.is_error === true && part.content.includes(content[0].type === "text" ? "visible_content" : "not_sole_call")))).toBe(true);
+    }
+  });
+
+  it("does not certify an ineligible request", async () => {
+    const model = setup();
+    faux.setResponses([
+      fauxAssistantMessage([fauxToolCall("FinishSilently", {}, { id: "silent-denied" })]),
+      fauxAssistantMessage([fauxText("Visible answer")]),
+    ]);
+    const result = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "Check" }],
+      allowedTools: ["FinishSilently"],
+      toolContext: createToolContext({ workspace: sessionsRoot }),
+      finishSilentlyController: { eligible: () => false },
+    }));
+    expect(result.turnDisposition).toBeUndefined();
+    expect(result.events.some((event) => event.type === "user"
+      && event.message?.content?.some((part) => part.type === "tool_result"
+        && part.is_error === true && part.content.includes("ineligible_turn")))).toBe(true);
+  });
+
   it("forwards maxRetries to the provider stream options", async () => {
     const model = setup();
     let seenOptions = null;

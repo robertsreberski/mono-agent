@@ -115,7 +115,9 @@ export function ensureProcessJobsService(
         settings,
         registration,
         wake: async (input) => await runWithProcessJobWakeContext(
-          { jobId: input.projection.jobId, chainDepth: input.chainDepth },
+          { jobId: input.projection.jobId, chainDepth: input.chainDepth,
+            pendingQuestion: input.projection.kind === "internal"
+              && input.projection.peerQuestion?.state === "awaiting_answer" },
           async () => await routeProcessJobWake({
             conversationId: input.conversationId,
             text: input.prompt,

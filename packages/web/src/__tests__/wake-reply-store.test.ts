@@ -75,6 +75,18 @@ describe("host wake terminal reply persistence", () => {
     } finally { s.store.close(); }
   });
 
+  it("does not push a host-certified textless wake", async () => {
+    const s = await setup();
+    try {
+      s.reserve(); s.store.associateProcessJobWakeTurn(s.deliveryKey, s.turn.turnId);
+      s.store.applyStreamFrames(s.turn.turnId, [reasoning]);
+      s.store.completeTurn(s.turn.turnId, "", { turnDisposition: "silent" }, undefined,
+        { hostWakeDeliveryKey: s.deliveryKey });
+      expect(s.parts().filter((part) => part.type === "text")).toEqual([]);
+      s.advance(); expect(s.store.claimDueWebPushDeliveries(10)).toEqual([]);
+    } finally { s.store.close(); }
+  });
+
   it("suppresses an already pending sentinel-only push on late settlement", async () => {
     const s = await setup();
     try {

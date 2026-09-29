@@ -12,6 +12,7 @@ import type {
 import {
   AgentResponseCancelledError,
   formatLiveInputActivityLine,
+  markSilentTurnAlreadyVisible,
   suppressesNotification,
 } from "@mono-agent/agent-contracts";
 
@@ -248,6 +249,7 @@ export function createAgentResponder(options: {
       ? `${sessionRolloverNotice(boundary)}\n\n`
       : undefined;
     if (notice !== undefined) {
+      markSilentTurnAlreadyVisible(request);
       runtimeEventStream.enqueueText(notice);
     }
     // Per-turn scratch: tool_timing arrives strictly before its tool_result and
@@ -313,7 +315,8 @@ export function createAgentResponder(options: {
       throw new AgentHarnessFailureError(response.failure);
     }
 
-    const text = composeResponseText(response.text, notice, routing);
+    const text = response.metadata?.turnDisposition === "silent"
+      ? "" : composeResponseText(response.text, notice, routing);
     return {
       ...(text === undefined ? {} : { text }),
       metadata: { ...response.metadata },

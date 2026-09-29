@@ -34,6 +34,7 @@ export async function buildSuccessfulTurn(
   runId: string,
   sender?: AgentMessageSender,
   request?: AgentHarnessRequest,
+  silentTurn = false,
 ): Promise<{
   readonly capturedAt: string;
   readonly messages: readonly HistoryMessage[];
@@ -41,9 +42,11 @@ export async function buildSuccessfulTurn(
 }> {
     const userLiveInputs = liveInputs;
     const capturedAt = options.now?.().toISOString() ?? new Date().toISOString();
-    let assistantHistoryText = assistantText;
+    // Canonical text history cannot represent an empty assistant completion;
+    // this annotation is host-authored, never model prose or the legacy sentinel.
+    let assistantHistoryText = silentTurn ? "[Host: silent completion]" : assistantText;
     try {
-      assistantHistoryText = await options.turnHistoryEnricher?.enrichAssistantHistory({
+      if (!silentTurn) assistantHistoryText = await options.turnHistoryEnricher?.enrichAssistantHistory({
         runId,
         conversationId,
         assistantText,

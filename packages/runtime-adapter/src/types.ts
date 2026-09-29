@@ -294,6 +294,8 @@ function optionalLiteral(
 }
 
 export interface RuntimeResult {
+  /** Certified only by a successful, terminal FinishSilently attempt. */
+  readonly turnDisposition?: "silent" | "visible";
   readonly subagentQuestion?: { question: string; options?: string[] };
   readonly text?: string | null;
   readonly structuredResult?: unknown;
@@ -452,6 +454,8 @@ export interface RuntimeRunOptions {
   readonly hostCapabilities?: Readonly<Record<string, { readonly available: boolean; readonly reason?: string; readonly limits?: Readonly<Record<string, number | null>> }>>;
 
   readonly askParentController?: { submit(question: { question: string; options?: string[] }): Promise<void> };
+  /** Request-bound host authority, never a model-provided request flag. */
+  readonly finishSilentlyController?: { eligible(): boolean };
   /** Host-owned opt-in for settled durable terminal recovery. */
   readonly sessionRecovery?: { runId: string; revision: number } | undefined;
   readonly model: RuntimeModelReference;

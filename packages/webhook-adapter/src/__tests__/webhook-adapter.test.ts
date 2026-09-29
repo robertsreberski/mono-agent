@@ -4,7 +4,7 @@ import { createConnection } from "node:net";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { MAX_AGENT_REPLY_PARTS, type AgentReplyPart, type AgentResponder } from "@mono-agent/agent-contracts";
+import { MAX_AGENT_REPLY_PARTS, isNativeNotifyRequest, type AgentReplyPart, type AgentResponder } from "@mono-agent/agent-contracts";
 
 import {
   NATIVE_NOTIFY_CALLBACK_CHANNEL_IDS,
@@ -537,6 +537,7 @@ describe("Webhook adapter", () => {
     const results: unknown[] = [];
     const responder: AgentResponder = {
       async respond(request, stream) {
+        expect(isNativeNotifyRequest(request)).toBe(true);
         seen.push(request);
         await stream.append(`digest: ${request.text}`);
         return {};

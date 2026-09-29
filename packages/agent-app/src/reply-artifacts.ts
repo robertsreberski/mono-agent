@@ -772,7 +772,9 @@ export function createReplyArtifactService(options: ReplyArtifactServiceOptions)
           const parts = mergeReplyParts(response.parts, deliverable);
           await retainRun(runId);
           retainedRunId = runId;
-          return { ...response, parts };
+          return { ...response, parts,
+            ...(response.metadata?.turnDisposition === "silent"
+              ? { metadata: { ...response.metadata, turnDisposition: "visible" } } : {}) };
         } finally {
           await Promise.all([...context.runIds]
             .filter((runId) => runId !== retainedRunId)

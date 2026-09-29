@@ -1355,6 +1355,7 @@ const PROCESS_JOB: ProcessJobProjection = {
 
 async function runningWebChannel(
   deliverNotification: (input: DeliverWebNotificationInput) => Promise<unknown>,
+  response: { text: string; metadata?: { turnDisposition?: "silent" } } = { text: "Job finished safely." },
 ): Promise<RunningChannel> {
   const driver = createTuiChannelDriver({
     adapterFactory: async (): Promise<TuiAdapterStartResult> => ({
@@ -1373,7 +1374,7 @@ async function runningWebChannel(
   const start = startAppOwnedTuiChannel(driver, {
     ...baseInput(),
     responder: {
-      respond: async () => ({ text: "Job finished safely." }),
+      respond: async () => response,
       deliverVerbatim: async () => undefined,
     },
     sourceId: "agent-one",
@@ -1493,6 +1494,16 @@ describe("web process-job wake classification", () => {
         code: "process_job_origin_mismatch",
         retryable: false,
       });
+  });
+
+  it("accepts a typed silent wake without classifying empty_response", async () => {
+    const deliverNotification = vi.fn(async () => ({ threadId: "thread-1", duplicate: false,
+      delivery: { delivered: true } }));
+    const running = await runningWebChannel(deliverNotification, { text: "", metadata: { turnDisposition: "silent" } });
+    await expect(running.processJobs?.wake(wakeInput)).resolves.toMatchObject({
+      delivered: true, code: "delivered", channelId: "tui", historyRecorded: true,
+    });
+    expect(deliverNotification).toHaveBeenCalledTimes(1);
   });
 
   it("reports a delivered wake unchanged", async () => {

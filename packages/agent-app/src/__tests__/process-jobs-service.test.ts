@@ -126,14 +126,18 @@ describe("held subagent obligations", () => {
 });
 
 describe("process job service", () => {
-  it("settles an exact silent wake as suppressed even when the adapter reports no answer", async () => {
+  it.each([
+    { text: "NOTHING_TO_REPORT" },
+    { text: "", metadata: { turnDisposition: "silent" as const } },
+  ])("settles an exact silent wake as suppressed even when the adapter reports no answer: %j", async (answer) => {
     const fixture = await createFixture();
     const completion = deferred<ProcessJobProcessResult>();
-    const responder = bindProcessJobWakeContextToResponder({ respond: async () => ({ text: "NOTHING_TO_REPORT" }) });
+    const responder = bindProcessJobWakeContextToResponder({ respond: async () => answer });
     const wake = vi.fn(async (input: ProcessJobWakeInput) => await runWithProcessJobWakeContext(
       { jobId: input.projection.jobId, chainDepth: input.chainDepth }, async () => {
         expect(await responder.respond({ conversationId: ORIGIN.conversationId, text: input.prompt,
-          abortSignal: new AbortController().signal, metadata: {} }, {} as never)).toEqual({ text: "" });
+          abortSignal: new AbortController().signal, metadata: {} }, {} as never))
+          .toEqual({ ...answer, text: "" });
         return { delivered: false as const, code: "agent_produced_no_answer", retryable: false };
       }, input.deliveryKey));
     const service = await startService(fixture, { wake });

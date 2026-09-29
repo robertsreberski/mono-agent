@@ -348,7 +348,7 @@ When the web console's header bell is enabled, a new marked conversation is comm
 
 ### Staying silent ("nothing to report")
 
-To send nothing for a tick or request, the agent either produces an **empty final answer** or replies with the reserved sentinel `NOTHING_TO_REPORT` (matched trimmed and case-insensitively, either as the whole answer or as its final line — never as a substring). In either case no notification is posted.
+To send nothing for a `notify: true` tick or request, call `FinishSilently({})` alone without narration or attachments. The host records the silent disposition and posts no notification. When the tool is unavailable, reply with the reserved sentinel `NOTHING_TO_REPORT` (matched trimmed and case-insensitively, either as the whole answer or as its final line — never as a substring). An empty final answer is an `empty_response` failure.
 
 ### How native notification differs from send tools
 

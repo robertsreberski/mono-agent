@@ -221,6 +221,18 @@ describe("JsonlRunRecorder", () => {
     expect(String(summary.systemPrompt).length).toBeGreaterThan(1_000);
   });
 
+  it("persists an empty assistant text and typed disposition only on successful silence", async () => {
+    const dir = await tempDir();
+    const recorder = createJsonlRunRecorder({ runId: "run:silent", conversationId: "cron:fixture", artifactDir: dir });
+    const summary = await recorder.finish({ turnDisposition: "silent" });
+    expect(summary).toMatchObject({ status: "succeeded", turnDisposition: "silent", assistantText: "" });
+    const onDisk = JSON.parse(await readFile(summary.artifactPaths[1]!, "utf8")) as Record<string, unknown>;
+    expect(onDisk).toMatchObject({ turnDisposition: "silent", assistantText: "" });
+    const failed = createJsonlRunRecorder({ runId: "run:failed", conversationId: "cron:fixture", artifactDir: dir });
+    expect(await failed.finish({ turnDisposition: "silent", error: "failed" }))
+      .toMatchObject({ status: "failed", turnDisposition: "visible" });
+  });
+
   it("captures events and writes redacted summary artifacts", async () => {
     const dir = await tempDir();
     let now = 1000;

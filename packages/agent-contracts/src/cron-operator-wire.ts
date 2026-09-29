@@ -67,6 +67,7 @@ export interface CronOperatorRunBase {
   readonly sequence: number;
   readonly trigger: CronOperatorRunTrigger;
   readonly status: CronOperatorRunStatus;
+  readonly turnDisposition?: "silent" | "visible";
   readonly startedAt?: string;
   readonly completedAt?: string;
   readonly artifactRunId?: string;
@@ -138,7 +139,7 @@ const JOB_KEYS = [
   "effectiveEnabled", "nextRunAt", "health", "lastRun", "activeRunId",
 ] as const;
 const RUN_BASE_KEYS = [
-  "projection", "runId", "jobId", "scheduledAt", "orderedAt", "sequence", "trigger", "status",
+  "projection", "runId", "jobId", "scheduledAt", "orderedAt", "sequence", "trigger", "status", "turnDisposition",
   "startedAt", "completedAt", "artifactRunId", "text", "error", "failureKind", "blockedByRunId",
   "blockedByTrigger", "queueDepth", "replyPartOutcomes", "eventCount", "fieldsTruncated", "eventsTruncated",
 ] as const;
@@ -257,6 +258,8 @@ function parseRunBase(
       "admitted", "running", "queued", "succeeded", "failed", "cancelled", "skipped_overlap", "skipped_gate",
       "dropped",
     ])
+    || (run.turnDisposition !== undefined
+      && (run.status !== "succeeded" || !oneOf(run.turnDisposition, ["silent", "visible"])))
     || !Number.isSafeInteger(run.eventCount)
     || Number(run.eventCount) < 0
     || Number(run.eventCount) > MAX_CRON_OPERATOR_DETAIL_EVENTS
@@ -301,6 +304,7 @@ function parseRunBase(
     sequence: run.sequence as number,
     trigger: run.trigger as CronOperatorRunTrigger,
     status: run.status as CronOperatorRunStatus,
+    ...(run.turnDisposition === undefined ? {} : { turnDisposition: run.turnDisposition as "silent" | "visible" }),
     ...(run.startedAt === undefined ? {} : { startedAt: run.startedAt as string }),
     ...(run.completedAt === undefined ? {} : { completedAt: run.completedAt as string }),
     ...(run.artifactRunId === undefined ? {} : { artifactRunId: run.artifactRunId as string }),

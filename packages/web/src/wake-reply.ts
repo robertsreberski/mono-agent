@@ -2,10 +2,16 @@ import { classifyNotifySuppression } from "@mono-agent/agent-contracts";
 import type { WebMessagePart } from "./contracts.js";
 
 /** Call only after the store verifies a host-owned wake delivery association. */
-export function normalizeWakeTerminalReply(parts: readonly WebMessagePart[], exactOnly = false): {
+export function normalizeWakeTerminalReply(parts: readonly WebMessagePart[], exactOnly = false, disposition?: "silent" | "visible"): {
   parts: WebMessagePart[];
   changed: boolean;
 } {
+  if (disposition === "silent") {
+    // Typed silence is host-certified; a late rich/error/question part wins.
+    if (hasWakeReplyContent(parts)) return { parts: [...parts], changed: false };
+    return { parts: [...parts], changed: false };
+  }
+  if (disposition === "visible") return { parts: [...parts], changed: false };
   const explicit = parts.flatMap((part, index) => isAssistantMessageBoundary(part, "assistant_message_boundary") ? [index] : []);
   // Current Pi emits usage and an explicit boundary for the same message.
   // Usage is a compatibility fallback, never an additional message end.

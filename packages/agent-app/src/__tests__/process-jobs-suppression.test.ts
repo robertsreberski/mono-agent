@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentResponder, AgentResponse } from "@mono-agent/agent-contracts";
-import { bindProcessJobWakeContextToResponder, consumeSilentProcessJobWake, runWithProcessJobWakeContext } from "../process-jobs-context.js";
+import { bindProcessJobWakeContextToResponder, consumeSilentProcessJobWake, processJobWakeContextForRequest, runWithProcessJobWakeContext } from "../process-jobs-context.js";
 import { MemoryRetrievalService, type SharedRecallStore } from "../memory-retrieval.js";
 
 const keySymbol = Symbol.for("mono-agent.process-job-wake.delivery-key.v1");
@@ -20,6 +20,30 @@ describe("exact process-job wake silence", () => {
     expect(consumeSilentProcessJobWake("process-job:other")).toBe(false);
     expect(consumeSilentProcessJobWake(key)).toBe(true);
     expect(consumeSilentProcessJobWake(key)).toBe(false);
+  });
+
+  it("settles only a certified silent active wake, never a forged or stale delivery key", async () => {
+    const response = { text: "", metadata: { turnDisposition: "silent" as const } };
+    const responder = bindProcessJobWakeContextToResponder({ respond: async () => response });
+    expect(await responder.respond(request("process-job:expired"), stream)).toEqual(response);
+    const key = "process-job:accepted";
+    await runWithProcessJobWakeContext({ jobId: "accepted", chainDepth: 1 }, async () => {
+      expect(await responder.respond(request(key), stream)).toEqual(response);
+    }, key);
+    expect(consumeSilentProcessJobWake("process-job:expired")).toBe(false);
+    expect(consumeSilentProcessJobWake(key)).toBe(true);
+  });
+
+  it("retains an awaiting-question blocker on the exact bound request", async () => {
+    const key = "process-job:question";
+    const responder = bindProcessJobWakeContextToResponder({ respond: async (input) => {
+      expect(processJobWakeContextForRequest(input)).toMatchObject({
+        kind: "resolved", context: { pendingQuestion: true },
+      });
+      return { text: "Question pending" };
+    } });
+    await runWithProcessJobWakeContext({ jobId: "question", chainDepth: 1, pendingQuestion: true },
+      async () => { await responder.respond(request(key), stream); }, key);
   });
 
   it.each<AgentResponse>([

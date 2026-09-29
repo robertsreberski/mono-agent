@@ -151,9 +151,13 @@ export function responseMetadata(
   runtimeResult?: RuntimeResult,
 ): AgentHarnessResponse["metadata"] {
   const externalSummary = summary === undefined ? undefined : externalResponseSummary(summary);
+  const disposition = runtimeResult?.turnDisposition === "silent"
+    && (summary?.status !== "succeeded" || runtimeResult.cancelled === true || !!runtimeResult.error)
+    ? "visible" : runtimeResult?.turnDisposition;
   return {
     runId,
     conversationId: request.conversationId,
+    ...(disposition === undefined ? {} : { turnDisposition: disposition }),
     contextSources: context?.metadata.sources ?? [],
     contextSectionIds: context?.sections.map((section) => section.id) ?? [],
     ...(runtimeResult === undefined ? {} : { runtime: runtimeMetadata(runtimeResult) }),

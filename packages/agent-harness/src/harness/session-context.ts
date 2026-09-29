@@ -339,7 +339,7 @@ function notifyDeliveryGuidance(metadata: Record<string, unknown> | undefined): 
   return [
     "This run was triggered on a schedule or by a webhook, and your final reply is delivered to the user on their channel exactly as you write it.",
     "Write your final message as the finished notification: no preface, no meta-commentary, no narration of your steps, and do NOT call any tool to send it — delivery is automatic and posts your reply verbatim.",
-    `If there is nothing worth telling the user, reply with exactly \`${NOTHING_TO_REPORT_SENTINEL}\` and nothing else; no notification is sent.`,
+    `If there is nothing worth telling the user, call FinishSilently({}) as your sole tool call, with no narration or attachments. If that tool is unavailable, reply with exactly \`${NOTHING_TO_REPORT_SENTINEL}\` and nothing else; no notification is sent. An empty final answer is a failure, not silence.`,
   ].join("\n\n");
 }
 

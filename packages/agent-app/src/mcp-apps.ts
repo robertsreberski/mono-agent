@@ -967,7 +967,9 @@ export function createMcpAppService(options: McpAppServiceOptions): McpAppServic
           const merged = mergeReplyParts(response.parts, finalized);
           await retainRun(runId);
           retainedRunId = runId;
-          return { ...response, parts: merged };
+          return { ...response, parts: merged,
+            ...(response.metadata?.turnDisposition === "silent"
+              ? { metadata: { ...response.metadata, turnDisposition: "visible" } } : {}) };
         } finally {
           await Promise.all([...context.runIds]
             .filter((runId) => runId !== retainedRunId)

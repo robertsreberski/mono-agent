@@ -39,7 +39,7 @@ same durable outcomes without changing the stored answer text.
 
 **Failover attribution.** A notification whose run did not execute on the configured primary model carries one appended line naming the route that actually answered (see [Fallback & failover](/runtime/fallback/#who-sees-a-failover)). It is the only text the framework ever adds to an otherwise verbatim payload, and it appears only when a genuine route change happened.
 
-**Staying silent.** To send nothing for this tick, have the agent produce an **empty final answer** or reply with the reserved sentinel `NOTHING_TO_REPORT` (matched trimmed and case-insensitively, either as the whole answer or as its final line — never as a substring). In either case no notification is sent. Replying with the sentinel alone is the contract; a model that narrates first and ends with the marker is still treated as silent, and the run logs a warning so the off-contract answer stays visible. Suppression wins over attribution: a silent tick stays silent even when the run failed over.
+**Staying silent.** On a `notify: true` run, the agent can call `FinishSilently({})` alone, without answer narration or attachments. This ends the turn with a host-recorded silent disposition; no notification is sent. If the tool is unavailable, reply with the reserved sentinel `NOTHING_TO_REPORT` (matched trimmed and case-insensitively, either as the whole answer or as its final line — never as a substring). An empty final answer is an `empty_response` failure, not a way to finish silently. Replying with the sentinel alone is the contract; a model that narrates first and ends with the marker is still treated as silent, and the run logs a warning so the off-contract answer stays visible. Suppression wins over attribution: a silent tick stays silent even when the run failed over.
 
 The web console omits successful silent runs from its conversation feed, message
 counts, previews and search. Their compact run history remains retained separately;
@@ -156,7 +156,7 @@ notify: true
 notifyConversationId: telegram:42
 notifyFailureCooldownHours: 6
 ---
-Summarize yesterday's unread items. Your final answer is delivered verbatim; reply NOTHING_TO_REPORT if there is nothing new.
+Summarize yesterday's unread items. Your final answer is delivered verbatim; call FinishSilently({}) alone if there is nothing new; otherwise fall back to NOTHING_TO_REPORT if the tool is unavailable.
 ```
 
 :::caution

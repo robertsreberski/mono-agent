@@ -350,10 +350,14 @@ without `background: true` is invalid. This preference survives restart;
 older records retain the default wake behavior. Cancellation never restarts a
 command.
 
-A genuine completion wake can answer with exactly `NOTHING_TO_REPORT` to
-suppress delivery. Narration and rich reply parts remain visible. The host
+A genuine completion wake can call `FinishSilently({})` alone, without narration
+or attachments, to end with a host-recorded silent disposition. If that tool is
+unavailable, answering with exactly `NOTHING_TO_REPORT` still suppresses
+delivery. Narration and rich reply parts remain visible. The host
 matches the exact active delivery key; unrelated and stale keys cannot silence
-another turn. Web removes the sentinel from the settled reply and emits no
+another turn. Web wake admission has parity with the sentinel's exact live-flight
+binding, not stronger authentication: an operator client that knows a live key
+may submit another turn using it. Web removes the sentinel from the settled reply and emits no
 response push for a reply without visible content.
 
 A timeout before the destination confirms steering or durably admits the exact

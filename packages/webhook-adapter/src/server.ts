@@ -8,6 +8,7 @@ import {
   DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST,
   isAgentResponseCancelledError,
   isDeliverableConversation,
+  registerNativeNotifyRequest,
   unsupportedReplyPartDeliveryOutcomes,
   type AgentAttachment,
   type AgentMessageStream,
@@ -610,6 +611,7 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
       });
       void runResponder({
         request,
+        nativeNotify: endpoint.notify === true,
         ...(resolveRunNotifyConversationId === undefined ? {} : { resolveNotifyConversationId: resolveRunNotifyConversationId }),
         statusUrl,
         receivedAt,
@@ -634,6 +636,7 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
 
     const status = await runResponder({
       request,
+      nativeNotify: endpoint.notify === true,
       ...(resolveRunNotifyConversationId === undefined ? {} : { resolveNotifyConversationId: resolveRunNotifyConversationId }),
       statusUrl,
       receivedAt,
@@ -757,6 +760,7 @@ function authorize(req: Request, res: Response, apiKey: string | undefined): boo
 
 async function runResponder(input: {
   readonly request: WebhookInvocationRequest;
+  readonly nativeNotify: boolean;
   readonly resolveNotifyConversationId?: (abortSignal?: AbortSignal) => Promise<string | undefined>;
   readonly statusUrl: string;
   readonly receivedAt: string;
@@ -794,6 +798,7 @@ async function runResponder(input: {
       // type is not a runtime trust boundary, so completion delivery must never
       // depend on this object (or its replyTo) remaining unmodified.
       const responderRequest = withSnapshottedReplyTarget(input.request, selectedNotifyConversationId);
+      if (input.nativeNotify) registerNativeNotifyRequest(responderRequest);
       const result = await input.options.responder.respond(responderRequest, stream);
       await stream.finish(result.text, {
         ...(result.parts === undefined ? {} : { parts: result.parts }),

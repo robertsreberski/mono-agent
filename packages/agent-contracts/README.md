@@ -32,7 +32,9 @@ network binding, bearer tokens, attachments, and stream framing.
 
 Process-job projections distinguish terminal wake outcomes: `delivered`,
 `failed`, `unknown` (receipt uncertainty, never auto-replayed), and
-`suppressed` (explicit completion optout or exact sentinel-only reply).
+`suppressed` (explicit completion optout, a host-certified silent turn disposition,
+or exact sentinel-only reply). `AgentResponseMetadata.turnDisposition` is optional;
+when absent, consumers retain the legacy text classifier.
 Older projection fields remain compatible; chain depths accept up to 64.
 
 ```bash
