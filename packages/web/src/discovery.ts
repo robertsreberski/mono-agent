@@ -267,26 +267,26 @@ async function resolveOperatorApiKey(
   source: TraceSourceListItem,
   env: Readonly<Record<string, string | undefined>>,
 ): Promise<string | undefined> {
+  if (source.configPath !== undefined) {
+    // Managed workers publish only the path/fingerprint of their selected
+    // dotenv. Read the one exact key locally; never copy secret values into the
+    // trace registry or browser-facing agent metadata.
+    const dotenvPath = dotenvPathFromMetadata(source);
+    if (dotenvPath !== undefined) {
+      const fromDotenv = await readDotenvOperatorApiKey(dotenvPath);
+      if (fromDotenv !== undefined) return fromDotenv;
+    }
+
+    try {
+      const parsed = JSON.parse(await readOwnerRegularFile(source.configPath)) as { tui?: { apiKey?: unknown } };
+      const key = typeof parsed.tui?.apiKey === "string" ? parsed.tui.apiKey.trim() : "";
+      if (key.length > 0) return key;
+    } catch {
+      // A missing or unreadable source key can still use the shared ambient key.
+    }
+  }
   const fromEnv = env.MONO_AGENT_TUI_API_KEY?.trim();
-  if (fromEnv !== undefined && fromEnv.length > 0) return fromEnv;
-  if (source.configPath === undefined) return undefined;
-
-  // Managed workers publish only the path/fingerprint of their selected
-  // dotenv. Read the one exact key locally; never copy secret values into the
-  // trace registry or browser-facing agent metadata.
-  const dotenvPath = dotenvPathFromMetadata(source);
-  if (dotenvPath !== undefined) {
-    const fromDotenv = await readDotenvOperatorApiKey(dotenvPath);
-    if (fromDotenv !== undefined) return fromDotenv;
-  }
-
-  try {
-    const parsed = JSON.parse(await readOwnerRegularFile(source.configPath)) as { tui?: { apiKey?: unknown } };
-    const key = typeof parsed.tui?.apiKey === "string" ? parsed.tui.apiKey.trim() : "";
-    return key.length === 0 ? undefined : key;
-  } catch {
-    return undefined;
-  }
+  return fromEnv === undefined || fromEnv.length === 0 ? undefined : fromEnv;
 }
 
 function dotenvPathFromMetadata(source: TraceSourceListItem): string | undefined {

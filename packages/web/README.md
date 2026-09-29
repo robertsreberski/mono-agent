@@ -251,8 +251,10 @@ Private IP literals, localhost, the machine hostname, and its exact `.local`
 name are accepted as browser hosts. Set `MONO_AGENT_WEB_ALLOWED_HOSTS` to a
 comma-separated list of any additional exact DNS names (for example the node's
 Tailscale DNS name); suffix wildcards are intentionally not trusted. When a
-managed agent protects its loopback operator endpoint, discovery reads only
-`MONO_AGENT_TUI_API_KEY` from that agent's attested, owner-owned dotenv file.
+managed agent protects its loopback operator endpoint, discovery prefers
+`MONO_AGENT_TUI_API_KEY` from that agent's attested, owner-owned dotenv file,
+then its config `tui.apiKey`. Only agents publishing neither key use the
+console process's ambient `MONO_AGENT_TUI_API_KEY` as a shared-key fallback.
 
 One Dashboard is the console's whole navigation surface: a fixed 340-pixel left
 column on desktop, and the entrance screen on narrow touch screens. Its header
