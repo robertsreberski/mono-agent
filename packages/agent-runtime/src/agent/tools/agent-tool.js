@@ -467,7 +467,9 @@ export function createAgentTool(subagents, context = {}, continuation) {
             cleanup: () => instances.releaseReservation(retained.id, reservation),
             run: async (childSignal, _writeOutput, reportProgress, execution) => {
               try {
-                const result = await runTurn(childSignal, reportProgress, execution);
+                let result;
+                try { result = await runTurn(childSignal, reportProgress, execution); }
+                catch (error) { throw markChildRunFailure(error); }
                 return { answer: result.answer, status: result.details.subagent.status, ...(result.details.subagent.question ? { question: result.details.subagent.question } : {}), childStillBusy: result.details.subagent.childStillBusy === true,
                   output: JSON.stringify({ instanceId: retained.id, ...result.details.subagent,
                     answer: result.content[0].text, artifacts: result.details.tool_payload_saved_paths ?? [] }) };
@@ -482,6 +484,10 @@ export function createAgentTool(subagents, context = {}, continuation) {
         } catch (error) {
           try { await instances.releaseReservation(retained.id, reservation); }
           catch { throw Object.assign(new Error("Subagent ownership is unavailable; the turn remains fenced."), { code: "subagent_owner_unavailable" }); }
+          // The child's own run failures (e.g. provider admission refused) are
+          // framework-authored and keep their text; only controller/service
+          // refusals are replaced by their allowlisted public message.
+          if (isChildRunFailure(error)) throw error;
           const failure = publicBackgroundStartFailure(error);
           throw Object.assign(new Error(failure.message), { code: failure.code });
         }
@@ -1809,4 +1815,21 @@ function detachedUsage(result, observed = {}) {
     cacheRead: numberOrZero(usage.cache_read_tokens ?? usage.cacheRead ?? usage.cacheReadTokens ?? observed.cacheRead),
     cacheWrite: numberOrZero(usage.cache_write_tokens ?? usage.cache_creation_tokens ?? usage.cacheWrite ?? usage.cacheWriteTokens ?? observed.cacheWrite),
     costUsd: numberOrZero(usage.cost_usd ?? result?.cost?.total ?? result?.cost?.totalUsd ?? usage.cost?.total ?? observed.costUsd) };
+}
+
+const CHILD_RUN_FAILURE = Symbol("mono-agent.childRunFailure");
+
+/** Tag an error raised by this tool's own child run so start-failure sanitizing leaves it intact. */
+function markChildRunFailure(error) {
+  try {
+    if (typeof error === "object" && error !== null && Object.isExtensible(error)) {
+      Object.defineProperty(error, CHILD_RUN_FAILURE, { value: true });
+    }
+  } catch { /* Untagged errors are sanitized, which is the safe default. */ }
+  return error;
+}
+
+function isChildRunFailure(error) {
+  try { return typeof error === "object" && error !== null && Object.getOwnPropertyDescriptor(error, CHILD_RUN_FAILURE)?.value === true; }
+  catch { return false; }
 }

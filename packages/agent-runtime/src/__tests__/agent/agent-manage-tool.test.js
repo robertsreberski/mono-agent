@@ -521,7 +521,7 @@ describe("AgentManage retarget", () => {
     const f = retarget({ backgroundSubagentController: { startInternal: vi.fn(async () => { throw new Error("job admission refused"); }) } });
     await f.agent.execute("a", { prompt: "first", persist: true, id: "critic-1" });
     f.records.get("critic-1").status = "idle";
-    await expect(f.send.execute("b", { id: "critic-1", message: "detached", background: true, model: "sol" })).rejects.toThrow(/job admission refused/);
+    await expect(f.send.execute("b", { id: "critic-1", message: "detached", background: true, model: "sol" })).rejects.toThrow(/process-job controller is unavailable/);
     expect(f.instances.releaseReservation).toHaveBeenCalled();
     expect(f.records.get("critic-1").definition.model).toEqual(SOL);
   });
