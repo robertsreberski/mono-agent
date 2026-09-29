@@ -225,6 +225,7 @@ function validProcessJobStartResult(value) {
   if (value.state !== "queued" && value.state !== "starting" && value.state !== "running") return false;
   if (value.maxRuntimeMs !== undefined
     && (!Number.isSafeInteger(value.maxRuntimeMs) || value.maxRuntimeMs <= 0)) return false;
+  if (value.state !== "queued" && (value.queuePosition !== undefined || value.queueDeadlineAt !== undefined)) return false;
   if (value.queuePosition !== undefined && (!Number.isSafeInteger(value.queuePosition) || value.queuePosition < 1)) return false;
   if (value.queueDeadlineAt !== undefined && (typeof value.queueDeadlineAt !== "string"
     || !Number.isFinite(Date.parse(value.queueDeadlineAt)) || new Date(value.queueDeadlineAt).toISOString() !== value.queueDeadlineAt)) return false;
