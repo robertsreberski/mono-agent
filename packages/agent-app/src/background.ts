@@ -1541,7 +1541,11 @@ export async function statusBackground(
     launchdServiceInfo(deps.runner, target.label, deps.getuid()),
   ]);
   const matchingSources = classified.filter((entry) => entry.matches).map((entry) => entry.source);
-  const snapshotRefused = await readLaunchdSnapshotRefusal(target.label, target.paths);
+  // Status is diagnostic: unsafe or unreadable refusal state is reported, never fatal.
+  const snapshotRefused = await readLaunchdSnapshotRefusal(target.label, target.paths).catch((error: unknown) => {
+    deps.stderr(ui.errorLine(`Could not read the managed snapshot refusal status: ${error instanceof Error ? error.message : String(error)}`));
+    return false;
+  });
   const recorded = service.pid === undefined
     ? matchingSources[0]
     : matchingSources.find((source) => source.pid === service.pid) ?? matchingSources[0];
