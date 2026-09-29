@@ -107,8 +107,15 @@ export async function deliverWebNotification(
   }
   const bodyText = await readBoundedResponse(response);
   if (!response.ok) {
+    // Job ingress returns 400/invalid_notification only before accepting a
+    // card or wake (request parsing precedes service delivery). Preserve that
+    // narrow refusal separately from timeouts and post-acceptance failures.
+    let rejection: unknown;
+    try { rejection = JSON.parse(bodyText) as unknown; } catch { /* opaque response */ }
+    const rejectedBeforeAcceptance = input.triggerKind === "job" && response.status === 400
+      && asRecord(asRecord(rejection)?.error)?.code === "invalid_notification";
     throw new WebConsoleError(
-      "notification_delivery_failed",
+      rejectedBeforeAcceptance ? "notification_rejected" : "notification_delivery_failed",
       `The web notification ingress responded ${String(response.status)}${bodyText.length === 0 ? "." : `: ${bodyText.slice(0, 300)}`}`,
       502,
     );

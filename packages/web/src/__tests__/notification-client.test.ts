@@ -31,6 +31,24 @@ async function writeIngressRecord(stateDir: string, overrides: Record<string, un
 }
 
 describe("deliverWebNotification", () => {
+  it("distinguishes a pre-acceptance job validation refusal from other HTTP failures", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    await writeIngressRecord(stateDir);
+    const processJob = fakeProcessJob({ conversationId: "web:thread-one" });
+    const input = { sourceId: "agent-one", triggerKind: "job" as const,
+      deliveryKey: processJob.wake.deliveryKey, threadId: "thread-one", processJob,
+      wakePrompt: "Inspect the result." };
+    const refusal = { error: { code: "invalid_notification", message: "processJob must be a strict process-job projection." } };
+    await expect(deliverWebNotification(input, { stateDir, fetchImpl: async () =>
+      Response.json(refusal, { status: 400 }) })).rejects.toMatchObject({ code: "notification_rejected" });
+    await expect(deliverWebNotification(input, { stateDir, fetchImpl: async () =>
+      Response.json(refusal, { status: 409 }) })).rejects.toMatchObject({ code: "notification_delivery_failed" });
+    await expect(deliverWebNotification(input, { stateDir, fetchImpl: async () =>
+      Response.json({ error: { code: "internal_error" } }, { status: 400 }) }))
+      .rejects.toMatchObject({ code: "notification_delivery_failed" });
+  });
   it("reads the private loopback record and makes exactly one bounded authenticated attempt", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);

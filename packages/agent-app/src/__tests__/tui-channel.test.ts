@@ -1442,6 +1442,20 @@ describe("web process-job wake classification", () => {
     });
   });
 
+  it("classifies console pre-acceptance validation rejection as a definite wake failure", async () => {
+    const running = await runningWebChannel(async () => {
+      throw new WebConsoleError("notification_rejected", "HTTP 400: invalid_notification", 502);
+    });
+    await expect(running.processJobs?.wake(wakeInput)).resolves.toMatchObject({
+      delivered: false,
+      code: "process_job_wake_failed",
+      reason: "The web console rejected the process-job notification before accepting its wake.",
+      retryable: false,
+      channelId: "tui",
+    });
+    expect(await running.processJobs?.wake(wakeInput)).not.toHaveProperty("ambiguous");
+  });
+
   it("keeps an ambiguous wake permanent so no job reports twice", async () => {
     for (const code of ["notification_ingress_timeout", "notification_delivery_failed", "invalid_notification_response"]) {
       const running = await runningWebChannel(async () => {

@@ -437,7 +437,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     if (completion !== undefined) return completion;
     let projection = projectProcessJob(record);
     const progress = this.active.get(record.jobId)?.progress;
-    if (projection.kind === "internal" && progress) projection = { ...projection, subagentProgress: progress.snapshot() };
+    if (projection.kind === "internal" && projection.tool !== "PeerAgent" && progress) projection = { ...projection, subagentProgress: progress.snapshot() };
     if (isTerminalProcessJobState(record.state)) return projection;
     const snapshot = this.active.get(record.jobId)?.outputTail.snapshot();
     if (snapshot === undefined) return projection;
@@ -1310,11 +1310,12 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         this.scheduleWake(jobId);
         throw new ProcessJobServiceError("process_job_store_error");
       }
-      const progress = new SubagentJobProgress(pending.redactionSecrets);
+      // PeerAgent reports its answer through output/preview, not subagent telemetry.
+      const progress = pending.request.tool === "PeerAgent" ? undefined : new SubagentJobProgress(pending.redactionSecrets);
       const handle = launchInternalProcessJob(pending.request, current.maxRuntimeMs, current.maxOutputBytes, undefined,
         (chunk) => outputTail.writeStdout(chunk), (event) => this.reportSubagentProgress(jobId, event), Date.parse(startedAt) + current.maxRuntimeMs,
         pending.request.managed ? this.managedExecution(jobId, Date.parse(startedAt) + current.maxRuntimeMs) : undefined);
-      this.active.set(jobId, { ...pending, handle, outputTail, progress });
+      this.active.set(jobId, { ...pending, handle, outputTail, ...(progress ? { progress } : {}) });
       const settlement = handle.completion
         // Settlement closes the mailbox before any reporting can throw, so a
         // steer that arrives after the turn ends is refused rather than queued.
@@ -1480,7 +1481,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         delete active.progressTimer;
         await this.storeMutate("progress.persist", (records) => {
           const record = records.get(jobId);
-          if (record?.kind === "internal" && !isTerminalProcessJobState(record.state)) {
+          if (record?.kind === "internal" && record.tool !== "PeerAgent" && !isTerminalProcessJobState(record.state)) {
             record.subagentProgress = active.progress!.snapshot();
           }
         });
@@ -1544,7 +1545,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
               record.subagentOwnership.publication.state = "pending";
             }
             record.childStillBusy = result.childStillBusy === true;
-            if (finalProgress) record.subagentProgress = finalProgress;
+            if (record.tool !== "PeerAgent" && finalProgress) record.subagentProgress = finalProgress;
             if (!result.peerQuestion) this.pendingPeerRetirements.delete(jobId);
             if (result.peerQuestion && record.tool === "PeerAgent") {
               const redactQuestionText = (text: string, maxBytes: number): string => {
@@ -1569,7 +1570,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
                 ...(early?.questionId === result.peerQuestion.questionId ? { state: early.state } : {}),
                 message: redactQuestionText(result.peerQuestion.message, 2_000), requestedSchema: safeSchema };
             }
-            if (result.question) {
+            if (result.question && record.tool !== "PeerAgent") {
               const options = [...new Set(result.question.options?.map((option) => redactOutput(option, active.redactionSecrets).slice(0, 200).trim()).filter(Boolean))].slice(0, 5);
               record.subagentQuestion = {
                 question: redactOutput(result.question.question, active.redactionSecrets).slice(0, 2000) || "Child requested a parent reply (question redacted).",
@@ -1689,7 +1690,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
             || stdout.truncated
             || stderr.truncated
             || artifactError !== undefined;
-          if (completionRecord.kind === "internal" && finalProgress) completionRecord.subagentProgress = finalProgress;
+          if (completionRecord.kind === "internal" && completionRecord.tool !== "PeerAgent" && finalProgress) completionRecord.subagentProgress = finalProgress;
           completionRecord.preview = finalTail?.preview.length
             ? finalTail.preview
             : outputPreview(stdout.text, stderr.text, completionRecord.previewChars);

@@ -17,6 +17,9 @@
   reasoning-effort selection, and pricing while the pinned Pi catalog catches
   up, using Anthropic's published 1M context window and $2/$10 pricing.
 
+- Fix background `PeerAgent` job cards and exact-origin completion wakes in the
+  web console by keeping peer projections free of subagent-only telemetry.
+
 - Keep Telegram's native `typing…` indicator alive throughout an active agent
   turn, including while its transient tool ledger is posted or edited, and stop
   it before the final answer or cancellation.
