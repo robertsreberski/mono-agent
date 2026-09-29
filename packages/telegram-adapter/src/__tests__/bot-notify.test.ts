@@ -147,6 +147,33 @@ describe("createTelegramBot notify (proactive)", () => {
       .toBe(false);
   });
 
+  it("stops proactive typing activity when the responder fails before finish", async () => {
+    vi.useFakeTimers();
+    try {
+      const responder: AgentResponder = {
+        async respond(_request, stream) {
+          await stream.event?.({
+            type: "tool_call_started",
+            id: "t1",
+            name: "WebSearch",
+            arguments: { query: "scheduled research" },
+          });
+          throw new Error("responder failed");
+        },
+      };
+      const { controller, calls } = buildNotifiableBot(responder);
+
+      await expect(controller.notify(42, "Research this in the background."))
+        .resolves.toEqual({ delivered: false, reason: "responder failed" });
+      const activityCount = calls.filter((call) => call.method === "sendChatAction").length;
+
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(calls.filter((call) => call.method === "sendChatAction")).toHaveLength(activityCount);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("verbatim mode posts the text as-is without running a turn and records it to history", async () => {
     let responded = false;
     const verbatimCalls: Array<[string, string]> = [];

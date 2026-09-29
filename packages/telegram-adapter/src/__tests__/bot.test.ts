@@ -552,36 +552,45 @@ function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void
 }
 
 describe("createTelegramBot", () => {
-  it("delivers generated reply files through sendDocument without adding fallback text", async () => {
-    const attachment: AgentReplyAttachmentPart = {
-      type: "attachment",
-      id: "reply-file-1",
-      reference: { scheme: "mono-agent-artifact", id: "11111111-1111-4111-8111-111111111111" },
-      name: "report.txt",
-      mediaType: "text/plain",
-      sizeBytes: 5,
-      integrityId: `sha256:${"b".repeat(64)}`,
-    };
-    const responder: AgentResponder = {
-      async respond() { return { text: "Answer", parts: [attachment] }; },
-      async openReplyArtifact() {
-        return {
-          attachment,
-          body: (async function* () { yield new TextEncoder().encode("hello"); })(),
-        };
-      },
-    };
-    const { bot, calls } = buildTestBot({ responder });
+  it("delivers generated reply files after stopping typing and without adding fallback text", async () => {
+    vi.useFakeTimers();
+    try {
+      const attachment: AgentReplyAttachmentPart = {
+        type: "attachment",
+        id: "reply-file-1",
+        reference: { scheme: "mono-agent-artifact", id: "11111111-1111-4111-8111-111111111111" },
+        name: "report.txt",
+        mediaType: "text/plain",
+        sizeBytes: 5,
+        integrityId: `sha256:${"b".repeat(64)}`,
+      };
+      const responder: AgentResponder = {
+        async respond() { return { text: "Answer", parts: [attachment] }; },
+        async openReplyArtifact() {
+          // Final file preparation can be slow. Advancing past the refresh window
+          // must not resurrect typing once terminal delivery has begun.
+          await vi.advanceTimersByTimeAsync(4_000);
+          return {
+            attachment,
+            body: (async function* () { yield new TextEncoder().encode("hello"); })(),
+          };
+        },
+      };
+      const { bot, calls } = buildTestBot({ responder });
 
-    await bot.handleUpdate(textUpdate("hello"));
+      await bot.handleUpdate(textUpdate("hello"));
 
-    const document = calls.find((call) => call.method === "sendDocument");
-    expect(document?.payload).toMatchObject({
-      chat_id: 42,
-      reply_parameters: { message_id: 10, allow_sending_without_reply: true },
-    });
-    expect(texts(calls, "sendMessage")).toEqual(["Answer"]);
-    expect(JSON.stringify(calls.filter((call) => call.method === "sendMessage"))).not.toContain("report.txt");
+      const document = calls.find((call) => call.method === "sendDocument");
+      expect(document?.payload).toMatchObject({
+        chat_id: 42,
+        reply_parameters: { message_id: 10, allow_sending_without_reply: true },
+      });
+      expect(calls.filter((call) => call.method === "sendChatAction")).toHaveLength(1);
+      expect(texts(calls, "sendMessage")).toEqual(["Answer"]);
+      expect(JSON.stringify(calls.filter((call) => call.method === "sendMessage"))).not.toContain("report.txt");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("fails closed unless chats are explicitly allowed", () => {
@@ -2760,6 +2769,90 @@ describe("createTelegramBot pending asks and status posts", () => {
     });
     expect(requests).toHaveLength(0);
     expect(reactionEmojis(calls)).toContain("👍");
+  });
+
+  it("posts the next AskUser question below a custom text reply instead of editing the old card", async () => {
+    const pending = multiQuestionAskSnapshot();
+    const advanced: ChannelAskSnapshot = {
+      ...pending,
+      answers: [{ questionId: "q0", selectedOptionIds: [], customReply: "Use my wording" }],
+      activeQuestionIndex: 1,
+    };
+    const submitAskAnswers = vi.fn(async () => ({ accepted: true, snapshot: advanced }));
+    const { bot, controller, calls } = buildTestBot({
+      responder: { respond: vi.fn() },
+      pendingAsks: {
+        getPendingAsk: vi.fn(async () => pending),
+        submitAskAnswers,
+        cancel: vi.fn(),
+      },
+    });
+    await controller.presentAsk(42, pending);
+    await bot.handleUpdate(callbackUpdate({
+      data: telegramAskUserCallbackData(pending.interactionId, 0, { kind: "other" }),
+    }));
+
+    await bot.handleUpdate(textUpdate("Use my wording", { updateId: 2 }));
+    await controller.updateAsk(42, advanced);
+
+    expect(submitAskAnswers).toHaveBeenCalledWith({
+      conversationId: "telegram:42",
+      interactionId: pending.interactionId,
+      answers: [{ questionId: "q0", selectedOptionIds: [], customReply: "Use my wording" }],
+    });
+    expect(texts(calls, "editMessageText")).toEqual(["Answer recorded."]);
+    expect(String(texts(calls, "sendMessage").at(-1))).toContain("Follow-up · 2/2");
+  });
+
+  it("serializes rapid custom AskUser answers so a completed ask cannot leave a stale next card", async () => {
+    const first = multiQuestionAskSnapshot();
+    const second: ChannelAskSnapshot = {
+      ...first,
+      answers: [{ questionId: "q0", selectedOptionIds: [], customReply: "First answer" }],
+      activeQuestionIndex: 1,
+    };
+    const terminal: ChannelAskSnapshot = {
+      ...second,
+      answers: [
+        ...second.answers,
+        { questionId: "q1", selectedOptionIds: [], customReply: "Second answer" },
+      ],
+      activeQuestionIndex: 2,
+      status: "answered",
+    };
+    let current = first;
+    let controllerRef: ReturnType<typeof createTelegramBot> | undefined;
+    const updatePromises: Promise<void>[] = [];
+    const submitAskAnswers = vi.fn(async () => {
+      current = current.activeQuestionIndex === 0 ? second : terminal;
+      updatePromises.push(controllerRef!.updateAsk(42, current));
+      return { accepted: true, snapshot: current };
+    });
+    const { bot, controller, calls, failures } = buildTestBot({
+      responder: { respond: vi.fn() },
+      pendingAsks: {
+        getPendingAsk: vi.fn(async () => current),
+        submitAskAnswers,
+        cancel: vi.fn(),
+      },
+    });
+    controllerRef = controller;
+    await controller.presentAsk(42, first);
+    const editGate = createDeferred<void>();
+    failures.set("editMessageText", () => editGate.promise.then(() => ok(true)));
+
+    await bot.handleUpdate(textUpdate("First answer"));
+    await bot.handleUpdate(textUpdate("Second answer", { updateId: 2 }));
+    editGate.resolve();
+    await Promise.all(updatePromises);
+
+    const followUpPosts = calls.filter(
+      (call) => call.method === "sendMessage" && String(call.payload.text).includes("Follow-up · 2/2"),
+    );
+    expect(followUpPosts).toHaveLength(1);
+    const finalEdit = calls.filter((call) => call.method === "editMessageText").at(-1);
+    expect(String(finalEdit?.payload.text)).toContain("Follow-up: custom answer");
+    expect(finalEdit?.payload).not.toHaveProperty("reply_markup");
   });
 
   it("does not run a deadlocking turn when a pending AskUser submission is rejected", async () => {

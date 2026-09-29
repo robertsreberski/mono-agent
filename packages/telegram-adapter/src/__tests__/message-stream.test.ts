@@ -10,6 +10,8 @@ import type {
   TelegramDeleteMessageParams,
   TelegramEditMessageTextParams,
   TelegramGetUpdatesParams,
+  TelegramRequestOptions,
+  TelegramSendChatActionParams,
   TelegramSendMessageParams,
   TelegramSentMessage,
   TelegramUpdate,
@@ -19,11 +21,13 @@ class FakeTelegramApi implements TelegramBotApi {
   readonly sendMessageCalls: TelegramSendMessageParams[] = [];
   readonly editMessageTextCalls: TelegramEditMessageTextParams[] = [];
   readonly deleteMessageCalls: TelegramDeleteMessageParams[] = [];
+  readonly sendChatActionCalls: TelegramSendChatActionParams[] = [];
   readonly writeOperations: string[] = [];
   nextMessageId = 100;
   failSendWith: Error | undefined;
   failEditWith: Error | undefined;
   failDeleteWith: Error | undefined;
+  hangChatActionAfter: number | undefined;
 
   async sendMessage(
     params: TelegramSendMessageParams,
@@ -66,6 +70,22 @@ class FakeTelegramApi implements TelegramBotApi {
     return true;
   }
 
+  async sendChatAction(
+    params: TelegramSendChatActionParams,
+    options?: TelegramRequestOptions,
+  ): Promise<true> {
+    this.sendChatActionCalls.push(params);
+    if (
+      this.hangChatActionAfter !== undefined
+      && this.sendChatActionCalls.length > this.hangChatActionAfter
+    ) {
+      return await new Promise<true>((resolve) => {
+        options?.signal?.addEventListener("abort", () => resolve(true), { once: true });
+      });
+    }
+    return true;
+  }
+
   async getUpdates(_params: TelegramGetUpdatesParams): Promise<TelegramUpdate[]> {
     return [];
   }
@@ -78,6 +98,77 @@ describe("TelegramMessageStream", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("keeps the topic typing action alive through tool activity and stops it before the answer", async () => {
+    const api = new FakeTelegramApi();
+    const stream = new TelegramMessageStream({
+      api,
+      chatId: -1001,
+      messageThreadId: 77,
+      finalOnly: true,
+      editDebounceMs: 0,
+    });
+
+    await stream.status("Thinking…");
+    expect(api.sendChatActionCalls).toEqual([
+      { chat_id: -1001, message_thread_id: 77, action: "typing" },
+    ]);
+
+    await vi.advanceTimersByTimeAsync(3_999);
+    expect(api.sendChatActionCalls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(api.sendChatActionCalls).toHaveLength(2);
+
+    await stream.event({
+      type: "tool_call_started",
+      id: "t1",
+      name: "WebSearch",
+      arguments: { query: "release notes" },
+    });
+    // Posting the ledger clears Telegram's prior action, so the stream restores
+    // it immediately rather than waiting for the next scheduled heartbeat.
+    expect(api.sendChatActionCalls).toHaveLength(3);
+
+    await stream.finish("done");
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(api.sendChatActionCalls).toHaveLength(3);
+  });
+
+  it("stops the typing heartbeat when the turn aborts without an explicit finish", async () => {
+    const api = new FakeTelegramApi();
+    const controller = new AbortController();
+    const stream = new TelegramMessageStream({
+      api,
+      chatId: 42,
+      finalOnly: true,
+      abortSignal: controller.signal,
+    });
+
+    await stream.event({
+      type: "tool_call_started",
+      id: "t1",
+      name: "WebSearch",
+      arguments: { query: "release notes" },
+    });
+    const activityCount = api.sendChatActionCalls.length;
+
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(api.sendChatActionCalls).toHaveLength(activityCount);
+  });
+
+  it("does not let a stalled heartbeat block final delivery", async () => {
+    const api = new FakeTelegramApi();
+    api.hangChatActionAfter = 1;
+    const stream = new TelegramMessageStream({ api, chatId: 42, finalOnly: true });
+
+    await stream.status("Thinking…");
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(api.sendChatActionCalls).toHaveLength(2);
+
+    await expect(stream.finish("done")).resolves.toBeUndefined();
+    expect(api.sendMessageCalls.at(-1)?.text).toBe("done");
   });
 
   it("sends a placeholder and debounces Telegram edit updates", async () => {
@@ -328,6 +419,9 @@ describe("TelegramMessageStream", () => {
     await stream.dismissTransient();
 
     expect(api.deleteMessageCalls).toEqual([{ chat_id: 42, message_id: 100 }]);
+    const activityCount = api.sendChatActionCalls.length;
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(api.sendChatActionCalls).toHaveLength(activityCount);
   });
 
   it("never renders assistant reasoning as message text", async () => {
@@ -499,10 +593,11 @@ describe("TelegramMessageStream", () => {
     });
 
     await stream.append("x".repeat(60));
-    await vi.runAllTimersAsync();
+    await vi.advanceTimersByTimeAsync(0);
 
     expect(api.editMessageTextCalls[0]?.text).toHaveLength(32);
     expect(api.editMessageTextCalls[0]?.text.startsWith("…\n")).toBe(true);
+    await stream.finish();
   });
 
   it("shows the empty-content placeholder for a blank interim status update", async () => {

@@ -104,6 +104,10 @@ export type TelegramSendOutcome =
   | { kind: "fatal" };
 
 const DEFAULT_INITIAL_STATUS_TEXT = "Thinking…";
+// Telegram chat actions expire after about five seconds (and a bot message can
+// clear them sooner). Refresh just under that window for one continuous native
+// "typing…" affordance while the turn is still active.
+const ACTIVITY_HEARTBEAT_MS = 4_000;
 
 /** Sentinel raised by the transport when a rendered MarkdownV2 chunk overflows. */
 const MARKDOWN_OVERFLOW = Symbol("telegram-markdown-overflow");
@@ -234,14 +238,14 @@ class TelegramChannelTransport implements ChannelTransport {
     return classifyTelegramError(error);
   }
 
-  async indicateActivity(): Promise<void> {
+  async indicateActivity(signal?: AbortSignal): Promise<void> {
     // Telegram "typing…" chat action; expires after ~5s so the substrate
     // refreshes it while the agent works. No-op if the sender lacks the method.
     await this.api.sendChatAction?.({
       chat_id: this.chatId,
       ...(this.messageThreadId === undefined ? {} : { message_thread_id: this.messageThreadId }),
       action: "typing",
-    });
+    }, signal === undefined ? undefined : { signal });
   }
 
   /**
@@ -339,6 +343,15 @@ export class TelegramMessageStream implements AgentMessageStream {
   private readonly inner: ResilientMessageStream;
   private readonly formatMarkdown: boolean;
   private readonly finalOnly: boolean;
+  private readonly logger: TelegramMessageStreamLogger | undefined;
+  private readonly abortSignal: AbortSignal | undefined;
+  private readonly stopActivityOnAbort = (): void => {
+    void this.stopActivity();
+  };
+  private activityHeartbeat: ReturnType<typeof setInterval> | undefined;
+  private activityPulse: Promise<void> | undefined;
+  private activityPulseController: AbortController | undefined;
+  private activityActive = false;
 
   constructor(options: TelegramMessageStreamOptions) {
     const maxMessageChars = options.maxMessageChars ?? DEFAULT_MAX_MESSAGE_CHARS;
@@ -347,6 +360,11 @@ export class TelegramMessageStream implements AgentMessageStream {
     }
     this.formatMarkdown = options.formatMarkdown ?? true;
     this.finalOnly = options.finalOnly ?? false;
+    this.logger = options.logger;
+    this.abortSignal = options.abortSignal;
+    if (this.abortSignal?.aborted === false) {
+      this.abortSignal.addEventListener("abort", this.stopActivityOnAbort, { once: true });
+    }
 
     this.transport = new TelegramChannelTransport({
       api: options.api,
@@ -403,25 +421,56 @@ export class TelegramMessageStream implements AgentMessageStream {
 
   async status(text: string): Promise<void> {
     await this.inner.status(text);
+    this.startActivityHeartbeat();
   }
 
   async append(delta: string): Promise<void> {
     await this.inner.append(delta);
+    this.startActivityHeartbeat();
   }
 
   async replace(text: string): Promise<void> {
     await this.inner.replace(text);
+    this.startActivityHeartbeat();
   }
 
   async event(event: AgentStreamEvent): Promise<void> {
     await this.inner.event(event);
+    this.startActivityHeartbeat();
+    // Posting or editing the visible tool ledger can clear Telegram's current
+    // chat action. Reassert it immediately instead of leaving a four-second gap.
+    if (
+      event.type === "tool_call_started"
+      || event.type === "tool_call_completed"
+      || event.type === "provider_status"
+    ) {
+      // Best-effort feedback must never hold the tool event or the model run open.
+      void this.pulseActivity();
+    }
   }
 
   async dismissTransient(): Promise<void> {
+    await this.stopActivity();
     await this.inner.dismissTransient();
   }
 
+  /** Stop and drain the native typing heartbeat before terminal delivery. */
+  async stopActivity(): Promise<void> {
+    this.activityActive = false;
+    this.abortSignal?.removeEventListener("abort", this.stopActivityOnAbort);
+    if (this.activityHeartbeat !== undefined) {
+      clearInterval(this.activityHeartbeat);
+      this.activityHeartbeat = undefined;
+    }
+    this.activityPulseController?.abort();
+    await this.activityPulse;
+  }
+
   async finish(finalText?: string, options?: TelegramMessageFinishOptions): Promise<void> {
+    // Wait for any in-flight heartbeat before posting the final answer. Otherwise
+    // a slow sendChatAction could complete after delivery and falsely leave the
+    // bot looking busy for another five seconds.
+    await this.stopActivity();
     // Fixed system copy (e.g. "Cancelled.") is delivered as plain text — the
     // transport's markdown gate is toggled for this finish so the answer is not
     // re-rendered as MarkdownV2.
@@ -443,6 +492,52 @@ export class TelegramMessageStream implements AgentMessageStream {
       }
       throw error;
     }
+  }
+
+  private startActivityHeartbeat(): void {
+    if (this.activityActive || this.abortSignal?.aborted === true) {
+      return;
+    }
+    this.activityActive = true;
+    this.activityHeartbeat = setInterval(() => {
+      void this.pulseActivity();
+    }, ACTIVITY_HEARTBEAT_MS);
+    this.activityHeartbeat.unref?.();
+  }
+
+  private pulseActivity(): Promise<void> {
+    if (!this.activityActive) {
+      return Promise.resolve();
+    }
+    if (this.activityPulse !== undefined) {
+      return this.activityPulse;
+    }
+
+    const controller = new AbortController();
+    this.activityPulseController = controller;
+    const request = this.transport.indicateActivity(controller.signal)
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) {
+          this.logger?.debug?.("Telegram activity heartbeat failed (ignored).", {
+            error: redactTelegramErrorMessage(error),
+          });
+        }
+      });
+    const interrupted = new Promise<void>((resolve) => {
+      controller.signal.addEventListener("abort", () => resolve(), { once: true });
+    });
+    // A custom sender may ignore AbortSignal. Racing the local abort still lets
+    // final delivery proceed; `request` retains its rejection handler so a late
+    // transport failure cannot become unhandled.
+    const pulse = Promise.race([request, interrupted])
+      .finally(() => {
+        if (this.activityPulse === pulse) {
+          this.activityPulse = undefined;
+          this.activityPulseController = undefined;
+        }
+      });
+    this.activityPulse = pulse;
+    return pulse;
   }
 }
 
