@@ -3,12 +3,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api";
 import {
+  collectProcessJobParentCalls,
   ProcessJobPresentationProvider,
+  type ProcessJobParentCall,
   type ProcessJobPresentationEntry,
 } from "../process-job-presentation";
+import { agentTurn, launchCall, manageCall, parentMessage } from "../test/agent-group-fixtures";
 import { processJob } from "../test/fixtures";
 import type { ProcessJobProjection, ProcessJobState } from "../types";
 import { ProcessJobStack } from "./ProcessJobStack";
+import { ToolCallRepairProvider } from "./tool-call-repair";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -41,16 +45,19 @@ function StackHarness({
   threadId,
   jobs,
   historyIsBounded = false,
+  parentCalls = [],
 }: {
   readonly threadId: string;
   readonly jobs: readonly ProcessJobPresentationEntry[];
   readonly historyIsBounded?: boolean;
+  readonly parentCalls?: readonly ProcessJobParentCall[];
 }) {
   return (
     <ProcessJobPresentationProvider
       threadId={threadId}
       messages={[]}
       jobs={jobs}
+      parentCalls={parentCalls}
       historyIsBounded={historyIsBounded}
     >
       <div key={threadId}>
@@ -60,8 +67,15 @@ function StackHarness({
   );
 }
 
-/** The shelf disclosure: its accessible name starts with its visible title. */
+/** The shelf disclosure: its accessible name starts with its (visually hidden) title. */
 const shelfToggle = () => screen.getByRole("button", { name: /^Background jobs/u });
+/** Open one agent group by its id (the id is the start of its accessible name). */
+const openGroup = (id: string) => {
+  const group = screen.getByRole("group", { name: new RegExp(`^${id} (?:peer )?agent,`, "u") });
+  const summary = group.querySelector<HTMLElement>(":scope > summary")!;
+  if (!group.hasAttribute("open")) fireEvent.click(summary);
+  return group;
+};
 const openShelf = () => {
   const toggle = shelfToggle();
   if (toggle.getAttribute("aria-expanded") !== "true") fireEvent.click(toggle);
@@ -309,7 +323,9 @@ describe("ProcessJobStack", () => {
       summary: "Draft the spring planting plan",
     });
     const view = render(<StackHarness threadId="thread" jobs={[entry(agent)]} />);
-    expect(shelfToggle()).toHaveAccessibleName("Background jobs Running Agent job: Draft the spring planting plan");
+    // An agent is always a group: the bar names its id before its newest task.
+    expect(shelfToggle()).toHaveAccessibleName("Background jobs Running agent garden-helper: Draft the spring planting plan");
+    expect(within(shelfToggle()).getByText("garden-helper")).toHaveClass("process-job-stack-agent");
     expect(shelfToggle().querySelector(".process-job-stack-kind")).toHaveClass("is-agent");
     view.unmount();
 
@@ -357,13 +373,17 @@ describe("ProcessJobStack", () => {
     ]} />);
     openShelf();
     expect(announcement(view.container)).toHaveTextContent("Background jobs: 1 active, 1 question awaiting the agent.");
+    // The peer is a group: its header says the question, and so does its turn.
+    const group = openGroup("seed-bank");
+    expect(within(group.querySelector("summary")!).getByText("Question pending")).toBeVisible();
     const peer = screen.getByRole("group", { name: "PeerAgent background job succeeded" });
     expect(within(peer).getByText("Question pending")).toBeVisible();
+    expect(within(group).getByRole("note", { name: "seed-bank asks the agent" })).toHaveTextContent("Should I reserve the heirloom tomato seeds now?");
 
     // The shelf's one clock re-evaluates at the deadline without any poll.
     for (let step = 0; step < 4; step += 1) act(() => { vi.advanceTimersByTime(30_000); });
     expect(announcement(view.container)).toHaveTextContent("Background jobs: 1 active, 1 finished.");
-    expect(peer.closest(".process-job-stack-item")).toHaveAttribute("hidden");
+    expect(group.closest(".process-job-stack-item")).toHaveAttribute("hidden");
   });
 
   it.each([
@@ -379,7 +399,7 @@ describe("ProcessJobStack", () => {
     const question = toggle.querySelector(".process-job-chip.is-question");
     expect(question).not.toBeNull();
     expect(question?.querySelector(".process-job-chip-count")).toHaveTextContent("1");
-    expect(toggle).toHaveAccessibleName(new RegExp(`^Background jobs ${word}, Question pending PeerAgent job: Ask the seed-bank agent about heirloom stock 1 question awaiting the agent`, "u"));
+    expect(toggle).toHaveAccessibleName(new RegExp(`^Background jobs ${word}, Question pending peer agent seed-bank: Ask the seed-bank agent about heirloom stock 1 question awaiting the agent`, "u"));
   });
 
   it("does not repeat the question chip when the lone row's state already is the question", () => {
@@ -388,7 +408,7 @@ describe("ProcessJobStack", () => {
     render(<StackHarness threadId="thread" jobs={[entry(peerJob("2026-07-17T10:20:00.000Z"))]} />);
     const toggle = shelfToggle();
     expect(toggle.querySelector(".process-job-chip.is-question")).toBeNull();
-    expect(toggle).toHaveAccessibleName("Background jobs Question pending PeerAgent job: Ask the seed-bank agent about heirloom stock");
+    expect(toggle).toHaveAccessibleName("Background jobs Question pending peer agent seed-bank: Ask the seed-bank agent about heirloom stock");
   });
 
   it("keeps a failed peer job's outcome while its question is pending", () => {
@@ -396,6 +416,7 @@ describe("ProcessJobStack", () => {
     vi.setSystemTime(new Date("2026-07-17T10:00:00.000Z"));
     render(<StackHarness threadId="thread" jobs={[entry(peerJob("2026-07-17T10:20:00.000Z", { state: "failed", exitCode: 1 }))]} />);
     openShelf();
+    openGroup("seed-bank");
     const peer = screen.getByRole("group", { name: "PeerAgent background job failed" });
     expect(within(peer).getByText("Failed")).toHaveClass("process-job-state");
     expect(within(peer).getByText("Question pending")).toHaveClass("process-job-pending");
@@ -499,5 +520,162 @@ describe("ProcessJobStack", () => {
   it("renders no empty landmark when the loaded thread has no jobs", () => {
     render(<StackHarness threadId="thread" jobs={[]} />);
     expect(screen.queryByRole("region", { name: "Background jobs" })).toBeNull();
+  });
+
+  it("shows no visible title but keeps its name, and says the counts in words once open", () => {
+    vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+    render(<StackHarness threadId="thread" jobs={[entry(activeJob("thread", "running", { jobId: "one" })), entry(activeJob("thread", "queued", { jobId: "two" }))]} />);
+    const toggle = shelfToggle();
+    expect(within(toggle).getByText("Background jobs")).toHaveClass("sr-only");
+    expect(screen.getByRole("region", { name: "Background jobs" })).toContainElement(toggle);
+    expect(toggle).toHaveAccessibleName("Background jobs 2 active");
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAccessibleName("Background jobs 2 active");
+    expect(within(toggle).getByText("2 active")).toHaveClass("process-job-stack-summary");
+    expect(toggle.querySelector(".process-job-chip")).toBeNull();
+  });
+
+  it("says what an idle bar counts in words instead of a bare number", () => {
+    render(<StackHarness threadId="thread" jobs={[entry(processJob({ jobId: "done" })), entry(processJob({ jobId: "broken", state: "failed" }))]} />);
+    const toggle = shelfToggle();
+    expect(within(toggle).getByText("1 issue")).toHaveClass("process-job-chip-words");
+    expect(within(toggle).getByText("2 finished")).toHaveClass("process-job-chip-words");
+    expect(toggle.querySelector(".process-job-chip-count")).toBeNull();
+    expect(toggle).toHaveAccessibleName("Background jobs 1 issue 2 finished");
+  });
+
+  describe("agent groups", () => {
+    const brief = agentTurn("t1", "helper", 0, { durationMinutes: 4, summary: "Research frost dates" });
+    const follow = agentTurn("t2", "helper", 10, { tool: "AgentManage", summary: "Summarise the sowing windows" });
+    const calls = collectProcessJobParentCalls([
+      parentMessage("m1", 0, [launchCall(brief, { prompt: "Find the frost dates for the allotment.", persist: true, background: true }, { argsTruncated: true, argsBytes: 5_214 })]),
+      parentMessage("m2", 5, [{ type: "subagent", toolCallId: "fg", name: "researcher", status: "complete", calls: [],
+        args: { id: "helper", message: "Which source do you trust more?" } }]),
+      parentMessage("m3", 10, [launchCall(follow, { id: "helper", message: "Summarise the three safest sowing windows.", background: true })]),
+    ], "thread");
+
+    it("makes every turn of one instance one row, counted once", () => {
+      vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+      const view = render(<StackHarness threadId="thread" parentCalls={calls}
+        jobs={[entry(brief), entry(activeJob("thread", "running", { jobId: "cmd" })), entry(follow)]} />);
+      expect(announcement(view.container)).toHaveTextContent("Background jobs: 2 active.");
+      expect(shelfToggle()).toHaveAccessibleName("Background jobs 2 active");
+      openShelf();
+      expect(view.container.querySelectorAll(".process-job-group")).toHaveLength(1);
+      expect(view.container.querySelectorAll(".process-job-card")).toHaveLength(3);
+      const group = screen.getByRole("group", { name: "helper agent, 2 turns: Summarise the sowing windows" });
+      const summary = group.querySelector<HTMLElement>(":scope > summary")!;
+      expect(summary).toHaveAccessibleName("helper Summarise the sowing windows");
+      expect(summary).toHaveAccessibleDescription(/^Running .*2 turns/u);
+      expect(screen.queryByRole("button", { name: "Background job history" })).toBeNull();
+    });
+
+    it("opens a timeline of the parent's calls as tool rows, with the full text and the transcript's repair", async () => {
+      vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+      const repair = vi.fn(async () => true);
+      render(<ToolCallRepairProvider repair={repair}>
+        <StackHarness threadId="thread" parentCalls={calls} jobs={[entry(brief), entry(follow)]} />
+      </ToolCallRepairProvider>);
+      openShelf();
+      const group = openGroup("helper");
+      const timeline = within(group).getByRole("list", { name: "helper timeline" });
+      expect(timeline).toBeVisible();
+      expect([...timeline.children].map((step) => step.className)).toEqual([
+        "process-job-step is-call", "process-job-step is-turn", "process-job-step is-call", "process-job-step is-call", "process-job-step is-turn",
+      ]);
+      const briefRow = within(timeline).getByRole("button", { name: /^From the parent agent: Agent brief Find the frost dates for the allotment\./u });
+      expect(briefRow).toHaveAttribute("aria-expanded", "false");
+      fireEvent.click(briefRow);
+      expect(briefRow).toHaveAttribute("aria-expanded", "true");
+      const body = document.getElementById(briefRow.getAttribute("aria-controls")!)!;
+      expect(body).toBeVisible();
+      expect(within(body).getByText("Find the frost dates for the allotment.")).toBeVisible();
+      expect(within(body).getByText("Preview only, 5,214 chars.")).toBeVisible();
+      fireEvent.click(within(body).getByRole("button", { name: "Load full message" }));
+      await waitFor(() => expect(repair).toHaveBeenCalledWith("call-t1"));
+      // A foreground message has no turn under it and says where it was answered.
+      const foreground = within(timeline).getByRole("button", { name: /^From the parent agent: AgentManage message Which source do you trust more\?/u });
+      expect(foreground).toHaveTextContent("answered in the conversation");
+    });
+
+    it("counts only the newest turn's outcome as an issue", () => {
+      vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+      const failed = agentTurn("f1", "planner", 0, { state: "failed", durationMinutes: 2, summary: "Price the order" });
+      const retry = agentTurn("f2", "planner", 5, { tool: "AgentManage", summary: "Retry the pricing" });
+      const view = render(<StackHarness threadId="thread" jobs={[entry(failed), entry(retry)]} />);
+      expect(announcement(view.container)).toHaveTextContent("Background jobs: 1 active.");
+      expect(shelfToggle()).toHaveAccessibleName("Background jobs Running agent planner: Retry the pricing");
+      openShelf();
+      // The earlier failure still shows its own outcome inside the timeline.
+      openGroup("planner");
+      expect(screen.getByRole("group", { name: "Agent background job failed" })).toHaveClass("is-failed");
+
+      view.rerender(<StackHarness threadId="thread" jobs={[entry(failed), entry({ ...retry, state: "failed", exitCode: 1, durationMs: 60_000,
+        timestamps: { ...retry.timestamps, completedAt: retry.timestamps.startedAt } })]} />);
+      expect(announcement(view.container)).toHaveTextContent("Background jobs: No active jobs, 1 finished, 1 issue.");
+    });
+
+    it("keeps a group mounted and open while its newest turn settles into History", async () => {
+      const running = agentTurn("live", "helper", 10, { tool: "AgentManage", summary: "Summarise the sowing windows" });
+      let finish!: (job: ProcessJobProjection) => void;
+      vi.spyOn(api, "threadJob").mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+      const view = render(<StackHarness threadId="thread" parentCalls={calls} jobs={[entry(brief), entry(running)]} />);
+      openShelf();
+      const group = openGroup("helper");
+      const item = group.closest(".process-job-stack-item")!;
+      const card = screen.getByRole("group", { name: "AgentManage background job running" });
+
+      await act(async () => {
+        finish({ ...running, state: "succeeded", exitCode: 0, durationMs: 120_000,
+          timestamps: { ...running.timestamps, completedAt: running.timestamps.startedAt } });
+      });
+
+      expect(item).toHaveAttribute("hidden");
+      expect(announcement(view.container)).toHaveTextContent("Background jobs: No active jobs, 1 finished.");
+      fireEvent.click(historyToggle());
+      expect(item).not.toHaveAttribute("hidden");
+      expect(view.container.querySelector(".process-job-group")).toBe(group);
+      expect(group).toHaveAttribute("open");
+      expect(screen.getByRole("group", { name: "AgentManage background job succeeded" })).toBe(card);
+    });
+
+    it("shows a steer, a stop and a close as rows, and marks the instance closed", () => {
+      const stopped = agentTurn("s1", "soil-analyst", 0, { state: "cancelled", durationMinutes: 4, summary: "Compare soil tests", extra: { cancelRequested: true } });
+      const soilCalls = collectProcessJobParentCalls([
+        parentMessage("m1", 0, [launchCall(stopped, { prompt: "Compare the soil tests.", id: "soil-analyst", persist: true })]),
+        parentMessage("m2", 1, [manageCall("steer", { id: "soil-analyst", steer: "Skip the south bed." }, { jobId: "s1", status: "applied" })]),
+        parentMessage("m3", 2, [manageCall("stop", { id: "soil-analyst", stop: true }, { jobId: "s1", status: "stopped" })]),
+        parentMessage("m4", 3, [manageCall("close", { id: "soil-analyst", close: true }, "<subagent: analyst · closed>")]),
+      ], "thread");
+      render(<StackHarness threadId="thread" parentCalls={soilCalls} jobs={[entry(stopped)]} />);
+      openShelf();
+      fireEvent.click(historyToggle());
+      const group = openGroup("soil-analyst");
+      expect(within(group.querySelector("summary")!).getByText("closed")).toHaveClass("process-job-group-closed");
+      const timeline = within(group).getByRole("list", { name: "soil-analyst timeline" });
+      expect([...timeline.children].map((step) => step.className)).toEqual([
+        "process-job-step is-call", "process-job-step is-turn", "process-job-step is-call is-nested", "process-job-step is-call is-nested", "process-job-step is-call",
+      ]);
+      expect(timeline.children[2]).toHaveTextContent(/AgentManage\s*steer\s*Skip the south bed\.\s*applied/u);
+      expect(timeline.children[3]).toHaveTextContent(/AgentManage\s*stop\s*stopped/u);
+      expect(timeline.children[4]).toHaveTextContent(/AgentManage\s*close\s*instance closed/u);
+      // Rows without text are not buttons.
+      expect(within(timeline.children[3] as HTMLElement).queryByRole("button")).toBeNull();
+    });
+
+    it("groups peer jobs by peer and never merges them with a subagent of the same name", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-07-17T10:00:00.000Z"));
+      render(<StackHarness threadId="thread" jobs={[
+        entry(peerJob("2026-07-17T10:20:00.000Z")),
+        entry(agentTurn("sub", "seed-bank", 0, { durationMinutes: 1, summary: "Count the seed packets" })),
+        entry(peerJob("2026-07-17T10:20:00.000Z", { jobId: "peer-older", state: "succeeded", peerQuestion: undefined })),
+      ]} />);
+      openShelf();
+      expect(screen.getByRole("group", { name: "seed-bank peer agent, 2 turns: Ask the seed-bank agent about heirloom stock" })).toBeInTheDocument();
+      fireEvent.click(historyToggle());
+      expect(screen.getByRole("group", { name: "seed-bank agent, 1 turn: Count the seed packets" })).toBeInTheDocument();
+    });
   });
 });

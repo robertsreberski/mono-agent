@@ -17,6 +17,15 @@
   formatting render together; custom clients without rich-message support retain
   a safe MarkdownV2 fallback with aligned code-block tables.
 
+- Group the web Background jobs shelf by detached child: every `Agent` and
+  `AgentManage` turn of one subagent instance, or every `PeerAgent` job to one
+  peer, is one row showing the child's id and newest task. Opening it shows a
+  timeline of the parent's calls as tool rows (brief, messages and replies,
+  foreground messages, steer, stop, close, peer answers), each opening to its
+  whole text, between the child's turns. The shelf counts these rows, and only
+  a group's newest turn can make it an issue. The closed bar drops its visible
+  "Background jobs" title; its chips carry their words when nothing is running.
+
 - Polish the web wake-up schedule editor on phones: a clearly tinted Once/Weekly
   selection, date and time values centred in their fields, and date and time
   values shown at the sheet's own text size on touch screens while the native

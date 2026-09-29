@@ -152,6 +152,19 @@ export const processJobDisplayTitle = (job: ProcessJobProjection): string =>
     ? job.summary.slice("Purpose: ".length)
     : job.summary;
 
+/**
+ * A job's purpose under its agent group's id. The host labels a PeerAgent job
+ * `Peer <peer> thread <thread>`; beside the peer's own id that prefix only
+ * repeats it.
+ */
+export const processJobPurposeInGroup = (job: ProcessJobProjection, instanceId: string): string => {
+  const title = processJobDisplayTitle(job);
+  const prefix = `Peer ${instanceId} `;
+  return job.tool === "PeerAgent" && title.startsWith(prefix) && title.length > prefix.length
+    ? title.slice(prefix.length)
+    : title;
+};
+
 /** The legacy group name tests and assistive tech already know, plus a stop request. */
 export const processJobGroupName = (job: ProcessJobProjection): string =>
   `${job.tool} background job ${job.state.replaceAll("_", " ")}${!processJobIsTerminal(job) && job.cancelRequested ? " (stopping)" : ""}`;
@@ -217,21 +230,15 @@ export const processJobCallOutcomesLabel = (outcomes: readonly ProcessJobCallOut
   ].join(", ")}`;
 };
 
+/** The shelf's counts, one per row: see `processJobItemCounts`. */
 export interface ProcessJobStackCounts {
-  /** Lifecycle-active jobs only; a pending question never inflates it. */
+  /** Lifecycle-active rows only; a pending question never inflates it. */
   readonly active: number;
   /** Rows in the Finished group (terminal and not waiting on a question). */
   readonly finished: number;
   readonly issues: number;
   readonly questions: number;
 }
-
-export const processJobStackCounts = (jobs: readonly ProcessJobProjection[], now: number): ProcessJobStackCounts => ({
-  active: jobs.filter((job) => !processJobIsTerminal(job)).length,
-  finished: jobs.filter((job) => !processJobIsCurrent(job, now)).length,
-  issues: jobs.filter(processJobIsIssue).length,
-  questions: jobs.filter((job) => pendingPeerQuestion(job, now)).length,
-});
 
 export interface ProcessJobActiveMark {
   readonly tone: ProcessJobTone;

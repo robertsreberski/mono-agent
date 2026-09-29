@@ -155,9 +155,12 @@ export const truncatedLabel = (characters: number): string =>
 export function TruncationNotice({
   characters,
   onLoadFull,
+  loadLabel = "Load full output",
 }: {
   readonly characters?: number;
   readonly onLoadFull?: () => Promise<boolean>;
+  /** What the control fetches, in words: output for a tool body, a message for a parent's call. */
+  readonly loadLabel?: string;
 }) {
   const [state, setState] = useState<"idle" | "loading" | "failed">("idle");
   const size = characters === undefined ? "" : `, ${truncatedLabel(characters)}`;
@@ -178,7 +181,7 @@ export function TruncationNotice({
             );
           }}
         >
-          Load full output
+          {loadLabel}
         </button>
       )}
       {state === "loading" && <span>Loading…</span>}

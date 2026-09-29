@@ -101,7 +101,8 @@ describe("the background jobs shelf in Chromium", () => {
       expect(stack.getBoundingClientRect().height).toBeLessThanOrEqual(cap + 1);
       for (const meta of view.container.querySelectorAll(".process-job-stack-item:not([hidden]) .process-job-meta")) {
         noOverflow(meta);
-        const row = meta.closest(".process-job-card")!.getBoundingClientRect();
+        // A job row, or an agent group's own header.
+        const row = meta.closest(".process-job-card, .process-job-group")!.getBoundingClientRect();
         for (const alert of meta.querySelectorAll(".process-job-alert")) {
           const box = alert.getBoundingClientRect();
           expect(box.right).toBeLessThanOrEqual(row.right + 1);
@@ -173,9 +174,10 @@ describe("the background jobs shelf in Chromium", () => {
       expect(getComputedStyle(glyph).animationName).toBe("none");
       expect(glyph.getAnimations({ subtree: true })).toHaveLength(0);
     }
-    // The one animation in the whole shelf is the bar's spinner (the chevron
-    // only eases through its transition).
-    expect(stack.getAnimations({ subtree: true }).filter((moving) => moving instanceof CSSAnimation)).toEqual([animation]);
+    // Open, the header says the counts in words and the spinner goes with the
+    // chips: nothing in the open shelf animates (the chevron only eases
+    // through its transition).
+    expect(stack.getAnimations({ subtree: true }).filter((moving) => moving instanceof CSSAnimation)).toEqual([]);
     cleanup();
 
     // One current job: its own bar glyph is the spinner.

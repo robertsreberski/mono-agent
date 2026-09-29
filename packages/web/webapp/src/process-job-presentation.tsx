@@ -13,7 +13,7 @@ import {
   TERMINAL_PROCESS_JOB_STATES,
 } from "./components/ProcessJob";
 import { shouldShowMessageRunAttribution } from "./components/RunAttribution";
-import type { MessagePart, ProcessJobProjection, WebMessage } from "./types";
+import type { MessagePart, ProcessJobProjection, ToolCallStatus, WebMessage } from "./types";
 
 export type ProcessJobPartValue = Extract<MessagePart, { type: "process-job" }>;
 
@@ -27,6 +27,67 @@ export interface ProcessJobPresentation {
   readonly jobs: readonly ProcessJobPresentationEntry[];
   readonly eventsByMessageId: ReadonlyMap<string, readonly ProcessJobActivityEvent[]>;
   readonly jobsById: ReadonlyMap<string, ProcessJobProjection>;
+  /** The parent's calls to its detached children, in transcript order. */
+  readonly parentCalls: readonly ProcessJobParentCall[];
+}
+
+/**
+ * The kind of child a job or a parent call belongs to. A subagent instance id
+ * (Agent/AgentManage) and a peer name (PeerAgent) live in different
+ * namespaces, so the shelf never groups across families.
+ */
+export type ProcessJobAgentFamily = "agent" | "peer";
+
+const isPeerAgentToolName = (name: string): boolean => name === "PeerAgent" || name.endsWith("__PeerAgent");
+
+export const processJobAgentFamily = (tool: string): ProcessJobAgentFamily | undefined =>
+  isSubagentProcessJobTool(tool) ? "agent" : isPeerAgentToolName(tool) ? "peer" : undefined;
+
+/**
+ * What one parent call said to (or did to) a detached child.
+ *
+ * `brief` is an Agent prompt; `message` an AgentManage message or a PeerAgent
+ * send; `steer`, `stop` and `close` are AgentManage controls; `answer` and
+ * `decline` answer a peer's question.
+ */
+export type ProcessJobParentAction = "brief" | "message" | "steer" | "stop" | "close" | "answer" | "decline";
+
+/**
+ * One call from the parent agent to a detached child, read from the loaded
+ * transcript. Everything here is text the transcript already carries, in the
+ * shape the server already shaped it; the job projection never holds prompts.
+ */
+export interface ProcessJobParentCall {
+  readonly messageId: string;
+  readonly toolCallId: string;
+  /** The tool the parent called, without any MCP server prefix. */
+  readonly tool: string;
+  readonly family: ProcessJobAgentFamily;
+  /**
+   * The subagent instance id or peer name the call addressed. A launch whose
+   * arguments do not name it (a generated instance id) is joined through the
+   * job it started instead.
+   */
+  readonly instanceId?: string;
+  readonly action: ProcessJobParentAction;
+  /** The model-authored text: prompt, message, steer or a peer answer. */
+  readonly text?: string;
+  /** The server sent only the head of the call's arguments. */
+  readonly argsTruncated?: boolean;
+  /** Character length of the untruncated arguments, when truncated. */
+  readonly argsBytes?: number;
+  /** The detached job this call started, paired by its unique start receipt. */
+  readonly launchedJobId?: string;
+  /** The job a steer or stop reached, when its receipt names it. */
+  readonly targetJobId?: string;
+  /** The receipt's status for a steer or a stop (`applied`, `stopped`, ...). */
+  readonly outcome?: string;
+  /** A message that also closes the instance once its turn succeeds. */
+  readonly closes?: boolean;
+  /** The parent's own call: running, answered, or failed. */
+  readonly status: ToolCallStatus;
+  /** When the parent message holding the call started (an ordering hint only). */
+  readonly at: string;
 }
 
 /**
@@ -145,6 +206,168 @@ export const parseProcessJobStartReceipt = (
   } catch {
     return undefined;
   }
+};
+
+const INSTANCE_ID = /^[a-z0-9][a-z0-9-]{0,39}$/u;
+const nonEmptyText = (value: unknown): string | undefined =>
+  typeof value === "string" && value.trim().length > 0 ? value : undefined;
+
+/**
+ * The JSON record a control tool answered with, if its model-facing result is
+ * one. Receipts for steer, stop and a peer's started job are JSON text; the
+ * Agent tool's started text ends with a JSON line. Best effort: anything else
+ * reads as no receipt.
+ */
+const resultRecord = (result: unknown): Record<string, unknown> | undefined => {
+  const text = typeof result === "string" ? result
+    : Array.isArray(result) ? result.map((block) => isPlainRecord(block) && typeof block.text === "string" ? block.text : "").join("")
+      : isPlainRecord(result) && typeof result.text === "string" ? result.text : undefined;
+  if (text === undefined) return undefined;
+  for (const candidate of new Set([text.trim(), text.trim().split("\n").at(-1)?.trim() ?? ""])) {
+    if (!candidate.startsWith("{")) continue;
+    try {
+      const value = JSON.parse(candidate) as unknown;
+      if (isPlainRecord(value)) return value;
+    } catch {
+      // Not a receipt.
+    }
+  }
+  return undefined;
+};
+
+/** A peer answer as readable lines: `field: value`, one per answered field. */
+const peerAnswerText = (answers: unknown): string | undefined => {
+  if (!isPlainRecord(answers)) return undefined;
+  const lines = Object.entries(answers).flatMap(([key, value]) => {
+    const text = Array.isArray(value) ? value.filter((item) => typeof item === "string").join(", ")
+      : typeof value === "string" ? value : "";
+    return text.length > 0 ? [`${key}: ${text}`] : [];
+  });
+  return lines.length > 0 ? lines.join("\n") : undefined;
+};
+
+/**
+ * Every call the parent made to its detached children, in transcript order:
+ * Agent/AgentManage launches (paired with their job by the canonical start
+ * receipt, only when that receipt is unique), foreground continuations and
+ * controls addressed by instance id, and PeerAgent sends, answers and stops.
+ *
+ * Read-only presentation data: nothing here is fetched or stored, and only the
+ * prompt, message, steer and answer texts are read from the arguments.
+ */
+export const collectProcessJobParentCalls = (
+  messages: readonly WebMessage[],
+  threadId: string,
+): readonly ProcessJobParentCall[] => {
+  const inThread = messages.filter((message) => message.role === "assistant" && message.threadId === threadId);
+  const receiptCalls = new Map<string, Set<string>>();
+  for (const message of inThread) {
+    for (const part of message.parts) {
+      if (part.type !== "tool-call" || !isSubagentProcessJobTool(part.toolName)) continue;
+      const receipt = parseProcessJobStartReceipt(part.structuredResult, part.toolName);
+      if (receipt === undefined) continue;
+      const callers = receiptCalls.get(receipt.jobId) ?? new Set<string>();
+      callers.add(`${message.id}\0${part.toolCallId}`);
+      receiptCalls.set(receipt.jobId, callers);
+    }
+  }
+
+  const calls: ProcessJobParentCall[] = [];
+  for (const message of inThread) {
+    for (const part of message.parts) {
+      if (part.type !== "tool-call" && part.type !== "subagent") continue;
+      const args = isPlainRecord(part.args) ? part.args : undefined;
+      const id = typeof args?.id === "string" && INSTANCE_ID.test(args.id) ? args.id : undefined;
+      const base = {
+        messageId: message.id,
+        toolCallId: part.toolCallId,
+        status: part.status,
+        at: message.createdAt,
+        ...(part.argsTruncated === true ? { argsTruncated: true } : {}),
+        ...(part.argsBytes === undefined ? {} : { argsBytes: part.argsBytes }),
+      };
+
+      // A foreground delegation streams its child's calls, so the store keeps
+      // it as a subagent part without its tool name; its arguments say which.
+      if (part.type === "subagent") {
+        if (id === undefined) continue;
+        const message_ = nonEmptyText(args?.message);
+        const prompt = nonEmptyText(args?.prompt);
+        if (message_ !== undefined && prompt === undefined) {
+          calls.push({ ...base, tool: "AgentManage", family: "agent", instanceId: id, action: "message", text: message_,
+            ...(args?.close === true ? { closes: true } : {}) });
+        } else if (prompt !== undefined && args?.persist === true) {
+          calls.push({ ...base, tool: "Agent", family: "agent", instanceId: id, action: "brief", text: prompt });
+        }
+        continue;
+      }
+
+      if (isSubagentProcessJobTool(part.toolName)) {
+        const receipt = parseProcessJobStartReceipt(part.structuredResult, part.toolName);
+        const brief = part.toolName === "Agent";
+        if (receipt !== undefined) {
+          // Two calls claiming one job: neither is paired, as for the Activity rows.
+          if (receiptCalls.get(receipt.jobId)?.size !== 1) continue;
+          const text = nonEmptyText(brief ? args?.prompt : args?.message)
+            ?? (typeof part.args === "string" ? nonEmptyText(part.args) : undefined);
+          calls.push({ ...base, tool: part.toolName, family: "agent", action: brief ? "brief" : "message",
+            launchedJobId: receipt.jobId,
+            ...(id === undefined ? {} : { instanceId: id }),
+            ...(text === undefined ? {} : { text }),
+            ...(!brief && args?.close === true ? { closes: true } : {}) });
+          continue;
+        }
+        if (id === undefined) continue;
+        if (brief) {
+          // Only a persistent child named by the call can be placed.
+          const prompt = nonEmptyText(args?.prompt);
+          if (prompt !== undefined && args?.persist === true) {
+            calls.push({ ...base, tool: "Agent", family: "agent", instanceId: id, action: "brief", text: prompt });
+          }
+          continue;
+        }
+        const receiptRecord = resultRecord(part.result);
+        const reached = {
+          ...(typeof receiptRecord?.jobId === "string" ? { targetJobId: receiptRecord.jobId } : {}),
+          ...(typeof receiptRecord?.status === "string" ? { outcome: receiptRecord.status } : {}),
+        };
+        const steer = nonEmptyText(args?.steer);
+        const message_ = nonEmptyText(args?.message);
+        if (steer !== undefined) {
+          calls.push({ ...base, tool: part.toolName, family: "agent", instanceId: id, action: "steer", text: steer, ...reached });
+        } else if (args?.stop === true) {
+          calls.push({ ...base, tool: part.toolName, family: "agent", instanceId: id, action: "stop", ...reached });
+        } else if (message_ !== undefined) {
+          calls.push({ ...base, tool: part.toolName, family: "agent", instanceId: id, action: "message", text: message_,
+            ...(args?.close === true ? { closes: true } : {}) });
+        } else if (args?.close === true) {
+          calls.push({ ...base, tool: part.toolName, family: "agent", instanceId: id, action: "close" });
+        }
+        continue;
+      }
+
+      if (isPeerAgentToolName(part.toolName)) {
+        const peer = nonEmptyText(args?.peer);
+        if (peer === undefined) continue;
+        const receiptRecord = resultRecord(part.result);
+        const started = typeof receiptRecord?.jobId === "string" && receiptRecord.state === "started"
+          ? { launchedJobId: receiptRecord.jobId } : {};
+        const peerCall = { ...base, tool: "PeerAgent", family: "peer" as const, instanceId: peer };
+        if (args?.action === "send") {
+          const text = nonEmptyText(args.message);
+          calls.push({ ...peerCall, action: "message", ...(text === undefined ? {} : { text }), ...started });
+        } else if (args?.action === "answer") {
+          const text = peerAnswerText(args.answers);
+          calls.push({ ...peerCall, action: "answer", ...(text === undefined ? {} : { text }), ...started });
+        } else if (args?.action === "decline") {
+          calls.push({ ...peerCall, action: "decline", ...started });
+        } else if (args?.action === "stop") {
+          calls.push({ ...peerCall, action: "stop" });
+        }
+      }
+    }
+  }
+  return calls;
 };
 
 export const isContextCompactionPart = (
@@ -450,6 +673,9 @@ export const projectProcessJobPresentation = (
     jobs,
     eventsByMessageId,
     jobsById: new Map(jobs.map(({ part }) => [part.job.jobId, part.job])),
+    parentCalls: options.threadId === undefined || options.threadId === null
+      ? []
+      : collectProcessJobParentCalls(shaped, options.threadId),
   };
 };
 
@@ -457,6 +683,8 @@ interface ProcessJobPresentationContextValue {
   readonly threadId: string | null;
   readonly messages: readonly WebMessage[];
   readonly jobs: readonly ProcessJobPresentationEntry[];
+  /** The parent's calls to its detached children; they head each agent group's timeline rows. */
+  readonly parentCalls: readonly ProcessJobParentCall[];
   readonly historyIsBounded: boolean;
   readonly historyOpen: boolean;
   readonly setHistoryOpen: (open: boolean) => void;
@@ -469,12 +697,15 @@ const EMPTY_PRESENTATION: ProcessJobPresentationContextValue = {
   threadId: null,
   messages: [],
   jobs: [],
+  parentCalls: [],
   historyIsBounded: false,
   historyOpen: false,
   setHistoryOpen: () => undefined,
   shelfOpen: false,
   setShelfOpen: () => undefined,
 };
+
+const NO_PARENT_CALLS: readonly ProcessJobParentCall[] = [];
 
 const ProcessJobPresentationContext = createContext<ProcessJobPresentationContextValue>(EMPTY_PRESENTATION);
 
@@ -483,11 +714,13 @@ export function ProcessJobPresentationProvider({
   threadId,
   messages,
   jobs,
+  parentCalls = NO_PARENT_CALLS,
   historyIsBounded,
 }: Pick<ProcessJobPresentation, "messages" | "jobs"> & {
   readonly children: ReactNode;
   readonly threadId: string | null;
   readonly historyIsBounded: boolean;
+  readonly parentCalls?: readonly ProcessJobParentCall[];
 }) {
   // This provider sits above Chat's thread-keyed viewport. Only these two
   // disclosure preferences (the shelf and its history) survive A -> B -> A;
@@ -524,12 +757,13 @@ export function ProcessJobPresentationProvider({
     threadId,
     messages,
     jobs,
+    parentCalls,
     historyIsBounded,
     historyOpen,
     setHistoryOpen,
     shelfOpen,
     setShelfOpen,
-  }), [historyIsBounded, historyOpen, jobs, messages, setHistoryOpen, setShelfOpen, shelfOpen, threadId]);
+  }), [historyIsBounded, historyOpen, jobs, messages, parentCalls, setHistoryOpen, setShelfOpen, shelfOpen, threadId]);
 
   return (
     <ProcessJobPresentationContext.Provider value={value}>

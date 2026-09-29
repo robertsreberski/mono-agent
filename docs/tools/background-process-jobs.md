@@ -598,13 +598,31 @@ every queued, starting, and running projection and add a deterministic
 newest-terminal prefix within the 16 MiB response ceiling. The web console
 collects running and terminal jobs from the loaded transcript window into one
 compact shelf directly above the composer. Closed by default, the shelf is one
-line: its title, then either the one current job's purpose or marked counts of
-active jobs, questions awaiting the agent and issues (failed outcomes, wake
-problems, a child still busy). Opening it lists current work purpose-first,
-with state, elapsed time, tool, exit facts and a labelled output or step
-preview on each row; a row opens for its output tail, wake state and the
-wake's response, without the host-local artifact paths an operator cannot open
-from a browser. Each row names its tool beside a terminal or agent icon, and a
+line with no visible title (its accessible name still starts with "Background
+jobs"): either the one current row's purpose or marked counts of active rows,
+questions awaiting the agent and issues (failed outcomes, wake problems, a
+child still busy). With nothing current, the counts carry their words, such as
+"3 finished". Open, its header says the same counts in words and it lists
+current work purpose-first, with state, elapsed time, tool, exit facts and a
+labelled output or step preview on each row; a row opens for its output tail,
+wake state and the wake's response, without the host-local artifact paths an
+operator cannot open from a browser.
+
+Every detached child is one row, an agent group: all `Agent` and `AgentManage`
+turns of one persistent subagent instance (legacy `AgentSend` included), or all
+`PeerAgent` jobs to one peer, keyed by that family and the instance id or peer
+name. A reused instance id stays one group. The group's row shows the child's id
+and newest task with the status of the turn that speaks for it (a pending peer
+question first, then running work, else the newest turn). Opening it shows a
+timeline: the parent's calls read from the loaded transcript as tool rows (the
+`Agent` brief, each `AgentManage` message or reply, foreground messages that
+have no detached turn, steer, stop and close, and `PeerAgent` sends and
+answers), each opening to its whole text with the transcript's own **Load full
+message** for a preview the server shortened, and the child's turns as ordinary
+job rows between them, plus any question a turn ended with. After three turns
+the older ones fold behind one row. The shelf counts rows, not jobs: a group
+counts once in the chips, the open header, History and the polite
+announcement, and only its newest turn's outcome can make it an issue. Each row names its tool beside a terminal or agent icon, and a
 circular status glyph with the row's words gives the status: outlined rings for
 current work (empty when queued, half-filled while in progress, a square while
 stopping, a question mark for a pending question) and solid discs for outcomes
@@ -660,8 +678,9 @@ close-only calls, which start no turn.
 In the web console, detached launches keep their receipt in the parent's Activity,
 which shows `Agent job started` / `Agent job succeeded` (or the actual terminal
 state); `AgentManage` uses the corresponding label. The child no longer streams
-foreground-style subagent rows into the parent response. Its Background jobs
-row names the agent beside an agent icon, marks its last recorded tool calls as
+foreground-style subagent rows into the parent response. Its turns share one
+agent group in the Background jobs shelf; each turn row names the agent beside
+an agent icon, marks its last recorded tool calls as
 complete, failed or running while it works, and opens to a height-bounded scroll
 region with clustered tool calls, running/complete/failed status, durations, and
 a prose terminal report. State, Wake, and terminal facts remain on the card. Scrolling upward

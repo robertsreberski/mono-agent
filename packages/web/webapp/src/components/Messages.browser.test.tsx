@@ -713,6 +713,8 @@ describe("synthetic detached subagent evidence", () => {
     const stack = render(frame(backgroundSubagentJob()));
     // Nothing opens by itself: the operator opens the shelf, then the row.
     fireEvent.click(await screen.findByRole("button", { name: /^Background jobs/u }));
+    // The detached child is one agent group: open it, then its turn.
+    fireEvent.click(screen.getByRole("group", { name: /^synthetic-helper agent, 1 turn:/u }).querySelector(":scope > summary")!);
     fireEvent.click(screen.getByRole("group", { name: "Agent background job running" }).querySelector("summary")!);
     const region = await screen.findByRole("region", { name: "Subagent progress" });
     await waitFor(() => expect(region).toBeVisible());
