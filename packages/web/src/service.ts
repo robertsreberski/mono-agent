@@ -156,6 +156,8 @@ import {
 const DEFAULT_DISCOVERY_INTERVAL_MS = 5_000;
 const DEFAULT_PURGE_INTERVAL_MS = 60 * 60 * 1_000;
 const INFO_TIMEOUT_MS = 2_500;
+/** Only bound a human steer after its target turn has settled. */
+export const SETTLED_TURN_LIVE_INPUT_GRACE_MS = 60_000;
 /**
  * Consecutive inconclusive presence samples tolerated before a discovered
  * agent is reported offline. ONE missed probe is not evidence of a dead agent:
@@ -532,8 +534,10 @@ interface ActiveTurn {
 
 interface ActiveLiveInput {
   readonly threadId: string;
+  readonly turnId: string;
   readonly controller: AbortController;
   readonly completion: Promise<void>;
+  graceTimer: ReturnType<typeof setTimeout> | undefined;
 }
 
 type HostWakeReceipt = NonNullable<DeliverWebNotificationResult["delivery"]>;
@@ -2437,22 +2441,12 @@ export class WebService {
       };
     }
 
-    const controller = new AbortController();
-    const completion = this.deliverLiveInput(
-      reserved.input.id,
-      threadId,
-      active.client,
-      controller,
-      {
-        conversationId: `web:${threadId}`,
-        id: reserved.input.id,
-        text: reserved.input.text,
-        receivedAt: reserved.input.createdAt,
-      },
-    ).finally(() => {
-      this.activeLiveInputs.delete(reserved.input.id);
+    this.startTargetedLiveInput(reserved.input.id, threadId, active, {
+      conversationId: `web:${threadId}`,
+      id: reserved.input.id,
+      text: reserved.input.text,
+      receivedAt: reserved.input.createdAt,
     });
-    this.activeLiveInputs.set(reserved.input.id, { threadId, controller, completion });
     return { message: reserved.message, disposition: "pending" };
   }
 
@@ -2821,6 +2815,16 @@ export class WebService {
       resolveAdmitted(false);
       const active = this.activeTurns.get(threadId);
       if (active?.turnId === started.turnId) this.activeTurns.delete(threadId);
+      // Never bound a blocked tool call while its turn is running. Once that
+      // turn settles, a missing HTTP receipt gets one final grace window.
+      for (const input of this.activeLiveInputs.values()) {
+        if (input.threadId !== threadId || input.turnId !== started.turnId || input.controller.signal.aborted) continue;
+        input.graceTimer = setTimeout(() => {
+          input.graceTimer = undefined;
+          input.controller.abort(new Error("Settled turn's live-input receipt did not arrive."));
+        }, SETTLED_TURN_LIVE_INPUT_GRACE_MS);
+        input.graceTimer.unref();
+      }
       if (scheduledWake) {
         try {
           if (this.store.finishWake(started.turnId) !== null) this.emitWakeThread(threadId);
@@ -2895,21 +2899,28 @@ export class WebService {
       return;
     }
     if (!this.store.markLiveInputDispatchStarted(submission.inputId, submission.turnId)) return;
+    this.startTargetedLiveInput(submission.inputId, submission.threadId, active, {
+      conversationId: `web:${submission.threadId}`,
+      id: submission.inputId,
+      text: input.text,
+      receivedAt: input.createdAt,
+      targetTurnId: submission.turnId,
+    });
+  }
+
+  private startTargetedLiveInput(
+    id: string,
+    threadId: string,
+    active: ActiveTurn,
+    input: Omit<Parameters<OperatorClient["liveInput"]>[0], "signal">,
+  ): void {
     const controller = new AbortController();
-    const completion = this.deliverLiveInput(
-      submission.inputId,
-      submission.threadId,
-      active.client,
-      controller,
-      {
-        conversationId: `web:${submission.threadId}`,
-        id: submission.inputId,
-        text: input.text,
-        receivedAt: input.createdAt,
-        targetTurnId: submission.turnId,
-      },
-    ).finally(() => this.activeLiveInputs.delete(submission.inputId!));
-    this.activeLiveInputs.set(submission.inputId, { threadId: submission.threadId, controller, completion });
+    const completion = this.deliverLiveInput(id, threadId, active.client, controller, input).finally(() => {
+      const tracked = this.activeLiveInputs.get(id);
+      if (tracked?.graceTimer !== undefined) clearTimeout(tracked.graceTimer);
+      this.activeLiveInputs.delete(id);
+    });
+    this.activeLiveInputs.set(id, { threadId, turnId: active.turnId, controller, completion, graceTimer: undefined });
   }
 
   private async deliverLiveInput(
@@ -2946,7 +2957,7 @@ export class WebService {
       }
     } catch (error) {
       changedMessage = this.store.markLiveInputUncertain(id);
-      if (!controller.signal.aborted) {
+      if (changedMessage !== undefined && !controller.signal.aborted) {
         this.options.logger?.debug?.("Web live-input delivery outcome is uncertain; automatic fallback is suppressed.", {
           threadId,
           error: errorMessage(error),
@@ -2959,7 +2970,7 @@ export class WebService {
         updatedAt: changedMessage.updatedAt,
       });
     }
-    this.emitStoredThread(threadId, ["threads.changed"]);
+    if (changedMessage !== undefined) this.emitStoredThread(threadId, ["threads.changed"]);
     if (queued && !this.stopped) await this.drainQueuedLiveInputs(threadId);
   }
 

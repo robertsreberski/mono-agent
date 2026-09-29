@@ -1155,6 +1155,31 @@ describe("WebStore", () => {
     store.close();
   });
 
+  it("finalizes a dispatched pending steer on its receipt before any HTTP settlement", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "start", attachmentIds: [] });
+    const pending = store.reserveLiveInput(thread.id, "Use the API instead");
+    expect(store.markLiveInputDispatchStarted(pending.input.id, turn.turnId)).toBe(true);
+    const frame = { kind: "event" as const, event: {
+      type: "tool_call_started" as const, id: `live-input:${pending.input.id}`, name: "↪️ Steered: guide",
+      metadata: { liveInput: true, synthetic: true, inputId: pending.input.id },
+    } };
+    const write = store.applyStreamFrames(turn.turnId, [frame]);
+    expect(write.recoveredSteers).toEqual([expect.objectContaining({
+      id: pending.message.id, turnId: turn.turnId, liveInputStatus: "applied",
+    })]);
+    expect(store.storedLiveInput(pending.input.id)).toBeUndefined();
+    expect(store.getMessage(pending.message.id)?.liveInputStatus).toBe("applied");
+    expect(store.markLiveInputUncertain(pending.input.id)).toBeUndefined();
+    expect(store.markLiveInputApplied(pending.input.id)).toBeUndefined();
+    expect(store.applyStreamFrames(turn.turnId, [frame]).recoveredSteers).toBeUndefined();
+    store.close();
+  });
+
   it("recovers only a same-thread uncertain input with an exact stream receipt", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);

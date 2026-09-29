@@ -20,7 +20,7 @@ import type { WebEvent, WebMessage, WebMessageDelta, WebMessagePart } from "../c
 import { WEB_MAX_TURN_TEXT_CHARACTERS } from "../contracts.js";
 import { formatCronReplyContext } from "../cron-reply-context.js";
 import { applyDeltaOps, WebStore, WEB_MESSAGE_PAGE_DEFAULT, WEB_THREAD_PAGE_DEFAULT } from "../store.js";
-import { StreamFrameCoalescer, agentGeneration, PROBE_FAILURE_TOLERANCE, WebService, WeightedTurnBudget } from "../service.js";
+import { StreamFrameCoalescer, agentGeneration, PROBE_FAILURE_TOLERANCE, SETTLED_TURN_LIVE_INPUT_GRACE_MS, WebService, WeightedTurnBudget } from "../service.js";
 import { fakeDiscoveredAgent, fakeProcessJob, operatorFetch, temporaryRoot } from "./helpers.js";
 
 const cleanup: string[] = [];
@@ -4627,6 +4627,58 @@ describe("WebService", () => {
     await service.stop();
   });
 
+  it("bounds stalled human steers only after their turn settles and clears settled receipts' grace timers", async () => {
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const pending = new Map<string, { signal: AbortSignal; settle: (result: Response) => void }>();
+    const fetchImpl = operatorFetch({ supportsLiveInput: true, turns: () => new ReadableStream<Uint8Array>({
+      start(controller) { stream = controller; controller.enqueue(encoder.encode(`${JSON.stringify({ kind: "status", text: "working" })}\n`)); },
+    }) });
+    const service = await createService({ fetchImpl: (async (url, init) => {
+      if (!String(url).endsWith("/live-input")) return fetchImpl(url, init);
+      const id = (JSON.parse(String(init?.body)) as { id: string }).id;
+      return new Promise<Response>((resolve, reject) => {
+        const signal = init?.signal as AbortSignal;
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        pending.set(id, { signal, settle: resolve });
+      });
+    }) as typeof fetch });
+    const realSetTimeout = globalThis.setTimeout;
+    const timers: Array<{ callback: () => void; handle: ReturnType<typeof setTimeout> }> = [];
+    const timeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void, delay?: number) => {
+      const handle = realSetTimeout(callback, delay);
+      if (delay === SETTLED_TURN_LIVE_INPUT_GRACE_MS) timers.push({ callback, handle });
+      return handle;
+    }) as typeof setTimeout);
+    const clearSpy = vi.spyOn(globalThis, "clearTimeout");
+    try {
+      const thread = service.createThread("agent-one");
+      await service.startTurn(thread.id, { text: "Initial task" });
+      const stuck = service.submitLiveInput(thread.id, "Steer one");
+      const delivered = service.submitLiveInput(thread.id, "Steer two");
+      await waitFor(() => pending.size === 2);
+      expect(timers).toHaveLength(0);
+      expect([...pending.values()].every((entry) => !entry.signal.aborted)).toBe(true);
+      stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Done" })}\n`));
+      stream?.close();
+      await waitFor(() => timers.length === 2);
+      expect([...pending.values()].every((entry) => !entry.signal.aborted)).toBe(true);
+      const [stuckId, deliveredId] = [...pending.keys()];
+      pending.get(deliveredId!)?.settle(Response.json({ status: "applied", runId: "run-1" }));
+      await waitFor(() => service.store.getMessage(delivered.message.id)?.liveInputStatus === "applied");
+      expect(clearSpy).toHaveBeenCalledWith(timers[1]?.handle);
+      timers[0]!.callback();
+      await waitFor(() => service.store.getMessage(stuck.message.id)?.liveInputStatus === "uncertain");
+      expect(service.store.storedLiveInput(stuckId!)).toBeUndefined();
+      expect(service.store.queuedLiveInputThreadIds()).toEqual([]);
+    } finally {
+      timeoutSpy.mockRestore();
+      clearSpy.mockRestore();
+      try { stream?.close(); } catch { /* Already closed. */ }
+      await service.stop();
+    }
+  });
+
   it("announces an uncertain steer recovered by the running turn's receipt", async () => {
     const encoder = new TextEncoder();
     let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
@@ -4675,6 +4727,51 @@ describe("WebService", () => {
       stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Done" })}\n`));
       stream?.close();
       await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    } finally {
+      unsubscribe();
+      try { stream?.close(); } catch { /* Already closed. */ }
+      await service.stop();
+    }
+  });
+
+  it.each(["error", "uncertain", "applied"])("keeps a pending receipt applied after late HTTP %s without duplicate events", async (outcome) => {
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let settle!: (response: Response) => void;
+    let reject!: (error: Error) => void;
+    let inputId: string | undefined;
+    const fetchImpl = operatorFetch({ supportsLiveInput: true, turns: () => new ReadableStream<Uint8Array>({
+      start(controller) { stream = controller; controller.enqueue(encoder.encode(`${JSON.stringify({ kind: "status", text: "working" })}\n`)); },
+    }) });
+    const service = await createService({ fetchImpl: (async (url, init) => {
+      if (!String(url).endsWith("/live-input")) return fetchImpl(url, init);
+      inputId = (JSON.parse(String(init?.body)) as { id: string }).id;
+      return new Promise<Response>((resolve, fail) => { settle = resolve; reject = fail; });
+    }) as typeof fetch });
+    const events: WebEvent[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event); });
+    try {
+      const thread = service.createThread("agent-one");
+      await service.startTurn(thread.id, { text: "Initial task" });
+      const receipt = service.submitLiveInput(thread.id, "Use the API instead");
+      await waitFor(() => inputId !== undefined);
+      events.length = 0;
+      stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "event", event: {
+        type: "tool_call_started", id: `live-input:${inputId}`, name: "↪️ Steered: guide",
+        metadata: { liveInput: true, synthetic: true, inputId },
+      } })}\n`));
+      await waitFor(() => service.store.getMessage(receipt.message.id)?.liveInputStatus === "applied");
+      expect(service.store.storedLiveInput(inputId!)).toBeUndefined();
+      expect(events.filter((event) => event.type === "message.changed"
+        && (event.payload as { messageId?: string }).messageId === receipt.message.id)).toHaveLength(1);
+      expect(events.filter((event) => event.type === "threads.changed")).toHaveLength(1);
+      events.length = 0;
+      if (outcome === "error") reject(new Error("response lost"));
+      else settle(Response.json(outcome === "applied" ? { status: "applied", runId: "run-1" }
+        : { status: "uncertain", reason: "delivery_uncertain" }));
+      await waitFor(() => (service as unknown as { activeLiveInputs: Map<string, unknown> }).activeLiveInputs.size === 0);
+      expect(service.store.getMessage(receipt.message.id)?.liveInputStatus).toBe("applied");
+      expect(events.filter((event) => event.type === "message.changed" || event.type === "threads.changed")).toEqual([]);
     } finally {
       unsubscribe();
       try { stream?.close(); } catch { /* Already closed. */ }

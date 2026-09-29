@@ -2698,7 +2698,25 @@ export class WebStore {
       const parts = parseParts(candidate.parts_json);
       if (liveInputIdFromParts(parts) !== inputId) continue;
       const marker = steerMarkerFromUserParts(inputId, candidate.id, parts, candidate.created_at);
-      if (marker !== undefined) return marker;
+      if (marker === undefined) continue;
+      // A stream receipt is authoritative even when the HTTP settlement is
+      // still pending. Finalize the dispatched row in this frame transaction so
+      // a later transport failure cannot detach an already-consumed steer.
+      const dispatched = this.database.prepare(`
+        SELECT id FROM live_inputs
+        WHERE id = ? AND message_id = ? AND thread_id = ? AND active_turn_id = ?
+          AND dispatch_started_at IS NOT NULL
+      `).get(inputId, candidate.id, turn.thread_id, turnId);
+      if (dispatched !== undefined) {
+        const now = this.now();
+        this.writeMessageParts(candidate.id, withLiveInputStatus(parts, "applied", inputId), now);
+        this.database.prepare("DELETE FROM live_inputs WHERE id = ?").run(inputId);
+        this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
+          .run(now, turn.thread_id);
+        this.recordThreadRevision(turn.thread_id, "live_input_applied", now);
+        recovered.push(this.requireMessage(candidate.id));
+      }
+      return marker;
     }
     const legacy = this.database.prepare(
       "SELECT message_id, thread_id, created_at FROM live_inputs WHERE id = ?",
