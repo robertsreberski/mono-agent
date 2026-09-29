@@ -218,6 +218,7 @@ export interface AgentHarness {
   compactConversation?(
     conversationId: string,
     options?: import("@mono-agent/agent-contracts").AgentManualCompactionOptions,
+    signal?: AbortSignal,
   ): Promise<import("@mono-agent/agent-contracts").AgentManualCompactionResult>;
   readonly liveInputOwnership?: { readonly version: 1 };
   run(request: AgentHarnessRequest): Promise<AgentHarnessResponse>;

@@ -77,7 +77,8 @@ export function composeConversationMarkers(markers: readonly WebConversationMark
         ? `: ${marker.tokensBefore.toLocaleString("en-US")} → ${marker.tokenCountsExact ? "" : "about "}${marker.tokensAfter.toLocaleString("en-US")} tokens` : "";
       const outcome = marker.status === "succeeded" ? "context compacted" : `context compaction ${marker.status}`;
       const reason = marker.status === "succeeded" ? "" : marker.reason === "model_changed" ? ": model changed"
-        : marker.reason === "nothing_to_compact" ? ": nothing to compact" : "";
+        : marker.reason === "nothing_to_compact" ? ": nothing to compact"
+          : marker.reason === "outcome_unknown" ? ": outcome unknown (response lost; may have completed)" : "";
       return `${outcome} (${marker.trigger}) at ${markerLocalTime(marker.at)}${counts}${reason}`;
     }
     const minutes = Math.floor(marker.idleMs / 60_000);

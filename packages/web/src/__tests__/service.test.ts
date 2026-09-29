@@ -653,6 +653,40 @@ describe("WebService", () => {
     }
   });
 
+  it.each(["timeout", "unreachable", "server", "invalid", "agent_failure"] as const)(
+    "persists a %s compaction outcome after the running hint clears", async (failure) => {
+      const fallback = operatorFetch();
+      const service = await createService({ fetchImpl: (async (input, init) => {
+        const url = String(input);
+        if (!url.endsWith("/compact")) {
+          if (url.endsWith("/v1/info")) return Response.json({ schema: 1, capabilities: { manualCompaction: { version: 1 } } });
+          return fallback(input, init);
+        }
+        if (failure === "timeout") throw new DOMException("expired", "TimeoutError");
+        if (failure === "unreachable") throw new TypeError("unreachable");
+        if (failure === "server") return Response.json({ error: { code: "internal_error" } }, { status: 503 });
+        if (failure === "agent_failure") return Response.json({ error: { code: "compaction_failed", message: "Context compaction failed." } }, { status: 500 });
+        return Response.json({ malformed: true });
+      }) as typeof fetch });
+      try {
+        await service.refreshAgents();
+        const thread = service.createThread("agent-one");
+        const turn = service.store.beginTurn({ threadId: thread.id, text: "hello", attachmentIds: [] });
+        service.store.completeTurn(turn.turnId, "answer");
+        await expect(service.compactThread(thread.id)).rejects.toThrow();
+        expect(service.thread(thread.id).thread.compaction).toBeUndefined();
+        const marker = service.store.getThreadDetail(thread.id)?.messages.find((message) =>
+          message.parts[0]?.type === "conversation-marker" && message.parts[0].kind === "compaction");
+        expect(marker?.parts[0]).toMatchObject({ status: "failed", trigger: "manual",
+          ...(failure === "agent_failure" ? {} : { reason: "outcome_unknown" }) });
+        const next = service.store.beginTurn({ threadId: thread.id, text: "next", attachmentIds: [] });
+        expect(service.store.conversationMarkersForTurn(next.turnId)).toEqual(expect.arrayContaining([
+          expect.objectContaining({ kind: "compaction", status: "failed" }),
+        ]));
+      } finally { await service.stop(); }
+    },
+  );
+
   it("holds queued follow-ups and process-job wakes until compaction settles and sends the thread's model", async () => {
     let release!: () => void;
     let started!: () => void;
@@ -734,6 +768,27 @@ describe("WebService", () => {
       release();
       await service.stop();
     }
+  });
+
+  it("does not recreate a deleted thread to record a lost compaction response", async () => {
+    let reject!: (error: unknown) => void;
+    let started!: () => void;
+    const admitted = new Promise<void>((resolve) => { started = resolve; });
+    const service = await createService({ fetchImpl: operatorFetch({ supportsManualCompaction: true,
+      onCompact: async () => { started(); return await new Promise((_, fail) => { reject = fail; }); },
+    }) });
+    try {
+      await service.refreshAgents();
+      const thread = service.createThread("agent-one");
+      const pending = service.compactThread(thread.id);
+      await admitted;
+      service.patchThread(thread.id, { archived: true });
+      await service.deleteThread(thread.id);
+      reject(new Error("fictional disconnected agent"));
+      await expect(pending).rejects.toThrow();
+      expect(service.store.getThread(thread.id)).toBeUndefined();
+      expect(service.store.getThreadDetail(thread.id)).toBeUndefined();
+    } finally { await service.stop(); }
   });
 
   it("rejects an older agent without manual compaction and an unknown thread", async () => {

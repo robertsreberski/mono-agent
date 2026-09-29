@@ -100,6 +100,9 @@ Keep bearer values out of source config when possible. Set
   text. Busy conversations return 409 `compaction_busy`, unsupported hosts 501
   `compaction_unsupported`, and failures a bounded 500 `compaction_failed`. Clients
   must feature-detect this additive capability; the wire schema remains 1.
+  If the HTTP client disconnects before the response completes, the adapter
+  aborts the responder's compaction signal; the harness retires an uncommitted
+  provider session fail-closed. An already committed result cannot be undone.
 - `POST {basePath}/v1/conversations/:id/context-imports` is present only when
   `capabilities.contextImport = { version: 1, maxTextBytes: 32768 }` is
   advertised. Its exact `{ text, idempotencyKey }` body imports canonical

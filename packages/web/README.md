@@ -380,6 +380,10 @@ compaction runs; it survives closing the dialog or switching conversations,
 but not a web service restart. The composer blocks sends until it clears; externally queued live inputs
 still drain afterward. The
 transcript shows a transient running divider and then the persisted result.
+The console allows up to 15 minutes for the agent's response; when it cannot
+confirm an outcome it persists a failed-status marker explicitly labeled
+**outcome unknown** (a late commit may have succeeded), while an explicit agent
+failure is labeled failed. Neither marker is an in-progress state.
 Structured reasoning, routine tools, and process-job lifecycle evidence share
 the stream-aware Activity disclosure, which collapses at every terminal
 message state without reordering answer parts. Receipt-bearing job launches fold their launch call into one start row,

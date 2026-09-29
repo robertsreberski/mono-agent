@@ -2215,15 +2215,24 @@ export class WebService {
         }
       }
       return result;
-    })();
+    })().catch((error: unknown) => {
+      // Only an explicit agent failure is known to have failed. A lost or
+      // malformed response can race an already committed provider revision.
+      if (this.store.getThread(threadId) !== undefined) {
+        this.store.recordManualCompactionFailure(threadId,
+          error instanceof WebConsoleError && ["compaction_failed", "compaction_busy", "compaction_unsupported"].includes(error.code)
+            ? undefined : "outcome_unknown");
+      }
+      throw error;
+    });
     this.activeCompactions.set(threadId, operation.catch(() => undefined));
     this.manualCompactionStartedAt.set(threadId, this.currentDate().toISOString());
     this.emitStoredThread(threadId, ["thread.changed"]);
     try {
       return await operation;
     } finally {
-      // Service restarts forget this in-memory flag. An in-flight agent request
-      // can finish without a result being recorded, just as before this hint.
+      // Service restarts forget the in-memory hint; completed requests now
+      // leave a durable outcome (including an explicitly unknown one).
       this.activeCompactions.delete(threadId);
       this.manualCompactionStartedAt.delete(threadId);
       if (!this.stopped) this.emitStoredThread(threadId, ["thread.changed"]);

@@ -210,6 +210,7 @@ export class MonoAgentHarness implements AgentHarness {
   async compactConversation(
     conversationId: string,
     compactionOptions?: AgentManualCompactionOptions,
+    signal?: AbortSignal,
   ): Promise<AgentManualCompactionResult> {
     this.assertAcceptingRuns();
     if (typeof conversationId !== "string" || conversationId.trim().length === 0) {
@@ -257,6 +258,9 @@ export class MonoAgentHarness implements AgentHarness {
     // Shutdown-owned: dispose() aborts it so a hung summary cannot hold the
     // durable lease, the local session lease, or a concurrency slot.
     const controller = new AbortController();
+    const onExternalAbort = () => controller.abort(signal?.reason);
+    signal?.addEventListener("abort", onExternalAbort, { once: true });
+    if (signal?.aborted) onExternalAbort();
     this.compactionControllers.add(controller);
     let record = this.sessionStore?.acquire(conversationId);
     this.activeRuns += 1;
@@ -268,13 +272,17 @@ export class MonoAgentHarness implements AgentHarness {
         true, conversationId, record, ...handles);
     };
     try {
+      if (controller.signal.aborted) throw new AgentHarnessError("compaction_failed", "Context compaction was cancelled.");
       if ((await historyStore.load(conversationId)).length === 0) {
+        if (controller.signal.aborted) throw new AgentHarnessError("compaction_failed", "Context compaction was cancelled.");
         return { status: "skipped", trigger: "manual", operationId: randomUUID(), reason: "nothing_to_compact" };
       }
+      if (controller.signal.aborted) throw new AgentHarnessError("compaction_failed", "Context compaction was cancelled.");
       if (bound) {
         // A turn under this model would rotate a session bound to another
         // (or a legacy unbound) model. Compaction must not: decline untouched.
         const binding = await historyStore.readProviderSessionBinding!(conversationId);
+        if (controller.signal.aborted) throw new AgentHarnessError("compaction_failed", "Context compaction was cancelled.");
         if (binding !== undefined && (binding.modelKey === undefined ? binding.revision > 0 : binding.modelKey !== modelKey)) {
           return { status: "skipped", trigger: "manual", operationId: randomUUID(), reason: "model_changed" };
         }
@@ -290,6 +298,7 @@ export class MonoAgentHarness implements AgentHarness {
         }
         throw error;
       }
+      if (controller.signal.aborted) throw new AgentHarnessError("compaction_failed", "Context compaction was cancelled.");
       if (bound && providerTurn.modelKey !== modelKey) {
         throw new AgentHarnessError("provider_session_model_binding_mismatch",
           "Durable history did not acknowledge the requested session model binding.");
@@ -354,7 +363,9 @@ export class MonoAgentHarness implements AgentHarness {
       // An unsynced or failed attempt may already have written a summary into
       // the live handle: retire it before the durable record rotates the epoch.
       if (!synced) await retire({ providerSessionId: sessionId, modelKey });
+      if (controller.signal.aborted) throw new AgentHarnessError("compaction_failed", "Context compaction was cancelled.");
       prepared = await providerTurn.prepareCommit([], { providerSessionSynced: synced });
+      if (controller.signal.aborted) throw new AgentHarnessError("compaction_failed", "Context compaction was cancelled.");
       await prepared.commit();
       providerTurn = undefined;
       if (!synced) throw new AgentHarnessError("compaction_failed", "Context compaction failed; the session was retired safely.");
@@ -382,6 +393,7 @@ export class MonoAgentHarness implements AgentHarness {
         ? error
         : new AgentHarnessError("compaction_failed", "Context compaction failed; the conversation history is unchanged.");
     } finally {
+      signal?.removeEventListener("abort", onExternalAbort);
       this.compactionControllers.delete(controller);
       if (slotHeld) this.runLimiter?.release();
       if (record !== undefined) this.sessionStore?.release(conversationId, record);

@@ -48,7 +48,7 @@ describe("transient manual compaction marker", () => {
     expect(screen.getByRole("note")).toBeVisible();
     rerender(<ManualCompactionMarker thread={active} detail={{ ...detail, messages: [...detail.messages, {
       ...detail.messages[0]!, id: "marker", role: "system", parts: [{ type: "conversation-marker", kind: "compaction",
-        at: "2026-09-28T10:00:01Z", operationId: "fictional-result", trigger: "manual", status: "succeeded" }],
+        at: "2026-09-28T10:00:01Z", operationId: "fictional-result", trigger: "manual", status: "failed", reason: "outcome_unknown" }],
     }] }} />);
     expect(screen.queryByRole("note")).not.toBeInTheDocument();
   });

@@ -2168,6 +2168,25 @@ describe("WebStore", () => {
     store.close();
   });
 
+  it("retains a lost manual compaction response as an unknown timeline row across restart", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    store.recordManualCompactionFailure(thread.id, "outcome_unknown");
+    expect(store.getThreadDetail(thread.id)?.messages[0]?.parts[0]).toMatchObject({
+      kind: "compaction", status: "failed", reason: "outcome_unknown", trigger: "manual",
+    });
+    store.close();
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.getThreadDetail(thread.id)?.messages[0]?.parts[0]).toMatchObject({
+      kind: "compaction", status: "failed", reason: "outcome_unknown",
+    });
+    reopened.close();
+  });
+
   it("updates a compaction lifecycle in place while keeping distinct operations", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
