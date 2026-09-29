@@ -3937,12 +3937,19 @@ export class WebStore {
   }> {
     const created: Array<{ threadId: string; messageId: string; turnId: string }> = [];
     this.transaction(() => {
+      // Startup recovery proves web-console loss, not agent loss. The first
+      // process generation observed after reopening is the only comparison
+      // that can classify it: if still the dispatched generation, permanently
+      // retire its candidate marker before a later unrelated agent restart.
+      this.database.prepare(`UPDATE turns SET dispatch_generation = NULL
+        WHERE dispatch_generation = ? AND status = 'interrupted' AND error_code = 'interrupted'
+          AND thread_id IN (SELECT id FROM threads WHERE source_id = ?)`)
+        .run(currentGeneration, sourceId);
       const turns = this.database.prepare(`SELECT t.id, t.thread_id, t.status FROM turns t
         JOIN threads th ON th.id = t.thread_id
         WHERE th.source_id = ? AND t.dispatch_generation IS NOT NULL AND t.dispatch_generation <> ?
           AND t.cancel_origin IS NULL
-          AND (t.status = 'running' OR (t.status = 'failed' AND
-            (t.error_message = 'terminated' OR t.error_code = 'agent_unreachable'))
+          AND (t.status = 'running' OR (t.status = 'failed' AND t.error_code = 'agent_connection_lost')
             OR (t.status = 'interrupted' AND t.error_code = 'interrupted'))
           AND NOT EXISTS (SELECT 1 FROM parent_turn_interruptions n WHERE n.turn_id = t.id)`)
         .all(sourceId, currentGeneration) as Array<{ id: string; thread_id: string; status: string }>;

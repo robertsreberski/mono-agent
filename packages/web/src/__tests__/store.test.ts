@@ -7131,7 +7131,7 @@ describe("parent turn interruption ledger", () => {
     const failedThread = store.createThread("agent-one");
     const failed = store.beginTurn({ threadId: failedThread.id, text: "second", attachmentIds: [] });
     store.markTurnDispatchStarted(failed.turnId, "old-generation");
-    store.failTurn(failed.turnId, { message: "terminated" });
+    store.failTurn(failed.turnId, { message: "terminated", code: "agent_connection_lost" });
     const legacyThread = store.createThread("agent-one");
     const legacy = store.beginTurn({ threadId: legacyThread.id, text: "legacy", attachmentIds: [] });
     store.markTurnDispatchStarted(legacy.turnId);
@@ -7186,7 +7186,7 @@ describe("persisted interruption wake boundary", () => {
     const thread = store.createThread("agent-one");
     const turn = store.beginTurn({ threadId: thread.id, text: "question", attachmentIds: [] });
     store.markTurnDispatchStarted(turn.turnId, "generation-a");
-    store.failTurn(turn.turnId, { message: "terminated" });
+    store.failTurn(turn.turnId, { message: "terminated", code: "agent_connection_lost" });
     store.close();
     const reopened = await WebStore.open({ stateDir, clock: () => now });
     try {
@@ -7200,6 +7200,36 @@ describe("persisted interruption wake boundary", () => {
       reopened.expireParentInterruptionWake("agent-one", turn.turnId);
       expect(reopened.claimParentInterruptionWake("agent-one", turn.turnId)).toBe(false);
       expect(reopened.pendingParentInterruptions("agent-one")).toEqual([]);
+    } finally { reopened.close(); }
+  });
+});
+
+describe("web startup versus agent process loss", () => {
+  it("does not retro-classify a web-crashed turn after first observing its original agent generation", async () => {
+    const root = await temporaryRoot(); cleanup.push(root);
+    const stateDir = join(root, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const same = store.createThread("agent-one");
+    const sameTurn = store.beginTurn({ threadId: same.id, text: "request", attachmentIds: [] });
+    store.markTurnDispatchStarted(sameTurn.turnId, "generation-a");
+    const changed = store.createThread("agent-one");
+    const changedTurn = store.beginTurn({ threadId: changed.id, text: "request", attachmentIds: [] });
+    store.markTurnDispatchStarted(changedTurn.turnId, "generation-b");
+    store.close();
+    const reopened = await WebStore.open({ stateDir });
+    try {
+      expect(reopened.turnStatus(sameTurn.turnId)).toBe("interrupted");
+      expect(reopened.reconcileParentInterruptions("agent-one", "generation-a"))
+        .toEqual([expect.objectContaining({ turnId: changedTurn.turnId })]);
+      expect(reopened.reconcileParentInterruptions("agent-one", "generation-c")).toEqual([]);
+      expect(reopened.getThreadDetail(same.id)?.messages.some((message) => message.parts.some((part) =>
+        part.type === "text" && part.text.includes("AgentManage inspect")))).toBe(false);
+      const db = new DatabaseSync(reopened.paths.database);
+      try {
+        expect(db.prepare("SELECT dispatch_generation FROM turns WHERE id = ?").get(sameTurn.turnId))
+          .toMatchObject({ dispatch_generation: null });
+      } finally { db.close(); }
     } finally { reopened.close(); }
   });
 });
