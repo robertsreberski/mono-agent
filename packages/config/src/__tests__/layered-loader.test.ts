@@ -29,6 +29,29 @@ const base = {
 };
 
 describe("loadMonoAgentConfig JSON diagnostics", () => {
+  it("warns once per duplicate config version, continues with the last value and respects silence", async () => {
+    const path = join(dir, "duplicate.json");
+    const text = (last: number) => `{"runtime":{"model":"openai-codex:gpt-5.5","maxTurns":3,"maxTurns":${last}},"context":{"identityPath":"IDENTITY.md"}}`;
+    await writeFile(path, text(5));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const config = await loadMonoAgentConfig({ cwd: dir, jsonPath: path });
+      expect(config.runtime.maxTurns).toBe(5);
+      expect(warn).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("runtime.maxTurns"));
+      await loadMonoAgentConfig({ cwd: dir, jsonPath: path });
+      expect(warn).toHaveBeenCalledTimes(1);
+
+      await writeFile(path, text(6));
+      await loadMonoAgentConfig({ cwd: dir, jsonPath: path, warnOnDuplicateConfig: false });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect((await loadMonoAgentConfig({ cwd: dir, jsonPath: path })).runtime.maxTurns).toBe(6);
+      expect(warn).toHaveBeenCalledTimes(2);
+      await loadMonoAgentConfig({ cwd: dir, jsonPath: path });
+      expect(warn).toHaveBeenCalledTimes(2);
+    } finally {
+      warn.mockRestore();
+    }
+  });
   it("attributes missing required fields to JSON paths", async () => {
     const path = await writeConfig({});
     await expect(loadMonoAgentConfig({ cwd: dir, jsonPath: path })).rejects.toMatchObject({

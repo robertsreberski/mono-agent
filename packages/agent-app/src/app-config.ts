@@ -29,7 +29,7 @@ export type MonoAgentAppConfigInput = ChannelConfigInput & {
 
 export async function loadAppCoreConfig(
   input: MonoAgentAppConfigInput,
-  options: { readonly warnOnDeprecatedConfig?: boolean } = {},
+  options: { readonly warnOnDeprecatedConfig?: boolean; readonly warnOnDuplicateConfig?: boolean } = {},
 ): Promise<MonoAgentConfig> {
   const { json } = await readMonoAgentConfigJson(input.configPath);
   assertKnownAppConfigKeys(json);

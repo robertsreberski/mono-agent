@@ -36,6 +36,14 @@ describe("readMonoAgentConfigJson", () => {
     expect(first.missing).toBe(false);
   });
 
+  it("reports duplicates without changing last-wins parsing", async () => {
+    const path = join(dir, "duplicate.json");
+    await writeFile(path, '{"processJobs":{"maxActivePerConversation":2,"maxActivePerConversation":4}}');
+    const result = await readMonoAgentConfigJson(path);
+    expect(result.duplicateKeyPaths).toEqual(["processJobs.maxActivePerConversation"]);
+    expect((result.json as Record<string, unknown>).processJobs).toEqual({ maxActivePerConversation: 4 });
+  });
+
   it("rejects files that don't contain a JSON object", async () => {
     const path = join(dir, "bad.json");
     await writeFile(path, "[1,2,3]", "utf8");

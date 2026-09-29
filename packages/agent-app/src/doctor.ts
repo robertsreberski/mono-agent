@@ -93,7 +93,7 @@ import {
   type DurableContinuationRecord,
 } from "./continuation-store-types.js";
 import { CONTINUATION_STATES, continuationDigest, type ContinuationState } from "./continuations.js";
-import { isProcessJobState, normalizeOptionalString, PROCESS_JOB_STATES } from "@mono-agent/agent-contracts";
+import { isProcessJobState, normalizeOptionalString, PROCESS_JOB_STATES, readSettingsJson } from "@mono-agent/agent-contracts";
 import {
   hasSubagentObligation,
   hasUnresolvedSubagentOwnership,
@@ -204,6 +204,8 @@ export interface ValidateMonoAgentFolderOptions extends MonoAgentAppConfigInput 
    * (`ok`) unchanged — the start preflight relies on this. Defaults to true.
    */
   readonly liveness?: boolean;
+  /** Start preflight remains permissive for duplicates; validate/doctor defaults to error. */
+  readonly ignoreDuplicateKeys?: boolean;
   /** Model refs whose credentials were proven by a successful live turn. */
   readonly verifiedCredentialModelRefs?: readonly string[];
   /** Injectable subprocess seam for deterministic local tool version checks. */
@@ -236,13 +238,34 @@ export async function validateMonoAgentFolder(
   let coreConfig: MonoAgentConfig | undefined;
   try {
     // Validation returns structured diagnostics; do not emit loader prose.
-    coreConfig = await loadAppCoreConfig(options, { warnOnDeprecatedConfig: false });
+    coreConfig = await loadAppCoreConfig(options, { warnOnDeprecatedConfig: false, warnOnDuplicateConfig: false });
     sections.push({ id: "core", label: "Core config", status: "ok", details: [`Loaded ${options.configPath}.`] });
   } catch (error) {
     if (!isAppCoreConfigError(error)) {
       throw error;
     }
     sections.push({ id: "core", label: "Core config", status: "error", details: [error.message] });
+  }
+  // Duplicates are an error-level finding even though runtime keeps last-wins
+  // semantics. Keep other section diagnostics available for the same config.
+  if (options.ignoreDuplicateKeys !== true) {
+    try {
+      const { duplicateKeyPaths } = await readSettingsJson(options.configPath);
+      if (duplicateKeyPaths.length > 0) {
+        const core = sections[0]!;
+        sections[0] = {
+          ...core,
+          status: "error",
+          details: [
+            ...core.details,
+            ...duplicateKeyPaths.slice(0, 20).map((path) => `Duplicate JSON key: ${path.slice(0, 200)} (last value wins at runtime).`),
+            ...(duplicateKeyPaths.length > 20 ? [`${duplicateKeyPaths.length - 20} more duplicate JSON key paths.`] : []),
+          ],
+        };
+      }
+    } catch {
+      // Core already reports malformed or unavailable JSON above.
+    }
   }
 
   sections.push(await runtimeProvenanceSection(options.verifiedRuntimeProvenanceDetail));

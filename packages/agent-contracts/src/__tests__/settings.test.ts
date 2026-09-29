@@ -57,7 +57,7 @@ describe("settings JSON store", () => {
 describe("readSettingsJson error paths", () => {
   it("returns a missing result instead of throwing when the file is absent", async () => {
     const result = await readSettingsJson(join(dir, "absent.json"));
-    expect(result).toEqual({ json: {}, version: "", path: join(dir, "absent.json"), missing: true });
+    expect(result).toEqual({ json: {}, version: "", path: join(dir, "absent.json"), missing: true, duplicateKeyPaths: [] });
   });
 
   it("treats an empty/whitespace file as an empty object", async () => {

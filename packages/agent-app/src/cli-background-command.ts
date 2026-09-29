@@ -132,6 +132,7 @@ export async function ensureStartable(
     cwd,
     configPath,
     liveness: false,
+    ignoreDuplicateKeys: true,
     ...(options.preferAppPluginInstall === true ? { preferAppPluginInstall: true } : {}),
     ...(options.verifiedRuntimeProvenanceDetail === undefined
       ? {}

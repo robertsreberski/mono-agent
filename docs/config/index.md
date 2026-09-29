@@ -103,7 +103,7 @@ Composition](/programmatic/) and [Live input steering](/programmatic/approval-an
 
 ## Validate before you run
 
-`mono-agent validate` reports the resolved runtime, provider credentials, context, memory, tools, sandbox, observability, secret placement, and channel state. Exit code 0 means the config is structurally valid; a `waiting` section still needs attention and is not an **Agent ready** result. Static validation does not make a model request. See [CLI reference → validate](/observability/cli-reference/#validate) for the liveness and guided-init distinctions.
+`mono-agent validate` reports the resolved runtime, provider credentials, context, memory, tools, sandbox, observability, secret placement, and channel state. Exit code 0 means the config is structurally valid; a `waiting` section still needs attention and is not an **Agent ready** result. Duplicate JSON object keys at any depth are an error-level core finding with their path (for example, `processJobs.maxActivePerConversation`); `doctor` reports the same finding. At runtime the loader warns and continues with JSON's last-value-wins behavior, so correct the duplicate and validate before restarting. Static validation does not make a model request. See [CLI reference → validate](/observability/cli-reference/#validate) for the liveness and guided-init distinctions.
 
 ```bash
 mono-agent validate
