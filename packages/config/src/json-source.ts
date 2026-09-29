@@ -312,6 +312,8 @@ export interface ReadMonoAgentConfigJsonResult {
   readonly path: string;
   /** True when the file did not exist on disk. */
   readonly missing: boolean;
+  /** Duplicate object-key paths in the original JSON source. */
+  readonly duplicateKeyPaths: readonly string[];
 }
 
 /**

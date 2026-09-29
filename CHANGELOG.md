@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Flag duplicate object keys anywhere in `mono-agent.config.json` as errors in
+  `validate` and `doctor`; runtime loading warns and keeps the last value.
+
 - Keep a supervised agent running when console restart would relaunch it with
   unapproved launchd inputs or invalid systemd inputs; show durable launchd
   snapshot refusal in `mono-agent status` if inputs race after acceptance.

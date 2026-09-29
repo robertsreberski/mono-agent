@@ -40,7 +40,9 @@ console.log(config.runtime.model);
 
 Core settings resolve from `mono-agent.config.json`, then built-in defaults.
 `MONO_AGENT_*` core configuration variables are ignored. A missing or empty JSON
-file contributes an empty JSON source.
+file contributes an empty JSON source. Duplicate object keys are returned as
+`duplicateKeyPaths` by `readMonoAgentConfigJson`; loading warns and retains JSON's
+last-value-wins result. Agent-app's validate/doctor treats these as errors.
 
 ### Agent identity and runtime routes
 

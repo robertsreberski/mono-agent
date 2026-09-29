@@ -76,6 +76,13 @@ describe("ensureStartable (start/restart preflight gate)", () => {
     }
   });
 
+  it("does not block existing starts solely for duplicate keys", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    await writeFile(join(dir, "mono-agent.config.json"), '{"runtime":{"model":"openai-codex:gpt-5.5"},"context":{"identityPath":"./IDENTITY.md"},"processJobs":{"enabled":false,"enabled":false}}');
+    const result = await ensureStartable(parseCliArgs(["start"]));
+    expect(result.ok).toBe(true);
+  });
+
   it("passes when the only non-ok sections are waiting, and never hits the network", async () => {
     // bujo + Ollama would normally probe and downgrade to `waiting`; the gate
     // runs with liveness:false, so the probe is skipped entirely.

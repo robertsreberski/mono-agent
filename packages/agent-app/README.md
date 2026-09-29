@@ -128,7 +128,8 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   from the same config/env resolution path via `mono-agent memory` (including
   provider-free strict health and payload-free intake inspect/retry/resolve).
 - Scaffold (`mono-agent init`) and validate (`mono-agent validate`) agent
-  folders non-destructively.
+  folders non-destructively. Validate/doctor reject duplicate JSON object keys with
+  their paths; runtime loading warns and keeps the last value.
 - Resolve explicit WebSearch/WebFetch provider chains (Parallel then local Ollama
   search; local fetch by default) into every runtime run and
   report the four-request default WebSearch budget plus separate bounded

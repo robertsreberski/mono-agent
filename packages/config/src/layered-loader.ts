@@ -10,9 +10,12 @@ export interface LoadMonoAgentConfigInput {
   readonly jsonPath?: string;
   /** Disable deprecation prose for callers that produce structured diagnostics. */
   readonly warnOnDeprecatedConfig?: boolean;
+  /** Disable duplicate-key prose for structured validators. */
+  readonly warnOnDuplicateConfig?: boolean;
 }
 
 const warnedDeprecatedConfigPaths = new Set<string>();
+const warnedDuplicateConfigVersions = new Map<string, string>();
 
 /**
  * Load core configuration from `mono-agent.config.json` and built-in defaults.
@@ -26,10 +29,18 @@ const warnedDeprecatedConfigPaths = new Set<string>();
 export async function loadMonoAgentConfig(
   input: LoadMonoAgentConfigInput,
 ): Promise<MonoAgentConfig> {
-  const jsonLayer = input.jsonPath === undefined
-    ? {}
-    : (await readMonoAgentConfigJson(input.jsonPath)).json;
+  const result = input.jsonPath === undefined ? undefined : await readMonoAgentConfigJson(input.jsonPath);
+  const jsonLayer = result?.json ?? {};
   const configPath = input.jsonPath === undefined ? undefined : resolve(input.jsonPath);
+  if (result !== undefined && configPath !== undefined) {
+    if (result.duplicateKeyPaths.length === 0) {
+      warnedDuplicateConfigVersions.delete(configPath);
+    } else if (input.warnOnDuplicateConfig !== false
+      && warnedDuplicateConfigVersions.get(configPath) !== result.version) {
+      warnedDuplicateConfigVersions.set(configPath, result.version);
+      console.warn(`[mono-agent] Duplicate config keys (last value wins): ${result.duplicateKeyPaths.slice(0, 20).map((path) => path.slice(0, 200)).join(", ")}${result.duplicateKeyPaths.length > 20 ? ` (+${result.duplicateKeyPaths.length - 20} more)` : ""}. Run mono-agent validate to fix them.`);
+    }
+  }
   if (configPath !== undefined && input.warnOnDeprecatedConfig !== false
     && Object.hasOwn(jsonLayer, "monitors") && !warnedDeprecatedConfigPaths.has(configPath)) {
     warnedDeprecatedConfigPaths.add(configPath);
