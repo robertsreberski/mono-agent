@@ -775,8 +775,13 @@ empty range, unsupported composition, and backend failure remain distinct.
 
 `Remember` gives the agent an explicit way to persist one stated fact, closing
 the loop left by read-only `MemoryRecall`. It is request-scoped, deterministic,
-and append-only, and it writes through the shared memory retrieval service so no
-second store is opened.
+and it writes through the shared memory retrieval service so no second store is
+opened. BuJo alone accepts optional `about` (an existing person ID),
+`replaceable: true` (a scan observation that can change even without `about`),
+and `supersedes` (a current captured note/event or enhanced Remember ID);
+supersession preserves history and never replaces a text-only Remember line or
+upgrades a note to a user-stated fact. A plain exact duplicate of a replaceable
+write remains replaceable; use distinct dated wording for an owner-stated fact. Lite and Journal remain text-only.
 
 Availability is deliberately narrow: a configured memory block with
 `memory.rememberTool.enabled` left on, a store that affirms `supportsRemember()`

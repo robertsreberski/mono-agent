@@ -58,6 +58,7 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "memory.path": "string",
   "memory.maxBytes": "integer",
   "memory.writeMode": "string",
+  "memory.capture.cron": "boolean",
   "memory.capture.focus": "string",
   "memory.capture.only": "string[]",
   "memory.capture.reconcileModel": "string",

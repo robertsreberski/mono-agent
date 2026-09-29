@@ -53,6 +53,8 @@ describe("buildMonoAgentConfigView", () => {
       llm: { provider: "agent-host" as const, model: "openai-codex:gpt-5.5" } };
     expect(buildView({ memory }).flatMap((section) => section.fields).some((entry) => entry.id === "memory.capture.reconcileModel"))
       .toBe(false);
+    expect(field(buildView({ memory: { ...memory, capture: { cron: false } } }),
+      "memory.capture.cron")).toMatchObject({ value: "false", source: "json" });
     expect(field(buildView({ memory: { ...memory, capture: { reconcileModel: "openai-codex:gpt-5.6-terra" } } }),
       "memory.capture.reconcileModel")).toMatchObject({ value: "openai-codex:gpt-5.6-terra", source: "json" });
   });

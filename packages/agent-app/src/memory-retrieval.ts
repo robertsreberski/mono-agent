@@ -57,6 +57,12 @@ export interface SharedRecallStore extends MemoryStore, RecallCapableStore, Labe
   }>;
   /** Affirmative capability signal; false on a read-only store. */
   supportsRemember?(): boolean;
+  supportsRememberDetails?(): boolean;
+  rememberDetails?(conversationId: string, text: string,
+    details: { readonly about?: string; readonly supersedes?: string; readonly abortSignal?: AbortSignal }): Promise<{
+      readonly id: string; readonly source: string; readonly text: string;
+      readonly duplicate: boolean; readonly supersededId?: string;
+    }>;
 }
 
 // Short context-free replies cannot reliably select unsolicited cross-conversation lines.
@@ -356,6 +362,28 @@ export class MemoryRetrievalService implements MemoryStore {
     // Both halves, not just the signal: advertising a write surface whose
     // method is absent would fail every call instead of never appearing.
     return typeof this.store.remember === "function" && this.store.supportsRemember?.() === true;
+  }
+
+  supportsRememberDetails(): boolean {
+    return this.supportsRemember() && typeof this.store.rememberDetails === "function"
+      && this.store.supportsRememberDetails?.() === true;
+  }
+
+  async rememberDetails(conversationId: string, text: string,
+    details: { readonly about?: string; readonly supersedes?: string; readonly abortSignal?: AbortSignal }) {
+    if (!this.supportsRememberDetails()) throw new Error("memory: Remember details require writable BuJo memory.");
+    try {
+      const result = await this.store.rememberDetails!(conversationId, text, details);
+      if (!result.duplicate || result.supersededId !== undefined) this.releaseAllTurns();
+      return result;
+    } catch (error) {
+      // A published outbox intent can already have invalidated the old note
+      // before replay reports a partial projection failure.
+      if (typeof error === "object" && error !== null
+        && ((error as { rememberIntentWritten?: unknown }).rememberIntentWritten === true
+          || (error as { canonicalWritten?: unknown }).canonicalWritten === true)) this.releaseAllTurns();
+      throw error;
+    }
   }
 
   async remember(

@@ -56,6 +56,8 @@ import {
 } from "./capture-intake.js";
 import { composeRecallBlock } from "./recall.js";
 import { recoverDurableMutationState, withSerializedBujoMutation } from "./mutation-lock.js";
+import { rememberWithDetails, type RememberDetails } from "./remember-details.js";
+import { assertNoShadowedLegacyDailyFile } from "./remember-layout.js";
 import {
   migrate as migrateFn,
   type MigrateResult,
@@ -525,6 +527,17 @@ export class BujoMemoryStore implements MemoryStore {
     return !this.readOnly;
   }
 
+  supportsRememberDetails(): boolean {
+    return !this.readOnly && this._tier === "bujo";
+  }
+
+  async rememberDetails(conversationId: string, text: string, details: RememberDetails): Promise<MemoryRememberResult> {
+    if (!this.supportsRememberDetails()) throw new Error("memory-bujo: Remember details require writable BuJo memory.");
+    return await this.runAdmittedMutation("rememberDetails", async (signal) =>
+      await rememberWithDetails(this.root, this.db, this.clock, conversationId, text,
+        { ...details, abortSignal: signal }), details.abortSignal);
+  }
+
   /** Deterministically expand already-fetched direct hits for explicit MemoryRecall only. */
   expandGraph(
     query: string,
@@ -636,6 +649,9 @@ export class BujoMemoryStore implements MemoryStore {
           // reporting "already remembered" would be a success the agent cannot
           // read back. Explicit forget is deliberate, so re-storing the same
           // text must not silently resurrect it either.
+          if (indexed?.supersededBy !== undefined) {
+            throw new Error("memory-bujo: this exact text was superseded; record the new state with its date and source.");
+          }
           if (indexed !== undefined && (indexed.status === "dropped" || indexed.status === "invalidated")) {
             throw new Error(
               `memory-bujo: "${stored}" was explicitly forgotten (${indexed.status}) and is not re-storable; `
@@ -1395,31 +1411,6 @@ function reasonOf(error: unknown): string {
 function withCleanupErrors(primary: unknown, cleanup: readonly unknown[], message: string): unknown {
   if (cleanup.length === 0) return primary;
   return new AggregateError(primary === undefined ? cleanup : [primary, ...cleanup], message);
-}
-
-/**
- * Guard the one layout where appending to `daily/<date>.md` would hide data.
- *
- * Rebuild treats a canonical `daily/<date>.md` as authoritative for its date and
- * skips a root-level `<date>.md` with the same name. In a store that still keeps
- * that date only at the root, creating the modern file would therefore drop the
- * legacy file's facts from the next rebuilt index.
- */
-function assertNoShadowedLegacyDailyFile(root: string, when: Date): void {
-  const day = when.toISOString().slice(0, 10);
-  const legacy = readCanonicalFileSnapshot(root, `${day}.md`, { allowMissing: true });
-  if (legacy === undefined) return;
-  const modern = readCanonicalFileSnapshot(root, `daily/${day}.md`, { allowMissing: true });
-  if (modern !== undefined) return;
-  const legacyBody = legacy.content.trim();
-  // A migration can leave an empty placeholder (or just its canonical date
-  // heading) behind. There is no fact for a new modern file to hide in that
-  // case, so refusing the write would be a false data-safety failure.
-  if (legacyBody.length === 0 || legacyBody === `# ${day}`) return;
-  throw new Error(
-    `memory-bujo: ${day}.md still uses the root-level legacy layout; remembering a fact would create `
-    + `daily/${day}.md and hide it from the next rebuild. Migrate that file into daily/ first.`,
-  );
 }
 
 async function serializeJournalWrite<T>(

@@ -1177,6 +1177,53 @@ describe("shared MemoryRecall MCP", () => {
 });
 
 describe("MemoryRetrievalService.remember cache coherence", () => {
+  it("invalidates recall on a durable partial error and on a duplicate replacement retry", async () => {
+    let calls = 0;
+    let fail = true;
+    const store = {
+      async load() { return undefined; },
+      async recall() { calls += 1; return []; },
+      supportsRemember: () => true, supportsRememberDetails: () => true,
+      async remember() { throw new Error("wrong path"); },
+      async rememberDetails() {
+        if (fail) throw Object.assign(new Error("projection unfinished"), { rememberIntentWritten: true });
+        return { id: "new", source: "daily/x.md", text: "Morgan's report was resolved.",
+          duplicate: true, supersededId: "old" };
+      }, async close() {},
+    };
+    const service = new MemoryRetrievalService(store as never, {});
+    await service.load("conv-1", "Morgan report", { turnId: "turn-1" });
+    expect(calls).toBe(1);
+    await expect(service.rememberDetails("conv-1", "Morgan's report was resolved.", { supersedes: "old" }))
+      .rejects.toThrow(/projection unfinished/u);
+    await service.recallForTurn("turn-1", "Morgan report");
+    expect(calls).toBe(2);
+    fail = false;
+    await service.rememberDetails("conv-1", "Morgan's report was resolved.", { supersedes: "old" });
+    await service.recallForTurn("turn-1", "Morgan report");
+    expect(calls).toBe(3);
+  });
+
+  it("invalidates recalled results after a successful enhanced replacement", async () => {
+    let current = "Morgan's report is pending.";
+    const store = {
+      async load() { return undefined; },
+      async recall() { return [{ score: 1, record: { id: current.includes("complete") ? "new" : "old", text: current } }]; },
+      supportsRemember: () => true,
+      supportsRememberDetails: () => true,
+      async remember() { throw new Error("wrong path"); },
+      async rememberDetails(_conversationId: string, text: string) {
+        current = text;
+        return { id: "new", source: "daily/x.md", text, duplicate: false, supersededId: "old" };
+      },
+      async close() {},
+    };
+    const service = new MemoryRetrievalService(store as never, {});
+    await service.load("conv-1", "Morgan report", { turnId: "turn-1" });
+    expect((await service.recallForTurn("turn-1", "Morgan report")).map((hit) => hit.record.id)).toEqual(["old"]);
+    await service.rememberDetails("conv-1", "Morgan's report is complete.", { supersedes: "old" });
+    expect((await service.recallForTurn("turn-1", "Morgan report")).map((hit) => hit.record.id)).toEqual(["new"]);
+  });
   it("drops the per-turn recall cache so a stored fact is visible in the same run", async () => {
     // Recall memoizes per turn. Without invalidation a query answered before the
     // write keeps returning its stale empty result, contradicting the

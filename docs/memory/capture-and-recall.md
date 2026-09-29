@@ -25,7 +25,7 @@ Memory is not a task list. Automatic capture never writes an open BuJo task (`[ 
 
 Cron and webhook turns omit their trigger prompt and webhook pre-instructions from memory. Intelligent capture receives an honest scheduled-task or webhook source label (not `User`) plus the assistant answer; the deterministic host summary remains assistant-answer-only. The extractor must not treat an assistant recap as a first-party report. There is no deterministic recap classifier, so model-guided capture may still make mistakes; the no-op sentinel remains the deterministic skip.
 
-Memory persistence is **host-owned**. When a user says “remember this,” the agent should acknowledge the request normally and let the configured write mode decide whether and how to persist the completed turn after the reply succeeds. It must not use shell, filesystem, or database tools to edit `.mono-agent/memory`, canonical Markdown, SQLite rows, manifests, generations, or indexes directly. Operators should stop the agent and use the `mono-agent memory ...` maintenance commands when they need to rebuild, migrate, audit, or repair memory state. `memory export` is the one exception: it is strictly read-only and can back up a live agent. `memory import apply` and `import restore` do require a stopped agent.
+Memory persistence is **host-owned**. When a user says “remember this,” an allowed `Remember` tool can write a deliberate fact immediately; otherwise the configured write mode determines completed-turn persistence. In BuJo, `Remember({ text, about?, supersedes?, replaceable? })` optionally links an existing person entity (`about`) and replaces a recalled current ordinary note (`supersedes`), leaving the old state in history. It cannot create a person or replace owner-stated facts, preferences, lessons, or text-only Remember lines; supersession is limited to captured notes/events and enhanced Remember writes. Source, author, observation date and uncertainty belong in the self-contained sentence; enhanced writes carry assistant-noted, not verified owner, attribution. Lite and Journal accept text-only writes. For scan observations without a known person ID, use `replaceable: true` on the first write so a later change can supersede it; plain text-only Remember writes are protected from scan replacement. Exact repeats are idempotent; recall and compare before writing paraphrases. If a later plain Remember repeats the **exact text** of an existing replaceable write, it reports a duplicate and does not remove its replaceable marker; use distinct dated/source-specific wording when a protected owner-stated fact must be recorded. Do not use shell, filesystem, or database tools to edit `.mono-agent/memory`, canonical Markdown, SQLite rows, manifests, generations, or indexes directly. Operators should stop the agent and use the `mono-agent memory ...` maintenance commands when they need to rebuild, migrate, audit, or repair memory state. `memory export` is the one exception: it is strictly read-only and can back up a live agent. `memory import apply` and `import restore` do require a stopped agent.
 
 ```json
 {
@@ -239,6 +239,12 @@ with zero unrelated false supersedes in either condition. These are variable,
 bounded observations, not a correctness guarantee; classifier median call time
 rose from about 3.1–3.3 seconds to 7.3–7.5 seconds in the fictional trials.
 Provider costs and latency may vary.
+
+Set `memory.capture.cron: false` (BuJo capture mode) to skip automatic admission
+for every host-identified cron firing, including run-now. Unset/true keeps the
+existing default. Human turns, webhooks, history, recall and explicit Remember
+calls are unchanged, but cron raw summaries in `audit/` are also omitted because
+no cron turn is admitted. Previously admitted work still drains.
 
 An agent can optionally narrow automatic capture with `memory.capture.focus` (up to
 2048 UTF-8 bytes of operator-written guidance, inside a delimited extraction-prompt

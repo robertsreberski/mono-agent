@@ -1392,6 +1392,7 @@ function inferType(id: string): ConfigReferenceType {
   ].includes(id)) {
     return "integer";
   }
+  if (id === "memory.capture.cron") return "boolean";
   if (id === "providers.piNative.promptCacheDiagnostics") return "boolean";
   if (id === "runtime.compaction.fixedOverheadEnabled") {
     return "boolean";
@@ -1586,6 +1587,7 @@ function exampleFor(id: string): SettingsJsonValue {
     "memory.embeddings.model": "nomic-embed-text:v1.5",
     "memory.llm.provider": "agent-host",
     "memory.llm.model": "openai-codex:gpt-5.6-terra",
+    "memory.capture.cron": false,
     "memory.capture.focus": "Keep durable coding preferences and verified lessons; skip PR and CI status.",
     "memory.capture.only": ["preference", "lesson"],
     "memory.capture.reconcileModel": "openai-codex:gpt-6-sol",
@@ -1645,6 +1647,7 @@ function exampleFor(id: string): SettingsJsonValue {
 }
 
 function descriptionFor(id: string): string {
+  if (id === "memory.capture.cron") return "Set false to skip automatic capture and raw audit for host-identified cron turns (including run-now); other turns and explicit Remember writes are unchanged. Unset preserves capture.";
   if (id === "memory.capture.focus") return "Operator guidance (at most 2048 UTF-8 bytes) narrows BuJo capture extraction and review; it cannot override host safety or the strict JSON contract. Requires mode bujo and writeMode capture.";
   if (id === "memory.capture.only") return "Keep automatic capture memories only when a host-accepted label matches one of these kinds. An empty array drops all automatic captures; unset preserves current behavior. Remember writes are unaffected. Requires mode bujo and writeMode capture.";
   if (id === "memory.capture.reconcileModel") return "Optional validated agent-host runtime model reference for the capture reconciliation classifier only. Unset uses memory.llm for extraction, review and reconciliation. Requires mode bujo and writeMode capture; failures do not fall back to the capture model.";

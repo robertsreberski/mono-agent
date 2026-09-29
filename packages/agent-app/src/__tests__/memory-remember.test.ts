@@ -6,7 +6,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/agent-harness";
-import { createBujoMemoryStore, dailyFilePath } from "@mono-agent/memory/bujo";
+import { appendGraphBatch, createBujoMemoryStore, dailyFilePath } from "@mono-agent/memory/bujo";
+import { MemoryRetrievalService } from "../memory-retrieval.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -45,6 +46,7 @@ async function callRemember(
   store: RememberCapableStore,
   text: string,
   env: Record<string, string | undefined> = {},
+  details: { about?: string; supersedes?: string; replaceable?: boolean } = {},
 ) {
   const server = createMemoryRememberServer(store, "conv-1", env);
   const client = new Client({ name: "remember-test", version: "1.0.0" }, { capabilities: {} });
@@ -53,8 +55,9 @@ async function callRemember(
   await client.connect(clientTransport);
   try {
     const listed = await client.listTools();
-    const result = await client.callTool({ name: REMEMBER_TOOL_NAME, arguments: { text } });
-    return { listed, result: result as { isError?: boolean; structuredContent?: Record<string, unknown> } };
+    const result = await client.callTool({ name: REMEMBER_TOOL_NAME, arguments: { text, ...details } });
+    return { listed, result: result as { isError?: boolean; structuredContent?: Record<string, unknown>;
+      content?: Array<{ type: string; text?: string }> } };
   } finally {
     await client.close().catch(() => undefined);
     await server.close().catch(() => undefined);
@@ -106,6 +109,94 @@ describe("isRememberCapableStore", () => {
 });
 
 describe("Remember tool", () => {
+  it("supersedes through the real BuJo store, MCP tool and shared recall cache", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "remember-e2e-fictional-"));
+    appendGraphBatch(dir, { entities: [{ id: "person:morgan", name: "Morgan", type: "person",
+      createdAt: FIXED.toISOString() }], associations: [] });
+    const store = createBujoMemoryStore({ root: dir, clock: () => FIXED, dim: 8,
+      embeddings: { id: "fictional-8", embed: async (texts) => texts.map(() => Array(8).fill(1 / Math.sqrt(8))) },
+      tier: "bujo", llm: { id: "unused", complete: async () => "[]" } });
+    stores.push(store);
+    const service = new MemoryRetrievalService(store, {});
+    const first = await callRemember(service, "Morgan's dated note recorded an open question.", {}, { about: "person:morgan" });
+    const priorId = first.result.structuredContent?.id as string;
+    await service.load("conv-1", "Morgan's dated question", { turnId: "turn-1" });
+    await service.recallForTurn("turn-1", "Morgan's dated question");
+    const next = await callRemember(service, "Morgan's dated note resolved the question.", {},
+      { about: "person:morgan", supersedes: priorId });
+    const nextId = next.result.structuredContent?.id;
+    expect(next.result.structuredContent).toMatchObject({ supersededId: priorId, duplicate: false });
+    expect(next.result.content?.[0]?.text).toContain(`replaced ${priorId}`);
+    const hits = await service.recallForTurn("turn-1", "Morgan's dated question");
+    expect(hits.map((hit) => hit.record.id)).toContain(nextId);
+    expect(hits.map((hit) => hit.record.id)).not.toContain(priorId);
+
+    const unlinked = await callRemember(service, "A dated scan observed the Maple project was pending.", {},
+      { replaceable: true });
+    const unlinkedId = unlinked.result.structuredContent?.id as string;
+    const updated = await callRemember(service, "A dated scan observed the Maple project was completed.", {},
+      { supersedes: unlinkedId });
+    expect(updated.result.structuredContent).toMatchObject({ duplicate: false, supersededId: unlinkedId });
+    const ownerFact = await callRemember(service, "Morgan's durable preference is short summaries.");
+    const ownerFactId = ownerFact.result.structuredContent?.id as string;
+    const refused = await callRemember(service, "Morgan now prefers long summaries according to a scan.", {},
+      { supersedes: ownerFactId });
+    expect(refused.result.isError).toBe(true);
+    expect(refused.result.structuredContent).toMatchObject({ stored: false });
+  });
+  it("retains the original text-only schema and description for unsupported stores", async () => {
+    const { store } = writableStore();
+    const { listed, result } = await callRemember(store, "Morgan wrote a dated note.");
+    expect(listed.tools[0]?.inputSchema.properties).toHaveProperty("text");
+    expect(JSON.stringify(listed.tools[0]?.inputSchema)).toBe(JSON.stringify({
+      type: "object", properties: { text: { type: "string", minLength: 1,
+        description: "One self-contained fact to store. Stored as a single line: surrounding and internal whitespace is normalized, so write it as one sentence." } },
+      required: ["text"], $schema: "http://json-schema.org/draft-07/schema#",
+    }));
+    expect(listed.tools[0]?.description).toBe("Durably save one specific fact to long-term memory so it survives this conversation. "
+      + "Use it when the user asks you to remember something, or states a lasting preference, decision, or "
+      + "fact worth keeping; use MemoryRecall to read memory back. Write one self-contained sentence that "
+      + "still makes sense months from now, with no pronouns or references that depend on the current "
+      + "conversation; it is stored as a single normalized line. Do not use it for transient task state, for "
+      + "anything the user asked you to forget, or for credentials, tokens, or other secrets — secret-shaped "
+      + "text is rejected. Memory is append-only: you cannot edit or delete what you store.");
+    expect(result.isError).not.toBe(true);
+  });
+
+  it("rejects unsolicited detail arguments on a text-only store without changing its schema", async () => {
+    const { dir, store } = writableStore();
+    for (const details of [{ about: "person:morgan" }, { supersedes: "C-example" }, { replaceable: true }]) {
+      const { listed, result } = await callRemember(store, "Morgan recorded a dated note.", {}, details);
+      expect(Object.keys(listed.tools[0]?.inputSchema.properties ?? {})).toEqual(["text"]);
+      expect(result.isError).toBe(true);
+      expect(result.content?.[0]?.text).toContain("Input validation error");
+    }
+    expect(dailyContent(dir)).toBe("");
+  });
+
+  it("returns the replacement ID without permitting caller-provided attribution", async () => {
+    const writes: unknown[] = [];
+    const store: RememberCapableStore = {
+      supportsRemember: () => true,
+      supportsRememberDetails: () => true,
+      remember: async () => { throw new Error("wrong path"); },
+      rememberDetails: async (_conversation, text, details) => {
+        writes.push({ text, details });
+        return { id: "replacement", source: "daily/example.md", text, duplicate: false,
+          supersededId: "original" };
+      },
+    };
+    const response = await callRemember(store, "Morgan noted the update.", {}, {
+      about: "person:morgan", supersedes: "original",
+    });
+    expect(Object.keys(response.listed.tools[0]?.inputSchema.properties ?? {})).toEqual(["text", "about", "supersedes", "replaceable"]);
+    expect(response.listed.tools[0]?.description).toContain("Explicit supersedes replaces");
+    expect(response.result.structuredContent).toMatchObject({ id: "replacement", supersededId: "original" });
+    expect(response.result.content?.[0]?.text).toContain("(replaced original)");
+    expect(writes).toEqual([expect.objectContaining({ text: "Morgan noted the update.",
+      details: expect.objectContaining({ about: "person:morgan", supersedes: "original" }),
+    })]);
+  });
   it("stores one normalized fact and reports what was actually written", async () => {
     const { dir, store } = writableStore();
     const { listed, result } = await callRemember(store, "  Robert   deploys\non Fridays.  ");
@@ -290,6 +381,21 @@ describe("Remember tool — widened credential coverage", () => {
     const { result } = await callRemember(store, "The release script writes build.summary.json at the end.");
     expect(result.isError).not.toBe(true);
     expect(dailyContent(dir)).toContain("build.summary.json");
+  });
+
+  it("reports a durable enhanced intent as partial and asks for exact details on retry", async () => {
+    const store: RememberCapableStore = {
+      supportsRemember: () => true, supportsRememberDetails: () => true,
+      remember: async () => { throw new Error("wrong path"); },
+      rememberDetails: async () => {
+        throw Object.assign(new Error("fictional replay interruption"), { rememberIntentWritten: true });
+      },
+    };
+    const { result } = await callRemember(store, "Morgan recorded a dated update.", {}, {
+      about: "person:morgan", supersedes: "original",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({ stored: true, indexed: false });
   });
 
   it("reports a partial write as durable-but-unindexed instead of not stored", async () => {

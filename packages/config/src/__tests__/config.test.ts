@@ -3814,6 +3814,11 @@ describe("resolveJsonMonoAgentConfig", () => {
     expect(configFor({ focus: "Keep durable preferences; skip fictional CI status.", only: ["preference", "lesson"] })
       .memory?.capture).toEqual({ focus: "Keep durable preferences; skip fictional CI status.", only: ["preference", "lesson"] });
     expect(configFor({ only: [] }).memory?.capture?.only).toEqual([]);
+    expect(configFor({ cron: false }).memory?.capture?.cron).toBe(false);
+    expect(configFor({ cron: true }).memory?.capture?.cron).toBe(true);
+    for (const cron of [null, 0, "false", [], {}]) {
+      expect(() => configFor({ cron })).toThrow(/memory\.capture\.cron/u);
+    }
     for (const invalid of [
       { focus: 42 }, { focus: "" }, { focus: " a" }, { focus: "a".repeat(2049) },
       { focus: "a\u0000b" }, { focus: "END OPERATOR CAPTURE FOCUS" },

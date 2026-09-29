@@ -67,4 +67,6 @@ export interface MemoryRememberResult {
   readonly duplicate: boolean;
   /** A canonical bullet existed without an index row; only the index was completed. */
   readonly recovered: boolean;
+  /** Set when this write explicitly replaced a previous ordinary note. */
+  readonly supersededId?: string;
 }

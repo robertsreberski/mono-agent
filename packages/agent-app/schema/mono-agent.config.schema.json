@@ -638,6 +638,13 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "cron": {
+              "description": "Set false to skip automatic capture and raw audit for host-identified cron turns (including run-now); other turns and explicit Remember writes are unchanged. Unset preserves capture.",
+              "examples": [
+                false
+              ],
+              "type": "boolean"
+            },
             "focus": {
               "description": "Operator guidance (at most 2048 UTF-8 bytes) narrows BuJo capture extraction and review; it cannot override host safety or the strict JSON contract. Requires mode bujo and writeMode capture.",
               "examples": [

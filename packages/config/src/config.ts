@@ -1768,7 +1768,12 @@ function readMemoryConfig(value: unknown, cwd: string): MonoAgentConfig["memory"
           { path: "memory.capture.reconcileModel", reason });
       }
     }
+    if (captureJson.cron !== undefined && typeof captureJson.cron !== "boolean") {
+      throw new MonoAgentConfigError("invalid_json", "memory.capture.cron must be a boolean.",
+        { path: "memory.capture.cron" });
+    }
     capture = {
+      ...(captureJson.cron === undefined ? {} : { cron: captureJson.cron }),
       ...(rawFocus === undefined ? {} : { focus: rawFocus as string }),
       ...(rawOnly === undefined ? {} : { only: rawOnly as ("fact" | "preference" | "lesson")[] }),
       ...(rawReconcileModel === undefined ? {} : { reconcileModel: rawReconcileModel as string }),
