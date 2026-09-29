@@ -220,7 +220,7 @@ describe("Pi interoperability facade", () => {
     expect(describePiProviderAuth("missing")).toBeUndefined();
   });
 
-  it("hides Pi's new OpenAI ChatGPT OAuth but keeps OpenAI API keys and Codex OAuth", () => {
+  it("advertises Pi's ChatGPT OAuth alongside OpenAI API keys without changing Codex OAuth", () => {
     piMocks.builtinProviders.mockReturnValue([
       {
         id: "openai", name: "OpenAI", auth: {
@@ -235,11 +235,14 @@ describe("Pi interoperability facade", () => {
       },
     ]);
 
-    expect(isPiOAuthLoginEnabled("openai")).toBe(false);
+    expect(isPiOAuthLoginEnabled("openai")).toBe(true);
     expect(isPiOAuthLoginEnabled("openai-codex")).toBe(true);
     expect(describePiProviderAuth("openai")).toEqual({
       providerId: "openai", label: "OpenAI",
-      methods: [{ type: "api_key", label: "OpenAI API key", interactive: false }],
+      methods: [
+        { type: "oauth", label: "Sign in with ChatGPT", interactive: true },
+        { type: "api_key", label: "OpenAI API key", interactive: false },
+      ],
     });
     expect(describePiProviderAuth("openai-codex")).toEqual({
       providerId: "openai-codex", label: "OpenAI Codex (legacy)",
@@ -247,14 +250,20 @@ describe("Pi interoperability facade", () => {
     });
   });
 
-  it("rejects unsupported OpenAI OAuth before constructing Pi Models or starting login", async () => {
+  it("requires a stable callback and passes it to both OpenAI OAuth facades", async () => {
     const interaction = { prompt: vi.fn(), notify: vi.fn() };
-    await expect(loginPiProviderAuth("openai", "oauth", interaction))
-      .rejects.toThrow("Pi OAuth login for openai is unavailable until installation device IDs are supported");
-    await expect(loginPiOAuth("openai", {}))
-      .rejects.toThrow("Pi OAuth login for openai is unavailable until installation device IDs are supported");
-    expect(piMocks.builtinModels).not.toHaveBeenCalled();
-    expect(piMocks.getPiOAuthAuth).not.toHaveBeenCalled();
+    await expect(loginPiProviderAuth("openai", "oauth", interaction)).rejects.toThrow(/installation device ID/u);
+    await expect(loginPiOAuth("openai", {})).rejects.toThrow(/installation device ID/u);
+    const getDeviceId = vi.fn(() => "3e53b686-a244-45b6-8267-4dd9e6dce936");
+    const login = vi.fn(async () => ({ type: "oauth", access: "access", refresh: "refresh", expires: 1, clientId: "issued" }));
+    piMocks.builtinModels.mockReturnValueOnce({ login });
+    const credentials = await loginPiProviderAuth("openai", "oauth", interaction, { getDeviceId });
+    expect(credentials.clientId).toBe("issued");
+    expect(login).toHaveBeenCalledWith("openai", "oauth", expect.any(Object), { getDeviceId });
+    const oauthLogin = vi.fn(async () => credentials);
+    piMocks.getPiOAuthAuth.mockReturnValueOnce({ login: oauthLogin });
+    await loginPiOAuth("openai", { onAuth() {}, onDeviceCode() {}, onPrompt() {}, onSelect() {} }, { getDeviceId });
+    expect(oauthLogin).toHaveBeenCalledWith(expect.any(Object), { getDeviceId });
   });
 
   it("checks auth through Pi Models without refreshing or exposing credentials", async () => {

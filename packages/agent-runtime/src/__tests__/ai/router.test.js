@@ -1113,6 +1113,21 @@ describe("createRouterRuntime — same-model retry", () => {
     expect(executeMock.mock.calls[1][1].model.model).toBe("claude-sonnet-4-6");
   });
 
+  it("advances past ChatGPT subscription exhaustion without retrying the same route", async () => {
+    executeMock
+      .mockResolvedValueOnce({ text: null, error: "subscription_sharing_usage_limit_exceeded", failureKind: "provider_unavailable", events: [], cancelled: false })
+      .mockResolvedValueOnce({ text: "fallback worked", events: [], failureKind: null });
+    const router = createRouterRuntime({
+      chain: [{ model: OPUS, attempts: 3 }, { model: SONNET }],
+      retry: { backoffMs: 0, maxBackoffMs: 0 },
+    });
+    const result = await router.run("sys", { messages: [] });
+    expect(result.text).toBe("fallback worked");
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(result.failoverHistory[0].retryableSubkind).toBe("subscription_limit");
+    expect(executeMock.mock.calls[1][1].model.model).toBe("claude-sonnet-4-6");
+  });
+
   it("retries a terminated stream on the same model", async () => {
     executeMock
       .mockResolvedValueOnce({

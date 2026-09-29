@@ -428,6 +428,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           // another attempt here is a guaranteed second failure. Advance instead.
           const sameModelRetryable = retryability.retryable
             && retryability.subkind !== "context_limit"
+            && retryability.subkind !== "subscription_limit"
             && retryIndex + 1 < entry.attempts;
           if (!sameModelRetryable) break;
 

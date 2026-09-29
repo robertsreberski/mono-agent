@@ -202,13 +202,13 @@ export function describePiBuiltinProvider(providerId) {
 
 /**
  * Pi 0.99's OpenAI ChatGPT sign-in requires a stable installation device ID.
- * Until mono-agent owns that lifecycle, never advertise or start this OAuth
- * login; OpenAI API keys and the separate openai-codex OAuth remain available.
+ * App owners supply a stable installation ID when initiating OpenAI OAuth.
+ * The built-in method remains visible to callers choosing their auth type.
  * @param {string} providerId
  * @returns {boolean}
  */
 export function isPiOAuthLoginEnabled(providerId) {
-  return providerId !== "openai";
+  return true;
 }
 
 /**
@@ -297,14 +297,15 @@ export async function checkPiProviderAuth(providerId, credential, environment = 
  * @param {string} providerId
  * @param {"oauth"|"api_key"} type
  * @param {PiProviderAuthInteraction} interaction
+ * @param {{getDeviceId?: () => string}} [options]
  * @returns {Promise<*>}
  */
-export async function loginPiProviderAuth(providerId, type, interaction) {
+export async function loginPiProviderAuth(providerId, type, interaction, options) {
   if (type !== "oauth" && type !== "api_key") {
     throw new TypeError("Pi provider auth type must be oauth or api_key");
   }
-  if (type === "oauth" && !isPiOAuthLoginEnabled(providerId)) {
-    throw new Error(`Pi OAuth login for ${providerId} is unavailable until installation device IDs are supported`);
+  if (type === "oauth" && providerId === "openai" && typeof options?.getDeviceId !== "function") {
+    throw new TypeError("OpenAI ChatGPT login requires a stable installation device ID callback");
   }
   if (typeof interaction?.prompt !== "function" || typeof interaction?.notify !== "function") {
     throw new TypeError("Pi provider auth interaction requires prompt() and notify()");
@@ -314,7 +315,7 @@ export async function loginPiProviderAuth(providerId, type, interaction) {
     signal: interaction.signal,
     prompt: async (prompt) => await interaction.prompt(prompt),
     notify: (event) => interaction.notify(cloneInteropValue(event)),
-  });
+  }, providerId === "openai" && type === "oauth" ? { getDeviceId: options.getDeviceId } : undefined);
   return cloneInteropValue(credential);
 }
 
@@ -374,11 +375,12 @@ export async function resolvePiOAuthApiKey(providerId, credentials) {
  *
  * @param {string} providerId
  * @param {PiOAuthLoginCallbacks} callbacks
+ * @param {{getDeviceId?: () => string}} [options]
  * @returns {Promise<PiOAuthCredentialsSnapshot>}
  */
-export async function loginPiOAuth(providerId, callbacks) {
-  if (!isPiOAuthLoginEnabled(providerId)) {
-    throw new Error(`Pi OAuth login for ${providerId} is unavailable until installation device IDs are supported`);
+export async function loginPiOAuth(providerId, callbacks, options) {
+  if (providerId === "openai" && typeof options?.getDeviceId !== "function") {
+    throw new TypeError("OpenAI ChatGPT login requires a stable installation device ID callback");
   }
   const oauth = getPiOAuthAuth(providerId);
   if (!oauth || typeof oauth.login !== "function") {
@@ -391,6 +393,7 @@ export async function loginPiOAuth(providerId, callbacks) {
   }
   const credentials = await oauth.login(
     toAuthInteraction(/** @type {any} */ ({ ...callbacks })),
+    providerId === "openai" ? { getDeviceId: options.getDeviceId } : undefined,
   );
   return cloneInteropValue(credentials);
 }
