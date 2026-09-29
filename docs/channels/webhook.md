@@ -7,6 +7,11 @@ sidebar:
 
 The webhook channel turns your agent into an HTTP endpoint: `POST` a JSON body with `text`, and the agent runs a turn. It is the zero-credential smoke channel you enable explicitly — `mono-agent init --with webhook`, the `starter` preset, or `"webhook": { "enabled": true }` in the config — a loopback smoke test you can `curl` immediately, and the integration point for automations, scripts, and other services. The browser-first default scaffold enables no channel; the browser console discovers a running agent through its operator endpoint instead. Coverage: **config** (`webhook` section), plus env overrides.
 
+In BuJo capture mode, `memory.capture.webhook: false` skips automatic capture
+for host-identified webhook turns. If Remember is enabled, the host provides
+manual-write guidance in that turn's session context. Other turns retain their
+configured capture behavior; see [capture and recall](/memory/capture-and-recall/).
+
 ## Quick start
 
 `init` writes a `webhook` block bound to loopback on a free port. Start the agent, then `POST` to the path:

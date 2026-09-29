@@ -1455,6 +1455,10 @@ async function createConfiguredAgentHarnessInternal(
     ...(memory === undefined ? {} : { memory }),
     memoryWriteMode: config.memory?.writeMode ?? "disabled",
     ...(config.memory?.capture?.cron === undefined ? {} : { memoryCaptureCron: config.memory.capture.cron }),
+    ...(config.memory?.capture?.webhook === undefined ? {} : { memoryCaptureWebhook: config.memory.capture.webhook }),
+    memoryRememberEnabled: memoryRemember !== undefined,
+    memoryRememberDetails: memoryRemember !== undefined && memory instanceof MemoryRetrievalService
+      && memory.supportsRememberDetails(),
     ...(options.onMemoryWarning === undefined ? {} : { onMemoryWarning: options.onMemoryWarning }),
     historyStore,
     toolHistory,

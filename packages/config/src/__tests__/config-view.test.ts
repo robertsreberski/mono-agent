@@ -55,6 +55,8 @@ describe("buildMonoAgentConfigView", () => {
       .toBe(false);
     expect(field(buildView({ memory: { ...memory, capture: { cron: false } } }),
       "memory.capture.cron")).toMatchObject({ value: "false", source: "json" });
+    expect(field(buildView({ memory: { ...memory, capture: { webhook: false } } }),
+      "memory.capture.webhook")).toMatchObject({ value: "false", source: "json" });
     expect(field(buildView({ memory: { ...memory, capture: { reconcileModel: "openai-codex:gpt-5.6-terra" } } }),
       "memory.capture.reconcileModel")).toMatchObject({ value: "openai-codex:gpt-5.6-terra", source: "json" });
   });

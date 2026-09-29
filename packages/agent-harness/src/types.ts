@@ -500,6 +500,12 @@ export interface AgentHarnessOptions {
   readonly memoryWriteMode?: MemoryWriteMode;
   /** Disable automatic capture admission for host-identified cron turns only. */
   readonly memoryCaptureCron?: boolean;
+  /** Disable automatic capture admission for host-identified webhook turns only. */
+  readonly memoryCaptureWebhook?: boolean;
+  /** Host-provisioned Remember capability; never inferred from request content. */
+  readonly memoryRememberEnabled?: boolean;
+  /** Host-provisioned Remember detail support (BuJo). */
+  readonly memoryRememberDetails?: boolean;
   /** Best-effort post-provider persistence warning sink (host log/metric). */
   readonly onMemoryWarning?: (message: string) => void;
   readonly historyStore?: ConversationHistoryStore;

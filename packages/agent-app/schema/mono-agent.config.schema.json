@@ -639,7 +639,14 @@
           "additionalProperties": false,
           "properties": {
             "cron": {
-              "description": "Set false to skip automatic capture and raw audit for host-identified cron turns (including run-now); other turns and explicit Remember writes are unchanged. Unset preserves capture.",
+              "description": "Set false to skip automatic capture and raw audit for host-identified cron turns (including run-now); other turns and explicit Remember writes are unchanged. When Remember is enabled, this turn gets host-injected manual memory guidance. Unset preserves capture.",
+              "examples": [
+                false
+              ],
+              "type": "boolean"
+            },
+            "webhook": {
+              "description": "Set false to skip automatic capture and raw audit for host-identified webhook turns; other turns and explicit Remember writes are unchanged. When Remember is enabled, this turn gets host-injected manual memory guidance. Unset preserves capture.",
               "examples": [
                 false
               ],

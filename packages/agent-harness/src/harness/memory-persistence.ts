@@ -108,6 +108,8 @@ export async function persistSuccessfulMemory(
     readonly runId: string;
     /** Host-owned cron metadata, not a conversation-id/source-name guess. */
     readonly cronRequest?: boolean;
+    /** Host-owned webhook metadata, not a conversation-id/source-name guess. */
+    readonly webhookRequest?: boolean;
     readonly source?: string;
     readonly captureSpeakerKind?: MemoryCaptureSpeakerKind;
     readonly sender?: AgentMessageSender;
@@ -118,7 +120,8 @@ export async function persistSuccessfulMemory(
   },
 ): Promise<void> {
     const mode = harnessOptions.memoryWriteMode;
-    if (mode === "capture" && harnessOptions.memoryCaptureCron === false && persistenceOptions.cronRequest === true) return;
+    if (mode === "capture" && ((harnessOptions.memoryCaptureCron === false && persistenceOptions.cronRequest === true)
+      || (harnessOptions.memoryCaptureWebhook === false && persistenceOptions.webhookRequest === true))) return;
     if (harnessOptions.memory !== undefined && (mode === "append-host-summary" || mode === "capture")) {
       if (shouldSkipMemoryPersistence(assistantText)) {
         return;

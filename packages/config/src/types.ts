@@ -344,7 +344,7 @@ export interface MonoAgentConfig {
     readonly maxBytes: number;
     readonly writeMode: MemoryWriteMode;
     /** Optional capture controls; reconcileModel selects only the classifier's agent-host model. */
-    readonly capture?: { readonly focus?: string; readonly only?: readonly ("fact" | "preference" | "lesson")[]; readonly reconcileModel?: string; readonly cron?: boolean };
+    readonly capture?: { readonly focus?: string; readonly only?: readonly ("fact" | "preference" | "lesson")[]; readonly reconcileModel?: string; readonly cron?: boolean; readonly webhook?: boolean };
     /** Embedding provider for semantic memory recall; keyword fallback when unset. */
     readonly embeddings?: MemoryEmbeddingsConfig;
     /** LLM for bujo capture and effective tier selection. */

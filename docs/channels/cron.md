@@ -7,6 +7,11 @@ sidebar:
 
 The cron channel fires scheduled prompts at the agent's responder on a timezone-aware five-field schedule. Jobs run on an **in-app scheduler** — no system `cron`, `crontab`, or `launchd` is involved, so the agent just needs to be running. Jobs can be declared inline in config and/or as one `*.md` file per job in a folder; the two sources merge. Coverage: `config`.
 
+In BuJo capture mode, `memory.capture.cron: false` skips automatic capture for
+host-identified cron turns, including run-now. If Remember is enabled, the host
+provides manual-write guidance in that turn's session context. Other turns retain
+their configured capture behavior; see [capture and recall](/memory/capture-and-recall/).
+
 ## What a cron job is
 
 Each tick invokes the responder with the job's `prompt` text, exactly as if a message arrived on a channel. The result is produced inside the agent process. If you want a scheduled message to reach the user, prefer native cron notification with `notify: true`: the agent writes the final answer once, and the app delivers it to Telegram, Slack, or a new web-console conversation after the run succeeds.

@@ -1772,8 +1772,13 @@ function readMemoryConfig(value: unknown, cwd: string): MonoAgentConfig["memory"
       throw new MonoAgentConfigError("invalid_json", "memory.capture.cron must be a boolean.",
         { path: "memory.capture.cron" });
     }
+    if (captureJson.webhook !== undefined && typeof captureJson.webhook !== "boolean") {
+      throw new MonoAgentConfigError("invalid_json", "memory.capture.webhook must be a boolean.",
+        { path: "memory.capture.webhook" });
+    }
     capture = {
       ...(captureJson.cron === undefined ? {} : { cron: captureJson.cron }),
+      ...(captureJson.webhook === undefined ? {} : { webhook: captureJson.webhook }),
       ...(rawFocus === undefined ? {} : { focus: rawFocus as string }),
       ...(rawOnly === undefined ? {} : { only: rawOnly as ("fact" | "preference" | "lesson")[] }),
       ...(rawReconcileModel === undefined ? {} : { reconcileModel: rawReconcileModel as string }),

@@ -3816,6 +3816,11 @@ describe("resolveJsonMonoAgentConfig", () => {
     expect(configFor({ only: [] }).memory?.capture?.only).toEqual([]);
     expect(configFor({ cron: false }).memory?.capture?.cron).toBe(false);
     expect(configFor({ cron: true }).memory?.capture?.cron).toBe(true);
+    expect(configFor({ webhook: false }).memory?.capture?.webhook).toBe(false);
+    expect(configFor({ webhook: true }).memory?.capture?.webhook).toBe(true);
+    for (const webhook of [null, 0, "false", [], {}]) {
+      expect(() => configFor({ webhook })).toThrow(/memory\.capture\.webhook/u);
+    }
     for (const cron of [null, 0, "false", [], {}]) {
       expect(() => configFor({ cron })).toThrow(/memory\.capture\.cron/u);
     }
