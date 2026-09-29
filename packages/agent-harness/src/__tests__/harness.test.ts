@@ -2822,6 +2822,7 @@ describe("AgentHarness", () => {
     });
     const response = await harness.run({ conversationId: "c-silent", userMessage: "Check", abortSignal: new AbortController().signal });
     expect(response.failure).toBeUndefined();
+    expect(response.metadata.summary?.status).toBe("succeeded");
     expect(response).toMatchObject({ text: "", metadata: { turnDisposition: "silent" } });
     expect(memoryCapture).not.toHaveBeenCalled();
     expect(await history.load("c-silent")).toContainEqual(expect.objectContaining({

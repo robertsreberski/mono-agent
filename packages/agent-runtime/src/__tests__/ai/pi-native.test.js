@@ -1536,6 +1536,35 @@ describe("pi-native AgentHarness bridge", () => {
       part.type === "tool_result" && part.is_error && part.content.includes("not_sole_call")))).toBe(true);
   });
 
+  it.each(["PublishReplyFile", "AskUser"])("refuses FinishSilently after a successful %s round trip", async (toolName) => {
+    const connect = vi.spyOn(McpClient.prototype, "connect").mockResolvedValue(undefined);
+    const list = vi.spyOn(McpClient.prototype, "listTools").mockResolvedValue({
+      tools: [{ name: toolName, description: "Complete an interaction", inputSchema: { type: "object", properties: {} } }],
+    });
+    const call = vi.spyOn(McpClient.prototype, "callTool")
+      .mockResolvedValue({ content: [{ type: "text", text: "Published" }] });
+    try {
+      const model = setup();
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall(toolName, {}, { id: "interaction-1" })]),
+        fauxAssistantMessage([fauxToolCall("FinishSilently", {}, { id: "silence-after-file" })]),
+        fauxAssistantMessage([fauxText("Visible answer")]),
+      ]);
+      const result = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "Check" }],
+        allowedTools: ["FinishSilently"],
+        toolContext: createToolContext({ workspace: sessionsRoot }),
+        mcpServers: { reply: { type: "http", url: "http://127.0.0.1:9/mcp" } },
+        finishSilentlyController: { eligible: () => true },
+      }));
+      expect(call).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({ error: null, text: "Visible answer" });
+      expect(result.turnDisposition).toBeUndefined();
+      expect(result.events.some((event) => event.type === "user" && event.message?.content?.some((part) =>
+        part.type === "tool_result" && part.is_error && part.content.includes("visible_content")))).toBe(true);
+    } finally { call.mockRestore(); list.mockRestore(); connect.mockRestore(); }
+  });
+
   it("refuses silence after a prior rich output in the same run", async () => {
     // The MCP app/reply-file bridge marks rich output before the next model batch.
     const silentTurnState = { soleCall: true, visibleContent: true, pendingQuestion: false,
@@ -1547,6 +1576,30 @@ describe("pi-native AgentHarness bridge", () => {
     await expect(tool.execute("silence-after-file", {}, new AbortController().signal))
       .rejects.toThrow("visible_content");
     expect(silentTurnState.accepted).toBe(false);
+  });
+
+  it("never certifies silence on runtime failure or cancellation", async () => {
+    const model = setup();
+    faux.setResponses([() => { throw new Error("Provider unavailable"); }]);
+    const failed = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "Check" }],
+      allowedTools: ["FinishSilently"],
+      toolContext: createToolContext({ workspace: sessionsRoot }),
+      finishSilentlyController: { eligible: () => true },
+    }));
+    expect(failed.error).toContain("Provider unavailable");
+    expect(failed.turnDisposition).toBeUndefined();
+
+    const controller = new AbortController(); controller.abort();
+    const cancelled = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "Check" }],
+      allowedTools: ["FinishSilently"],
+      toolContext: createToolContext({ workspace: sessionsRoot }),
+      finishSilentlyController: { eligible: () => true },
+      abortSignal: controller.signal,
+    }));
+    expect(cancelled.cancelled).toBe(true);
+    expect(cancelled.turnDisposition).toBeUndefined();
   });
 
   it("does not certify an ineligible request", async () => {
