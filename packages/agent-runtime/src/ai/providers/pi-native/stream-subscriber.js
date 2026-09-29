@@ -113,6 +113,11 @@ function toolResultOutcome(result) {
  */
 export function createStreamSubscriber(runState, { onEvent, options, toolLimits, harness, sdk, model }) {
   return (event) => {
+    if (event.type === "message_start" && event.message?.role === "assistant" && runState.silentTurn?.accepted) {
+      // A continuation after the terminal tool is not the certified completion.
+      runState.silentTurn.accepted = false;
+      runState.silentTurn.completed = false;
+    }
     if (event.type === "message_update") {
       const streamEvent = event.assistantMessageEvent;
       if (streamEvent?.type === "text_delta" && streamEvent.delta) {
@@ -206,9 +211,10 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
     } else if (event.type === "tool_execution_end") {
       if (event.isError) {
         runState.toolFailureThisTurn = true;
-        if (runState.silentTurn) runState.silentTurn.failed = true;
       }
       if (event.toolName === "AskParent" && !event.isError && runState.silentTurn) runState.silentTurn.pendingQuestion = true;
+      if (!event.isError && runState.silentTurn
+        && /^(?:AskUser|mcp__[^\s]+__AskUser)$/.test(event.toolName ?? "")) runState.silentTurn.visibleContent = true;
       if (!event.isError && runState.silentTurn
         && /^(?:PublishReplyFile|ProposeRestart|mcp__[^\s]+__(?:PublishReplyFile|ProposeRestart))$/.test(event.toolName ?? "")) {
         runState.silentTurn.visibleContent = true;

@@ -487,6 +487,37 @@ describe("createStreamSubscriber — turn counting + maxTurns stop", () => {
     expect(runState.silentTurn.visibleContent).toBe(true);
   });
 
+  it("invalidates accepted silence on a later assistant continuation", () => {
+    const { runState, handler } = driver();
+    runState.silentTurn = { soleCall: true, visibleContent: false, pendingQuestion: false,
+      failed: false, accepted: true, completed: false };
+    handler({ type: "tool_execution_end", toolName: "FinishSilently", toolCallId: "silent-1",
+      result: { content: [], details: { accepted: true } }, isError: false });
+    expect(runState.silentTurn.completed).toBe(true);
+    handler({ type: "message_start", runId: "run-1", message: { role: "assistant" } });
+    expect(runState.silentTurn).toMatchObject({ accepted: false, completed: false });
+  });
+
+  it("allows a later silence after ordinary tool errors and refused silence", () => {
+    const { runState, handler } = driver();
+    runState.silentTurn = { soleCall: false, visibleContent: false, pendingQuestion: false,
+      failed: false, accepted: false, completed: false };
+    for (const name of ["Read", "FinishSilently"]) {
+      handler({ type: "tool_execution_end", toolName: name, toolCallId: name,
+        result: { content: [{ type: "text", text: "Error" }] }, isError: true });
+    }
+    expect(runState.silentTurn.failed).toBe(false);
+  });
+
+  it("blocks silence after a completed AskUser interaction", () => {
+    const { runState, handler } = driver();
+    runState.silentTurn = { soleCall: false, visibleContent: false, pendingQuestion: false,
+      failed: false, accepted: false, completed: false };
+    handler({ type: "tool_execution_end", toolName: "mcp__adapter_send_tools__AskUser", toolCallId: "ask-1",
+      result: { content: [{ type: "text", text: "Answered" }] }, isError: false });
+    expect(runState.silentTurn.visibleContent).toBe(true);
+  });
+
   it("accepts a successful terminal StructuredOutput submission at the exact ceiling", () => {
     const { runState, harness, handler } = driver({ maxTurns: 1, outputSchema: { type: "object" } });
     handler({ type: "tool_execution_start", toolName: "StructuredOutput", toolCallId: "structured-1", args: { ok: true } });

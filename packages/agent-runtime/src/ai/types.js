@@ -378,6 +378,7 @@
  * @property {{turnToken: string, state: "retained"|"unknown"|"lost"}} [subagentContinuity] App-owned detached settlement evidence.
  * @property {{question: string, options?: string[]}} [subagentQuestion]
  * @property {string|null} [text]
+ * @property {"silent"|"visible"} [turnDisposition] Host-certified silent completion, when applicable.
  * @property {*} [structuredResult]
  * @property {string|null} [structuredResultSource]
  * @property {Array<RuntimeEvent>} [events]

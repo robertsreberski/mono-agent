@@ -295,7 +295,7 @@ export async function buildTurnHarness(runState, {
     thinkingLevel,
     systemPrompt: appendStructuredOutputInstruction(systemPrompt, outputSchema, options.prompts),
     tools,
-    toolExecutionMode: options.finishSilentlyController ? "sequential" : toolExecutionMode,
+    toolExecutionMode,
     silentTurnState: runState.silentTurn,
     streamOptions: { transport, maxRetries, maxRetryDelayMs,
       ...(model.api === "anthropic-messages" && options.cacheRetention !== undefined ? { cacheRetention: options.cacheRetention } : {}),

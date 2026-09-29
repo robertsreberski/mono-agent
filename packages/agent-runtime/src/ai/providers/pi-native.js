@@ -563,9 +563,9 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       ...(options.toolLimits?.bashTimeoutMs === undefined ? {} : { bashTimeoutMs: options.toolLimits.bashTimeoutMs }),
     };
     const toolExecution = resolvePiToolExecutionMode(options);
-    // A terminating silence must be the sole call in its response batch;
-    // sequential scheduling prevents later rich output from racing acceptance.
-    const effectiveToolExecutionMode = options.finishSilentlyController ? "sequential" : toolExecution.mode;
+    // The after_response gate refuses mixed batches before any tool executes.
+    // Preserve normal parallel scheduling for all other admitted calls.
+    const effectiveToolExecutionMode = toolExecution.mode;
     for (const warning of toolExecution.warnings) {
       runtimeWarnings.push(warning);
       onEvent({ type: "runtime_warning", ...warning });
@@ -1069,7 +1069,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     const silentCertified = runState.silentTurn.completed
       && !runState.silentTurn.visibleContent && !runState.silentTurn.pendingQuestion
       && !runState.silentTurn.failed && !errorMessage && !runState.externalAbort
-      && !finalText?.trim() && options.finishSilentlyController?.eligible() === true;
+      && runState.recoveryInputIds?.length === 0 && !finalText?.trim() && options.finishSilentlyController?.eligible() === true;
     return { ...buildSuccessResult({
       finalText,
       finalThinking,

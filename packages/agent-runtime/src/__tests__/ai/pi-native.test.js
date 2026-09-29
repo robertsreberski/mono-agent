@@ -46,6 +46,7 @@ import {
   startLiveInput,
 } from "../../ai/providers/pi-native/turn-runner.js";
 import { createToolContext } from "../../agent/tools/shared/tool-context.js";
+import { getPiBuiltinTools } from "../../agent/tools/pi-bridge.js";
 import { refreshProviderSession, syncProviderSession } from "../../ai/runtime/sessions.js";
 
 const FAUX_MODEL = { api: "faux", provider: "faux", id: "faux-model" };
@@ -1149,6 +1150,36 @@ describe("pi-native AgentHarness bridge", () => {
     }
   });
 
+  it("does not certify silence after a consumed live input", async () => {
+    const model = setup();
+    let releaseFirst;
+    const firstReleased = new Promise((resolve) => { releaseFirst = resolve; });
+    let firstSeen = false;
+    faux.setResponses([
+      async () => {
+        firstSeen = true;
+        await firstReleased;
+        return fauxAssistantMessage([fauxToolCall("Read", { file_path: "missing.txt" }, { id: "read-1" })]);
+      },
+      fauxAssistantMessage([fauxToolCall("FinishSilently", {}, { id: "silent-1" })]),
+    ]);
+    const acknowledge = vi.fn();
+    const liveInput = (async function* () {
+      await vi.waitFor(() => expect(firstSeen).toBe(true));
+      yield { id: "input-1", body: "New instruction", accepted: releaseFirst, acknowledge,
+        uncertain: releaseFirst };
+    })();
+    const result = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "Check" }],
+      allowedTools: ["Read", "FinishSilently"],
+      toolContext: createToolContext({ workspace: sessionsRoot }),
+      finishSilentlyController: { eligible: () => true },
+      liveInput,
+    }));
+    expect(acknowledge).toHaveBeenCalledTimes(1);
+    expect(result.turnDisposition).toBeUndefined();
+  });
+
   it("serializes invoked Bash calls while preserving source-ordered results", async () => {
     const root = mkdtempSync(join(tmpdir(), "pi-native-sequential-tools-"));
     try {
@@ -1414,10 +1445,44 @@ describe("pi-native AgentHarness bridge", () => {
       && event.message?.content?.some((part) => part.type === "tool_result"))).toBe(true);
   });
 
+  it("does not force sequential execution on an admitted read-only batch", async () => {
+    const model = setup();
+    let active = 0;
+    let peak = 0;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      active -= 1;
+      return new Response("<html><body>Sample result</body></html>", {
+        status: 200, headers: { "content-type": "text/html" },
+      });
+    };
+    try {
+      faux.setResponses([
+        fauxAssistantMessage([
+          fauxToolCall("WebFetch", { url: "https://example.test/one" }, { id: "fetch-1" }),
+          fauxToolCall("WebFetch", { url: "https://example.test/two" }, { id: "fetch-2" }),
+        ]),
+        fauxAssistantMessage([fauxText("Visible answer")]),
+      ]);
+      const result = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "Check" }],
+        allowedTools: ["FinishSilently", "WebFetch"],
+        toolContext: createToolContext({ workspace: sessionsRoot }),
+        finishSilentlyController: { eligible: () => true },
+      }));
+      expect(result.error).toBeNull();
+      expect(peak).toBe(2);
+    } finally { globalThis.fetch = originalFetch; }
+  });
+
   it("never exposes FinishSilently on an interactive request without a controller", async () => {
     const model = setup();
+    let exposedTools;
     faux.setResponses([(context) => {
-      expect(getCurrentTools(context.messages).map((tool) => tool.name)).not.toContain("FinishSilently");
+      exposedTools = getCurrentTools(context.messages).map((tool) => tool.name);
       return fauxAssistantMessage([fauxText("Visible answer")]);
     }]);
     const result = await generatePiNativeResponse("system", runOptions(model, {
@@ -1425,6 +1490,8 @@ describe("pi-native AgentHarness bridge", () => {
       allowedTools: ["FinishSilently"],
       toolContext: createToolContext({ workspace: sessionsRoot }),
     }));
+    expect(exposedTools).not.toContain("FinishSilently");
+    expect(result).toMatchObject({ error: null, text: "Visible answer" });
     expect(result.turnDisposition).toBeUndefined();
   });
 
@@ -1446,6 +1513,40 @@ describe("pi-native AgentHarness bridge", () => {
         && event.message?.content?.some((part) => part.type === "tool_result"
           && part.is_error === true && part.content.includes(content[0].type === "text" ? "visible_content" : "not_sole_call")))).toBe(true);
     }
+  });
+
+  it("allows silence after an ordinary tool error and a refused mixed-batch silence", async () => {
+    const model = setup();
+    faux.setResponses([
+      fauxAssistantMessage([fauxToolCall("Read", { file_path: "/missing-fictional-file" }, { id: "read-error" })]),
+      fauxAssistantMessage([
+        fauxToolCall("FinishSilently", {}, { id: "silent-refused" }),
+        fauxToolCall("Read", { file_path: "/missing-fictional-file" }, { id: "read-again" }),
+      ]),
+      fauxAssistantMessage([fauxToolCall("FinishSilently", {}, { id: "silent-accepted" })]),
+    ]);
+    const result = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "Check" }],
+      allowedTools: ["Read", "FinishSilently"],
+      toolContext: createToolContext({ workspace: sessionsRoot }),
+      finishSilentlyController: { eligible: () => true },
+    }));
+    expect(result).toMatchObject({ error: null, text: "", turnDisposition: "silent" });
+    expect(result.events.some((event) => event.type === "user" && event.message?.content?.some((part) =>
+      part.type === "tool_result" && part.is_error && part.content.includes("not_sole_call")))).toBe(true);
+  });
+
+  it("refuses silence after a prior rich output in the same run", async () => {
+    // The MCP app/reply-file bridge marks rich output before the next model batch.
+    const silentTurnState = { soleCall: true, visibleContent: true, pendingQuestion: false,
+      failed: false, accepted: false, completed: false };
+    const tool = getPiBuiltinTools(["FinishSilently"], {
+      ctx: createToolContext({ workspace: sessionsRoot }),
+      finishSilentlyController: { eligible: () => true }, silentTurnState,
+    }).find((entry) => entry.name === "FinishSilently");
+    await expect(tool.execute("silence-after-file", {}, new AbortController().signal))
+      .rejects.toThrow("visible_content");
+    expect(silentTurnState.accepted).toBe(false);
   });
 
   it("does not certify an ineligible request", async () => {
