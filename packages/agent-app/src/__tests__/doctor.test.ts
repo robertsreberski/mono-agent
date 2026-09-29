@@ -4163,6 +4163,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
   });
 
   it.each([
+    ["anthropic:claude-sonnet-5-5", "anthropic", { type: "api_key", key: "sk-ant-test" }],
     ["anthropic:claude-opus-5-5", "anthropic", { type: "api_key", key: "sk-ant-test" }],
     ["openai-codex:gpt-6-sol", "openai-codex", { type: "oauth", expires: FUTURE, refresh: "r" }],
     ["openai-codex:gpt-6-luna", "openai-codex", { type: "oauth", expires: FUTURE, refresh: "r" }],

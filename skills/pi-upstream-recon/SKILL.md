@@ -65,10 +65,12 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
   keys off `input` including `"image"`; attachment resizing stays Sharp-owned).
 - Pi 0.87.1 ships `anthropic:claude-opus-5-5` and `gpt-6-sol`/`gpt-6-luna`
   on both `openai` and `openai-codex` natively, so no runtime supplement or
-  OAuth identity patch is needed. Sol/Luna have a
-  272,000-token context window and priced tier above 272,000 input tokens;
-  Opus 5.5 exposes low through max efforts. Anthropic OAuth sends Claude Code
-  2.1.280 from upstream.
+  OAuth identity patch is needed for those rows. Sol/Luna have a 272,000-token
+  context window and priced tier above 272,000 input tokens; Opus 5.5 exposes
+  low through max efforts. Anthropic OAuth sends Claude Code 2.1.280 upstream.
+  It does not yet ship `anthropic:claude-sonnet-5-5`; mono-agent temporarily
+  backfills that row in `packages/agent-runtime/src/ai/pi-supplement.js` with
+  upstream-first precedence. Remove the row and its tests when Pi catches up.
 - Pi's standalone OAuth registry remains unavailable at runtime.
   `packages/agent-runtime/src/ai/pi-oauth-compat.js` owns the compatibility
   surface over `provider.auth.oauth`; do not bypass it with private upstream

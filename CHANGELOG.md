@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add `anthropic:claude-sonnet-5-5` to model discovery, runtime routing,
+  reasoning-effort selection, and pricing while the pinned Pi catalog catches
+  up, using Anthropic's published 1M context window and $2/$10 pricing.
+
 - Polish the web wake-up schedule editor on phones: a clearly tinted Once/Weekly
   selection, date and time values centred in their fields, and date and time
   values shown at the sheet's own text size on touch screens while the native

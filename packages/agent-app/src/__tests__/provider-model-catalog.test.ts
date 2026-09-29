@@ -117,8 +117,9 @@ describe("provider-model-catalog", () => {
     }
   });
 
-  it("advertises each new 0.87.1 Pi model once with upstream limits and effort", () => {
+  it("advertises new Pi and supplemented models once with their limits and effort", () => {
     for (const [provider, model, contextWindow] of [
+      ["anthropic", "claude-sonnet-5-5", 1_000_000],
       ["anthropic", "claude-opus-5-5", 1_000_000],
       ["openai-codex", "gpt-6-sol", 272_000],
       ["openai-codex", "gpt-6-luna", 272_000],
@@ -497,7 +498,7 @@ describe("provider-model-catalog", () => {
 
   it("does not fall back to the full built-in catalog when every allowlist entry is disabled", () => {
     // Branching on the FILTERED list would make "narrowed to two, both
-    // withdrawn" advertise all 13 Pi anthropic models instead of none.
+    // withdrawn" advertise every Anthropic catalog model instead of none.
     const real = listPiBuiltinModels("anthropic").slice(0, 2).map((model) => model.id);
     const catalog = buildProviderModelCatalog({
       providers: [{
