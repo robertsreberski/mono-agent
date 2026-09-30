@@ -4771,6 +4771,22 @@ export class WebStore {
       WHERE schedules.thread_id = ?`).get(this.resolveThreadId(threadId)) as ReturnType<WebStore["wakeRow"]>;
   }
 
+  /** Bind an agent's canonical conversation lookup, never a browser-chosen interaction id. */
+  recordAskThread(sourceId: string, threadId: string, interactionId: string): void {
+    const thread = this.requireThread(threadId);
+    if (thread.sourceId !== sourceId) throw new WebConsoleError("interaction_not_found", "Interaction not found.", 404);
+    const key = `web_ask_thread_v1:${JSON.stringify([sourceId, interactionId])}`;
+    const row = this.database.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined;
+    if (row !== undefined && this.resolveThreadId(row.value) !== thread.id) throw new WebConsoleError("interaction_not_found", "Interaction not found.", 404);
+    this.setSetting(key, thread.id);
+  }
+
+  askBelongsToThread(sourceId: string, threadId: string, interactionId: string): boolean {
+    const row = this.database.prepare("SELECT value FROM settings WHERE key = ?")
+      .get(`web_ask_thread_v1:${JSON.stringify([sourceId, interactionId])}`) as { value: string } | undefined;
+    return row !== undefined && this.resolveThreadId(row.value) === this.resolveThreadId(threadId);
+  }
+
   wakeSchedule(threadId: string): WebWakeSchedule | null {
     const thread = this.assertWakeThread(threadId);
     const row = this.wakeRow(thread.id);

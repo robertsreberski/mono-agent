@@ -1288,6 +1288,10 @@ export class WebService {
       attachment,
       signal,
     );
+    if (this.options.multiUser === true) {
+      try { this.authorizeReplyPart(threadId, messageId, partId, "attachment", expires, token); }
+      catch (error) { await response.body?.cancel(); throw error; }
+    }
     return { part, response, remainingSeconds };
   }
 
@@ -1317,6 +1321,7 @@ export class WebService {
       part.connectionId,
       signal,
     );
+    if (this.options.multiUser === true) this.authorizeReplyPart(threadId, messageId, partId, "mcp_app", expires, token);
     if (
       resource.app.invocationId !== part.invocationId
       || resource.app.connectionId !== part.connectionId
@@ -1355,7 +1360,7 @@ export class WebService {
     if (connection === undefined || connection.info.mcpApps?.bridgeVersion !== 1) {
       throw new WebConsoleError("mcp_app_unavailable", "The MCP App source is offline or incompatible.", 409);
     }
-    return await connection.client.mcpAppRequest(
+    const result = await connection.client.mcpAppRequest(
       this.conversationIdForThread(thread.id),
       {
         invocationId: part.invocationId,
@@ -1366,6 +1371,8 @@ export class WebService {
       },
       signal,
     );
+    if (this.options.multiUser === true) this.authorizeReplyPart(threadId, messageId, partId, "mcp_app", expires, token);
+    return result;
   }
 
   private requirePushEnabled(): void {
@@ -1450,6 +1457,8 @@ export class WebService {
       this.store.cronConversationIdForThread(thread.id) ?? `web:${thread.id}`,
       AbortSignal.timeout(INFO_TIMEOUT_MS),
     );
+    this.recheckThreadAccess(threadId);
+    if (this.options.multiUser === true && snapshot !== undefined) this.store.recordAskThread(thread.sourceId, thread.id, snapshot.interactionId);
     if (!this.stopped && snapshot !== undefined && isFuturePendingAsk(snapshot, this.currentDate())) {
       this.enqueueAskPush(thread.id, snapshot);
     }
@@ -1462,7 +1471,13 @@ export class WebService {
     const connection = this.connections.get(thread.sourceId);
     if (connection === undefined) throw new WebConsoleError("agent_offline", "This agent is offline.", 409);
     if (!connection.info.supportsAskById) return undefined;
-    return await connection.client.ask(interactionId, AbortSignal.timeout(INFO_TIMEOUT_MS));
+    if (this.options.multiUser === true && !this.store.askBelongsToThread(thread.sourceId, thread.id, interactionId)) {
+      const pending = await this.pendingAsk(thread.id);
+      if (pending?.interactionId !== interactionId) throw new WebConsoleError("interaction_not_found", "Interaction not found.", 404);
+    }
+    const snapshot = await connection.client.ask(interactionId, AbortSignal.timeout(INFO_TIMEOUT_MS));
+    this.recheckThreadAccess(thread.id);
+    return snapshot;
   }
 
   async submitAsk(
@@ -1477,7 +1492,13 @@ export class WebService {
       throw new WebConsoleError("ask_user_unavailable", "This agent does not support interactive questions.", 409);
     }
     const conversationId = this.store.cronConversationIdForThread(thread.id) ?? `web:${thread.id}`;
+    if (this.options.multiUser === true && !this.store.askBelongsToThread(thread.sourceId, thread.id, interactionId)) {
+      const pending = await this.pendingAsk(thread.id);
+      if (pending?.interactionId !== interactionId) throw new WebConsoleError("interaction_not_found", "Interaction not found.", 404);
+    }
+    this.recheckThreadAccess(thread.id);
     const result = await connection.client.submitAsk(conversationId, interactionId, answers);
+    this.recheckThreadAccess(thread.id);
     if (result.accepted) this.store.staleWebPushEvent(`ask:${interactionId}`, "answered");
     return result;
   }
@@ -1806,6 +1827,12 @@ export class WebService {
     }
   }
 
+  private recheckThreadAccess(threadId: string): void {
+    if (this.options.multiUser !== true || this.store.access.current() === undefined) return;
+    this.recheckBrowserAccess();
+    if (this.store.getThread(threadId) === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+  }
+
   private requireCronResults(sourceId: string, jobId: string): void {
     this.recheckBrowserAccess();
     if (this.store.access.current() !== undefined && this.store.cronThread(sourceId, jobId) === undefined) {
@@ -2113,6 +2140,7 @@ export class WebService {
     if (connection.info.supportsProviderUsage !== true) throw new WebConsoleError("provider_usage_unavailable", "This agent does not expose provider usage.", 409);
     if (refresh && connection.info.supportsProviderUsageRefresh !== true) throw new WebConsoleError("provider_usage_refresh_unavailable", "This agent does not support manual usage refresh.", 409);
     const snapshot = await (refresh ? connection.client.refreshProviderUsage(provider, AbortSignal.timeout(15_000)) : connection.client.providerUsage(provider, AbortSignal.timeout(15_000)));
+    this.recheckBrowserAccess();
     if (this.connections.get(sourceId)?.generation !== connection.generation) throw new WebConsoleError("agent_generation_changed", "The agent restarted; reopen settings.", 409);
     return snapshot;
   }
@@ -4125,8 +4153,10 @@ export class WebService {
     sourceId: string,
     operation: (connection: AgentConnection) => Promise<T>,
   ): Promise<T> {
+    this.recheckBrowserAccess();
     const connection = this.requireProviderAuthConnection(sourceId);
     const result = await operation(connection);
+    this.recheckBrowserAccess();
     if (this.connections.get(sourceId)?.generation !== connection.generation) {
       throw new WebConsoleError(
         "agent_generation_changed",
@@ -4518,6 +4548,9 @@ export class WebService {
             AbortSignal.any([signal, AbortSignal.timeout(INFO_TIMEOUT_MS)]),
           );
           if (snapshot !== undefined) {
+            if (this.options.multiUser === true && thread !== undefined && !this.stopped && !signal.aborted) {
+              this.store.recordAskThread(thread.sourceId, threadId, snapshot.interactionId);
+            }
             if (isFuturePendingAsk(snapshot, this.currentDate())) {
               if (this.stopped || signal.aborted) return;
               this.enqueueAskPush(threadId, snapshot);
@@ -4919,6 +4952,7 @@ export class WebService {
     /** Whole seconds this capability is still good for. */
     readonly remainingSeconds: number;
   } {
+    this.recheckThreadAccess(threadId);
     const access = this.replyAccessTokenStatus(threadId, messageId, type, partId, expires, token);
     if (access === "invalid") {
       throw new WebConsoleError("reply_part_not_found", "The reply part is unavailable.", 404);

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Bind exact `AskUser` lookups to their canonical conversation and recheck
+  asynchronous question, reply-resource, and provider-auth responses after
+  account or access changes.
+
 - Retain the explicitly configured web public origin across managed restarts,
   validate it before publication, and keep HTTPS cookie trust independent of
   forwarded headers.
