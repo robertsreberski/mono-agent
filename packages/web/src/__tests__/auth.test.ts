@@ -139,6 +139,28 @@ describe("web authentication storage", () => {
     }
   });
 
+  it("does not reset failures with interleaved successes and also throttles normalized usernames across remotes", async () => {
+    const store = await openStore(); await store.auth.bootstrap("morgan", PASSWORD);
+    for (let index = 0; index < 5; index += 1) {
+      await expect(store.auth.login("missing-user", "wrong", "proxy")).rejects.toMatchObject({ code: "login_failed" });
+      if (index < 4) await store.auth.login("morgan", PASSWORD, "proxy");
+    }
+    await expect(store.auth.login("morgan", PASSWORD, "proxy")).rejects.toMatchObject({ code: "login_throttled" });
+    for (let index = 0; index < 5; index += 1) {
+      await expect(store.auth.login(index % 2 ? " MORGAN " : "morgan", "wrong", `remote-${index}`)).rejects.toMatchObject({ code: "login_failed" });
+    }
+    await expect(store.auth.login("Morgan", PASSWORD, "fresh-remote")).rejects.toMatchObject({ code: "login_throttled" });
+  });
+
+  it("shares the scrypt concurrency cap and failure throttle with password changes", async () => {
+    const store = await openStore(); const user = await store.auth.bootstrap("morgan", PASSWORD);
+    const pending = Array.from({ length: 4 }, () => store.auth.changePassword(user.id, "wrong", PASSWORD, undefined, "proxy"));
+    await expect(store.auth.changePassword(user.id, "wrong", PASSWORD, undefined, "proxy")).rejects.toMatchObject({ code: "login_throttled" });
+    await Promise.all(pending.map((operation) => expect(operation).rejects.toMatchObject({ code: "invalid_password" })));
+    await expect(store.auth.changePassword(user.id, "wrong", PASSWORD, undefined, "proxy")).rejects.toMatchObject({ code: "invalid_password" });
+    await expect(store.auth.login("morgan", PASSWORD, "different-remote")).rejects.toMatchObject({ code: "login_throttled" });
+  });
+
   it("cannot disable or demote the last active admin", async () => {
     const store = await openStore();
     const admin = await store.auth.bootstrap("morgan", PASSWORD);
@@ -148,7 +170,8 @@ describe("web authentication storage", () => {
     store.auth.patchUser(other.id, { disabled: true });
     expect(() => store.auth.patchUser(admin.id, { disabled: true })).toThrow("last active administrator");
     store.auth.patchUser(other.id, { disabled: false });
-    store.auth.patchUser(admin.id, { role: "user" });
+    expect(() => store.auth.patchUser(admin.id, { role: "user" })).toThrow("designated bootstrap administrator");
+    expect(() => store.auth.patchUser(admin.id, { disabled: true })).toThrow("designated bootstrap administrator");
     expect(store.auth.hasActiveAdmin()).toBe(true);
   });
 
@@ -168,7 +191,7 @@ describe("web authentication storage", () => {
     const legacy = store.createThread(AGENT.sourceId);
     expect(database(store).prepare("SELECT owner_user_id, shared FROM threads WHERE id = ?").get(legacy.id))
       .toEqual({ owner_user_id: null, shared: 0 });
-    expect(() => store.auth.initializeOwnership()).toThrow("Bootstrap an active web administrator");
+    expect(() => store.auth.initializeOwnership()).toThrow("Run web users bootstrap");
     const bootstrap = await store.auth.bootstrap("morgan", PASSWORD);
     // Merely creating/recovering accounts is not first enablement.
     expect(database(store).prepare("SELECT owner_user_id FROM threads WHERE id = ?").get(legacy.id))
@@ -249,7 +272,7 @@ describe("web authentication storage", () => {
     const directory = await stateDir(); const store = await openStore({ stateDir: directory });
     const designated = await store.auth.bootstrap("morgan", PASSWORD);
     await store.auth.createUser({ username: "avery", password: PASSWORD, role: "admin" });
-    store.auth.initializeOwnership(); store.auth.patchUser(designated.id, { disabled: true }); store.close();
+    store.auth.initializeOwnership(); database(store).prepare("UPDATE web_users SET disabled = 1 WHERE id = ?").run(designated.id); store.close();
     await expect(WebService.create({ stateDir: directory, multiUser: true })).rejects.toMatchObject({ code: "web_admin_required" });
     await bootstrapWebUser({ stateDir: directory, username: "morgan", password: PASSWORD });
     const service = await WebService.create({ stateDir: directory, multiUser: true, discoverImpl: async () => [], discoveryIntervalMs: 0, purgeIntervalMs: 0 });

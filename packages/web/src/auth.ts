@@ -112,12 +112,11 @@ export class WebAuthStore {
   /** First enable only: recovery and later enablement never steal existing ownership. */
   initializeOwnership(): void {
     this.transaction(() => {
-      if (!this.hasActiveAdmin()) throw new WebConsoleError("web_admin_required", "Bootstrap an active web administrator before enabling multi-user mode.", 409);
       const state = this.database.prepare("SELECT * FROM web_auth_state WHERE id = 1").get() as { bootstrap_admin_id: string | null; initialized_at: string | null };
       if (state.bootstrap_admin_id === null) throw new WebConsoleError("web_admin_required", "Run web users bootstrap before enabling multi-user mode.", 409);
       const designated = this.getUser(state.bootstrap_admin_id);
       if (designated.disabled || designated.role !== "admin") {
-        throw new WebConsoleError("web_admin_required", "Recover the designated bootstrap administrator before enabling multi-user mode.", 409);
+        throw new WebConsoleError("web_admin_required", `Recover the designated bootstrap administrator ${designated.username} with web users bootstrap before enabling multi-user mode.`, 409);
       }
       if (state.initialized_at !== null) return;
       this.database.prepare("UPDATE threads SET owner_user_id = ?, shared = 0 WHERE owner_user_id IS NULL").run(state.bootstrap_admin_id);
@@ -170,6 +169,9 @@ export class WebAuthStore {
         && (this.database.prepare("SELECT count(*) AS count FROM web_users WHERE role = 'admin' AND disabled = 0").get() as { count: number }).count <= 1) {
         throw new WebConsoleError("last_active_admin", "Cannot disable or demote the last active administrator.", 409);
       }
+      if (id === this.bootstrapAdminId() && (userRole === "user" || patch.disabled === true)) {
+        throw new WebConsoleError("designated_admin_required", "Cannot disable or demote the designated bootstrap administrator.", 409);
+      }
       this.database.prepare("UPDATE web_users SET display_name = ?, role = ?, disabled = ?, version = version + 1, updated_at = ? WHERE id = ?")
         .run(name ?? before.display_name, userRole ?? before.role, patch.disabled === undefined ? before.disabled : Number(patch.disabled), this.clock().toISOString(), id);
       if (assigned !== undefined) this.assignGrants(id, assigned);
@@ -181,15 +183,17 @@ export class WebAuthStore {
     const record = await hashWebPassword(password);
     this.transaction(() => { authorizeWrite?.(); this.row(id); this.writePassword(id, record); });
   }
-  async changePassword(id: string, current: string, password: string, authorizeWrite?: () => void): Promise<void> {
+  async changePassword(id: string, current: string, password: string, authorizeWrite?: () => void, remoteKey = "password-change"): Promise<void> {
     const before = this.row(id);
-    if (!await verifyWebPassword(current, before.password_record)) throw new WebConsoleError("invalid_password", "Current password is incorrect.", 403);
-    const record = await hashWebPassword(password);
-    this.transaction(() => {
-      authorizeWrite?.();
-      const latest = this.row(id);
-      if (latest.version !== before.version || latest.disabled === 1) throw new WebConsoleError("auth_changed", "Account changed; authenticate again.", 401);
-      this.writePassword(id, record);
+    return this.passwordAttempt(before.username, remoteKey, async () => {
+      if (!await verifyWebPassword(current, before.password_record)) throw new WebConsoleError("invalid_password", "Current password is incorrect.", 403);
+      const record = await hashWebPassword(password);
+      this.transaction(() => {
+        authorizeWrite?.();
+        const latest = this.row(id);
+        if (latest.version !== before.version || latest.disabled === 1) throw new WebConsoleError("auth_changed", "Account changed; authenticate again.", 401);
+        this.writePassword(id, record);
+      });
     });
   }
   private writePassword(id: string, record: string): void {
@@ -225,33 +229,39 @@ export class WebAuthStore {
     if (user.disabled) return undefined;
     return { ...user, sessionHash: hash, expiresAt: session.expires_at };
   }
-  async login(usernameInput: string, password: string, remoteKey: string): Promise<{ token: string; principal: WebPrincipal }> {
+  private async passwordAttempt<T>(username: string, remoteKey: string, operation: () => Promise<T>): Promise<T> {
     const now = this.clock().getTime();
     for (const [key, value] of this.attempts) if (value.until <= now) this.attempts.delete(key);
-    // IP-only accounting cannot be bypassed by rotating a guessed username. Bound memory and concurrent scrypt work.
-    const key = webSessionHash(remoteKey);
-    const attempt = this.attempts.get(key);
-    if (this.inFlightLogins >= 4 || (attempt?.count ?? 0) >= 5 || (attempt === undefined && this.attempts.size >= MAX_THROTTLE_KEYS)) {
-      throw new WebConsoleError("login_throttled", "Unable to log in; try again later.", 429);
+    const keys = [webSessionHash(`remote:${remoteKey}`), webSessionHash(`username:${username}`)];
+    if (this.inFlightLogins >= 4 || keys.some((key) => (this.attempts.get(key)?.count ?? 0) >= 5)
+      || this.attempts.size + keys.filter((key) => !this.attempts.has(key)).length > MAX_THROTTLE_KEYS) {
+      throw new WebConsoleError("login_throttled", "Authentication is busy; try again later.", 429);
     }
-    this.attempts.set(key, { count: (attempt?.count ?? 0) + 1, until: attempt?.until ?? now + THROTTLE_WINDOW_MS });
+    for (const key of keys) if (!this.attempts.has(key)) this.attempts.set(key, { count: 0, until: now + THROTTLE_WINDOW_MS });
+    this.inFlightLogins += 1;
+    try { return await operation(); }
+    catch (error) {
+      for (const key of keys) { const attempt = this.attempts.get(key); if (attempt !== undefined) attempt.count += 1; }
+      throw error;
+    } finally { this.inFlightLogins -= 1; }
+  }
+
+  async login(usernameInput: string, password: string, remoteKey: string): Promise<{ token: string; principal: WebPrincipal }> {
     let username: string;
     try { username = normalizeWebUsername(usernameInput); } catch { username = ""; }
-    const before = this.database.prepare("SELECT * FROM web_users WHERE username = ?").get(username) as unknown as UserRow | undefined;
-    this.inFlightLogins += 1;
-    let valid: boolean;
-    try { valid = await verifyWebPassword(password, before?.password_record ?? DUMMY_PASSWORD_RECORD); }
-    finally { this.inFlightLogins -= 1; }
-    if (!valid || before === undefined || before.disabled === 1) throw new WebConsoleError("login_failed", "Invalid username or password.", 401);
-    return this.transaction(() => {
-      const latest = this.row(before.id);
-      if (latest.version !== before.version || latest.disabled === 1) throw new WebConsoleError("login_failed", "Invalid username or password.", 401);
-      this.attempts.delete(key);
-      this.database.prepare("DELETE FROM web_sessions WHERE expires_at <= ?").run(this.clock().toISOString());
-      const token = randomBytes(32).toString("base64url"); const hash = webSessionHash(token);
-      const createdAt = this.clock().toISOString(); const expiresAt = new Date(this.clock().getTime() + WEB_SESSION_TTL_MS).toISOString();
-      this.database.prepare("INSERT INTO web_sessions(token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)").run(hash, before.id, createdAt, expiresAt);
-      return { token, principal: { ...this.getUser(before.id), sessionHash: hash, expiresAt } };
+    return this.passwordAttempt(username, remoteKey, async () => {
+      const before = this.database.prepare("SELECT * FROM web_users WHERE username = ?").get(username) as unknown as UserRow | undefined;
+      const valid = await verifyWebPassword(password, before?.password_record ?? DUMMY_PASSWORD_RECORD);
+      if (!valid || before === undefined || before.disabled === 1) throw new WebConsoleError("login_failed", "Invalid username or password.", 401);
+      return this.transaction(() => {
+        const latest = this.row(before.id);
+        if (latest.version !== before.version || latest.disabled === 1) throw new WebConsoleError("login_failed", "Invalid username or password.", 401);
+        this.database.prepare("DELETE FROM web_sessions WHERE expires_at <= ?").run(this.clock().toISOString());
+        const token = randomBytes(32).toString("base64url"); const hash = webSessionHash(token);
+        const createdAt = this.clock().toISOString(); const expiresAt = new Date(this.clock().getTime() + WEB_SESSION_TTL_MS).toISOString();
+        this.database.prepare("INSERT INTO web_sessions(token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)").run(hash, before.id, createdAt, expiresAt);
+        return { token, principal: { ...this.getUser(before.id), sessionHash: hash, expiresAt } };
+      });
     });
   }
 }

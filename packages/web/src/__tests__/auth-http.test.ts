@@ -61,6 +61,14 @@ async function fixture(options: { enabled?: boolean; publicOrigin?: (host: strin
 }
 
 describe("web HTTP authentication boundary", () => {
+  it("throttles repeated profile password verification through the shared authentication guard", async () => {
+    const f = await fixture(); const cookie = await f.login("Avery");
+    for (let index = 0; index < 5; index += 1) {
+      expect((await f.mutate("/api/v1/profile/password", { currentPassword: "wrong", password: PASSWORD }, cookie)).status).toBe(403);
+    }
+    expect((await f.mutate("/api/v1/profile/password", { currentPassword: PASSWORD, password: PASSWORD }, cookie)).status).toBe(429);
+    expect((await f.request("/api/v1/profile", { headers: { Cookie: cookie } })).status).toBe(200);
+  });
   it("provides minimal public status but authenticates before protected body validators", async () => {
     const { request } = await fixture();
     const status = await request("/api/v1/auth/status");

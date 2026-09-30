@@ -131,7 +131,7 @@ export function installWebAuthentication(app: Express, store: WebStore, options:
   app.post("/api/v1/profile/password", json, (req, res, next) => {
     try {
       const body = record(req.body, ["currentPassword", "password"]);
-      void store.auth.changePassword(store.access.requirePrincipal().id, text(body.currentPassword), text(body.password), () => authorizeSessionWrite(req, store))
+      void store.auth.changePassword(store.access.requirePrincipal().id, text(body.currentPassword), text(body.password), () => authorizeSessionWrite(req, store), req.socket.remoteAddress ?? "unknown")
         .then(() => { cookie(res, req, undefined, publicOrigin); res.status(204).end(); }).catch(next);
     } catch (error) { next(error); }
   });

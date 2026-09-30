@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Harden multi-user authentication throttles and administrator recovery, retain
+  shared automation outcomes after browser revocation, isolate staged upload
+  quotas, and configure the owned tailnet HTTPS origin for authenticated use.
+  Document administrative password-reset impersonation and shared-participant
+  `AskUser` answers as policy limits, not cryptographic isolation.
+
 - Enable opt-in multi-user web accounts with creator-private conversations,
   explicit sharing, per-agent grants and authenticated operator attribution;
   require an active designated administrator before exposing protected APIs.
