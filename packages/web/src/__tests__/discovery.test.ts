@@ -163,9 +163,15 @@ describe("operator discovery", () => {
     };
     await writeFile(join(registry, "agent-one.json"), JSON.stringify(manifest));
 
-    const found = await discoverOperatorAgents({ registryDirs: [registry], env: {} });
+    const found = await discoverOperatorAgents({ registryDirs: [registry], env: { MONO_AGENT_TUI_API_KEY: "ambient-key" } });
     expect(found).toHaveLength(1);
     expect(found[0]).toMatchObject({ baseUrl: "http://127.0.0.1:5555/gui", apiKey: "secret", source: { sourceId: "agent-one" } });
+
+    await writeFile(configPath, "{}");
+    const shared = await discoverOperatorAgents({ registryDirs: [registry], env: { MONO_AGENT_TUI_API_KEY: " ambient-key " } });
+    expect(shared[0]?.apiKey).toBe("ambient-key");
+    const keyless = await discoverOperatorAgents({ registryDirs: [registry], env: {} });
+    expect(keyless[0]?.apiKey).toBeUndefined();
   });
 
   it("derives the process-job bearer only from an owner-private advertised state directory", async () => {
@@ -240,7 +246,7 @@ describe("operator discovery", () => {
         },
       }));
 
-      const found = await discoverOperatorAgents({ registryDirs: [registry], env: {} });
+      const found = await discoverOperatorAgents({ registryDirs: [registry], env: { MONO_AGENT_TUI_API_KEY: "ambient-key" } });
       expect(found[0]).toMatchObject({ apiKey: "durable-key" });
       expect(found[0]?.source.metadata).not.toHaveProperty("apiKey");
       expect(JSON.stringify(found)).not.toContain("must-stay-unread");

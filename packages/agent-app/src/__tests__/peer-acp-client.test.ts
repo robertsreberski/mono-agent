@@ -42,7 +42,8 @@ afterEach(async () => {
 });
 
 async function fixture(answer = "ok", askUser: boolean | "sensitive" | "long" = false, incomplete = false, pending = false,
-  onTurn?: (turn: { conversationId: string; metadata: Record<string, unknown>; text: string }) => Promise<void>) {
+  onTurn?: (turn: { conversationId: string; metadata: Record<string, unknown>; text: string }) => Promise<void>,
+  unauthorized = false, expectedKey?: string) {
   const temporary = await mkdtemp(join(tmpdir(), "mono-agent-peer-client-"));
   roots.push(temporary);
   const root = await realpath(temporary);
@@ -61,7 +62,10 @@ async function fixture(answer = "ok", askUser: boolean | "sensitive" | "long" = 
   const server = createServer(async (req, res) => {
     if (req.url === "/gui/v1/info") {
       res.setHeader("content-type", "application/json");
-      res.end(JSON.stringify({ schema: 1, label: "Peer fixture", capabilities: askUser ? { askUser: true } : {} }));
+      if (unauthorized || (expectedKey !== undefined && req.headers.authorization !== `Bearer ${expectedKey}`)) {
+        res.statusCode = 401;
+        res.end("private-response-detail-must-not-surface");
+      } else res.end(JSON.stringify({ schema: 1, label: "Peer fixture", capabilities: askUser ? { askUser: true } : {} }));
     } else if (req.url === "/gui/v1/turns" && req.method === "POST") {
       let body = "";
       for await (const chunk of req) body += String(chunk);
@@ -111,18 +115,30 @@ async function fixture(answer = "ok", askUser: boolean | "sensitive" | "long" = 
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("No fixture listener.");
   const now = new Date().toISOString();
+  const configPath = join(root, "mono-agent.config.json");
+  const dotenvPath = join(root, "peer.env");
+  if (expectedKey !== undefined) {
+    await writeFile(configPath, JSON.stringify({ tui: { apiKey: "outdated-config-key" } }), { mode: 0o600 });
+    await writeFile(dotenvPath, `MONO_AGENT_TUI_API_KEY=${expectedKey}\n`, { mode: 0o600 });
+  }
   await writeFile(join(registry, "peer-test.json"), JSON.stringify({
     schema: "agent-runtime.trace-source.v1", sourceId: "peer-test", label: "Peer fixture", artifactDir,
     status: "running", startedAt: now, updatedAt: now,
+    ...(expectedKey === undefined ? {} : { configPath }),
     metadata: { channels: { tui: { kind: "running", baseUrl: `http://127.0.0.1:${address.port}/gui`,
       acpBridge: { schema: "mono-agent.acp-source.v1", bridgeVersion: 1, protocolVersion: 1,
-        installedVersion: "0.24.0", workspacePath: root } } } },
+        installedVersion: "0.24.0", workspacePath: root } } },
+    ...(expectedKey === undefined ? {} : { backgroundSnapshot: {
+      schema: "mono-agent.background-snapshot.v1", configPath, configFingerprint: "config-proof",
+      dotenvPath, dotenvFingerprint: "dotenv-proof",
+    } }) },
   }));
   return { root, artifactDir, turns, started, submission: () => submission,
     askGets: () => askGets, responseClosed: () => responseClosed,
     turn: (sessionId?: string, signal = new AbortController().signal,
       onQuestion?: import("../peer-acp-client.js").PeerAcpTurn["onQuestion"]) => runPeerAcpTurn({
-      sourceId: "peer-test", cliPath, env: { ...process.env, MONO_AGENT_TRACE_REGISTRY_DIR: registry },
+      sourceId: "peer-test", cliPath, env: { ...process.env, MONO_AGENT_TRACE_REGISTRY_DIR: registry,
+        ...(expectedKey === undefined ? {} : { MONO_AGENT_TUI_API_KEY: "caller-owned-key" }) },
       workspace: root, artifactDir, caller: "agent-test", conversation: "web:caller",
       depth: 1, text: "request text", ...(sessionId ? { sessionId } : {}),
       signal, onSession: async () => {}, ...(onQuestion === undefined ? {} : { onQuestion }),
@@ -131,6 +147,34 @@ async function fixture(answer = "ok", askUser: boolean | "sensitive" | "long" = 
 }
 
 describe("peer ACP client over a real spawned bridge", () => {
+  it("uses the peer's attested dotenv key despite a different caller ambient key", async () => {
+    const f = await fixture("accepted", false, false, false, undefined, false, "peer-owned-key");
+    await expect(f.turn()).resolves.toMatchObject({ answer: expect.stringContaining("accepted") });
+    expect(f.turns).toHaveLength(1);
+  }, 30_000);
+
+  it("reports a startup 401 by allowlisted code and source, never by raw stderr", async () => {
+    const f = await fixture("ok", false, false, false, undefined, true);
+    const error = await f.turn().catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/operator API key was rejected for source "peer-test" \(agent_unauthorized\); no prompt was replayed/u);
+    expect((error as Error).message).not.toContain("private-response-detail-must-not-surface");
+    expect(f.turns).toHaveLength(0);
+  }, 30_000);
+
+  it("keeps unknown bridge startup failures generic without forwarding stderr", async () => {
+    const f = await fixture();
+    const error = await runPeerAcpTurn({
+      sourceId: "peer-test", cliPath: join(f.root, "missing-cli.js"), workspace: f.root,
+      artifactDir: f.artifactDir, caller: "alpha-agent", conversation: "web:caller",
+      depth: 1, text: "request text", signal: new AbortController().signal,
+      onSession: async () => {},
+    }).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("Peer ACP turn failed: ACP bridge or operator transport failed (no prompt was replayed).");
+    expect((error as Error).message).not.toContain("missing-cli.js");
+  }, 30_000);
+
   it("initializes, creates, resumes without replay, and stamps verified source/depth", async () => {
     const f = await fixture();
     const first = await f.turn();
@@ -254,6 +298,39 @@ describe("peer ACP client over a real spawned bridge", () => {
   it("rejects an operator stream EOF without a completed turn", async () => {
     const f = await fixture("partial", false, true);
     await expect(f.turn()).rejects.toThrow(/failed|interrupted/u);
+  }, 30_000);
+
+  it("PeerAgent surfaces the allowlisted startup failure without operator response details", async () => {
+    const f = await fixture("ok", false, false, false, undefined, true);
+    const callerRoot = join(f.root, "caller");
+    await mkdir(callerRoot);
+    discovery.enabled = true;
+    discovery.root = f.root;
+    discovery.artifactDir = f.artifactDir;
+    discovery.callerArtifactDir = join(callerRoot, "artifacts");
+    const config = resolveJsonMonoAgentConfig({ cwd: callerRoot, json: {
+      runtime: { model: "pi:openai-codex:gpt-5.5", workspace: callerRoot },
+      context: { identityPath: "IDENTITY.md" }, artifacts: { dir: discovery.callerArtifactDir },
+      traceability: { sourceId: "agent-a" }, tools: { allowedTools: ["PeerAgent"] },
+      peers: { beta: { sourceId: "peer-test" } },
+    } });
+    const extension = await createPeerAgentRuntimeExtension({ config, cliPath,
+      env: { ...process.env, MONO_AGENT_TRACE_REGISTRY_DIR: join(f.root, "registry") } })!({
+      runId: "run", request: { conversationId: "web:owner", userMessage: "ask peer",
+        metadata: { source: "web" }, abortSignal: new AbortController().signal }, context: {} as never,
+    });
+    const spec = (extension.runtimeOptions?.mcpServers as Record<string, { url: string }>)["mono-agent-peer-agent"]!;
+    const client = new Client({ name: "peer-tool-bridge", version: "1" });
+    await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+    try {
+      const result = await client.callTool({ name: "PeerAgent", arguments: {
+        action: "send", peer: "beta", thread: "example", message: "hello",
+      } });
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result.content)).toMatch(/agent_unauthorized.*no prompt was replayed/u);
+      expect(JSON.stringify(result.content)).not.toContain("private-response-detail-must-not-surface");
+      expect(f.turns).toHaveLength(0);
+    } finally { await client.close(); await extension.cleanup?.(); }
   }, 30_000);
 
   it("PeerAgent foreground send and answer resume one real spawned ACP bridge turn", async () => {
@@ -452,7 +529,7 @@ describe("peer ACP client over a real spawned bridge", () => {
       caller: "agent-test", conversation: "web:caller", depth: 1, text: "no",
       env: { ...process.env, MONO_AGENT_TRACE_REGISTRY_DIR: join(f.root, "registry") },
       signal: new AbortController().signal, onSession: async () => {},
-    })).rejects.toThrow(/Peer ACP turn failed/u);
+    })).rejects.toThrow(/source was not found for source "missing" \(source_not_found\); no prompt was replayed/u);
     expect(f.turns).toHaveLength(0);
   }, 30_000);
 });

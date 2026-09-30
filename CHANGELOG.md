@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix PeerAgent, ACP bridge, and web console operator key selection to prefer
+  each agent's own key over the caller's ambient key; report allowlisted peer
+  bridge startup causes without exposing raw diagnostics.
+
 - Keep web live-input delivery open while a blocking agent operation delays its
   response, then bound missing receipts after the turn settles. Apply pending or
   uncertain steers inline when their exact receipt arrives without resending.

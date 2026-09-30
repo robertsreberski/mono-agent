@@ -166,7 +166,11 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
 - Discover and expose one exact running agent through the ACP core-session
   profile with `mono-agent bridge acp`, including durable session resume, while
   preserving agent-owned configuration, workspace, sandbox, tools, MCP servers,
-  and credentials.
+  and credentials. The bridge and PeerAgent prefer the target's attested dotenv
+  operator key, then its config `tui.apiKey`; the caller's ambient
+  `MONO_AGENT_TUI_API_KEY` is used only when the target publishes no key.
+  Startup failures identify an allowlisted cause and source without forwarding
+  raw bridge stderr to PeerAgent.
 
 Persistent Agent/AgentManage can run detached through the app-private in-process
 ProcessJobs lane. Completed job progress reports each child's priced cost and

@@ -319,7 +319,7 @@ describe("ACP bridge", () => {
       input: new PassThrough(),
       output: new PassThrough(),
       stderr,
-    })).resolves.toBe(1);
+    })).resolves.toBe(25);
     expect(stderr.read()?.toString()).toMatch(/compatible ACP bridge.*bridge 2/u);
   });
 

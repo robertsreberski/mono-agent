@@ -36,6 +36,7 @@ import {
 } from "@mono-agent/web";
 
 import { agentAppPackageVersion } from "./package-version.js";
+import { bridgeStartupExitCode } from "./peer-acp-startup.js";
 import { consumePeerGeneration, PeerSessionExhaustedError, prunePeerGenerationLedger, stampPeerOperatorHandoff, verifyPeerHandoff } from "./peer-provenance.js";
 import {
   createAcpSessionAuthorization,
@@ -117,7 +118,9 @@ export async function runAcpBridge(options: RunAcpBridgeOptions): Promise<number
     await resolveTarget(AbortSignal.timeout(5_000));
   } catch (error) {
     stderr.write(`mono-agent ACP bridge: ${errorMessage(error)}\n`);
-    return 1;
+    const code = error instanceof RequestError
+      ? (error.data as { code?: unknown } | undefined)?.code : codedErrorCode(error);
+    return bridgeStartupExitCode(code);
   }
 
   const activeTurns = new Map<string, ActiveTurn>();
