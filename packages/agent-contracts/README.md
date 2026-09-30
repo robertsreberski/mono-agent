@@ -59,17 +59,6 @@ An adapter extends `AgentRequestBase` with transport metadata, supplies an
 returned `AgentResponse` is the terminal result; stream callbacks carry visible
 text and structured progress while the request is running.
 
-`AgentRequestBase.sender` carries a transport-neutral participant: its `id` is
-host-only, while user-controlled `displayName`/`handle` are sanitized into a
-64-character current-speaker label, never proof of identity. The operator
-adapter's optional versioned `webActor` wire envelope maps into this existing
-contract; it does not add a web-specific core request field. At the trusted
-operator boundary, `metadata.webActor = { role: "admin" | "user" }` is
-host-stamped, never copied from client metadata. A human web turn marked `user`
-is not owner evidence for memory recall or capture; `admin` and legacy turns
-without a marker retain owner behavior. Non-owner preferences use the existing
-source-and-sender-id token, without exposing the physical id to the model.
-
 Managed `tool_call_started` and `tool_call_completed` events may carry
 `SessionToolHistoryEventMetadata`. It is the host writer's acknowledgement for
 that exact block—stable record/sequence when already known, persisted, deferred,

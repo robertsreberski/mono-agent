@@ -2,10 +2,6 @@
 
 ## Unreleased
 
-- Add versioned web actor attribution at the trusted operator boundary so agents
-  can identify console senders and keep non-admin web preferences user-scoped;
-  preserve legacy owner behavior when no actor is supplied.
-
 ## 0.25.0 — Telegram topics, web wake-ups and language-neutral memory (2026-09-30)
 
 - Show the web console's provider usage refresh result as a short muted line
