@@ -405,6 +405,10 @@ export interface WebWakeSchedule {
 }
 
 export interface WebThread {
+  /** Present only on authenticated multi-user projections. */
+  readonly ownerUserId?: string | null;
+  readonly creatorDisplayName?: string | null;
+  readonly shared?: boolean;
   /** Transient service-owned operation; not part of the stored thread or revision. */
   readonly compaction?: { readonly status: "running"; readonly trigger: "manual"; readonly startedAt: string };
   readonly wakeSchedule?: Pick<WebWakeSchedule, "state" | "revision" | "nextFireAt"> & { readonly kind: WebWakeScheduleDefinition["kind"] };
@@ -837,6 +841,8 @@ export interface WebAttachment {
 }
 
 export interface WebMessage {
+  /** Authenticated human snapshot; omitted for automation and legacy-mode projections. */
+  readonly sender?: { readonly id: string; readonly displayName: string; readonly handle?: string };
   readonly id: string;
   readonly threadId: string;
   readonly turnId?: string;
@@ -989,8 +995,17 @@ export type WebCronRunSummary = CronOperatorRunSummary;
 export type WebCronRunDetail = CronOperatorRunDetail;
 export type WebCronRun = CronOperatorRun;
 
-export interface WebCronJob extends CronOperatorJob {
-  readonly threadId: string;
+export interface WebCronJob extends Omit<CronOperatorJob, "conversationId"> {
+  /** Absent when the recipient cannot see the cron channel's results. */
+  readonly conversationId?: string;
+  readonly threadId?: string;
+  readonly resultsPrivate?: true;
+}
+
+/** A successful shared control action, without a private run/channel snapshot. */
+export interface WebCronControlAcknowledgement {
+  readonly acknowledged: true;
+  readonly jobId: string;
 }
 
 export interface WebCronOverview extends Omit<CronOperatorOverview, "jobs"> {
@@ -1303,6 +1318,8 @@ export interface PatchWebAgentInput {
 }
 
 export interface PatchWebThreadInput {
+  /** Creator-only, idle-only, and cannot be combined with other changes. */
+  readonly shared?: boolean;
   readonly tagIds?: readonly string[];
   readonly title?: string;
   readonly archived?: boolean;

@@ -3,6 +3,8 @@ import type { WebCancelOrigin, WebExternalConversationChannel } from "./contract
 import type { ConsoleToolScope, ConsoleToolOperation, ExternalConsoleToolScope } from "./console-tools.js";
 import type { ExternalConversationObservation } from "./external-conversations.js";
 import type { ExternalTurnContext } from "./store.js";
+import { projectWebEvent, type WebEventAccess } from "./event-access.js";
+import type { WebThreadAccess } from "./access.js";
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 
@@ -68,6 +70,7 @@ import {
   type WebBootstrapScope,
   type WebChannelConfigView,
   type WebCronMutationResult,
+  type WebCronControlAcknowledgement,
   type WebCronOverview,
   type WebCronRunSummary,
   type WebCronRunPage,
@@ -498,6 +501,7 @@ export interface WebServiceLogger {
 }
 
 export interface CreateWebServiceOptions extends WebStatePathOptions, DiscoverOperatorAgentsOptions {
+  readonly multiUser?: boolean;
   readonly fetchImpl?: typeof fetch;
   readonly logger?: WebServiceLogger;
   readonly clock?: () => Date;
@@ -742,6 +746,7 @@ export class WebService {
       options.maxQueuedAttachmentTurns ?? WEB_MAX_QUEUED_ATTACHMENT_TURNS,
     );
     this.pushDispatcher = new WebPushDispatcher(store, pushIdentity, pushSubject, {
+      enabled: () => this.options.multiUser !== true,
       ...(options.pushSendImpl === undefined ? {} : { send: options.pushSendImpl }),
       ...(options.pushDnsResolver === undefined ? {} : { resolve: options.pushDnsResolver }),
       ...(options.pushDispatchIntervalMs === undefined ? {} : { intervalMs: options.pushDispatchIntervalMs }),
@@ -762,13 +767,14 @@ export class WebService {
     try {
       // Recovery mutates active rows, so it must happen only after singleton
       // ownership is established. A losing second process never opens the DB.
-      store = await WebStore.openPrepared(paths, options);
+      store = await WebStore.openPrepared(paths, { ...options, pushEnabled: () => options.multiUser !== true });
     } catch (error) {
       await lease.release();
       throw error;
     }
     let service: WebService | undefined;
     try {
+      if (options.multiUser === true) store.auth.initializeOwnership();
       const pushIdentity = store.ensureWebPushIdentity(generateWebPushIdentity);
       const replyAccessKey = Buffer.from(
         store.ensureReplyAccessKey(() => randomBytes(32).toString("base64url")),
@@ -795,6 +801,10 @@ export class WebService {
   }
 
   async bootstrap(scope: WebBootstrapScope = {}): Promise<Omit<WebBootstrap, "console">> {
+    if (this.store.access.current() !== undefined && scope.sourceId !== undefined
+      && this.store.getAgent(scope.sourceId) === undefined) {
+      throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    }
     const currentThreadId = this.store.currentThreadId();
     const currentThread = currentThreadId === undefined ? undefined : this.store.getThread(currentThreadId);
     const discoveredCurrentThreadId = currentThread !== undefined
@@ -953,7 +963,23 @@ export class WebService {
    */
   private readonly consoleToolTurns = new Set<string>();
 
+  private withConsoleToolAccess<T>(scope: ConsoleToolScope, operation: () => T): T {
+    if (this.options.multiUser !== true) return operation();
+    if (scope.kind === "external") return this.store.access.external(scope.sourceId, operation);
+    const actor = this.store.turnWebActor(scope.turnId);
+    if (actor === undefined) throw new WebConsoleError("console_tool_revoked", "The originating turn is no longer writable.", 403);
+    const principal = this.store.auth.getUser(actor.sender.id);
+    if (principal.disabled || principal.role !== actor.role) {
+      throw new WebConsoleError("console_tool_revoked", "The originating turn is no longer writable.", 403);
+    }
+    return this.store.access.run(principal, operation);
+  }
+
   assertConsoleToolTurn(scope: ConsoleToolScope): void {
+    this.withConsoleToolAccess(scope, () => this.assertScopedConsoleToolTurn(scope));
+  }
+
+  private assertScopedConsoleToolTurn(scope: ConsoleToolScope): void {
     if (scope.kind === "external") {
       this.assertExternalToolScope(scope);
       return;
@@ -1005,7 +1031,11 @@ export class WebService {
   }
 
   consoleToolOperation(scope: ConsoleToolScope, operation: ConsoleToolOperation): Record<string, unknown> {
-    this.assertConsoleToolTurn(scope);
+    return this.withConsoleToolAccess(scope, () => this.scopedConsoleToolOperation(scope, operation));
+  }
+
+  private scopedConsoleToolOperation(scope: ConsoleToolScope, operation: ConsoleToolOperation): Record<string, unknown> {
+    this.assertScopedConsoleToolTurn(scope);
     const commit = this.store.consoleToolOperation(scope, operation);
     for (const id of commit.threads) {
       const thread = this.store.getThread(id);
@@ -1018,9 +1048,9 @@ export class WebService {
       const tag = this.store.getTag(id);
       if (tag !== undefined) this.emitTag({ tag });
     }
-    for (const tagId of commit.deletedTags) this.emitTag({ tagId, removed: true });
+    for (const tagId of commit.deletedTags) this.emitTag({ tagId, removed: true }, scope.sourceId);
     for (const id of commit.projects) this.refreshProject(id);
-    for (const projectId of commit.deletedProjects) this.emitProject({ projectId, removed: true });
+    for (const projectId of commit.deletedProjects) this.emitProject({ projectId, removed: true }, scope.sourceId);
     if (commit.threads.length > 0 && (operation.tool === "SetWakeSchedule" || operation.tool === "ClearWakeSchedule")) this.dispatchWakes();
     return commit.result;
   }
@@ -1040,12 +1070,13 @@ export class WebService {
   }
 
   deleteTag(id: string): void {
+    const sourceId = this.store.getTag(id)?.sourceId;
     for (const threadId of this.store.deleteTag(id)) {
       const thread = this.store.getThread(threadId)!;
       this.emitThread("thread.changed", { thread });
       this.emitThread("threads.changed", { thread });
     }
-    this.emitTag({ tagId: id, removed: true });
+    this.emitTag({ tagId: id, removed: true }, sourceId);
   }
 
   projects(sourceId: string): WebProject[] {
@@ -1085,6 +1116,7 @@ export class WebService {
    * its member page must close.
    */
   deleteProject(id: string): void {
+    const sourceId = this.store.getProject(id)?.sourceId;
     const members = this.store.deleteProject(id);
     for (const memberId of members) {
       const thread = this.store.getThread(memberId);
@@ -1092,7 +1124,7 @@ export class WebService {
       this.emitThread("thread.changed", { thread });
       this.emitThread("threads.changed", { thread });
     }
-    this.emitProject({ projectId: id, removed: true });
+    this.emitProject({ projectId: id, removed: true }, sourceId);
   }
 
   threadUsage(id: string): Promise<import("./contracts.js").WebThreadUsage> {
@@ -1254,6 +1286,10 @@ export class WebService {
       attachment,
       signal,
     );
+    if (this.options.multiUser === true) {
+      try { this.authorizeReplyPart(threadId, messageId, partId, "attachment", expires, token); }
+      catch (error) { await response.body?.cancel(); throw error; }
+    }
     return { part, response, remainingSeconds };
   }
 
@@ -1283,6 +1319,7 @@ export class WebService {
       part.connectionId,
       signal,
     );
+    if (this.options.multiUser === true) this.authorizeReplyPart(threadId, messageId, partId, "mcp_app", expires, token);
     if (
       resource.app.invocationId !== part.invocationId
       || resource.app.connectionId !== part.connectionId
@@ -1321,7 +1358,7 @@ export class WebService {
     if (connection === undefined || connection.info.mcpApps?.bridgeVersion !== 1) {
       throw new WebConsoleError("mcp_app_unavailable", "The MCP App source is offline or incompatible.", 409);
     }
-    return await connection.client.mcpAppRequest(
+    const result = await connection.client.mcpAppRequest(
       this.conversationIdForThread(thread.id),
       {
         invocationId: part.invocationId,
@@ -1332,6 +1369,12 @@ export class WebService {
       },
       signal,
     );
+    if (this.options.multiUser === true) this.authorizeReplyPart(threadId, messageId, partId, "mcp_app", expires, token);
+    return result;
+  }
+
+  private requirePushEnabled(): void {
+    if (this.options.multiUser === true) throw new WebConsoleError("push_disabled", "Push is disabled in multi-user mode.", 404);
   }
 
   async registerWebPushSubscription(input: {
@@ -1343,6 +1386,7 @@ export class WebService {
     readonly previousSubscriptionId?: string;
     readonly previousEndpoint?: string;
   }): Promise<WebPushSubscriptionStatus> {
+    this.requirePushEnabled();
     if (input.previousSubscriptionId !== undefined && input.previousEndpoint !== undefined) {
       throw new WebConsoleError(
         "invalid_push_subscription",
@@ -1359,6 +1403,7 @@ export class WebService {
       && (!Number.isSafeInteger(input.expirationTime) || input.expirationTime <= this.currentDate().getTime())) {
       throw new WebConsoleError("invalid_push_subscription", "The push subscription expiration is invalid.", 400);
     }
+    this.requirePushEnabled();
     return this.store.registerWebPushSubscription({
       endpoint: endpoint.endpoint,
       p256dh: input.p256dh,
@@ -1384,6 +1429,7 @@ export class WebService {
   }
 
   testWebPushSubscription(id: string): WebPushSubscriptionStatus {
+    this.requirePushEnabled();
     this.store.enqueueWebPushTest(id);
     this.pushDispatcher.wake();
     return this.webPushSubscription(id);
@@ -1409,6 +1455,8 @@ export class WebService {
       this.store.cronConversationIdForThread(thread.id) ?? `web:${thread.id}`,
       AbortSignal.timeout(INFO_TIMEOUT_MS),
     );
+    this.recheckThreadAccess(threadId);
+    if (this.options.multiUser === true && snapshot !== undefined) this.store.recordAskThread(thread.sourceId, thread.id, snapshot.interactionId);
     if (!this.stopped && snapshot !== undefined && isFuturePendingAsk(snapshot, this.currentDate())) {
       this.enqueueAskPush(thread.id, snapshot);
     }
@@ -1421,7 +1469,13 @@ export class WebService {
     const connection = this.connections.get(thread.sourceId);
     if (connection === undefined) throw new WebConsoleError("agent_offline", "This agent is offline.", 409);
     if (!connection.info.supportsAskById) return undefined;
-    return await connection.client.ask(interactionId, AbortSignal.timeout(INFO_TIMEOUT_MS));
+    if (this.options.multiUser === true && !this.store.askBelongsToThread(thread.sourceId, thread.id, interactionId)) {
+      const pending = await this.pendingAsk(thread.id);
+      if (pending?.interactionId !== interactionId) throw new WebConsoleError("interaction_not_found", "Interaction not found.", 404);
+    }
+    const snapshot = await connection.client.ask(interactionId, AbortSignal.timeout(INFO_TIMEOUT_MS));
+    this.recheckThreadAccess(thread.id);
+    return snapshot;
   }
 
   async submitAsk(
@@ -1435,13 +1489,36 @@ export class WebService {
     if (connection === undefined || !connection.info.supportsAskUser) {
       throw new WebConsoleError("ask_user_unavailable", "This agent does not support interactive questions.", 409);
     }
+    this.requireHumanActorSupport(thread.sourceId);
     const conversationId = this.store.cronConversationIdForThread(thread.id) ?? `web:${thread.id}`;
+    if (this.options.multiUser === true && !this.store.askBelongsToThread(thread.sourceId, thread.id, interactionId)) {
+      const pending = await this.pendingAsk(thread.id);
+      if (pending?.interactionId !== interactionId) throw new WebConsoleError("interaction_not_found", "Interaction not found.", 404);
+    }
+    this.recheckThreadAccess(thread.id);
     const result = await connection.client.submitAsk(conversationId, interactionId, answers);
+    this.recheckThreadAccess(thread.id);
     if (result.accepted) this.store.staleWebPushEvent(`ask:${interactionId}`, "answered");
     return result;
   }
 
   patchThread(id: string, patch: PatchWebThreadInput): WebThread {
+    if (patch.shared !== undefined) {
+      const before = this.store.requireThreadCreator(id);
+      if (Object.keys(patch).some((key) => key !== "shared")) {
+        throw new WebConsoleError("invalid_request", "Change sharing separately from other conversation fields.", 400);
+      }
+      if (this.activeCompactions.has(before.id) || this.activeTurns.has(before.id) || this.activeLiveInputs.has(before.id)) {
+        throw new WebConsoleError("sharing_busy", "Wait until this conversation is idle before changing sharing.", 409);
+      }
+      const previousAccess = this.store.threadAccess(before.id);
+      const thread = this.store.setThreadShared(before.id, patch.shared);
+      if (before.revision !== thread.revision) {
+        this.emitThread("thread.changed", { thread }, previousAccess);
+        this.emitThread("threads.changed", { thread }, previousAccess);
+      }
+      return this.projectThread(thread);
+    }
     if ((patch.projectId !== undefined || patch.tagIds !== undefined) && patch.ifRunConfigUnset === true) {
       throw new WebConsoleError("invalid_request", "projectId and tagIds cannot be combined with ifRunConfigUnset.", 400);
     }
@@ -1476,8 +1553,8 @@ export class WebService {
   }
 
   async deleteThread(id: string, options: { readonly emptyOnly?: boolean } = {}): Promise<void> {
-    const resolved = this.store.getThread(id)?.id;
-    if (resolved === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+    const resolved = this.store.requireThreadCreator(id).id;
+    const previousAccess = this.store.threadAccess(resolved);
     const projectId = this.store.getThread(resolved)?.projectId ?? null;
     if (this.activeTurns.has(resolved)) {
       throw new WebConsoleError("turn_active", "Cancel the active turn before deleting this conversation.", 409);
@@ -1489,8 +1566,8 @@ export class WebService {
         count: result.orphanedFiles,
       });
     }
-    this.emitThread("thread.changed", { threadId: resolved, removed: true });
-    this.emitThread("threads.changed", { threadId: resolved, removed: true });
+    this.emitThread("thread.changed", { threadId: resolved, removed: true }, previousAccess);
+    this.emitThread("threads.changed", { threadId: resolved, removed: true }, previousAccess);
     if (projectId !== null) this.refreshProject(projectId);
   }
 
@@ -1738,21 +1815,62 @@ export class WebService {
     return connection.info.skills ?? { status: "unsupported", items: [] };
   }
 
+  /** Async browser operations must not publish using an expired authority snapshot. */
+  private recheckBrowserAccess(): void {
+    const principal = this.store.access.current();
+    if (principal === undefined) return;
+    const current = "sessionHash" in principal && typeof principal.sessionHash === "string"
+      ? this.store.auth.authenticateHash(principal.sessionHash) : this.store.auth.getUser(principal.id);
+    if (current === undefined || current.disabled || current.id !== principal.id || current.version !== principal.version) {
+      throw new WebConsoleError("authentication_required", "Log in to continue.", 401);
+    }
+  }
+
+  private recheckThreadAccess(threadId: string): void {
+    if (this.options.multiUser !== true || this.store.access.current() === undefined) return;
+    this.recheckBrowserAccess();
+    if (this.store.getThread(threadId) === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+  }
+
+  private requireCronResults(sourceId: string, jobId: string): void {
+    this.recheckBrowserAccess();
+    if (this.store.access.current() !== undefined && this.store.cronThread(sourceId, jobId) === undefined) {
+      throw new WebConsoleError("cron_job_not_found", "Cron job not found for this agent.", 404);
+    }
+  }
+
+  private projectCronOverview(overview: WebCronOverview, sourceId: string): WebCronOverview {
+    if (this.store.access.current() === undefined) return overview;
+    this.recheckBrowserAccess();
+    const { degradedReason: _privateDiagnostic, ...safe } = overview;
+    return { ...safe, jobs: overview.jobs.map((job) => {
+      if (this.store.cronThread(sourceId, job.jobId) !== undefined) return job;
+      // Shared definitions are explicit: future operator fields must not become
+      // an accidental private-result side channel.
+      return { jobId: job.jobId, configured: job.configured, declaredEnabled: job.declaredEnabled,
+        effectiveEnabled: job.effectiveEnabled, health: job.health,
+        ...(job.expression === undefined ? {} : { expression: job.expression }),
+        ...(job.timezone === undefined ? {} : { timezone: job.timezone }),
+        ...(job.nextRunAt === undefined ? {} : { nextRunAt: job.nextRunAt }), resultsPrivate: true as const };
+    }) };
+  }
+
   async cronOverview(sourceId: string): Promise<WebCronOverview> {
     const agent = this.store.getAgent(sourceId);
     if (agent === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
     const connection = this.connections.get(sourceId);
     if (connection?.info.cron?.read === true) {
       const overview = await connection.client.cronOverview(AbortSignal.timeout(INFO_TIMEOUT_MS));
-      const synced = this.store.syncCronOverviewResult({ sourceId, ...overview });
+      this.recheckBrowserAccess();
+      const synced = this.store.access.internal(() => this.store.syncCronOverviewResult({ sourceId, ...overview }));
       if (synced.changed) {
         this.emit("cron.changed", undefined, { sourceId });
         this.emit("threads.changed");
       }
-      return synced.overview;
+      return this.projectCronOverview(synced.overview, sourceId);
     }
     const stored = this.store.storedCronOverview(sourceId);
-    if (stored !== undefined) return { ...stored, actionsEnabled: false };
+    if (stored !== undefined) return this.projectCronOverview({ ...stored, actionsEnabled: false }, sourceId);
     throw new WebConsoleError(
       "cron_unavailable",
       "This agent does not expose first-class cron operator state.",
@@ -1765,6 +1883,7 @@ export class WebService {
     jobId: string,
     input: { readonly limit: number; readonly before?: string },
   ): Promise<WebCronRunPage> {
+    this.requireCronResults(sourceId, jobId);
     const agent = this.store.getAgent(sourceId);
     if (agent === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
     const connection = this.connections.get(sourceId);
@@ -1783,7 +1902,8 @@ export class WebService {
       ...(input.before === undefined ? {} : { before: input.before }),
       signal: AbortSignal.timeout(INFO_TIMEOUT_MS),
     });
-    const reconciled = this.store.reconcileCronRunsResult(sourceId, jobId, page.runs);
+    this.requireCronResults(sourceId, jobId);
+    const reconciled = this.store.access.internal(() => this.store.reconcileCronRunsResult(sourceId, jobId, page.runs));
     if (reconciled.changed) {
       this.announceReconciledMessages(reconciled);
       this.emitStoredThread(this.store.cronThread(sourceId, jobId)?.id, ["thread.changed", "threads.changed"]);
@@ -1792,9 +1912,11 @@ export class WebService {
   }
 
   async cronRun(sourceId: string, jobId: string, runId: string): Promise<WebMessage> {
+    this.requireCronResults(sourceId, jobId);
     const connection = this.requireCronConnection(sourceId, false);
     const run = await connection.client.cronRun(jobId, runId, AbortSignal.timeout(INFO_TIMEOUT_MS));
-    const reconciled = this.store.reconcileCronRunsResult(sourceId, jobId, [run]);
+    this.requireCronResults(sourceId, jobId);
+    const reconciled = this.store.access.internal(() => this.store.reconcileCronRunsResult(sourceId, jobId, [run]));
     const message = reconciled.messages[0];
     if (reconciled.changed) {
       this.announceReconciledMessages(reconciled);
@@ -1815,7 +1937,12 @@ export class WebService {
     runId: string,
     input: CreateWebCronReplyInput,
   ): Promise<WebCronReplyReceipt> {
-    const running = this.activeCronReplies.get(input.operationId);
+    try { this.requireCronResults(sourceId, jobId); }
+    catch (error) { return Promise.reject(error); }
+    const principal = this.store.access.current();
+    const key = principal === undefined ? input.operationId
+      : `${principal.id}:${"sessionHash" in principal ? principal.sessionHash : principal.version}:${input.operationId}`;
+    const running = this.activeCronReplies.get(key);
     if (running !== undefined) {
       if (running.sourceId !== sourceId || running.jobId !== jobId || running.runId !== runId) {
         return Promise.reject(new WebConsoleError(
@@ -1827,11 +1954,14 @@ export class WebService {
       return running.promise;
     }
     const operation = this.createCronReplyThreadOnce(sourceId, jobId, runId, input)
-      .then((receipt) => ({ ...receipt, messages: this.shapeMessages(receipt.messages) }));
-    this.activeCronReplies.set(input.operationId, { sourceId, jobId, runId, promise: operation });
+      .then((receipt) => {
+        this.requireCronResults(sourceId, jobId);
+        return { ...receipt, messages: this.shapeMessages(receipt.messages) };
+      });
+    this.activeCronReplies.set(key, { sourceId, jobId, runId, promise: operation });
     const release = (): void => {
-      if (this.activeCronReplies.get(input.operationId)?.promise === operation) {
-        this.activeCronReplies.delete(input.operationId);
+      if (this.activeCronReplies.get(key)?.promise === operation) {
+        this.activeCronReplies.delete(key);
       }
     };
     void operation.then(release, release);
@@ -1901,10 +2031,11 @@ export class WebService {
         && (error.code === "context_import_conflict"
           || error.code === "context_import_failed"
           || error.code === "context_import_unsupported")) {
-        const failed = this.store.failCronReplyOperation(
+        const failed = this.store.access.internal(() => this.store.failCronReplyOperation(
           input.operationId,
           typeof error.details?.reason === "string" ? error.details.reason : error.code,
-        );
+        ));
+        this.requireCronResults(sourceId, jobId);
         const wonRace = this.cronReplyTerminalResult(failed);
         if (wonRace !== undefined) return wonRace;
         throw new WebConsoleError(
@@ -1925,8 +2056,12 @@ export class WebService {
       );
     }
 
-    const completed = this.store.completeCronReplyOperation(input.operationId, canonicalStatus);
-    const receipt = this.cronReplyTerminalResult(completed);
+    const completed = this.store.access.internal(() => this.store.completeCronReplyOperation(input.operationId, canonicalStatus));
+    this.requireCronResults(sourceId, jobId);
+    const projected = this.store.access.current() !== undefined ? this.store.cronReplyOperation(input.operationId) : completed;
+    const terminal = this.cronReplyTerminalResult(projected ?? completed);
+    const receipt = terminal === undefined ? undefined : { ...terminal,
+      duplicate: completed.kind === "completed" ? completed.receipt.duplicate : terminal.duplicate };
     if (receipt === undefined) {
       throw new WebConsoleError("cron_reply_operation_conflict", "Cron reply operation did not complete.", 409);
     }
@@ -2007,6 +2142,7 @@ export class WebService {
     if (connection.info.supportsProviderUsage !== true) throw new WebConsoleError("provider_usage_unavailable", "This agent does not expose provider usage.", 409);
     if (refresh && connection.info.supportsProviderUsageRefresh !== true) throw new WebConsoleError("provider_usage_refresh_unavailable", "This agent does not support manual usage refresh.", 409);
     const snapshot = await (refresh ? connection.client.refreshProviderUsage(provider, AbortSignal.timeout(15_000)) : connection.client.providerUsage(provider, AbortSignal.timeout(15_000)));
+    this.recheckBrowserAccess();
     if (this.connections.get(sourceId)?.generation !== connection.generation) throw new WebConsoleError("agent_generation_changed", "The agent restarted; reopen settings.", 409);
     return snapshot;
   }
@@ -2059,23 +2195,33 @@ export class WebService {
   }
 
   async cronConfigView(sourceId: string): Promise<WebChannelConfigView> {
+    this.recheckBrowserAccess();
     const connection = this.requireCronConnection(sourceId, false);
-    return await connection.client.cronConfigView(AbortSignal.timeout(INFO_TIMEOUT_MS));
+    const view = await connection.client.cronConfigView(AbortSignal.timeout(INFO_TIMEOUT_MS));
+    this.recheckBrowserAccess();
+    return view;
   }
 
   async cronRunNow(
     sourceId: string,
     jobId: string,
     input: { readonly idempotencyKey: string; readonly confirmationToken?: string },
-  ): Promise<WebCronMutationResult<{ readonly run: WebCronRunSummary }>> {
+  ): Promise<WebCronMutationResult<{ readonly run: WebCronRunSummary } | WebCronControlAcknowledgement>> {
+    this.recheckBrowserAccess();
     const connection = this.requireCronConnection(sourceId, true);
     const result = await connection.client.cronRunNow(jobId, input, AbortSignal.timeout(INFO_TIMEOUT_MS));
+    this.recheckBrowserAccess();
     if (result.kind === "completed") {
-      const reconciled = this.store.reconcileCronRunsResult(sourceId, jobId, [result.value.run]);
+      const reconciled = this.store.access.internal(() => this.store.reconcileCronRunsResult(sourceId, jobId, [result.value.run]));
       if (reconciled.changed) {
         this.announceReconciledMessages(reconciled);
         this.emitStoredThread(this.store.cronThread(sourceId, jobId)?.id, ["thread.changed", "threads.changed"]);
       }
+    }
+    if (this.store.access.current() !== undefined) {
+      if (result.kind === "confirmation_required") return { ...result,
+        confirmation: { ...result.confirmation, message: "Confirm this cron control action." } };
+      if (this.store.cronThread(sourceId, jobId) === undefined) return { ...result, value: { acknowledged: true, jobId } };
     }
     return result;
   }
@@ -2085,7 +2231,8 @@ export class WebService {
     jobId: string,
     enabled: boolean,
     input: { readonly idempotencyKey: string; readonly confirmationToken?: string },
-  ): Promise<WebCronMutationResult<{ readonly job: WebCronOverview["jobs"][number] }>> {
+  ): Promise<WebCronMutationResult<{ readonly job: WebCronOverview["jobs"][number] } | WebCronControlAcknowledgement>> {
+    this.recheckBrowserAccess();
     const connection = this.requireCronConnection(sourceId, true);
     const result = await connection.client.cronSetEffectiveEnabled(
       jobId,
@@ -2093,15 +2240,21 @@ export class WebService {
       input,
       AbortSignal.timeout(INFO_TIMEOUT_MS),
     );
-    if (result.kind === "confirmation_required") return result;
+    this.recheckBrowserAccess();
+    if (result.kind === "confirmation_required") return this.store.access.current() === undefined ? result : { ...result,
+      confirmation: { ...result.confirmation, message: "Confirm this cron control action." } };
     const refreshed = await connection.client.cronOverview(AbortSignal.timeout(INFO_TIMEOUT_MS));
-    const synced = this.store.syncCronOverviewResult({ sourceId, ...refreshed });
+    this.recheckBrowserAccess();
+    const synced = this.store.access.internal(() => this.store.syncCronOverviewResult({ sourceId, ...refreshed }));
     const overview = synced.overview;
     const job = overview.jobs.find((candidate) => candidate.jobId === jobId);
     if (job === undefined) throw new WebConsoleError("invalid_operator_cron", "Updated cron job disappeared.", 502);
     if (synced.changed) {
       this.emit("cron.changed", job.threadId, { sourceId, jobId });
       this.emitStoredThread(job.threadId, ["thread.changed", "threads.changed"]);
+    }
+    if (this.store.access.current() !== undefined && this.store.cronThread(sourceId, jobId) === undefined) {
+      return { ...result, value: { acknowledged: true, jobId } };
     }
     return { ...result, value: { job } };
   }
@@ -2185,6 +2338,7 @@ export class WebService {
       || job.origin.conversationId.split("#", 1)[0] !== `web:${threadId}`) {
       throw new WebConsoleError("process_job_not_found", "Process job was not found for this conversation.", 404);
     }
+    this.recheckThreadAccess(thread.id);
     return job;
   }
 
@@ -2211,30 +2365,33 @@ export class WebService {
         this.conversationIdForThread(threadId),
         model === undefined ? undefined : { model },
       );
-      // A thread deleted meanwhile keeps the agent's outcome but records nothing.
-      if (this.store.getThread(threadId) !== undefined) {
-        const messageId = this.store.recordManualCompaction(threadId, result);
-        if (messageId !== undefined) {
-          this.emit("message.changed", threadId, { messageId, updatedAt: new Date().toISOString() });
+      // Shared durable outcomes survive revocation of the requesting browser.
+      this.store.access.internal(() => {
+        if (this.store.getThread(threadId) !== undefined) {
+          const messageId = this.store.recordManualCompaction(threadId, result);
+          if (messageId !== undefined) this.emit("message.changed", threadId, { messageId, updatedAt: new Date().toISOString() });
         }
-      }
+      });
       return result;
     })().catch((error: unknown) => {
       // Only an explicit agent failure is known to have failed. A lost or
       // malformed response can race an already committed provider revision.
-      if (this.store.getThread(threadId) !== undefined) {
-        this.store.recordManualCompactionFailure(threadId,
+      this.store.access.internal(() => {
+        if (this.store.getThread(threadId) !== undefined) this.store.recordManualCompactionFailure(threadId,
           error instanceof WebConsoleError && ["compaction_failed", "compaction_busy", "compaction_unsupported"].includes(error.code)
             ? undefined : "outcome_unknown");
-      }
+      });
       throw error;
     });
     this.activeCompactions.set(threadId, operation.catch(() => undefined));
     this.manualCompactionStartedAt.set(threadId, this.currentDate().toISOString());
     this.emitStoredThread(threadId, ["thread.changed"]);
     try {
-      return await operation;
-    } finally {
+      const result = await operation;
+      this.recheckThreadAccess(threadId);
+      return result;
+    } catch (error) { this.recheckThreadAccess(threadId); throw error; }
+    finally {
       // Service restarts forget the in-memory hint; completed requests now
       // leave a durable outcome (including an explicitly unknown one).
       this.activeCompactions.delete(threadId);
@@ -2244,6 +2401,23 @@ export class WebService {
       if (!this.stopped) void this.drainQueuedLiveInputs(threadId);
       this.dispatchWake(threadId);
     }
+  }
+
+  private requireHumanActorSupport(sourceId: string): void {
+    if (this.options.multiUser !== true) return;
+    this.recheckBrowserAccess();
+    this.store.access.requirePrincipal();
+    if (this.connections.get(sourceId)?.info.webActor?.version !== 1) {
+      throw new WebConsoleError("web_actor_unsupported", "This agent is read-only until it supports authenticated web actors.", 409);
+    }
+  }
+
+  private canHumanSteer(thread: WebThread, turnId: string): boolean {
+    if (this.options.multiUser !== true) return true;
+    if (thread.shared === true) return false;
+    const principal = this.store.access.requirePrincipal();
+    const actor = this.store.turnWebActor(turnId);
+    return actor?.sender.id === principal.id && actor.role === principal.role;
   }
 
   async startTurn(threadId: string, input: StartWebTurnInput): Promise<{ readonly thread: WebThread; readonly turn: WebThread["runState"] }> {
@@ -2263,6 +2437,7 @@ export class WebService {
     if (connection === undefined || !thread.canSend) {
       throw new WebConsoleError("agent_offline", "This agent is offline. The conversation remains available read-only.", 409);
     }
+    this.requireHumanActorSupport(thread.sourceId);
     const started = this.store.beginTurn({
       threadId,
       text,
@@ -2294,6 +2469,7 @@ export class WebService {
     if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
     threadId = thread.id;
     if (this.activeCompactions.has(threadId)) throw new WebConsoleError("compaction_busy", "Wait for compaction to finish.", 409);
+    this.requireHumanActorSupport(thread.sourceId);
     const text = input.text ?? "";
     const attachmentIds = input.attachmentIds ?? [];
     const quotedText = input.quote === undefined ? text : formatQuotedTurn(input.quote.text, text);
@@ -2306,6 +2482,7 @@ export class WebService {
       attachmentIds,
       model: input.model ?? null,
       effort: input.effort ?? null,
+      ...(this.options.multiUser !== true ? {} : { actor: { id: this.store.access.requirePrincipal().id, role: this.store.access.requirePrincipal().role } }),
     })).digest("hex");
     const existing = this.store.webSubmission(threadId, input.submissionId);
     if (existing !== undefined) {
@@ -2324,7 +2501,7 @@ export class WebService {
     let reserved: ReturnType<WebStore["reserveLiveInput"]> | undefined;
     const activeTurnId = this.store.activeTurn(threadId)?.id;
     const activeTarget = activeTurnId === undefined ? undefined : this.activeTurns.get(threadId);
-    const ownsActiveTarget = activeTarget?.turnId === activeTurnId;
+    const ownsActiveTarget = activeTarget?.turnId === activeTurnId && activeTurnId !== undefined && this.canHumanSteer(thread, activeTurnId);
     const claimed = this.store.claimWebSubmission({
       threadId,
       submissionId: input.submissionId,
@@ -2409,13 +2586,14 @@ export class WebService {
     const thread = this.store.getThread(threadId);
     if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
     threadId = thread.id;
+    this.requireHumanActorSupport(thread.sourceId);
     const connection = this.connections.get(thread.sourceId);
     const active = this.activeTurns.get(threadId);
     const reserved = this.store.reserveLiveInput(threadId, text);
     this.emit("message.changed", threadId, { messageId: reserved.message.id, updatedAt: reserved.message.updatedAt });
     this.emitThread("threads.changed", { thread: reserved.thread });
 
-    if (!reserved.offered || active === undefined || connection === undefined || !connection.info.supportsLiveInput) {
+    if (!reserved.offered || active === undefined || connection === undefined || !connection.info.supportsLiveInput || !this.canHumanSteer(thread, active.turnId)) {
       const queued = reserved.offered ? this.store.queueLiveInput(reserved.input.id) ?? reserved.message : reserved.message;
       this.emit("message.changed", threadId, { messageId: queued.id, updatedAt: queued.updatedAt });
       void this.drainQueuedLiveInputs(threadId);
@@ -2515,7 +2693,10 @@ export class WebService {
     if (attachment.status !== "staged" || attachment.uploaded) {
       throw new WebConsoleError("attachment_unavailable", "This attachment is not available for upload.", 409);
     }
-    if (this.activeUploads.size >= WEB_MAX_CONCURRENT_UPLOADS || this.activeUploads.has(id)) {
+    const principal = this.store.access.current();
+    const activeCount = principal === undefined ? this.activeUploads.size
+      : [...this.activeUploads.keys()].filter((uploadId) => this.store.attachmentOwner(uploadId) === principal.id).length;
+    if (activeCount >= WEB_MAX_CONCURRENT_UPLOADS || this.activeUploads.has(id)) {
       throw new WebConsoleError("upload_concurrency_limit", "Too many uploads are already in progress.", 429);
     }
     const usage = this.store.stagedUploadUsage();
@@ -2538,6 +2719,7 @@ export class WebService {
   }
 
   completeUpload(id: string, sizeBytes: number): WebAttachment {
+    this.recheckBrowserAccess();
     const web = toWebAttachment(this.store.markUploadComplete(id, sizeBytes));
     this.emit("attachment.changed", undefined, { attachment: web });
     return web;
@@ -2551,13 +2733,24 @@ export class WebService {
 
   async removeUpload(id: string): Promise<void> {
     if (this.activeUploads.has(id)) throw new WebConsoleError("upload_active", "This upload is still in progress.", 409);
+    const uploadOwnerUserId = this.store.attachmentOwner(id);
     await this.store.removeStagedAttachment(id);
-    this.emit("attachment.changed", undefined, { attachmentId: id, removed: true });
+    this.emit("attachment.changed", undefined, { attachmentId: id, removed: true },
+      uploadOwnerUserId === undefined ? undefined : { uploadOwnerUserId });
   }
 
   subscribe(callback: (event: WebEvent) => boolean | void): () => void {
     this.subscribers.add(callback);
     return () => this.subscribers.delete(callback);
+  }
+
+  private readonly eventAccess = new WeakMap<WebEvent, WebEventAccess>();
+
+  /** Every enabled recipient is scoped and authenticated before this call. */
+  projectEvent(event: WebEvent): WebEvent | undefined {
+    const projected = projectWebEvent(this.store, event, this.eventAccess.get(event));
+    const payload = projected?.payload as { thread?: WebThread } | undefined;
+    return payload?.thread === undefined ? projected : { ...projected!, payload: { thread: this.projectThread(payload.thread) } };
   }
 
   readyEvent(): WebEvent {
@@ -2673,12 +2866,33 @@ export class WebService {
       // capability as a typed turn: an agent reacting to finished background work
       // is exactly when filing or moving the conversation is useful. Cron and
       // webhook channels stay excluded here and in `assertConsoleToolTurn`.
-      const consoleTools = started.thread.trigger === undefined;
+      const actor = this.options.multiUser === true ? this.store.turnWebActor(started.turnId) : undefined;
+      const human = "userMessageId" in started && hostWakeDeliveryKey === undefined && !scheduledWake;
+      if (this.options.multiUser === true && !human
+        && (this.connections.get(started.thread.sourceId)?.info.webAutomation?.version !== 1
+          || this.connections.get(started.thread.sourceId)?.client !== client)) {
+        throw new WebConsoleError("web_automation_unsupported", "This agent does not support non-human web automation.", 409);
+      }
+      if (this.options.multiUser === true && (human || actor !== undefined)) {
+        const connection = this.connections.get(started.thread.sourceId);
+        if (actor === undefined || connection?.client !== client || connection.info.webActor?.version !== 1) {
+          throw new WebConsoleError("web_actor_unsupported", "Authenticated human dispatch is unavailable.", 409);
+        }
+        const principal = this.store.auth.getUser(actor.sender.id);
+        if (principal.disabled || principal.role !== actor.role
+          || this.store.access.run(principal, () => this.store.getThread(started.thread.id)) === undefined) {
+          if (scheduledWake) { this.store.suspendWake(started.thread.id); this.emitWakeThread(started.thread.id); }
+          throw new WebConsoleError("actor_access_revoked", "The initiating account no longer has access to this conversation.", 403);
+        }
+      }
+      const consoleTools = started.thread.trigger === undefined && (this.options.multiUser !== true || actor !== undefined);
       if (consoleTools) this.consoleToolTurns.add(started.turnId);
       this.store.markTurnDispatchStarted(started.turnId, this.clientProcessGeneration.get(client));
       let response;
       try {
         response = await client.turn({
+        ...(this.options.multiUser === true && actor !== undefined ? { webActor: actor } : {}),
+        ...(this.options.multiUser === true && !human ? { webAutomation: { schema: 1 } } : {}),
         conversationId: started.conversationId,
         text: operatorText,
         attachments,
@@ -2800,7 +3014,7 @@ export class WebService {
     const controller = new AbortController();
     let resolveAdmitted!: (admitted: boolean) => void;
     const admitted = new Promise<boolean>((resolve) => { resolveAdmitted = resolve; });
-    const completion = this.runTurn(
+    const completion = this.store.access.internal(() => this.runTurn(
       started,
       client,
       controller,
@@ -2809,7 +3023,7 @@ export class WebService {
       () => { resolveAdmitted(true); },
       scheduledWake,
       ownerText,
-    ).finally(() => {
+    )).finally(() => {
       // Inert once admission already resolved; the turn settled without the
       // operator ever returning a stream when it did not.
       resolveAdmitted(false);
@@ -2874,11 +3088,25 @@ export class WebService {
     };
   }
 
+  private liveActorStillAllowed(id: string, threadId: string, turnId: string): boolean {
+    if (this.options.multiUser !== true) return true;
+    const actor = this.store.storedLiveInput(id)?.webActor;
+    if (actor === undefined) return false;
+    const principal = this.store.auth.getUser(actor.sender.id);
+    if (principal.disabled || principal.role !== actor.role) return false;
+    return this.store.access.run(principal, () => {
+      const thread = this.store.getThread(threadId);
+      const origin = this.store.turnWebActor(turnId);
+      return thread !== undefined && thread.shared !== true && origin?.sender.id === actor.sender.id && origin.role === actor.role;
+    });
+  }
+
   private async dispatchTargetedSubmission(submission: StoredWebSubmission, active: ActiveTurn): Promise<void> {
     if (submission.inputId === undefined || submission.messageId === undefined || submission.turnId === undefined) return;
     await active.admitted;
     if (this.activeTurns.get(submission.threadId) !== active
-      || this.store.activeTurn(submission.threadId)?.id !== submission.turnId) {
+      || this.store.activeTurn(submission.threadId)?.id !== submission.turnId
+      || !this.liveActorStillAllowed(submission.inputId, submission.threadId, submission.turnId)) {
       const queued = this.store.queueLiveInput(submission.inputId, "closed_before_dispatch");
       if (queued !== undefined) {
         this.emit("message.changed", submission.threadId, { messageId: queued.id, updatedAt: queued.updatedAt });
@@ -2974,7 +3202,11 @@ export class WebService {
     if (queued && !this.stopped) await this.drainQueuedLiveInputs(threadId);
   }
 
-  private async drainQueuedLiveInputs(threadId: string): Promise<void> {
+  private drainQueuedLiveInputs(threadId: string): Promise<void> {
+    return this.store.access.internal(() => this.drainQueuedLiveInputsInternal(threadId));
+  }
+
+  private async drainQueuedLiveInputsInternal(threadId: string): Promise<void> {
     if (this.stopped
       || this.activeTurns.has(threadId)
       || this.activeCompactions.has(threadId)
@@ -2987,6 +3219,20 @@ export class WebService {
         if (thread === undefined || thread.archivedAt !== null || !thread.canSend) return;
         const connection = this.connections.get(thread.sourceId);
         if (connection === undefined) return;
+        if (this.options.multiUser === true) {
+          const queued = this.store.nextQueuedLiveInput(threadId);
+          if (queued === undefined) return;
+          const actor = queued.webActor;
+          const principal = actor === undefined ? undefined : this.store.auth.getUser(actor.sender.id);
+          if (actor === undefined || principal === undefined || principal.disabled || principal.role !== actor.role
+            || connection.info.webActor?.version !== 1
+            || this.store.access.run(principal, () => this.store.getThread(threadId)) === undefined) {
+            const message = this.store.cancelLiveInput(queued.id);
+            if (message !== undefined) this.emit("message.changed", threadId, { messageId: message.id, updatedAt: message.updatedAt });
+            this.emitStoredThread(threadId, ["thread.changed", "threads.changed"]);
+            continue;
+          }
+        }
         const started = this.store.promoteNextQueuedLiveInput(threadId);
         if (started === undefined) return;
         // Resolved anew: the queued text was stored unprefixed, and the
@@ -3917,8 +4163,10 @@ export class WebService {
     sourceId: string,
     operation: (connection: AgentConnection) => Promise<T>,
   ): Promise<T> {
+    this.recheckBrowserAccess();
     const connection = this.requireProviderAuthConnection(sourceId);
     const result = await operation(connection);
+    this.recheckBrowserAccess();
     if (this.connections.get(sourceId)?.generation !== connection.generation) {
       throw new WebConsoleError(
         "agent_generation_changed",
@@ -3969,23 +4217,38 @@ export class WebService {
   /** Indexed due scan; sync admission avoids an interleaving with ordinary user input. */
   private dispatchWakes(): void {
     if (this.stopped) return;
-    for (const threadId of this.store.wakeDueThreadIds()) this.dispatchWake(threadId);
+    this.store.access.internal(() => { for (const threadId of this.store.wakeDueThreadIds()) this.dispatchWake(threadId); });
   }
 
   private dispatchWake(threadId: string): void {
+    this.store.access.internal(() => this.dispatchWakeInternal(threadId));
+  }
+
+  private dispatchWakeInternal(threadId: string): void {
     if (this.stopped) return;
     const thread = this.store.getThread(threadId);
     if (thread === undefined) return;
     const connection = this.connections.get(thread.sourceId);
+    const editorId = this.options.multiUser === true ? this.store.wakeEditor(threadId) : undefined;
+    const editor = editorId === undefined ? undefined : this.store.auth.getUser(editorId);
+    if (this.options.multiUser === true && thread.wakeSchedule?.state === "active"
+      && (editor === undefined || editor.disabled
+        || this.store.access.run(editor, () => this.store.getThread(threadId)) === undefined
+        || (connection !== undefined && (connection.info.webAutomation?.version !== 1 || connection.info.webActor?.version !== 1)))) {
+      this.store.suspendWake(threadId);
+      this.emitWakeThread(threadId);
+      return;
+    }
     const revision = thread.revision;
     this.store.reconcileWake(threadId, connection !== undefined);
     if (this.store.getThread(threadId)?.revision !== revision) this.emitWakeThread(threadId);
     if (connection === undefined || this.activeTurns.has(threadId) || this.activeCompactions.has(threadId)
       || this.hostWakeReservations.has(threadId) || this.drainingLiveInputThreads.has(threadId)) return;
     const selection = this.resolveTurnSelection(threadId);
-    const claimed = this.store.claimWake(threadId, thread.sourceId,
+    const claim = () => this.store.claimWake(threadId, thread.sourceId,
       () => !this.stopped && this.connections.get(thread.sourceId) === connection
         && !this.hostWakeReservations.has(threadId) && !this.activeCompactions.has(threadId), selection);
+    const claimed = editor === undefined ? claim() : this.store.access.run(editor, claim);
     if (claimed === null) return;
     const { started, prompt } = claimed;
     this.emitWakeThread(threadId);
@@ -4052,12 +4315,16 @@ export class WebService {
    * named one conversation while carrying another would have every console
    * apply the wrong row.
    */
-  private emitThread(type: "thread.changed" | "threads.changed", payload: WebThreadChangedPayload): void {
+  private emitThread(type: "thread.changed" | "threads.changed", payload: WebThreadChangedPayload, previousThread?: WebThreadAccess): void {
     const projected = "thread" in payload ? { thread: this.projectThread(payload.thread) } : payload;
-    this.emit(type, "thread" in projected ? projected.thread.id : projected.threadId, projected);
+    this.emit(type, "thread" in projected ? projected.thread.id : projected.threadId, projected,
+      previousThread === undefined ? undefined : { previousThread });
   }
 
   private projectThread(thread: WebThread): WebThread {
+    if (this.options.multiUser === true && this.connections.get(thread.sourceId)?.info.webActor?.version !== 1) {
+      thread = { ...thread, canSend: false, canUpload: false };
+    }
     const startedAt = this.manualCompactionStartedAt.get(thread.id);
     return startedAt === undefined ? thread : {
       ...thread, compaction: { status: "running", trigger: "manual", startedAt },
@@ -4070,12 +4337,14 @@ export class WebService {
    * Projects are global hints, so one event updates both the page and listing;
    * a second singular event would duplicate the full context on the wire.
    */
-  private emitTag(payload: WebTagChangedPayload): void {
-    this.emit("tags.changed", undefined, payload);
+  private emitTag(payload: WebTagChangedPayload, removedSourceId?: string): void {
+    const sourceId = "tag" in payload ? payload.tag.sourceId : removedSourceId;
+    this.emit("tags.changed", undefined, payload, sourceId === undefined ? undefined : { sourceId });
   }
 
-  private emitProject(payload: WebProjectChangedPayload): void {
-    this.emit("projects.changed", undefined, payload);
+  private emitProject(payload: WebProjectChangedPayload, removedSourceId?: string): void {
+    const sourceId = "project" in payload ? payload.project.sourceId : removedSourceId;
+    this.emit("projects.changed", undefined, payload, sourceId === undefined ? undefined : { sourceId });
   }
 
   /**
@@ -4219,9 +4488,10 @@ export class WebService {
     this.emit("message.delta", threadId, shaped);
   }
 
-  private emit(type: WebEventType, threadId?: string, payload?: unknown): void {
+  private emit(type: WebEventType, threadId?: string, payload?: unknown, access?: WebEventAccess): void {
     if (this.stopped) return;
     const event = this.createEvent(type, threadId, payload);
+    if (access !== undefined) this.eventAccess.set(event, access);
     for (const subscriber of [...this.subscribers]) {
       try {
         if (subscriber(event) === false) this.subscribers.delete(subscriber);
@@ -4288,6 +4558,9 @@ export class WebService {
             AbortSignal.any([signal, AbortSignal.timeout(INFO_TIMEOUT_MS)]),
           );
           if (snapshot !== undefined) {
+            if (this.options.multiUser === true && thread !== undefined && !this.stopped && !signal.aborted) {
+              this.store.recordAskThread(thread.sourceId, threadId, snapshot.interactionId);
+            }
             if (isFuturePendingAsk(snapshot, this.currentDate())) {
               if (this.stopped || signal.aborted) return;
               this.enqueueAskPush(threadId, snapshot);
@@ -4309,7 +4582,7 @@ export class WebService {
 
   private enqueueAskPush(threadId: string, snapshot: ChannelAskSnapshot): void {
     const question = snapshot.questions[snapshot.activeQuestionIndex];
-    if (this.stopped || question === undefined || !isFuturePendingAsk(snapshot, this.currentDate())) return;
+    if (this.options.multiUser === true || this.stopped || question === undefined || !isFuturePendingAsk(snapshot, this.currentDate())) return;
     const thread = this.store.getThread(threadId);
     if (thread === undefined) return;
     const agent = this.store.getAgent(thread.sourceId);
@@ -4689,6 +4962,7 @@ export class WebService {
     /** Whole seconds this capability is still good for. */
     readonly remainingSeconds: number;
   } {
+    this.recheckThreadAccess(threadId);
     const access = this.replyAccessTokenStatus(threadId, messageId, type, partId, expires, token);
     if (access === "invalid") {
       throw new WebConsoleError("reply_part_not_found", "The reply part is unavailable.", 404);
@@ -4968,8 +5242,12 @@ export class WebService {
     partId: string,
     expires: string,
   ): string {
+    const principal = this.store.access.current();
+    const session = principal !== undefined && "sessionHash" in principal && typeof principal.sessionHash === "string"
+      ? principal.sessionHash : "unbound";
+    const binding = principal === undefined ? [] : ["web-session-v1", principal.id, session];
     return createHmac("sha256", this.replyAccessKey)
-      .update(["v1", threadId, messageId, type, partId, expires].join("\0"))
+      .update(["v1", threadId, messageId, type, partId, expires, ...binding].join("\0"))
       .digest("base64url");
   }
 
@@ -5001,6 +5279,7 @@ export class WebService {
   }
 
   private announcePushEvent(logicalKey: string): void {
+    if (this.options.multiUser === true) return;
     const event = this.store.webPushEventByLogicalKey(logicalKey);
     if (event === undefined) return;
     this.pushDispatcher.wake();
@@ -5025,7 +5304,10 @@ export class WebService {
 
   private activeReservedUploadBytes(): number {
     let total = 0;
-    for (const bytes of this.activeUploads.values()) total += bytes;
+    const principal = this.store.access.current();
+    for (const [id, bytes] of this.activeUploads) {
+      if (principal === undefined || this.store.attachmentOwner(id) === principal.id) total += bytes;
+    }
     return total;
   }
 }

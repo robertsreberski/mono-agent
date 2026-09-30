@@ -233,10 +233,62 @@ console.log(server.url);
 await server.stop();
 ```
 
-The interface is deliberately single-user and has no application login. Anyone
-who can reach port 5050 can inspect conversations and operate discovered agents;
-use host firewall/LAN policy and Tailscale ACLs as the access boundary. The
-server emits no CORS permission and rejects cross-origin mutations.
+The interface defaults to legacy single-user mode with no application login.
+Anyone who can reach port 5050 can inspect conversations and operate discovered
+agents in that mode; use host firewall/LAN policy and Tailscale ACLs as the access
+boundary. The server emits no CORS permission and rejects cross-origin mutations.
+
+Opt in with `--multi-user` (or embedded `multiUser: true`) for scrypt-backed
+accounts, expiring/revocable HttpOnly SameSite sessions and per-agent grants.
+Conversations are creator-private, including from administrators. Only the
+creator may share/unshare/delete; sharing while idle exposes the entire retained
+history to granted participants. Shared human follow-ups queue; private steering
+requires the same initiating account and role. Older agents without authenticated
+actor support are read-only. Projects/tags and cron definitions are shared within
+an allowed agent, but membership, counts and cron results follow conversation
+visibility. Console tools and event streams use the same privacy predicate.
+Scheduled wakes recheck their editor and use non-human operator provenance;
+unsupported/inaccessible schedules pause. Push production/delivery is disabled
+in multi-user mode, including retained subscriptions and outbox work (follow-up
+#1160). This server-side boundary does not sandbox the agent's arbitrary tools or
+global memory. Browser login/sharing/cache UX is a separate webapp follow-up.
+
+Privacy against administrators is an application policy, not cryptographic
+isolation: an administrator can reset another account's password through the
+web API and could then authenticate as that account. Offline bootstrap remains
+the recovery path. Any visible participant in a shared conversation may answer
+an `AskUser` raised by another participant's run. A shared project change may be
+temporarily unavailable because of retained work, including private membership;
+its neutral error does not identify that membership. This availability signal is
+a known limit. Staged upload quotas and in-flight reservations are per account;
+physical disk exhaustion remains a host resource limit.
+
+Prepare or recover an administrator offline with
+`mono-agent web users bootstrap --username <name>` while the server is stopped.
+The command prompts for a hidden, confirmed password and takes the same exclusive
+state lease as the server; recovery preserves existing conversation ownership.
+Managed `web start`/`restart` retain an explicit `--multi-user` or
+`--no-multi-user` selection. Enabled startup requires an active designated
+bootstrap administrator and fails closed otherwise. First enablement assigns
+existing unowned conversations and unknown schedule editors to that admin;
+recovery/re-enable never reassigns established ownership. Recover the designated
+account with the same offline bootstrap command if it was disabled or demoted.
+
+For HTTPS termination, set `MONO_AGENT_WEB_PUBLIC_ORIGIN` to the exact external
+origin (for example, `https://console.example.test`) when starting or restarting
+the managed worker. launchd and systemd retain that validated origin across
+restarts; an explicit new value replaces it. Multi-user managed Tailscale sharing
+also derives and persists the exact HTTPS origin of the command's owned route
+when no deployment origin is set; if it cannot prove one it refuses that
+combination. Linux routes remain externally managed and require an explicit
+origin. Embedded hosts may instead pass
+`publicOrigin` to `startWebServer`. No path, query, fragment or credentials are
+allowed. Keep the hostname in the existing allowed-host policy and preserve the
+external Host header at the proxy. HTTPS origins issue Secure cookies; plain HTTP
+without a terminator uses non-Secure cookies and is appropriate only on a trusted
+network. Arbitrary forwarded protocol/address headers never establish TLS or
+origin trust. A configured HTTPS origin must not be used through a different
+plain-HTTP hostname; use its external HTTPS address for authenticated requests.
 
 The service uses the operating-system hostname as its machine identity and as
 the default display name. An operator-selected `name` replaces that default in
@@ -1021,6 +1073,7 @@ AcpBridgeDiscovery
 AcpBridgeSourceDescriptor
 AcpBridgeSourceHealth
 BeginWebExternalTurnInput
+BootstrapWebUserOptions
 ConsoleToolName
 ConsoleToolOperation
 ConsoleToolScope
@@ -1029,6 +1082,7 @@ CreateWebProjectInput
 CreateWebTagInput
 CreateWebThreadInput
 CreateWebUploadInput
+CreateWebUserInput
 DEFAULT_WEB_HOST
 DEFAULT_WEB_PORT
 DEFAULT_WEB_THEME
@@ -1051,6 +1105,7 @@ PatchWebAgentInput
 PatchWebProjectInput
 PatchWebTagInput
 PatchWebThreadInput
+PatchWebUserInput
 ProjectContextSource
 PutWebAgentRunSettingsInput
 SearchWebThreadsInput
@@ -1110,6 +1165,7 @@ WebMessagePart
 WebMessageStatus
 WebModelOption
 WebNotificationTriggerKind
+WebPrincipal
 WebProject
 WebProjectChangedPayload
 WebProjectColor
@@ -1150,9 +1206,12 @@ WebThreadTrigger
 WebThreadUsage
 WebUsageSlice
 WebUsageTokens
+WebUser
+WebUserRole
 WebWakeSchedule
 WebWakeScheduleDefinition
 beginWebExternalTurn
+bootstrapWebUser
 createWebConsoleToolClient
 defaultTraceRegistryDir
 defaultWebStateDir

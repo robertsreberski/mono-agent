@@ -48,6 +48,25 @@ async function tempDir(): Promise<string> {
 }
 
 describe("parseCliArgs", () => {
+  it("restricts multi-user enablement and offline bootstrap arguments", () => {
+    for (const action of ["start", "restart", "run"]) {
+      expect(parseCliArgs(["web", action, "--multi-user"]).multiUser).toBe(true);
+      expect(parseCliArgs(["web", action, "--no-multi-user"]).multiUser).toBe(false);
+      expect(parseCliArgs(["web", action])).not.toHaveProperty("multiUser");
+    }
+    expect(parseCliArgs(["web", "users", "bootstrap", "--username", "Avery"]))
+      .toMatchObject({ positionals: ["users", "bootstrap"], username: "Avery" });
+    for (const argv of [
+      ["web", "run", "--multi-user", "--no-multi-user"],
+      ["web", "run", "--multi-user", "--multi-user"],
+      ["web", "status", "--multi-user"],
+      ["start", "--multi-user"],
+      ["web", "run", "--username", "avery"],
+      ["web", "users", "bootstrap", "--username", "invalid name"],
+      ["web", "users", "bootstrap", "--password", "never-accept-argv-passwords"],
+    ]) expect(() => parseCliArgs(argv)).toThrow();
+  });
+
   it("parses init with model, fallbacks, effort, and memory", () => {
     expect(
       parseCliArgs([

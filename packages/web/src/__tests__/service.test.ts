@@ -573,6 +573,30 @@ describe("operator probe failure tolerance", () => {
 });
 
 describe("WebService", () => {
+  it("projects a principal-scoped bootstrap and rejects denied or missing requested sources", async () => {
+    const service = await createService();
+    try {
+      const admin = await service.store.auth.bootstrap("Morgan", "fictional-bootstrap-password");
+      const user = await service.store.auth.createUser({ username: "Avery", role: "user",
+        password: "fictional-bootstrap-password", grants: ["agent-one"] });
+      service.store.auth.initializeOwnership();
+      const privateAdmin = service.store.access.run(admin, () => service.createThread("agent-one"));
+      const privateUser = service.store.access.run(user, () => service.createThread("agent-one"));
+      const own = await service.store.access.run(user, () => service.bootstrap());
+      expect(own.threads.map((thread) => thread.id)).toEqual([privateUser.id]);
+      expect(own.currentThreadId).toBe(privateUser.id);
+      const administration = await service.store.access.run(admin, () => service.bootstrap());
+      expect(administration.threads.map((thread) => thread.id)).toEqual([privateAdmin.id]);
+      expect(administration.currentThreadId).toBeUndefined();
+      await expect(service.store.access.run(user, () => service.bootstrap({ sourceId: "denied" })))
+        .rejects.toMatchObject({ status: 404 });
+      await expect(service.store.access.run(admin, () => service.bootstrap({ sourceId: "missing" })))
+        .rejects.toMatchObject({ status: 404 });
+      // Legacy unknown-source fallback remains unchanged outside authenticated scope.
+      expect((await service.bootstrap({ sourceId: "missing" })).threadsSourceId).toBe("agent-one");
+    } finally { await service.stop(); }
+  });
+
   it("only compacts an owned idle thread and rejects concurrent actions", async () => {
     let release!: () => void;
     let started!: () => void;
@@ -1266,7 +1290,7 @@ describe("WebService", () => {
         cronRun: { ...run, projection: "detail", events: [], eventsIncluded: 0 },
       }),
     });
-    const cronThreadId = (await service.cronOverview("agent-one")).jobs[0]!.threadId;
+    const cronThreadId = (await service.cronOverview("agent-one")).jobs[0]!.threadId!;
     const events: WebEvent[] = [];
     const unsubscribe = service.subscribe((event) => { events.push(event); });
 
@@ -1455,7 +1479,7 @@ describe("WebService", () => {
       fetchImpl: operatorFetch({ cronOverview: operatorCronOverview() }),
     });
     const overview = await service.cronOverview("agent-one");
-    const threadId = overview.jobs[0]!.threadId;
+    const threadId = overview.jobs[0]!.threadId!;
     const expected = {
       code: "cron_channel_read_only",
       message: "Cron channels are read-only. Scheduled runs and history are managed by the agent.",
@@ -1654,7 +1678,7 @@ describe("WebService", () => {
       fetchImpl,
       clock: () => new Date(clockMs += 1_000),
     });
-    const threadId = (await service.cronOverview("agent-one")).jobs[0]!.threadId;
+    const threadId = (await service.cronOverview("agent-one")).jobs[0]!.threadId!;
     const database = new DatabaseSync(service.store.paths.database, { readOnly: true });
     const snapshot = () => ({
       thread: database.prepare("SELECT revision, updated_at FROM threads WHERE id = ?").get(threadId),
@@ -1700,7 +1724,7 @@ describe("WebService", () => {
       return await delegated(input, init);
     }) as typeof fetch;
     const service = await createService({ fetchImpl });
-    const threadId = (await service.cronOverview("agent-one")).jobs[0]!.threadId;
+    const threadId = (await service.cronOverview("agent-one")).jobs[0]!.threadId!;
     currentOverview = operatorCronOverview({
       generatedAt: "2026-08-14T10:01:00.000Z",
       jobs: [{
@@ -4103,6 +4127,33 @@ describe("WebService", () => {
       body: { method: "tools/call", params: { name: "refresh_chart" }, confirmed: true },
       headers: { "x-mono-agent-mcp-connection-id": "connection-one" },
     });
+
+    // Scoped capabilities bind both account and session, while legacy tokens
+    // retain their previous wire shape outside multi-user scope.
+    const admin = await service.store.auth.bootstrap("Morgan", "fictional-resource-password");
+    service.store.auth.initializeOwnership();
+    const user = await service.store.auth.createUser({ username: "Avery", password: "fictional-resource-password", role: "user", grants: ["agent-one"] });
+    const other = await service.store.auth.createUser({ username: "Riley", password: "fictional-resource-password", role: "user", grants: ["agent-one"] });
+    service.store.access.run(admin, () => service.patchThread(thread.id, { shared: true }));
+    const firstSession = await service.store.auth.login(user.username, "fictional-resource-password", "one");
+    const secondSession = await service.store.auth.login(user.username, "fictional-resource-password", "two");
+    const otherSession = await service.store.auth.login(other.username, "fictional-resource-password", "three");
+    const scopedPart = service.store.access.run(firstSession.principal, () => service.replyPartAccess(thread.id, message.id, attachment.id, "attachment"));
+    if (scopedPart.type !== "attachment") throw new Error("Expected attachment");
+    const scopedUrl = new URL(scopedPart.contentUrl!, "http://console.local");
+    const readScoped = () => service.replyAttachment(thread.id, message.id, attachment.id,
+      scopedUrl.searchParams.get("expires")!, scopedUrl.searchParams.get("token")!);
+    await expect(service.store.access.run(firstSession.principal, readScoped)).resolves.toMatchObject({ part: { id: attachment.id } });
+    await expect(service.store.access.run(secondSession.principal, readScoped)).rejects.toMatchObject({ status: 404 });
+    await expect(service.store.access.run(otherSession.principal, readScoped)).rejects.toMatchObject({ status: 404 });
+    const scopedApp = service.store.access.run(firstSession.principal, () => service.replyPartAccess(thread.id, message.id, app.id, "mcp_app"));
+    if (scopedApp.type !== "mcp_app") throw new Error("Expected MCP App");
+    const scopedAppUrl = new URL(scopedApp.resourceUrl!, "http://console.local");
+    const readApp = () => service.mcpAppResource(thread.id, message.id, app.id,
+      scopedAppUrl.searchParams.get("expires")!, scopedAppUrl.searchParams.get("token")!);
+    await expect(service.store.access.run(firstSession.principal, readApp)).resolves.toMatchObject({ connected: true });
+    await expect(service.store.access.run(secondSession.principal, readApp)).rejects.toMatchObject({ status: 404 });
+    await expect(service.store.access.run(otherSession.principal, readApp)).rejects.toMatchObject({ status: 404 });
 
     clockMs += 11 * 60 * 1_000;
     await expect(service.replyAttachment(
@@ -7563,7 +7614,7 @@ describe("authenticated console project callback", () => {
       await expect(call({ operationId: randomUUID(), tool: "ListProjects", args: {} })).rejects.toMatchObject({ code: "console_tool_revoked" });
 
       // A cron channel keeps its own exclusion, wake or not.
-      const cronThreadId = (await service.cronOverview("agent-one")).jobs[0]!.threadId;
+      const cronThreadId = (await service.cronOverview("agent-one")).jobs[0]!.threadId!;
       expect(() => service.assertConsoleToolTurn({ sourceId: "agent-one", threadId: cronThreadId, turnId }))
         .toThrowError(expect.objectContaining({ code: "console_tool_revoked" }));
     } finally { try { stream?.close(); } catch { /* already settled */ } await ingress.stop(); await service.stop(); }

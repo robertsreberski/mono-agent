@@ -97,6 +97,70 @@ function pairedLaunchctlFixture(initial: { readonly worker?: boolean; readonly h
 }
 
 describe("runWebCommand", () => {
+  it("bootstraps offline with confirmed prompt input and no server start", async () => {
+    const home = await testHome();
+    const promptPassword = vi.fn(async () => "fictional-test-password");
+    const bootstrapUser = vi.fn(async () => ({ id: "fictional-user" })) as unknown as NonNullable<RunWebCommandDeps["bootstrapUser"]>;
+    const startServer = vi.fn();
+    let output = "";
+    expect(await runWebCommand({ positionals: ["users", "bootstrap"], username: "Avery", env: {} }, {
+      homeDir: home, promptPassword, bootstrapUser, startServer,
+      stdout: { write: (text) => { output += text; } },
+    })).toBe(0);
+    expect(promptPassword).toHaveBeenCalledTimes(2);
+    expect(bootstrapUser).toHaveBeenCalledWith({ stateDir: webPaths(home).stateDir,
+      username: "Avery", password: "fictional-test-password" });
+    expect(startServer).not.toHaveBeenCalled();
+    expect(output).toContain("administrator bootstrapped");
+    expect(output).not.toContain("fictional-test-password");
+  });
+
+  it("does not bootstrap on mismatched, cancelled or malformed prompt requests", async () => {
+    const bootstrapUser = vi.fn();
+    const promptPassword = vi.fn().mockResolvedValueOnce("fictional-test-password").mockResolvedValueOnce("different-test-password");
+    let errors = "";
+    expect(await runWebCommand({ positionals: ["users", "bootstrap"], username: "avery", env: {} }, {
+      promptPassword, bootstrapUser, stderr: { write: (text) => { errors += text; } },
+    })).toBe(1);
+    expect(errors).toContain("Passwords do not match");
+    expect(errors).not.toContain("fictional-test-password");
+    promptPassword.mockResolvedValue(undefined);
+    expect(await runWebCommand({ positionals: ["users", "bootstrap"], username: "avery", env: {} }, {
+      promptPassword, bootstrapUser,
+    })).toBe(1);
+    promptPassword.mockClear();
+    expect(await runWebCommand({ positionals: ["users", "bootstrap"], env: {} }, {
+      promptPassword, bootstrapUser, stderr: { write: () => undefined },
+    })).toBe(2);
+    expect(await runWebCommand({ positionals: ["users", "bootstrap"], username: "avery", multiUser: true, env: {} }, {
+      promptPassword, bootstrapUser, stderr: { write: () => undefined },
+    })).toBe(2);
+    expect(promptPassword).not.toHaveBeenCalled();
+    expect(bootstrapUser).not.toHaveBeenCalled();
+  });
+
+  it.each(["run", "start", "restart"])("rejects invalid public origin before any %s worker/state action", async (action) => {
+    const startServer = vi.fn(); const prepareState = vi.fn(); const launchctl = vi.fn();
+    expect(await runWebCommand({ positionals: [action], env: { MONO_AGENT_WEB_PUBLIC_ORIGIN: "https://console.example.test/private" } }, {
+      startServer, prepareState, launchctl, stderr: { write: () => undefined },
+    })).toBe(2);
+    expect(startServer).not.toHaveBeenCalled(); expect(prepareState).not.toHaveBeenCalled(); expect(launchctl).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])("forwards foreground multi-user mode explicitly (enabled=%s)", async (multiUser) => {
+    const home = await testHome();
+    const stop = vi.fn(async () => undefined);
+    const startServer = vi.fn(async () => ({ url: "http://127.0.0.1:5050/", host: "127.0.0.1", port: 5050, stop }));
+    let output = "";
+    expect(await runWebCommand({ positionals: ["run"], multiUser, env: { MONO_AGENT_WEB_PUBLIC_ORIGIN: "https://console.example.test:443/" } }, {
+      homeDir: home, prepareState, startServer, waitForShutdown: async () => undefined,
+      stdout: { write: (text) => { output += text; } }, discoverNetworkAddresses: () => [],
+    })).toBe(0);
+    expect(startServer).toHaveBeenCalledWith(expect.objectContaining({ multiUser, publicOrigin: "https://console.example.test" }));
+    expect(output).toContain(multiUser ? "Multi-user authentication is enabled" : "No app authentication is enabled");
+    expect(stop).toHaveBeenCalledOnce();
+  });
+
   it("keeps bare web read-only while showing status and subcommand help", async () => {
     const home = await testHome();
     let output = "";
@@ -1373,7 +1437,21 @@ describe("runWebCommand", () => {
     expect(launchctl).not.toHaveBeenCalledWith(expect.arrayContaining(["bootstrap"]));
   });
 
-  it("pins the node's exact Tailscale DNS hostname into the worker before claiming Serve", async () => {
+  it("refuses authenticated tailnet sharing without a derivable deployment origin", async () => {
+    const home = await testHome(); const paths = webPaths(home); let errors = "";
+    await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
+    const code = await runWebCommand({ positionals: ["start"], multiUser: true, shareTailnet: true, env: {} }, {
+      platform: "darwin", homeDir: home, getuid: () => 501, prepareState,
+      acquireLifecycleLock: async () => async () => undefined,
+      launchctl: async () => ({ code: 1, stdout: "", stderr: "not loaded" }), tailscale: unavailableTailscaleRunner(),
+      ensureManagedRuntime: async () => ({ cliPath: "/managed/dist/cli.js", nodePath: "/managed/node", launchProof: "cHJvb2Y" }),
+      healthcheck: async () => false, stdout: { write: () => undefined }, stderr: { write: (text) => { errors += text; } },
+    });
+    expect(code).toBe(1); expect(errors).toContain("requires a proven HTTPS origin");
+    await expect(stat(paths.recordPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each([false, true])("pins owned tailnet hostname and derives authenticated HTTPS origin (multiUser=%s)", async (multiUser) => {
     const home = await testHome();
     const paths = webPaths(home);
     await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
@@ -1389,7 +1467,11 @@ describe("runWebCommand", () => {
 
     const claimRunner = scriptedClaimRunner();
     let dnsReads = 0;
+    let preflight = false;
     const tailscale: CommandRunner = async (args) => {
+      if (multiUser && args[0] === "serve" && args[1] === "status" && !preflight) {
+        preflight = true; return { code: 0, stdout: JSON.stringify({ TCP: {}, Web: {} }), stderr: "" };
+      }
       if (args[0] === "status" && dnsReads++ === 0) {
         return { code: 1, stdout: "", stderr: "transient LocalAPI failure" };
       }
@@ -1400,6 +1482,7 @@ describe("runWebCommand", () => {
       {
         positionals: ["start"],
         theme: "terracotta",
+        multiUser,
         shareTailnet: true,
         env: {
           MONO_AGENT_WEB_ALLOWED_HOSTS: "console.home.arpa",
@@ -1428,13 +1511,17 @@ describe("runWebCommand", () => {
     expect(dnsReads).toBeGreaterThanOrEqual(2);
     const plist = await readFile(paths.launchd.plistPath, "utf8");
     expect(plist).toContain("<string>MONO_AGENT_WEB_ALLOWED_HOSTS=console.home.arpa,host.example.ts.net</string>");
+    if (multiUser) {
+      expect(plist).toContain("MONO_AGENT_WEB_PUBLIC_ORIGIN=https://host.example.ts.net");
+      expect(JSON.parse(await readFile(paths.recordPath, "utf8")).publicOrigin).toBe("https://host.example.ts.net");
+    }
     expect(plist).toContain("<string>MONO_AGENT_WEB_PUSH_SUBJECT=mailto:owner@example.test</string>");
     expect(plist).toContain("<string>--theme</string>");
     expect(plist).toContain("<string>terracotta</string>");
     expect(JSON.parse(await readFile(paths.recordPath, "utf8"))).toMatchObject({ theme: "terracotta" });
   });
 
-  it("preserves the recorded theme when restart does not override it", async () => {
+  it.each([undefined, true, false])("preserves the recorded theme and retains/overrides multi-user mode (override=%s)", async (multiUser) => {
     const home = await testHome();
     const paths = webPaths(home);
     await prepareState({ stateDir: paths.stateDir });
@@ -1445,6 +1532,8 @@ describe("runWebCommand", () => {
       host: "127.0.0.1",
       port: 5050,
       theme: "plum",
+      multiUser: true,
+      publicOrigin: "https://console.example.test",
       updatedAt: "2026-07-17T00:00:00.000Z",
     })}\n`, { mode: 0o600 });
     let workerLoaded = true;
@@ -1468,7 +1557,7 @@ describe("runWebCommand", () => {
 
     let errors = "";
     const result = await runWebCommand(
-      { positionals: ["restart"], env: {} },
+      { positionals: ["restart"], env: multiUser === true ? { MONO_AGENT_WEB_PUBLIC_ORIGIN: "http://replacement.example.test:5050/" } : {}, ...(multiUser === undefined ? {} : { multiUser }) },
       {
         platform: "darwin",
         homeDir: home,
@@ -1486,9 +1575,14 @@ describe("runWebCommand", () => {
     );
     expect(result, errors).toBe(0);
 
-    expect(JSON.parse(await readFile(paths.recordPath, "utf8"))).toMatchObject({ theme: "plum" });
-    expect(await readFile(paths.launchd.plistPath, "utf8")).toContain("<string>plum</string>");
+    const publicOrigin = multiUser === true ? "http://replacement.example.test:5050" : "https://console.example.test";
+    expect(JSON.parse(await readFile(paths.recordPath, "utf8"))).toMatchObject({ theme: "plum", multiUser: multiUser ?? true, publicOrigin });
+    const plist = await readFile(paths.launchd.plistPath, "utf8");
+    expect(plist).toContain("<string>plum</string>");
+    expect(plist).toContain(`<string>${multiUser === false ? "--no-multi-user" : "--multi-user"}</string>`);
+    expect(plist).toContain(`MONO_AGENT_WEB_PUBLIC_ORIGIN=${publicOrigin}`);
   });
+
 
   it("preserves the recorded console name by default and clears it with --name -", async () => {
     const home = await testHome();

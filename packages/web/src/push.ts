@@ -46,6 +46,7 @@ export type WebPushSend = (
 ) => Promise<WebPushHttpResult>;
 
 export interface WebPushDispatcherOptions {
+  readonly enabled?: () => boolean;
   readonly send?: WebPushSend;
   readonly resolve?: WebPushDnsResolver;
   readonly beforeSend?: (
@@ -252,14 +253,14 @@ export class WebPushDispatcher {
   }
 
   start(): void {
-    if (this.timer !== undefined || this.stopped) return;
+    if (this.timer !== undefined || this.stopped || this.options.enabled?.() === false) return;
     this.timer = setInterval(() => this.wake(), this.options.intervalMs ?? DISPATCH_INTERVAL_MS);
     this.timer.unref();
     this.wake();
   }
 
   wake(): void {
-    if (this.stopped || this.ticking) return;
+    if (this.stopped || this.ticking || this.options.enabled?.() === false) return;
     void this.tick();
   }
 
@@ -275,7 +276,7 @@ export class WebPushDispatcher {
   async stopAndDrain(timeoutMs = 5_000): Promise<void> {
     if (this.stopped) return;
     const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline && (this.store.webPushDueQueueDepth() > 0 || this.active.size > 0)) {
+    while (this.options.enabled?.() !== false && Date.now() < deadline && (this.store.webPushDueQueueDepth() > 0 || this.active.size > 0)) {
       this.wake();
       await new Promise<void>((resolvePromise) => {
         const timer = setTimeout(resolvePromise, 50);
@@ -292,7 +293,7 @@ export class WebPushDispatcher {
   }
 
   private async tick(): Promise<void> {
-    if (this.stopped || this.ticking) return;
+    if (this.stopped || this.ticking || this.options.enabled?.() === false) return;
     this.ticking = true;
     try {
       const available = Math.max(0, 4 - this.active.size);
@@ -366,6 +367,11 @@ export class WebPushDispatcher {
       return;
     }
 
+    if (this.options.enabled?.() === false) {
+      this.store.settleWebPushDelivery({ eventId: delivery.event.id, subscriptionId: delivery.subscription.id,
+        status: "dropped", errorCode: "multi_user_disabled" });
+      return;
+    }
     let result: WebPushHttpResult;
     try {
       result = await this.send(delivery, this.identity, this.subject, signal);

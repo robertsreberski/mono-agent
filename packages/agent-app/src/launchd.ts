@@ -102,6 +102,7 @@ export interface WebPlistInput {
   readonly theme: string;
   /** Operator-chosen console label; absent means the worker falls back to the machine hostname. */
   readonly name?: string;
+  readonly multiUser?: boolean;
   readonly stdoutPath: string;
   readonly stderrPath: string;
   /** Deliberately allowlisted, non-secret worker environment. */
@@ -560,6 +561,7 @@ export function buildWebLaunchdProgramArguments(input: WebPlistInput): readonly 
     "--theme",
     input.theme,
     ...(input.name === undefined ? [] : ["--name", input.name]),
+    ...(input.multiUser === undefined ? [] : [input.multiUser ? "--multi-user" : "--no-multi-user"]),
   ];
   for (const argument of arguments_) assertControlFree(argument, "web launchd program argument");
   return arguments_;

@@ -32,6 +32,7 @@ import {
   DEFAULT_WEB_THEME,
   decodeManagedWebDefinition,
   LEGACY_DEFAULT_WEB_HOST,
+  selectedWebPublicOrigin,
 } from "./web-service-definition.js";
 
 const cliPath = fileURLToPath(new URL("./cli.js", import.meta.url));
@@ -211,6 +212,7 @@ export async function runSystemdWebCommand(options: RunWebCommandOptions, deps: 
       : options.host ?? installedDefinition?.host ?? (installed === undefined ? FRESH_WEB_HOST : LEGACY_WEB_HOST);
     const port = options.port ?? installedDefinition?.port ?? DEFAULT_WEB_PORT;
     const theme = options.theme ?? installedDefinition?.theme ?? DEFAULT_WEB_THEME;
+    const multiUser = options.multiUser ?? installedDefinition?.multiUser;
     // No default: an absent name means the worker falls back to the machine hostname.
     let consoleName = installedDefinition?.name;
     if (options.name !== undefined) {
@@ -246,7 +248,7 @@ export async function runSystemdWebCommand(options: RunWebCommandOptions, deps: 
             pid: service.pid > 0 ? service.pid : null,
             healthy,
           },
-          authentication: "none",
+          authentication: multiUser === true ? "multi-user" : "none",
           ownedTailscaleRoute: { state: "not-managed", detail: "Linux HTTPS routes are externally managed" },
           definitionError: definitionUnknown
             ? "the installed systemd unit is not a recognized managed web definition"
@@ -261,7 +263,7 @@ export async function runSystemdWebCommand(options: RunWebCommandOptions, deps: 
           "The installed systemd web unit is not a recognized managed web definition; the effective listener is unknown and was not probed.",
         ));
       } else {
-        stdout.write(`Web: ${url}\nTheme: ${theme}\nName: ${consoleName ?? "— (machine hostname)"}\nHTTPS routes: externally managed; inspect tailscale serve status.\n`);
+        stdout.write(`Web: ${url}\nTheme: ${theme}\nName: ${consoleName ?? "— (machine hostname)"}\nAuthentication: ${multiUser === true ? "multi-user (application login required)" : "none (network reachability is the access boundary)"}\nHTTPS routes: externally managed; inspect tailscale serve status.\n`);
       }
       return code;
     }
@@ -272,6 +274,8 @@ export async function runSystemdWebCommand(options: RunWebCommandOptions, deps: 
     }
     if (action !== "start" && action !== "restart") throw new Error(`Unsupported systemd web action: ${action}`);
     const environment = operationalEnvironment(options.env);
+    const publicOrigin = selectedWebPublicOrigin(options.env.MONO_AGENT_WEB_PUBLIC_ORIGIN ?? installedDefinition?.publicOrigin);
+    if (publicOrigin !== undefined) environment.MONO_AGENT_WEB_PUBLIC_ORIGIN = publicOrigin;
     const previousAllowed = installed?.argv.find((arg) => arg.startsWith("MONO_AGENT_WEB_ALLOWED_HOSTS="))?.slice("MONO_AGENT_WEB_ALLOWED_HOSTS=".length);
     const allowed = options.env.MONO_AGENT_WEB_ALLOWED_HOSTS ?? previousAllowed;
     if (allowed !== undefined) environment.MONO_AGENT_WEB_ALLOWED_HOSTS = allowed;
@@ -279,6 +283,7 @@ export async function runSystemdWebCommand(options: RunWebCommandOptions, deps: 
       argv: workerArgv([
         "web", "run", "--host", host, "--port", String(port), "--theme", theme,
         ...(consoleName === undefined ? [] : ["--name", consoleName]),
+        ...(multiUser === undefined ? [] : [multiUser ? "--multi-user" : "--no-multi-user"]),
       ], environment) };
     await withSystemdLock(identity, deps, async () => {
       const service = await inspectSystemd(identity, deps);

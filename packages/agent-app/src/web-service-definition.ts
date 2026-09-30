@@ -45,6 +45,20 @@ export interface ManagedWebDefinition {
   readonly port: number;
   readonly theme: WebTheme;
   readonly name?: string;
+  readonly multiUser?: boolean;
+  readonly publicOrigin?: string;
+}
+
+/** Exact deployment origin; never accept a path, credentials or proxy headers. */
+export function selectedWebPublicOrigin(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  let url: URL;
+  try { url = new URL(value); } catch { throw new Error("Invalid web public origin."); }
+  if (!new Set(["http:", "https:"]).has(url.protocol) || url.username || url.password
+    || url.pathname !== "/" || url.search || url.hash) {
+    throw new Error("Web public origin must be an exact HTTP(S) origin.");
+  }
+  return url.origin;
 }
 
 const MANAGED_WEB_OPTION_NAMES: readonly string[] = ["--host", "--port", "--theme", "--name"];
@@ -85,9 +99,14 @@ function readManagedOptionPairs(
   suffix: readonly string[],
 ): ReadonlyMap<string, string> | undefined {
   const values = new Map<string, string>();
-  for (let index = 0; index < suffix.length; index += 2) {
+  for (let index = 0; index < suffix.length; index += 1) {
     const flag = suffix[index];
-    const value = suffix[index + 1];
+    if (flag === "--multi-user" || flag === "--no-multi-user") {
+      if (values.has("multiUser")) return undefined;
+      values.set("multiUser", flag === "--multi-user" ? "true" : "false");
+      continue;
+    }
+    const value = suffix[++index];
     if (flag === undefined || value === undefined || !MANAGED_WEB_OPTION_NAMES.includes(flag)) return undefined;
     if (values.has(flag)) return undefined;
     values.set(flag, value);
@@ -127,7 +146,18 @@ export function decodeManagedWebDefinition(argv: readonly string[]): ManagedWebD
   index += 1;
   if (argv[index] !== "-i") return undefined;
   index += 1;
-  while (index < argv.length && MANAGED_WEB_ENVIRONMENT_ASSIGNMENT.test(argv[index] ?? "")) index += 1;
+  let publicOrigin: string | undefined;
+  let originSeen = false;
+  while (index < argv.length && MANAGED_WEB_ENVIRONMENT_ASSIGNMENT.test(argv[index] ?? "")) {
+    const assignment = argv[index]!;
+    if (assignment.startsWith("MONO_AGENT_WEB_PUBLIC_ORIGIN=")) {
+      if (originSeen) return undefined;
+      originSeen = true;
+      try { publicOrigin = selectedWebPublicOrigin(assignment.slice("MONO_AGENT_WEB_PUBLIC_ORIGIN=".length)); }
+      catch { return undefined; }
+    }
+    index += 1;
+  }
   // Node executable, then the optional Linux `--` separator, then the CLI
   // entrypoint. Filenames are validated (not merely token positions), so an
   // unrelated env-wrapped command cannot be reinterpreted as the worker.
@@ -150,5 +180,7 @@ export function decodeManagedWebDefinition(argv: readonly string[]): ManagedWebD
   if (!isValidManagedBindHost(host)) return undefined;
   const name = values.get("--name");
   if (name !== undefined && invalidWebConsoleName(name) !== undefined) return undefined;
-  return { host, port, theme, ...(name === undefined ? {} : { name }) };
+  return { host, port, theme, ...(name === undefined ? {} : { name }),
+    ...(publicOrigin === undefined ? {} : { publicOrigin }),
+    ...(values.has("multiUser") ? { multiUser: values.get("multiUser") === "true" } : {}) };
 }

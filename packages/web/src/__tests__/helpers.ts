@@ -101,6 +101,8 @@ export function operatorFetch(options: {
   readonly onCompact?: (conversationId: string, body: Record<string, unknown>) => Record<string, unknown> | Promise<Record<string, unknown>>;
   readonly supportsAskUser?: boolean;
   readonly supportsAskById?: boolean;
+  readonly supportsWebActor?: boolean;
+  readonly supportsWebAutomation?: boolean;
   readonly supportsLiveInput?: boolean;
   readonly supportsLiveInputTargeting?: boolean;
   readonly supportsReplyAttachments?: boolean;
@@ -163,6 +165,8 @@ export function operatorFetch(options: {
         },
         ...(options.skills === undefined ? {} : { skills: options.skills }),
         capabilities: {
+          ...(options.supportsWebActor === true ? { webActor: { version: 1 } } : {}),
+          ...(options.supportsWebAutomation === true ? { webAutomation: { version: 1 } } : {}),
           attachments: options.supportsAttachments ?? true,
           ...(options.supportsHistoryAppend === true ? { historyAppend: true } : {}),
           ...(options.supportsContextImport === true

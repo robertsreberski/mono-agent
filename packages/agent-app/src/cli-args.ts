@@ -203,6 +203,8 @@ export interface ParsedCliArgs {
   readonly port?: number;
   /** web: curated visual theme for this host console. */
   readonly theme?: string;
+  readonly multiUser?: boolean;
+  readonly username?: string;
   /** web: narrow the bind to 127.0.0.1 (the fresh default; kept for explicit scripts). */
   readonly loopback?: boolean;
   /** web: explicitly create/verify the mono-agent-owned Tailscale Serve route (macOS managed start/restart). */
@@ -253,6 +255,7 @@ const CLI_VALUE_FLAGS = new Set([
   "--host",
   "--port",
   "--theme",
+  "--username",
   "--source-id",
   "--model",
   "--name",
@@ -276,6 +279,8 @@ const CLI_VALUE_FLAGS = new Set([
 ]);
 
 const CLI_BOOLEAN_FLAGS = new Set([
+  "--multi-user",
+  "--no-multi-user",
   "--all",
   "--dry-run",
   "--include-memory",
@@ -457,6 +462,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let host: string | undefined;
   let port: number | undefined;
   let theme: string | undefined;
+  let multiUser: boolean | undefined;
+  let username: string | undefined;
   let loopback = false;
   let shareTailnet = false;
   let sourceId: string | undefined;
@@ -661,6 +668,15 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         port = parsed;
         break;
       }
+      case "--multi-user":
+      case "--no-multi-user":
+        if (multiUser !== undefined) throw new Error("Choose only one multi-user mode flag.");
+        multiUser = flag === "--multi-user";
+        break;
+      case "--username":
+        username = requireValue(rest, ++i, flag).trim();
+        if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/u.test(username)) throw new Error("Invalid --username.");
+        break;
       case "--theme":
         theme = requireValue(rest, ++i, flag).trim();
         if (theme.length === 0) throw new Error("--theme must not be empty.");
@@ -1036,11 +1052,14 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     [INTERNAL_WEB_LOG_MAINTENANCE_COMMAND],
   );
 
+  assertFlagCommand(multiUser !== undefined, "--multi-user/--no-multi-user", cmd, ["web"]);
+  assertFlagCommand(username !== undefined, "--username", cmd, ["web"]);
   if (cmd === "web") {
     const action = positionals[0];
-    if ((host !== undefined || port !== undefined || theme !== undefined || name !== undefined || loopback)
+    if (username !== undefined && (action !== "users" || positionals[1] !== "bootstrap")) throw new Error("--username is only supported for web users bootstrap.");
+    if ((host !== undefined || port !== undefined || theme !== undefined || name !== undefined || multiUser !== undefined || loopback)
       && action !== "start" && action !== "restart" && action !== "run") {
-      throw new Error("--host, --port, --theme, --name, and --loopback are only supported for `mono-agent web start`, `web restart`, or `web run`.");
+      throw new Error("--host, --port, --theme, --name, --multi-user/--no-multi-user, and --loopback are only supported for `mono-agent web start`, `web restart`, or `web run`.");
     }
     if (shareTailnet && action !== "start" && action !== "restart") {
       throw new Error("--share-tailnet is only supported for `mono-agent web start` and `mono-agent web restart`; the foreground `web run` never manages a Tailscale route.");
@@ -1136,6 +1155,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(host === undefined ? {} : { host }),
     ...(port === undefined ? {} : { port }),
     ...(theme === undefined ? {} : { theme }),
+    ...(multiUser === undefined ? {} : { multiUser }),
+    ...(username === undefined ? {} : { username }),
     ...(shareTailnet ? { shareTailnet } : {}),
     ...(loopback ? { loopback } : {}),
     ...(sourceId === undefined ? {} : { sourceId }),

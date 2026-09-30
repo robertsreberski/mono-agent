@@ -131,7 +131,7 @@ Keep bearer values out of source config when possible. Set
   side-effecting action; status reads never start one. Cooldown responses use
   `429` plus `Retry-After`.
 - `POST {basePath}/v1/turns` accepts
-  `{ conversationId, text, client?, attachments?, metadata?, webActor? }`;
+  `{ conversationId, text, client?, attachments?, metadata?, webActor?, webAutomation? }`;
   attachment-only web turns are valid. Web model/effort metadata is preserved and mirrored into the
   shared TUI override lane before the responder runs. The response is chunked
   `application/x-ndjson` with frames
@@ -224,6 +224,18 @@ trusted boundary. Clients requiring attribution must fail closed when it is
 absent or unsupported. Older consoles may omit the field; wire schema 1 and
 legacy turn behavior remain unchanged. No login or user store is provided here.
 
+The separate `webAutomation: { schema: 1 }` marker is accepted only for web
+turns on the same trusted boundary and advertised as
+`capabilities.webAutomation = { version: 1 }`. Its strict parser rejects unknown
+keys and unsupported versions. A marked turn is always stamped
+`captureSpeakerKind: "trigger"`, regardless of any accompanying editor actor's
+role. The actor scopes tools/access; it cannot turn automation into a human or
+owner-human memory source. Client-supplied `metadata.webAutomation` is stripped
+on all clients. Unmarked legacy requests retain their original classification;
+clients needing non-human provenance must refuse unsupported agents.
+`OperatorWebAutomation`, `parseOperatorWebAutomation` and its version constant
+are exported from the package and `/client` entrypoint.
+
 The adapter maps the sender to `AgentRequestBase.sender` and stamps only
 `metadata.webActor = { role }`. It strips client-supplied `metadata.webActor`
 on every turn, even without an envelope. `captureSpeakerKind` continues to come
@@ -310,7 +322,9 @@ MAX_CRON_OPERATOR_RUN_PAGE
 MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES
 MAX_FRAME_BYTES
 OPERATOR_WEB_ACTOR_VERSION
+OPERATOR_WEB_AUTOMATION_VERSION
 OperatorWebActor
+OperatorWebAutomation
 RedactedTuiAdapterConfig
 RequestToolEnvironmentConfig
 TUI_CONFIG_FIELDS
@@ -338,6 +352,7 @@ TuiSkillRegistry
 TuiSkillUnavailableReason
 loadTuiAdapterConfig
 parseOperatorWebActor
+parseOperatorWebAutomation
 redactTuiAdapterConfig
 startTuiAdapter
 ```
@@ -346,12 +361,15 @@ startTuiAdapter
 
 ```text
 OPERATOR_WEB_ACTOR_VERSION
+OPERATOR_WEB_AUTOMATION_VERSION
 OperatorStreamFrameTooLargeError
 OperatorWebActor
+OperatorWebAutomation
 fetchLongLivedHostWake
 fetchLongLivedTurn
 operatorResponseFromFinishFrame
 parseOperatorWebActor
+parseOperatorWebAutomation
 readOperatorStreamFrames
 ```
 

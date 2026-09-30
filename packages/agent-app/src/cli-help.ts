@@ -209,6 +209,8 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
       "owned Tailscale Serve HTTPS route only with --share-tailnet and re-verify an",
       "existing owned route on restart; Linux HTTPS routes are externally managed.",
       "`web run` stays in the foreground and never manages a Serve route or removes one.",
+      "Use --multi-user or --no-multi-user on start/restart/run; managed restarts retain the mode.",
+      "Bootstrap/recover offline with web users bootstrap --username <name> (confirmed hidden password).",
       "Themes: evergreen (default), ocean, plum, and terracotta. --name sets",
       "the PWA, tab, and rail label; --name - restores the hostname default. A managed start/restart",
       "persists both selections and status reports their effective values.",

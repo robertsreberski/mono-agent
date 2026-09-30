@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+- Harden multi-user authentication throttles and administrator recovery, retain
+  shared automation outcomes after browser revocation, isolate staged upload
+  quotas, and configure the owned tailnet HTTPS origin for authenticated use.
+  Document administrative password-reset impersonation and shared-participant
+  `AskUser` answers as policy limits, not cryptographic isolation.
+
+- Enable opt-in multi-user web accounts with creator-private conversations,
+  explicit sharing, per-agent grants and authenticated operator attribution;
+  require an active designated administrator before exposing protected APIs.
+
+- Bind exact `AskUser` lookups to their canonical conversation and recheck
+  asynchronous question, reply-resource, and provider-auth responses after
+  account or access changes.
+
+- Retain the explicitly configured web public origin across managed restarts,
+  validate it before publication, and keep HTTPS cookie trust independent of
+  forwarded headers.
+
+- Disable push production and delivery in multi-user mode, including retained
+  subscriptions and outbox work, without changing legacy notification behavior.
+
+- Keep multi-user web automation non-human at the trusted operator boundary,
+  scope scheduled wakes to their current editor, and suspend inaccessible or
+  unsupported schedules instead of falling back to legacy owner authority.
+
+- Attribute human web turns and queued follow-ups to their authenticated sender,
+  cancel queued input after access or role loss, and keep older agents read-only
+  in multi-user mode while preserving legacy steering when the mode is off.
+
+- Project multi-user web events for each recipient, remove inaccessible shared
+  conversations with content-free notices, and close revoked or expired streams.
+
+- Keep multi-user attachment downloads and event streams out of browser caches.
+
+- Bind web console tools and receipt replay to their initiating account's current
+  access, and keep unmapped channel capabilities away from web conversations.
+
+- Keep opted-in web cron definitions and controls available to granted users
+  without disclosing private results, and bind imported Reply conversations and
+  replay receipts to their authenticated requester.
+
+- Add offline web administrator bootstrap and recovery with confirmed hidden
+  passwords under the web state lease, and preserve explicit multi-user mode
+  selections across managed restarts without permitting partially protected
+  startup.
+
 - Add versioned web actor attribution at the trusted operator boundary so agents
   can identify console senders and keep non-admin web preferences user-scoped;
   preserve legacy owner behavior when no actor is supplied.
