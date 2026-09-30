@@ -1,3 +1,5 @@
+import { useAuth } from "./auth";
+import { isMultiUser, recheckAuthentication } from "./auth-state";
 import { routeWriteState } from "./mobile-history";
 import type { TagSummary, TagColor } from "./types";
 import type { ProjectColor } from "./types";
@@ -336,6 +338,7 @@ interface ConsoleStoreValue {
   readonly renameThread: (threadId: string, title: string) => Promise<void>;
   readonly archiveThread: (threadId: string) => Promise<void>;
   readonly unarchiveThread: (threadId: string) => Promise<void>;
+  readonly shareThread: (threadId: string, shared: boolean) => Promise<void>;
   readonly deleteThread: (
     threadId: string,
     options?: { readonly emptyOnly?: boolean },
@@ -1725,6 +1728,7 @@ export const validateRunPreference = (
 };
 
 export function ConsoleStoreProvider({ children }: { readonly children: ReactNode }) {
+  const { user } = useAuth();
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(() =>
     cronRouteSelection()?.sourceId ?? localStorage.getItem(SELECTED_AGENT_STORAGE_KEY),
@@ -1968,7 +1972,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * until it is asked to, but there is exactly one owner of the device store.
    */
   const persistenceRef = useRef<ThreadPersistence | null>(null);
-  persistenceRef.current ??= createThreadPersistence();
+  if (!isMultiUser()) persistenceRef.current ??= createThreadPersistence();
   /**
    * Whether hydration has settled.
    *
@@ -4909,6 +4913,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     events.onmessage = handleEvent;
     for (const type of eventTypes) events.addEventListener(type, handleEvent);
     events.onerror = () => {
+      recheckAuthentication();
       errored = true;
       // This socket answered -- with a failure. A resume may build another.
       resumeInFlightRef.current = false;
@@ -6355,7 +6360,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         } else if (readPersistedThreadIds()[thread.sourceId] === target.id) {
           persistThreadId(thread.sourceId, null);
         }
-        if (thread.trigger === undefined && thread.messageCount === 0) {
+        if (thread.trigger === undefined && thread.messageCount === 0 && (!isMultiUser() || thread.ownerUserId === user?.id)) {
           try {
             await deleteThreadRef.current(thread.id, { emptyOnly: true });
           } catch (emptyDeleteError) {
@@ -6381,8 +6386,17 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       fetchThreadSummary,
       installReplacementSelection,
       visibleThreads,
+      user?.id,
     ],
   );
+
+  const shareThread = useCallback(async (threadId: string, shared: boolean) => {
+    const issuedAt = removedThreadsRef.current.epoch();
+    try {
+      const thread = await enqueueThreadWrite(threadId, (signal) => api.patchThread(threadId, { shared }, signal));
+      applyThreadUpdate(thread, issuedAt);
+    } catch (failure) { setActionError(errorMessage(failure)); throw failure; }
+  }, [applyThreadUpdate, enqueueThreadWrite]);
 
   const unarchiveThread = useCallback(async (threadId: string) => {
     try {
@@ -7313,6 +7327,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       renameThread,
       archiveThread,
       unarchiveThread,
+      shareThread,
       deleteThread,
       sendTurn,
       sendLiveInput,
@@ -7442,6 +7457,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       loadMoreProjectMembers,
       threads,
       unarchiveThread,
+      shareThread,
       visibleAgents,
       visibleThreads,
     ],

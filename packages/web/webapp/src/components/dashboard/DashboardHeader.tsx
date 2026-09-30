@@ -1,3 +1,4 @@
+import { useAuth } from "../../auth";
 import { ThreadListPrimitive } from "@assistant-ui/react";
 import { useConsoleStore } from "../../console-store";
 import { Icon } from "../Icon";
@@ -21,6 +22,7 @@ export function DashboardHeader({ onNavigate, settingsOpen = false }: { readonly
     selectionError,
     selectionLoading,
   } = useConsoleStore();
+  const { admin, multiUser, user } = useAuth();
   const draft = useSettingsDraft(selectedAgent?.sourceId ?? "");
   const saved = selectedAgent?.runSettings.override;
   const hasDraft = draft !== null && (draft.model !== (saved?.model ?? "") || draft.effort !== (saved?.effort ?? ""));
@@ -39,7 +41,8 @@ export function DashboardHeader({ onNavigate, settingsOpen = false }: { readonly
       </div>
       <div className="dashboard-header-actions">
         <NotificationBell />
-        <button
+        {multiUser && <button type="button" className="agent-settings-button" aria-label="Your profile" title={`${user?.displayName ?? "Account"} · Profile`} onClick={() => window.dispatchEvent(new Event("mono-agent:account"))}><Icon name="agent" size={16} /></button>}
+        {admin && <button
           type="button"
           className="agent-settings-button"
           aria-label="Agent settings"
@@ -54,7 +57,7 @@ export function DashboardHeader({ onNavigate, settingsOpen = false }: { readonly
         >
           <Icon name="settings" size={16} />
           {hasDraft && <span className="settings-dot" aria-hidden="true" />}
-        </button>
+        </button>}
         <ThreadListPrimitive.New
           className="new-thread-button"
           aria-label={creatingThread ? "Creating conversation" : "New conversation"}

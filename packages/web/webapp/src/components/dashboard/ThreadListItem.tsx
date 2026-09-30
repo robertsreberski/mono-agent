@@ -96,6 +96,7 @@ export function ThreadListItem({
             <span className="thread-title">
               <ThreadListItemPrimitive.Title fallback="Untitled conversation" />
             </span>
+            {thread.shared && <span className="shared-badge">Shared · {thread.creatorDisplayName ?? "Creator"}</span>}
             {unread && <i className="thread-unread" role="img" aria-label="Unread" />}
             {thread.wakeSchedule?.state === "active" && <span className="wake-indicator" role="img"
               aria-label="Active scheduled wake-up" title={`Scheduled wake-up: ${wakeStatusText(thread.wakeSchedule)}`}><Icon name="clock" size={14} /></span>}

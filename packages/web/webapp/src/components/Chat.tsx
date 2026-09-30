@@ -1,3 +1,4 @@
+import { useAuth } from "../auth";
 import { ConversationTags } from "./tag/ConversationTags";
 import { ProjectBadge } from "./project/ProjectIdentity";
 import { ThreadPrimitive, useAui, useAuiState } from "@assistant-ui/react";
@@ -233,6 +234,7 @@ function ConversationTitle() {
             : selectedThread?.title ?? "New conversation"}
       </button>
       {triggerBadge}
+      {selectedThread?.shared && <span className="shared-badge">Shared · {selectedThread.creatorDisplayName ?? "Creator"}</span>}
     </div>
   );
 }
@@ -353,6 +355,8 @@ function ProjectPickerItems({ threadId, sourceId, currentProjectId }: {
 }
 
 function ConversationActions() {
+  const { multiUser, user } = useAuth();
+  const [sharingBusy, setSharingBusy] = useState(false);
   // The conversation the schedule editor was opened for. A different selected
   // conversation closes it rather than silently retargeting the open editor.
   const [scheduleThreadId, setScheduleThreadId] = useState<string | null>(null);
@@ -362,6 +366,8 @@ function ConversationActions() {
     archiveThread,
     unarchiveThread,
     deleteThread,
+    shareThread,
+    detail,
     loadProjects,
     projectsByAgent,
     setThreadProject,
@@ -371,8 +377,10 @@ function ConversationActions() {
     if (scheduleThreadId !== null && scheduleThreadId !== selectedThreadId) setScheduleThreadId(null);
   }, [scheduleThreadId, selectedThreadId]);
   if (selectedThread === null) return null;
+  const creator = !multiUser || selectedThread.ownerUserId === user?.id;
+  const busy = selectedThread.runState.status === "running" || selectedThread.compaction?.status === "running" || detail?.messages.some((message) => message.liveInputStatus === "pending" || message.liveInputStatus === "queued") === true;
   const archived = selectedThread.archivedAt !== null;
-  const canDelete = archived
+  const canDelete = creator && (!multiUser || !busy) && archived
     && (selectedThread.trigger?.kind !== "cron" || selectedThread.trigger.configured === false);
   // Membership survives archiving (storage keeps it; the context still
   // reaches a restored member), so the menu says where the chat is either way.
@@ -464,7 +472,7 @@ function ConversationActions() {
                   return;
                 }
                 const confirmed = window.confirm(
-                  "Archive this conversation? Empty conversations will be permanently removed. Conversations with messages remain available in Archived.",
+                  creator ? "Archive this conversation? Empty conversations will be permanently removed. Conversations with messages remain available in Archived." : "Archive this conversation? It will remain available in Archived.",
                 );
                 if (confirmed) void archiveThread(selectedThread.id).catch(() => undefined);
               }}
@@ -472,6 +480,15 @@ function ConversationActions() {
               <Icon name={archived ? "restore" : "archive"} size={16} />
               <span>{archived ? "Restore conversation" : "Archive conversation"}</span>
             </Menu.Item>
+            {multiUser && creator && <Menu.Item className="conversation-menu-item" disabled={busy || sharingBusy} onClick={() => {
+              const sharing = !selectedThread.shared;
+              const confirmed = window.confirm(sharing
+                ? "Share with everyone allowed on this agent? The whole conversation history becomes visible. Follow-ups will be queued."
+                : "Make this conversation private again? Other participants lose access immediately, but content already viewed cannot be retracted.");
+              if (!confirmed) return;
+              setSharingBusy(true);
+              void shareThread(selectedThread.id, sharing).catch(() => undefined).finally(() => setSharingBusy(false));
+            }}><Icon name="agent" size={16} /><span>{selectedThread.shared ? "Make private" : "Share with everyone allowed on this agent"}</span></Menu.Item>}
             {canDelete && (
               <Menu.Item
                 className="conversation-menu-item is-danger"

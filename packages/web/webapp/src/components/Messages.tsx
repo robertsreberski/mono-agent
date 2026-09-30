@@ -1,3 +1,4 @@
+import { useAuth } from "../auth";
 import { ModelMarkers } from "./ModelMarkers";
 import { isConversationMarker } from "../conversation-markers";
 import { ProjectMarkers } from "./project/ProjectIdentity";
@@ -1280,6 +1281,8 @@ function RestartProposalPart({ data }: DataMessagePartProps) {
   const messageId = useAuiState((value) => value.message.id);
   const boundThreadId = useAuiState((value) => value.message.metadata.custom?.threadId);
   const { selectedThread, selectedAgent, activeThreads } = useConsoleStore();
+  const { admin } = useAuth();
+  if (!admin) return null;
   const threadId = typeof boundThreadId === "string" ? boundThreadId : selectedThread?.id ?? "";
   const sourceId = selectedThread?.id === threadId ? selectedThread.sourceId : "";
   const partId = typeof payload.id === "string" ? payload.id : "";
@@ -1465,9 +1468,12 @@ function AssistantParts() {
 }
 
 export function UserMessage() {
+  const { selectedThread } = useConsoleStore();
+  const sender = useAuiState((state) => state.message.metadata.custom?.sender) as { displayName?: string } | undefined;
   return (
     <>
     <MessagePrimitive.Root className="message message-user">
+      {selectedThread?.shared && sender?.displayName && <div className="message-sender">{sender.displayName}</div>}
       <MessageGallery>
         <div className="message-user-content">
           <UserMessageAttachments />

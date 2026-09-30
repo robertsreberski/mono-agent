@@ -1,3 +1,4 @@
+import { isMultiUser } from "./auth-state";
 import type { CronReplySnapshotKind } from "./types";
 
 const STORAGE_KEY = "mono-agent:web:cron-reply-recovery:v1";
@@ -45,6 +46,7 @@ const parseReference = (value: unknown): CronReplyRecoveryReference | undefined 
 };
 
 const readPersistedReferences = (): readonly CronReplyRecoveryReference[] => {
+  if (isMultiUser()) return [];
   try {
     const decoded = JSON.parse(sessionStorage.getItem(STORAGE_KEY) ?? "[]") as unknown;
     if (!Array.isArray(decoded)) return [];
@@ -58,6 +60,7 @@ const readPersistedReferences = (): readonly CronReplyRecoveryReference[] => {
 };
 
 const write = (references: readonly CronReplyRecoveryReference[]): void => {
+  if (isMultiUser()) return;
   try {
     if (references.length === 0) sessionStorage.removeItem(STORAGE_KEY);
     else sessionStorage.setItem(

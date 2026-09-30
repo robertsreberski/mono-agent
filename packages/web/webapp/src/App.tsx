@@ -7,6 +7,8 @@ import {
   useRef,
   useState,
 } from "react";
+import { useAuth } from "./auth";
+import { AccountPanel } from "./components/AccountPanel";
 import { AgentSettingsScreen } from "./components/agent-settings/AgentSettingsScreen";
 import { mobileHistoryEntry, ownedSettingsEntry, pushMobileHistoryEntry, replaceMobileHistoryEntry, routeWriteState, type MobileScreen, type SettingsSection } from "./mobile-history";
 import { closeSettingsHistory, parseSettingsParam, pushSettingsEntries, stripSettingsParam } from "./settings-navigation";
@@ -181,6 +183,7 @@ function CommandPalette({ open, onClose }: { readonly open: boolean; readonly on
 }
 
 function OpenCommandPalette({ onClose }: { readonly onClose: () => void }) {
+  const { admin } = useAuth();
   const store = useConsoleStore();
   const dataModeSetting = useDataModeSetting();
   const dataMode = useDataMode();
@@ -290,7 +293,7 @@ function OpenCommandPalette({ onClose }: { readonly onClose: () => void }) {
     [dataMode, dataModeSetting, dataUsage.bytes, dataUsage.measured, store],
   );
   const normalized = query.trim().toLowerCase();
-  const visible = actions.filter((action) => action.label.toLowerCase().includes(normalized));
+  const visible = actions.filter((action) => (admin || (action.id !== "agent-settings" && action.id !== "pin-agent")) && action.label.toLowerCase().includes(normalized));
 
   return (
     <div className="dialog-layer" role="presentation" onMouseDown={onClose}>
@@ -376,6 +379,8 @@ function FatalError() {
 }
 
 export function App() {
+  const { admin, multiUser } = useAuth();
+  const [accountOpen, setAccountOpen] = useState(false);
   const {
     loading,
     bootstrap,
@@ -395,12 +400,13 @@ export function App() {
   const [mobile, setMobile] = useState(isMobileViewport);
   const [palette, setPalette] = useState(false);
   const [settings, setSettings] = useState<{ readonly section: SettingsSection | null; readonly intent?: number } | null>(() => {
+    if (!admin) return null;
     const owned = ownedSettingsEntry();
     if (owned !== null) return { section: owned.section };
     const requested = parseSettingsParam(window.location.href);
     return requested === undefined ? null : { section: requested };
   });
-  const settingsOpen = settings !== null;
+  const settingsOpen = admin && settings !== null;
   const [tagSettings, setTagSettings] = useState<TagSettingsState | null>(null);
   const tagSettingsRef = useRef<HTMLElement>(null);
   const closeTagSettings = useCallback(() => setTagSettings(null), []);
@@ -682,6 +688,7 @@ export function App() {
       if (detail?.message) setNotice(detail.message);
     };
     const onAgentSettings = (event: Event) => {
+      if (!admin) return;
       const requested = (event as CustomEvent<{ section?: SettingsSection }>).detail?.section;
       const section = requested === "providers" || requested === "agent" || requested === "new-conversations" ? requested : null;
       if (settings === null && document.activeElement instanceof HTMLElement) settingsInvokerRef.current = document.activeElement;
@@ -708,19 +715,22 @@ export function App() {
       if (detail === undefined) return;
       setProjectSettings(detail);
     };
+    const onAccount = () => { if (multiUser) setAccountOpen(true); };
+    window.addEventListener("mono-agent:account", onAccount);
     window.addEventListener("mono-agent:command", onCommand);
     window.addEventListener("mono-agent:notice", onNotice);
     window.addEventListener("mono-agent:agent-settings", onAgentSettings);
     window.addEventListener("mono-agent:tag-settings", onTagSettings);
     window.addEventListener("mono-agent:project-settings", onProjectSettings);
     return () => {
+      window.removeEventListener("mono-agent:account", onAccount);
       window.removeEventListener("mono-agent:command", onCommand);
       window.removeEventListener("mono-agent:notice", onNotice);
       window.removeEventListener("mono-agent:agent-settings", onAgentSettings);
       window.removeEventListener("mono-agent:tag-settings", onTagSettings);
       window.removeEventListener("mono-agent:project-settings", onProjectSettings);
     };
-  }, [closeAgentSettings, settings, togglePalette]);
+  }, [admin, multiUser, closeAgentSettings, settings, togglePalette]);
 
   useEffect(() => {
     if (!notice && !actionError) return;
@@ -909,7 +919,7 @@ export function App() {
             {hasServerSnapshot
               ? error
               // The one thing the message itself cannot say.
-              : `${error} Showing what this browser had stored.`}
+              : multiUser ? error : `${error} Showing what this browser had stored.`}
           </span>
           <button type="button" className="console-error-retry" onClick={retry}>Try again</button>
           <button type="button" aria-label="Dismiss error" onClick={clearError}>
@@ -967,7 +977,8 @@ export function App() {
         </div>
       )}
       <CommandPalette open={palette} onClose={closePalette} />
-      {settings !== null && <div className="settings-region"><AgentSettingsScreen section={settings.section} intent={settings.intent ?? 0} layout={mobile ? "stacked" : "split"} onClose={closeAgentSettings} onNotice={setNotice} /></div>}
+      {accountOpen && <AccountPanel onClose={() => setAccountOpen(false)} />}
+      {admin && settings !== null && <div className="settings-region"><AgentSettingsScreen section={settings.section} intent={settings.intent ?? 0} layout={mobile ? "stacked" : "split"} onClose={closeAgentSettings} onNotice={setNotice} /></div>}
       <TagSettingsSheet sheet={tagSettings} onClose={closeTagSettings} dialogRef={tagSettingsRef} />
       <ProjectSettingsSheet sheet={projectSettings} onClose={closeProjectSettings} dialogRef={projectSettingsRef} />
       {(notice || actionError) && (

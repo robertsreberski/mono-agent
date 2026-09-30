@@ -90,7 +90,7 @@ const resultNotice = (message: string): void => {
   window.dispatchEvent(new CustomEvent("mono-agent:notice", { detail: { message } }));
 };
 
-export function CronChannelHeader() {
+export function CronChannelHeader({ controlJob }: { readonly controlJob?: CronJob } = {}) {
   const {
     selectedAgent,
     selectedThread,
@@ -100,13 +100,13 @@ export function CronChannelHeader() {
     connection,
     refreshCron,
   } = useConsoleStore();
-  const jobId = selectedThread?.trigger?.kind === "cron"
+  const jobId = controlJob?.jobId ?? (selectedThread?.trigger?.kind === "cron"
     ? selectedThread.trigger.jobId
-    : undefined;
+    : undefined);
   const job = useMemo(
-    () => cronOverview?.jobs.find((candidate) => candidate.jobId === jobId
+    () => controlJob ?? cronOverview?.jobs.find((candidate) => candidate.jobId === jobId
       && candidate.threadId === selectedThread?.id),
-    [cronOverview?.jobs, jobId, selectedThread?.id],
+    [controlJob, cronOverview?.jobs, jobId, selectedThread?.id],
   );
   const [pending, setPending] = useState<PendingConfirmation>();
   const [configView, setConfigView] = useState<ChannelConfigView>();
@@ -122,7 +122,7 @@ export function CronChannelHeader() {
     setError(undefined);
   }, [jobId, selectedAgent?.sourceId]);
 
-  if (selectedThread?.trigger?.kind !== "cron") return null;
+  if (controlJob === undefined && selectedThread?.trigger?.kind !== "cron") return null;
 
   const sourceId = selectedAgent?.sourceId;
   const online = connection === "live" && selectedAgent?.status !== "offline";
@@ -284,7 +284,7 @@ export function CronChannelHeader() {
             <div>
               <dt>Last run</dt>
               <dd title={job?.lastRun?.orderedAt}>
-                {job?.lastRun === undefined ? "Unknown" : (
+                {job?.resultsPrivate ? "Private results" : job?.lastRun === undefined ? "Unknown" : (
                   <a href={`#${cronRunAnchor(job.lastRun.runId)}`}>{displayTime(job.lastRun.orderedAt)}</a>
                 )}
               </dd>

@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { registerSW } from "virtual:pwa-register";
 import { App } from "./App";
+import { AuthGate, useAuth } from "./auth";
 import { RenderErrorBoundary, RootErrorFallback } from "./components/RenderErrorBoundary";
 import { ConsoleStoreProvider } from "./console-store";
 import { observeTransferredResources } from "./data-usage";
@@ -19,19 +20,19 @@ registerServiceWorkerUpdates(registerSW);
 // than on import so nothing but the real app ever gets an observer.
 observeTransferredResources();
 
+function ConsoleProviders() {
+  const { multiUser } = useAuth();
+  const runtime = <WebRuntimeProvider><App /></WebRuntimeProvider>;
+  return <ConsoleStoreProvider>{multiUser ? runtime : <NotificationsProvider>{runtime}</NotificationsProvider>}</ConsoleStoreProvider>;
+}
+
 createRoot(document.getElementById("root")!).render(
   <RenderErrorBoundary
     scope="console"
     fallback={() => <RootErrorFallback />}
   >
     <StrictMode>
-      <ConsoleStoreProvider>
-        <NotificationsProvider>
-          <WebRuntimeProvider>
-            <App />
-          </WebRuntimeProvider>
-        </NotificationsProvider>
-      </ConsoleStoreProvider>
+      <AuthGate><ConsoleProviders /></AuthGate>
     </StrictMode>
   </RenderErrorBoundary>,
 );

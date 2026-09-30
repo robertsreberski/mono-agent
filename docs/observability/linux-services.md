@@ -82,7 +82,7 @@ For Tailscale Serve, start with loopback binding and set
 `MONO_AGENT_WEB_ALLOWED_HOSTS` to the full Tailscale DNS hostname when installing
 the web service. Then configure Serve to proxy to `http://127.0.0.1:5050`.
 Mono preserves external routes during start, restart, stop, and reset; use
-`tailscale serve status` to inspect them. The console has no application login:
+`tailscale serve status` to inspect them. The console has no application login by default:
 keep access restricted to trusted devices. See [Web console](./web-console.md).
 
 ## Scope and migration
