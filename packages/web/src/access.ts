@@ -25,10 +25,14 @@ export function webThreadVisible(principal: WebUser, thread: WebThreadAccess): b
  * authenticate before entering it; deferred dispatch must revalidate its actor.
  */
 export class WebAccessContext {
-  private readonly context = new AsyncLocalStorage<WebUser | undefined>();
+  private readonly context = new AsyncLocalStorage<{ readonly principal?: WebUser; readonly externalSourceId?: string } | undefined>();
 
-  current(): WebUser | undefined { return this.context.getStore(); }
-  run<T>(principal: WebUser, operation: () => T): T { return this.context.run(principal, operation); }
+  current(): WebUser | undefined { return this.context.getStore()?.principal; }
+  isScoped(): boolean { return this.context.getStore() !== undefined; }
+  isExternal(): boolean { return this.context.getStore()?.externalSourceId !== undefined; }
+  run<T>(principal: WebUser, operation: () => T): T { return this.context.run({ principal }, operation); }
+  /** An unmapped channel capability can reach its shared source, never web threads. */
+  external<T>(sourceId: string, operation: () => T): T { return this.context.run({ externalSourceId: sourceId }, operation); }
   internal<T>(operation: () => T): T { return this.context.run(undefined, operation); }
   requirePrincipal(): WebUser {
     const principal = this.current();
@@ -41,18 +45,21 @@ export class WebAccessContext {
     return principal;
   }
   agentAllowed(sourceId: string): boolean {
+    const external = this.context.getStore()?.externalSourceId;
+    if (external !== undefined) return external === sourceId;
     const principal = this.current();
     return principal === undefined || webAgentAllowed(principal, sourceId);
   }
   threadVisible(thread: WebThreadAccess): boolean {
+    if (this.isExternal()) return false;
     const principal = this.current();
     return principal === undefined || webThreadVisible(principal, thread);
   }
   /** Source-owned aliases only. Scalar functions read this request's scope. */
   agentSql(alias: string): string {
-    return this.current() === undefined ? "" : ` AND web_agent_allowed(${alias}.source_id) = 1`;
+    return !this.isScoped() ? "" : ` AND web_agent_allowed(${alias}.source_id) = 1`;
   }
   threadSql(alias: string): string {
-    return this.current() === undefined ? "" : ` AND web_thread_visible(${alias}.source_id, ${alias}.owner_user_id, ${alias}.shared) = 1`;
+    return !this.isScoped() ? "" : ` AND web_thread_visible(${alias}.source_id, ${alias}.owner_user_id, ${alias}.shared) = 1`;
   }
 }

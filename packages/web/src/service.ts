@@ -962,7 +962,23 @@ export class WebService {
    */
   private readonly consoleToolTurns = new Set<string>();
 
+  private withConsoleToolAccess<T>(scope: ConsoleToolScope, operation: () => T): T {
+    if (this.options.multiUser !== true) return operation();
+    if (scope.kind === "external") return this.store.access.external(scope.sourceId, operation);
+    const actor = this.store.turnWebActor(scope.turnId);
+    if (actor === undefined) throw new WebConsoleError("console_tool_revoked", "The originating turn is no longer writable.", 403);
+    const principal = this.store.auth.getUser(actor.sender.id);
+    if (principal.disabled || principal.role !== actor.role) {
+      throw new WebConsoleError("console_tool_revoked", "The originating turn is no longer writable.", 403);
+    }
+    return this.store.access.run(principal, operation);
+  }
+
   assertConsoleToolTurn(scope: ConsoleToolScope): void {
+    this.withConsoleToolAccess(scope, () => this.assertScopedConsoleToolTurn(scope));
+  }
+
+  private assertScopedConsoleToolTurn(scope: ConsoleToolScope): void {
     if (scope.kind === "external") {
       this.assertExternalToolScope(scope);
       return;
@@ -1014,7 +1030,11 @@ export class WebService {
   }
 
   consoleToolOperation(scope: ConsoleToolScope, operation: ConsoleToolOperation): Record<string, unknown> {
-    this.assertConsoleToolTurn(scope);
+    return this.withConsoleToolAccess(scope, () => this.scopedConsoleToolOperation(scope, operation));
+  }
+
+  private scopedConsoleToolOperation(scope: ConsoleToolScope, operation: ConsoleToolOperation): Record<string, unknown> {
+    this.assertScopedConsoleToolTurn(scope);
     const commit = this.store.consoleToolOperation(scope, operation);
     for (const id of commit.threads) {
       const thread = this.store.getThread(id);

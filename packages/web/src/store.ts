@@ -1841,7 +1841,7 @@ export class WebStore {
   }
 
   private requireVisibleCronChannel(sourceId: string, jobId: string): void {
-    if (this.access.current() !== undefined && this.cronThread(sourceId, jobId) === undefined) {
+    if (this.access.isScoped() && this.cronThread(sourceId, jobId) === undefined) {
       throw new WebConsoleError("cron_job_not_found", "Cron job not found for this agent.", 404);
     }
   }
@@ -2856,6 +2856,7 @@ export class WebStore {
   }
 
   createThread(sourceId: string, explicit: CreateStoredThreadInput = {}): WebThread {
+    if (this.access.isExternal()) throw new WebConsoleError("console_tool_unavailable", "Web conversations require an authenticated web actor.", 403);
     const agent = this.getAgent(sourceId);
     if (agent === undefined) {
       throw new WebConsoleError("agent_not_found", "The selected agent is no longer available.", 404);
@@ -3219,7 +3220,7 @@ export class WebStore {
 
   getMessage(id: string): WebMessage | undefined {
     const row = this.database.prepare(`SELECT * FROM messages WHERE id = ? AND ${visibleMessageSql("messages")}
-      ${this.access.current() === undefined ? "" : `AND EXISTS (SELECT 1 FROM threads t WHERE t.id = messages.thread_id ${this.access.threadSql("t")})`}`)
+      ${!this.access.isScoped() ? "" : `AND EXISTS (SELECT 1 FROM threads t WHERE t.id = messages.thread_id ${this.access.threadSql("t")})`}`)
       .get(id) as unknown as MessageRow | undefined;
     return row === undefined ? undefined : this.mapMessage(row);
   }
@@ -3515,7 +3516,7 @@ export class WebStore {
     return this.transaction(() => {
       this.requireTagForAgent(id);
       const members = this.database.prepare("SELECT thread_id FROM thread_tags WHERE tag_id = ?").all(id) as Array<{ thread_id: string }>;
-      const visible = this.access.current() === undefined ? members.map((row) => ({ id: row.thread_id }))
+      const visible = !this.access.isScoped() ? members.map((row) => ({ id: row.thread_id }))
         : this.database.prepare(`SELECT t.id FROM threads t JOIN thread_tags tt ON tt.thread_id = t.id
           WHERE tt.tag_id = ? ${this.access.threadSql("t")}`).all(id) as Array<{ id: string }>;
       // Definition deletion is agent-shared. Detach all members internally, but
@@ -3613,7 +3614,7 @@ export class WebStore {
       const members = (this.database.prepare(`
         SELECT id FROM threads WHERE project_id = ? ORDER BY updated_at ASC, id ASC
       `).all(id) as Array<{ id: string }>).map((member) => member.id);
-      const visible = this.access.current() === undefined ? members
+      const visible = !this.access.isScoped() ? members
         : (this.database.prepare(`SELECT t.id FROM threads t WHERE t.project_id = ? ${this.access.threadSql("t")}`)
           .all(id) as Array<{ id: string }>).map((member) => member.id);
       if (this.database.prepare(`
@@ -3878,10 +3879,22 @@ export class WebStore {
    * a repeated read answers from current state, and a read never writes.
    */
   consoleToolOperation(scope: ConsoleToolScope, operation: ConsoleToolOperation): ConsoleToolCommit {
+    if (this.access.isExternal() && operation.tool === "CreateConversation") {
+      throw new WebConsoleError("console_tool_unavailable", "Web conversations require an authenticated web actor.", 403);
+    }
+    const principal = this.access.current();
+    if (principal !== undefined && scope.kind !== "external") {
+      const actor = this.turnWebActor(scope.turnId);
+      const current = this.auth.getUser(principal.id);
+      if (current.disabled || current.version !== principal.version || actor?.sender.id !== principal.id || actor.role !== principal.role) {
+        throw new WebConsoleError("console_tool_revoked", "The originating turn is no longer writable.", 403);
+      }
+    }
     if (!/^[a-zA-Z0-9-]{16,128}$/u.test(operation.operationId)) throw new WebConsoleError("invalid_operation", "Invalid operation identity.", 400);
     const readOnly = CONSOLE_READ_TOOL_NAMES.has(operation.tool);
     const canonicalArgs = Object.fromEntries(Object.entries(operation.args).sort(([a], [b]) => a.localeCompare(b)));
-    const hash = createHash("sha256").update(JSON.stringify({ ...scope, tool: operation.tool, args: canonicalArgs })).digest("hex");
+    const hash = createHash("sha256").update(JSON.stringify({ ...scope, tool: operation.tool, args: canonicalArgs,
+      ...(principal === undefined ? (this.access.isExternal() ? { unmappedExternal: true } : {}) : { actor: { id: principal.id, role: principal.role } }) })).digest("hex");
     if (scope.kind === "external") {
       // A channel turn has no web thread or turn row; its receipt is keyed by
       // the owning process's turn identity instead of fabricating either.
@@ -3892,7 +3905,7 @@ export class WebStore {
           .get(operation.operationId) as { payload_sha256: string; result_json: string } | undefined;
         if (prior !== undefined) {
           if (prior.payload_sha256 !== hash) throw new WebConsoleError("operation_conflict", "Operation identity was reused with a different request.", 409);
-          return { result: JSON.parse(prior.result_json), projects: [], threads: [], deletedProjects: [], tags: [], deletedTags: [] };
+          return { result: this.projectConsoleToolReceipt(scope, JSON.parse(prior.result_json)), projects: [], threads: [], deletedProjects: [], tags: [], deletedTags: [] };
         }
         const commit = executeConsoleTool(this, scope, operation);
         const now = this.now();
@@ -3912,13 +3925,36 @@ export class WebStore {
         .get(operation.operationId) as { payload_sha256: string; result_json: string } | undefined;
       if (prior !== undefined) {
         if (prior.payload_sha256 !== hash) throw new WebConsoleError("operation_conflict", "Operation identity was reused with a different request.", 409);
-        return { result: JSON.parse(prior.result_json), projects: [], threads: [], deletedProjects: [], tags: [], deletedTags: [] };
+        return { result: this.projectConsoleToolReceipt(scope, JSON.parse(prior.result_json)), projects: [], threads: [], deletedProjects: [], tags: [], deletedTags: [] };
       }
       const commit = executeConsoleTool(this, scope, operation);
       this.database.prepare("INSERT INTO console_tool_operations(operation_id, thread_id, turn_id, payload_sha256, result_json) VALUES (?, ?, ?, ?, ?)")
         .run(operation.operationId, scope.threadId, scope.turnId, hash, JSON.stringify(commit.result));
       return commit;
     });
+  }
+
+  /** Receipt identity is not an access grant; project against current visibility. */
+  private projectConsoleToolReceipt(scope: ConsoleToolScope, value: unknown): Record<string, unknown> {
+    const result = record(value);
+    if (result === undefined) throw new WebConsoleError("storage_corrupt", "Stored console receipt is invalid.", 500);
+    if (!this.access.isScoped()) return result;
+    const attachment = record(result.attachment);
+    for (const id of [result.conversationId, attachment?.conversationId]) {
+      if (typeof id !== "string") continue;
+      const thread = this.getThread(id);
+      const external = thread === undefined ? this.getExternalConversation(id) : undefined;
+      if ((thread === undefined && external === undefined) || (thread ?? external)?.sourceId !== scope.sourceId) {
+        throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+      }
+    }
+    const cachedProject = record(result.project);
+    if (typeof cachedProject?.id === "string") {
+      const project = this.getProject(cachedProject.id);
+      if (project === undefined || project.sourceId !== scope.sourceId) throw new WebConsoleError("project_not_found", "Project not found.", 404);
+      return { ...result, project };
+    }
+    return result;
   }
 
   /** A read signal is not conversation activity: neither recency nor transcript revisions move. */
@@ -4411,6 +4447,7 @@ export class WebStore {
   }
 
   createUpload(input: CreateStoredUploadInput): StoredAttachment {
+    if (this.access.isExternal()) throw new WebConsoleError("console_tool_unavailable", "Uploads require an authenticated web actor.", 403);
     const id = randomUUID();
     const now = this.now();
     const storageName = `${id}.bin`;
@@ -4435,6 +4472,7 @@ export class WebStore {
   }
 
   getStoredAttachment(id: string): StoredAttachment | undefined {
+    if (this.access.isExternal()) return undefined;
     const row = this.database.prepare("SELECT * FROM attachments WHERE id = ?").get(id) as unknown as AttachmentRow | undefined;
     const principal = this.access.current();
     if (row === undefined) return undefined;
@@ -4570,6 +4608,12 @@ export class WebStore {
     return removed;
   }
 
+  /** Trusted capability binding; callers must subsequently enter/recheck actor access. */
+  turnWebActor(turnId: string): OperatorWebActor | undefined {
+    const row = this.database.prepare("SELECT web_actor_json FROM turns WHERE id = ?").get(turnId) as { web_actor_json: string | null } | undefined;
+    return row === undefined ? undefined : parseStoredWebActor(row.web_actor_json);
+  }
+
   beginTurn(input: BeginStoredTurnInput): BeginStoredTurnResult {
     const threadId = this.resolveThreadId(input.threadId);
     const thread = this.requireThread(threadId);
@@ -4630,8 +4674,8 @@ export class WebStore {
       this.database.prepare(`
         INSERT INTO turns (
           id, thread_id, status, text, model, effort, requested_model, requested_effort, assistant_message_id,
-          started_at, finished_at, error_code, error_message
-        ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+          started_at, finished_at, error_code, error_message, web_actor_json
+        ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)
       `).run(
         turnId,
         threadId,
@@ -4642,6 +4686,7 @@ export class WebStore {
         input.requestedEffort ?? null,
         assistantMessageId,
         now,
+        this.access.current() === undefined ? null : JSON.stringify(webActorForUser(this.access.requirePrincipal())),
       );
 
       const userParts: WebMessagePart[] = [
@@ -4651,9 +4696,10 @@ export class WebStore {
         ...(input.text.length === 0 ? [] : [{ type: "text" as const, text: input.text }]),
       ];
       this.database.prepare(`
-        INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
-        VALUES (?, ?, ?, 'user', ?, ?, ?, 'complete')
-      `).run(userMessageId, threadId, turnId, serializeParts(userParts), now, now);
+        INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status, web_actor_json)
+        VALUES (?, ?, ?, 'user', ?, ?, ?, 'complete', ?)
+      `).run(userMessageId, threadId, turnId, serializeParts(userParts), now, now,
+        this.access.current() === undefined ? null : JSON.stringify(webActorForUser(this.access.requirePrincipal())));
       this.database.prepare(`
         INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
         VALUES (?, ?, ?, 'assistant', '[]', ?, ?, 'running')
@@ -7620,6 +7666,7 @@ export class WebStore {
   }
 
   private requireCronReplyAccess(row: CronReplyOperationRow): void {
+    if (this.access.isExternal()) throw new WebConsoleError("cron_reply_operation_not_found", "Cron reply operation not found.", 404);
     const principal = this.access.current();
     if (principal === undefined) return;
     const actor = parseStoredWebActor(row.web_actor_json);

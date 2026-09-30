@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Bind web console tools and receipt replay to their initiating account's current
+  access, and keep unmapped channel capabilities away from web conversations.
+
 - Keep opted-in web cron definitions and controls available to granted users
   without disclosing private results, and bind imported Reply conversations and
   replay receipts to their authenticated requester.
