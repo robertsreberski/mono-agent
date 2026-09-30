@@ -76,6 +76,9 @@ export function installWebAuthentication(app: Express, store: WebStore, options:
   const loginPath = "/api/v1/auth/login";
   app.use("/api", (req, res, next) => {
     if (!options.enabled) { next(); return; }
+    // Byte and SSE handlers also set cache headers; retain the authenticated
+    // mode across those later helpers instead of reverting to legacy caching.
+    res.locals.webMultiUser = true;
     res.setHeader("Cache-Control", "private, no-store, max-age=0");
     if ((req.originalUrl.split("?")[0] === statusPath && req.method === "GET")
       || (req.originalUrl.split("?")[0] === loginPath && req.method === "POST")) { next(); return; }

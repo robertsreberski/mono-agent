@@ -34,6 +34,11 @@ async function fixture(options: { enabled?: boolean; publicOrigin?: (host: strin
     res.json({ principal: store.access.current()?.id ?? null });
   });
   app.post("/api/v1/private", (_req, res) => res.json({ principal: store.access.current()?.id ?? null }));
+  app.get("/api/v1/cache-overwrite", (_req, res) => {
+    // Mirrors the later byte/SSE helpers overriding the gateway header.
+    res.setHeader("Cache-Control", res.locals.webMultiUser === true ? "private, no-store, no-transform" : "private, max-age=31536000, immutable");
+    res.end("fictional bytes");
+  });
   app.use((_req, res) => res.status(404).json({ error: "not_found" }));
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
     res.status(error instanceof WebConsoleError ? error.status : 400).json({ error: error instanceof WebConsoleError ? error.code : "invalid_json" });
@@ -66,6 +71,16 @@ describe("web HTTP authentication boundary", () => {
     expect(malformed.status).toBe(401);
     expect(await malformed.json()).toEqual({ error: "authentication_required" });
     expect((await request("/api/v1/unknown")).status).toBe(401);
+  });
+
+  it("keeps no-store through later byte/SSE header writers without changing mode-off caching", async () => {
+    const scoped = await fixture();
+    const cookie = await scoped.login("Avery");
+    const protectedResponse = await scoped.request("/api/v1/cache-overwrite", { headers: { Cookie: cookie } });
+    expect(protectedResponse.headers.get("cache-control")).toBe("private, no-store, no-transform");
+    const legacy = await fixture({ enabled: false });
+    const legacyResponse = await legacy.request("/api/v1/cache-overwrite");
+    expect(legacyResponse.headers.get("cache-control")).toBe("private, max-age=31536000, immutable");
   });
 
   it("sets HttpOnly SameSite cookies, isolates async principals and rejects duplicate cookies", async () => {

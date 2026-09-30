@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Keep multi-user attachment downloads and event streams out of browser caches.
+
 - Bind web console tools and receipt replay to their initiating account's current
   access, and keep unmapped channel capabilities away from web conversations.
 
