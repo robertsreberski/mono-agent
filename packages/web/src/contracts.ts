@@ -841,6 +841,8 @@ export interface WebAttachment {
 }
 
 export interface WebMessage {
+  /** Authenticated human snapshot; omitted for automation and legacy-mode projections. */
+  readonly sender?: { readonly id: string; readonly displayName: string; readonly handle?: string };
   readonly id: string;
   readonly threadId: string;
   readonly turnId?: string;

@@ -2361,6 +2361,23 @@ export class WebService {
     }
   }
 
+  private requireHumanActorSupport(sourceId: string): void {
+    if (this.options.multiUser !== true) return;
+    this.recheckBrowserAccess();
+    this.store.access.requirePrincipal();
+    if (this.connections.get(sourceId)?.info.webActor?.version !== 1) {
+      throw new WebConsoleError("web_actor_unsupported", "This agent is read-only until it supports authenticated web actors.", 409);
+    }
+  }
+
+  private canHumanSteer(thread: WebThread, turnId: string): boolean {
+    if (this.options.multiUser !== true) return true;
+    if (thread.shared === true) return false;
+    const principal = this.store.access.requirePrincipal();
+    const actor = this.store.turnWebActor(turnId);
+    return actor?.sender.id === principal.id && actor.role === principal.role;
+  }
+
   async startTurn(threadId: string, input: StartWebTurnInput): Promise<{ readonly thread: WebThread; readonly turn: WebThread["runState"] }> {
     const text = input.text ?? "";
     const quotedText = input.quote === undefined ? text : formatQuotedTurn(input.quote.text, text);
@@ -2378,6 +2395,7 @@ export class WebService {
     if (connection === undefined || !thread.canSend) {
       throw new WebConsoleError("agent_offline", "This agent is offline. The conversation remains available read-only.", 409);
     }
+    this.requireHumanActorSupport(thread.sourceId);
     const started = this.store.beginTurn({
       threadId,
       text,
@@ -2409,6 +2427,7 @@ export class WebService {
     if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
     threadId = thread.id;
     if (this.activeCompactions.has(threadId)) throw new WebConsoleError("compaction_busy", "Wait for compaction to finish.", 409);
+    this.requireHumanActorSupport(thread.sourceId);
     const text = input.text ?? "";
     const attachmentIds = input.attachmentIds ?? [];
     const quotedText = input.quote === undefined ? text : formatQuotedTurn(input.quote.text, text);
@@ -2421,6 +2440,7 @@ export class WebService {
       attachmentIds,
       model: input.model ?? null,
       effort: input.effort ?? null,
+      ...(this.options.multiUser !== true ? {} : { actor: { id: this.store.access.requirePrincipal().id, role: this.store.access.requirePrincipal().role } }),
     })).digest("hex");
     const existing = this.store.webSubmission(threadId, input.submissionId);
     if (existing !== undefined) {
@@ -2439,7 +2459,7 @@ export class WebService {
     let reserved: ReturnType<WebStore["reserveLiveInput"]> | undefined;
     const activeTurnId = this.store.activeTurn(threadId)?.id;
     const activeTarget = activeTurnId === undefined ? undefined : this.activeTurns.get(threadId);
-    const ownsActiveTarget = activeTarget?.turnId === activeTurnId;
+    const ownsActiveTarget = activeTarget?.turnId === activeTurnId && activeTurnId !== undefined && this.canHumanSteer(thread, activeTurnId);
     const claimed = this.store.claimWebSubmission({
       threadId,
       submissionId: input.submissionId,
@@ -2524,13 +2544,14 @@ export class WebService {
     const thread = this.store.getThread(threadId);
     if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
     threadId = thread.id;
+    this.requireHumanActorSupport(thread.sourceId);
     const connection = this.connections.get(thread.sourceId);
     const active = this.activeTurns.get(threadId);
     const reserved = this.store.reserveLiveInput(threadId, text);
     this.emit("message.changed", threadId, { messageId: reserved.message.id, updatedAt: reserved.message.updatedAt });
     this.emitThread("threads.changed", { thread: reserved.thread });
 
-    if (!reserved.offered || active === undefined || connection === undefined || !connection.info.supportsLiveInput) {
+    if (!reserved.offered || active === undefined || connection === undefined || !connection.info.supportsLiveInput || !this.canHumanSteer(thread, active.turnId)) {
       const queued = reserved.offered ? this.store.queueLiveInput(reserved.input.id) ?? reserved.message : reserved.message;
       this.emit("message.changed", threadId, { messageId: queued.id, updatedAt: queued.updatedAt });
       void this.drainQueuedLiveInputs(threadId);
@@ -2799,12 +2820,26 @@ export class WebService {
       // capability as a typed turn: an agent reacting to finished background work
       // is exactly when filing or moving the conversation is useful. Cron and
       // webhook channels stay excluded here and in `assertConsoleToolTurn`.
-      const consoleTools = started.thread.trigger === undefined;
+      const actor = this.options.multiUser === true ? this.store.turnWebActor(started.turnId) : undefined;
+      const human = "userMessageId" in started && hostWakeDeliveryKey === undefined && !scheduledWake;
+      if (this.options.multiUser === true && human) {
+        const connection = this.connections.get(started.thread.sourceId);
+        if (actor === undefined || connection?.client !== client || connection.info.webActor?.version !== 1) {
+          throw new WebConsoleError("web_actor_unsupported", "Authenticated human dispatch is unavailable.", 409);
+        }
+        const principal = this.store.auth.getUser(actor.sender.id);
+        if (principal.disabled || principal.role !== actor.role
+          || this.store.access.run(principal, () => this.store.getThread(started.thread.id)) === undefined) {
+          throw new WebConsoleError("actor_access_revoked", "The initiating account no longer has access to this conversation.", 403);
+        }
+      }
+      const consoleTools = started.thread.trigger === undefined && (this.options.multiUser !== true || actor !== undefined);
       if (consoleTools) this.consoleToolTurns.add(started.turnId);
       this.store.markTurnDispatchStarted(started.turnId, this.clientProcessGeneration.get(client));
       let response;
       try {
         response = await client.turn({
+        ...(human && actor !== undefined ? { webActor: actor } : {}),
         conversationId: started.conversationId,
         text: operatorText,
         attachments,
@@ -2926,7 +2961,7 @@ export class WebService {
     const controller = new AbortController();
     let resolveAdmitted!: (admitted: boolean) => void;
     const admitted = new Promise<boolean>((resolve) => { resolveAdmitted = resolve; });
-    const completion = this.runTurn(
+    const completion = this.store.access.internal(() => this.runTurn(
       started,
       client,
       controller,
@@ -2935,7 +2970,7 @@ export class WebService {
       () => { resolveAdmitted(true); },
       scheduledWake,
       ownerText,
-    ).finally(() => {
+    )).finally(() => {
       // Inert once admission already resolved; the turn settled without the
       // operator ever returning a stream when it did not.
       resolveAdmitted(false);
@@ -3000,11 +3035,25 @@ export class WebService {
     };
   }
 
+  private liveActorStillAllowed(id: string, threadId: string, turnId: string): boolean {
+    if (this.options.multiUser !== true) return true;
+    const actor = this.store.storedLiveInput(id)?.webActor;
+    if (actor === undefined) return false;
+    const principal = this.store.auth.getUser(actor.sender.id);
+    if (principal.disabled || principal.role !== actor.role) return false;
+    return this.store.access.run(principal, () => {
+      const thread = this.store.getThread(threadId);
+      const origin = this.store.turnWebActor(turnId);
+      return thread !== undefined && thread.shared !== true && origin?.sender.id === actor.sender.id && origin.role === actor.role;
+    });
+  }
+
   private async dispatchTargetedSubmission(submission: StoredWebSubmission, active: ActiveTurn): Promise<void> {
     if (submission.inputId === undefined || submission.messageId === undefined || submission.turnId === undefined) return;
     await active.admitted;
     if (this.activeTurns.get(submission.threadId) !== active
-      || this.store.activeTurn(submission.threadId)?.id !== submission.turnId) {
+      || this.store.activeTurn(submission.threadId)?.id !== submission.turnId
+      || !this.liveActorStillAllowed(submission.inputId, submission.threadId, submission.turnId)) {
       const queued = this.store.queueLiveInput(submission.inputId, "closed_before_dispatch");
       if (queued !== undefined) {
         this.emit("message.changed", submission.threadId, { messageId: queued.id, updatedAt: queued.updatedAt });
@@ -3100,7 +3149,11 @@ export class WebService {
     if (queued && !this.stopped) await this.drainQueuedLiveInputs(threadId);
   }
 
-  private async drainQueuedLiveInputs(threadId: string): Promise<void> {
+  private drainQueuedLiveInputs(threadId: string): Promise<void> {
+    return this.store.access.internal(() => this.drainQueuedLiveInputsInternal(threadId));
+  }
+
+  private async drainQueuedLiveInputsInternal(threadId: string): Promise<void> {
     if (this.stopped
       || this.activeTurns.has(threadId)
       || this.activeCompactions.has(threadId)
@@ -3113,6 +3166,20 @@ export class WebService {
         if (thread === undefined || thread.archivedAt !== null || !thread.canSend) return;
         const connection = this.connections.get(thread.sourceId);
         if (connection === undefined) return;
+        if (this.options.multiUser === true) {
+          const queued = this.store.nextQueuedLiveInput(threadId);
+          if (queued === undefined) return;
+          const actor = queued.webActor;
+          const principal = actor === undefined ? undefined : this.store.auth.getUser(actor.sender.id);
+          if (actor === undefined || principal === undefined || principal.disabled || principal.role !== actor.role
+            || connection.info.webActor?.version !== 1
+            || this.store.access.run(principal, () => this.store.getThread(threadId)) === undefined) {
+            const message = this.store.cancelLiveInput(queued.id);
+            if (message !== undefined) this.emit("message.changed", threadId, { messageId: message.id, updatedAt: message.updatedAt });
+            this.emitStoredThread(threadId, ["thread.changed", "threads.changed"]);
+            continue;
+          }
+        }
         const started = this.store.promoteNextQueuedLiveInput(threadId);
         if (started === undefined) return;
         // Resolved anew: the queued text was stored unprefixed, and the
@@ -4185,6 +4252,9 @@ export class WebService {
   }
 
   private projectThread(thread: WebThread): WebThread {
+    if (this.options.multiUser === true && this.connections.get(thread.sourceId)?.info.webActor?.version !== 1) {
+      thread = { ...thread, canSend: false, canUpload: false };
+    }
     const startedAt = this.manualCompactionStartedAt.get(thread.id);
     return startedAt === undefined ? thread : {
       ...thread, compaction: { status: "running", trigger: "manual", startedAt },

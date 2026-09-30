@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Attribute human web turns and queued follow-ups to their authenticated sender,
+  cancel queued input after access or role loss, and keep older agents read-only
+  in multi-user mode while preserving legacy steering when the mode is off.
+
 - Project multi-user web events for each recipient, remove inaccessible shared
   conversations with content-free notices, and close revoked or expired streams.
 

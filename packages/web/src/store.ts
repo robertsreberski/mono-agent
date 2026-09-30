@@ -226,6 +226,7 @@ interface ThreadRow {
 }
 
 interface WebSubmissionRow {
+  web_actor_json: string | null;
   thread_id: string;
   submission_id: string;
   payload_sha256: string;
@@ -251,6 +252,7 @@ export type StoredWebSubmissionReason =
   | "mailbox_failed";
 
 export interface StoredWebSubmission {
+  readonly webActor?: OperatorWebActor;
   readonly threadId: string;
   readonly submissionId: string;
   readonly payloadSha256: string;
@@ -400,6 +402,7 @@ interface MessageRow {
   status: string;
   /** Parts writes so far. See {@link WebMessage.seq}; pre-v17 rows read 0. */
   seq: number;
+  web_actor_json: string | null;
   /** `turns.finished_at`, when the query joined the turn; a single-row read looks it up instead. */
   turn_finished_at?: string | null;
 }
@@ -437,6 +440,7 @@ interface TurnRow {
 }
 
 interface LiveInputRow {
+  web_actor_json: string | null;
   id: string;
   thread_id: string;
   message_id: string;
@@ -768,6 +772,7 @@ export type ProcessJobWakeReservation =
   | { readonly kind: "uncertain" };
 
 export interface StoredLiveInput {
+  readonly webActor?: OperatorWebActor;
   readonly id: string;
   readonly threadId: string;
   readonly messageId: string;
@@ -5099,13 +5104,14 @@ export class WebStore {
     ];
     this.transaction(() => {
       this.database.prepare(`
-        INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
-        VALUES (?, ?, ?, 'user', ?, ?, ?, 'complete')
-      `).run(messageId, threadId, active?.id ?? null, serializeParts(parts), now, now);
+        INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status, web_actor_json)
+        VALUES (?, ?, ?, 'user', ?, ?, ?, 'complete', ?)
+      `).run(messageId, threadId, active?.id ?? null, serializeParts(parts), now, now,
+        this.access.current() === undefined ? null : JSON.stringify(webActorForUser(this.access.requirePrincipal())));
       this.database.prepare(`
         INSERT INTO live_inputs (
-          id, thread_id, message_id, active_turn_id, text, model, effort, status, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          id, thread_id, message_id, active_turn_id, text, model, effort, status, created_at, updated_at, web_actor_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         id,
         threadId,
@@ -5117,6 +5123,7 @@ export class WebStore {
         status,
         now,
         now,
+        this.access.current() === undefined ? null : JSON.stringify(webActorForUser(this.access.requirePrincipal())),
       );
       const title = deriveAutomaticTitle(text, []);
       this.database.prepare(`
@@ -5274,6 +5281,12 @@ export class WebStore {
     `).all() as unknown as Array<{ thread_id: string }>).map((row) => row.thread_id);
   }
 
+  nextQueuedLiveInput(threadId: string): StoredLiveInput | undefined {
+    const row = this.database.prepare("SELECT * FROM live_inputs WHERE thread_id = ? AND status = 'queued' ORDER BY created_at, rowid LIMIT 1")
+      .get(this.resolveThreadId(threadId)) as unknown as LiveInputRow | undefined;
+    return row === undefined ? undefined : mapLiveInput(row);
+  }
+
   promoteNextQueuedLiveInput(threadId: string): BeginStoredTurnResult | undefined {
     threadId = this.resolveThreadId(threadId);
     const active = this.database.prepare(
@@ -5298,9 +5311,9 @@ export class WebStore {
       this.database.prepare(`
         INSERT INTO turns (
           id, thread_id, status, text, model, effort, requested_model, requested_effort, assistant_message_id,
-          started_at, finished_at, error_code, error_message
-        ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
-      `).run(turnId, threadId, row.text, row.model, row.effort, row.model, row.effort, assistantMessageId, now);
+          started_at, finished_at, error_code, error_message, web_actor_json
+        ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)
+      `).run(turnId, threadId, row.text, row.model, row.effort, row.model, row.effort, assistantMessageId, now, row.web_actor_json);
       this.writeMessageParts(
         row.message_id,
         withoutLiveInputTelemetry(userMessage),
@@ -7226,7 +7239,9 @@ export class WebStore {
         ? row.turn_finished_at !== undefined ? row.turn_finished_at ?? undefined : turn?.finished_at ?? undefined
         : undefined;
       const attribution = turn === undefined ? undefined : runAttribution(turn);
+      const actor = role !== "user" || this.access.current() === undefined ? undefined : parseStoredWebActor(row.web_actor_json);
       return {
+        ...(actor === undefined ? {} : { sender: actor.sender }),
         id: row.id,
         threadId: row.thread_id,
         ...(row.turn_id === null ? {} : { turnId: row.turn_id }),
@@ -7637,6 +7652,7 @@ export class WebStore {
         "SELECT * FROM web_submissions WHERE thread_id = ? AND submission_id = ?",
       ).get(threadId, input.submissionId) as unknown as WebSubmissionRow | undefined;
       if (existing !== undefined) {
+        if (!this.webSubmissionVisible(existing)) throw new WebConsoleError("submission_not_found", "Submission not found.", 404);
         if (existing.payload_sha256 !== input.payloadSha256) {
           throw new WebConsoleError("submission_conflict", "Submission id was already used for different content.", 409);
         }
@@ -7646,8 +7662,8 @@ export class WebStore {
       const now = this.now();
       this.database.prepare(`
         INSERT INTO web_submissions (
-          thread_id, submission_id, payload_sha256, outcome, reason, message_id, turn_id, input_id, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          thread_id, submission_id, payload_sha256, outcome, reason, message_id, turn_id, input_id, created_at, web_actor_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         threadId,
         input.submissionId,
@@ -7658,6 +7674,7 @@ export class WebStore {
         created.turnId ?? null,
         created.inputId ?? null,
         now,
+        this.access.current() === undefined ? null : JSON.stringify(webActorForUser(this.access.requirePrincipal())),
       );
       return {
         created: true,
@@ -7674,7 +7691,15 @@ export class WebStore {
     const row = this.database.prepare(
       "SELECT * FROM web_submissions WHERE thread_id = ? AND submission_id = ?",
     ).get(threadId, submissionId) as unknown as WebSubmissionRow | undefined;
-    return row === undefined ? undefined : mapWebSubmission(row);
+    return row === undefined || !this.webSubmissionVisible(row) ? undefined : mapWebSubmission(row);
+  }
+
+  private webSubmissionVisible(row: WebSubmissionRow): boolean {
+    if (this.access.isExternal()) return false;
+    const principal = this.access.current();
+    if (principal === undefined) return true;
+    const actor = parseStoredWebActor(row.web_actor_json);
+    return actor?.sender.id === principal.id && actor.role === principal.role;
   }
 
   private requireCronReplyAccess(row: CronReplyOperationRow): void {
@@ -7766,7 +7791,9 @@ export class WebStore {
 }
 
 function mapWebSubmission(row: WebSubmissionRow): StoredWebSubmission {
+  const actor = parseStoredWebActor(row.web_actor_json);
   return {
+    ...(actor === undefined ? {} : { webActor: actor }),
     threadId: row.thread_id,
     submissionId: row.submission_id,
     payloadSha256: row.payload_sha256,
@@ -8451,7 +8478,9 @@ function mapStoredAttachment(row: AttachmentRow): StoredAttachment {
 }
 
 function mapLiveInput(row: LiveInputRow): StoredLiveInput {
+  const actor = parseStoredWebActor(row.web_actor_json);
   return {
+    ...(actor === undefined ? {} : { webActor: actor }),
     id: row.id,
     threadId: row.thread_id,
     messageId: row.message_id,

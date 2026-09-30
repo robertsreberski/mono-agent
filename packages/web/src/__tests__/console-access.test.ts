@@ -19,7 +19,7 @@ async function fixture(attributed = true) {
   const first = fakeDiscoveredAgent();
   const options: CreateWebServiceOptions = { stateDir: join(root, "state"), discoveryIntervalMs: 0, purgeIntervalMs: 0,
     discoverImpl: async () => [first, { ...first, source: { ...first.source, sourceId: "agent-two", label: "Agent Two" } }],
-    fetchImpl: operatorFetch({ turns: () => new ReadableStream<Uint8Array>({ start: (controller) => { stream = controller; } }) }) };
+    fetchImpl: operatorFetch({ supportsWebActor: true, turns: () => new ReadableStream<Uint8Array>({ start: (controller) => { stream = controller; } }) }) };
   const service = await WebService.create(options);
   const store = service.store;
   const admin = await store.auth.bootstrap("Morgan", password);
@@ -35,8 +35,8 @@ async function fixture(attributed = true) {
   const scope = { sourceId: "agent-one", threadId: origin.id, turnId };
   // Isolate the enforcement pieces without changing the production startup
   // guard: no enabled WebService.create or browser server is started here.
-  Object.assign(options, { multiUser: true });
   await vi.waitFor(() => expect(stream).toBeDefined());
+  Object.assign(options, { multiUser: true });
   cleanup.push(async () => { stream?.enqueue(new TextEncoder().encode(`${JSON.stringify({ kind: "finish", finalText: "Done" })}\n`));
     stream?.close(); await service.stop(); await rm(root, { recursive: true, force: true }); });
   let sequence = 0;
