@@ -56,6 +56,7 @@ import type {
 import { errorMessage, WebConsoleError } from "./errors.js";
 import { isTrustedOperatorBaseUrl } from "./discovery.js";
 import {
+  fetchLongLivedHostWake,
   fetchLongLivedTurn,
   operatorResponseFromFinishFrame,
   OperatorStreamFrameTooLargeError,
@@ -231,6 +232,7 @@ export class OperatorClient {
   private readonly processJobsBearer: string | undefined;
   private readonly fetchImpl: typeof fetch;
   private readonly turnFetchImpl: typeof fetch;
+  private readonly liveInputFetchImpl: typeof fetch;
 
   constructor(options: OperatorClientOptions) {
     if (!isTrustedOperatorBaseUrl(options.baseUrl)) {
@@ -241,6 +243,9 @@ export class OperatorClient {
     this.processJobsBearer = options.processJobsBearer;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.turnFetchImpl = options.fetchImpl ?? fetchLongLivedTurn;
+    // The agent settles this response only when the run consumes the steer.
+    // A blocking tool may hold headers longer than Undici's parser default.
+    this.liveInputFetchImpl = options.fetchImpl ?? fetchLongLivedHostWake;
   }
 
   async info(signal?: AbortSignal): Promise<OperatorInfo> {
@@ -542,6 +547,8 @@ export class OperatorClient {
           ...(input.deliveryKey === undefined ? {} : { deliveryKey: input.deliveryKey }),
         }),
       },
+      undefined,
+      this.liveInputFetchImpl,
     );
     const body = record(JSON.parse(await readBoundedBody(response, MAX_INFO_BODY_BYTES, "operator_live_input_too_large")));
     if (body === undefined || typeof body.status !== "string") {

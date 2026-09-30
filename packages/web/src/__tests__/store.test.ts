@@ -1155,6 +1155,72 @@ describe("WebStore", () => {
     store.close();
   });
 
+  it("finalizes a dispatched pending steer on its receipt before any HTTP settlement", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "start", attachmentIds: [] });
+    const pending = store.reserveLiveInput(thread.id, "Use the API instead");
+    expect(store.markLiveInputDispatchStarted(pending.input.id, turn.turnId)).toBe(true);
+    const frame = { kind: "event" as const, event: {
+      type: "tool_call_started" as const, id: `live-input:${pending.input.id}`, name: "↪️ Steered: guide",
+      metadata: { liveInput: true, synthetic: true, inputId: pending.input.id },
+    } };
+    const write = store.applyStreamFrames(turn.turnId, [frame]);
+    expect(write.recoveredSteers).toEqual([expect.objectContaining({
+      id: pending.message.id, turnId: turn.turnId, liveInputStatus: "applied",
+    })]);
+    expect(store.storedLiveInput(pending.input.id)).toBeUndefined();
+    expect(store.getMessage(pending.message.id)?.liveInputStatus).toBe("applied");
+    expect(store.markLiveInputUncertain(pending.input.id)).toBeUndefined();
+    expect(store.markLiveInputApplied(pending.input.id)).toBeUndefined();
+    expect(store.applyStreamFrames(turn.turnId, [frame]).recoveredSteers).toBeUndefined();
+    store.close();
+  });
+
+  it("recovers only a same-thread uncertain input with an exact stream receipt", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const other = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "start", attachmentIds: [] });
+    const otherTurn = store.beginTurn({ threadId: other.id, text: "elsewhere", attachmentIds: [] });
+    const uncertain = store.reserveLiveInput(thread.id, "Use the API instead");
+    const cancelled = store.reserveLiveInput(thread.id, "Never sent");
+    expect(store.markLiveInputUncertain(uncertain.input.id)).toMatchObject({ liveInputStatus: "uncertain" });
+    expect(store.cancelLiveInput(cancelled.input.id)?.liveInputStatus).toBe("cancelled");
+    const receipt = (inputId: string) => (["tool_call_started", "tool_call_completed"] as const).map((type) => ({
+      kind: "event" as const,
+      event: { type, id: `live-input:${inputId}`, name: "↪️ Steered: guide",
+        metadata: { liveInput: true, synthetic: true, inputId } },
+    }));
+    store.applyStreamFrames(otherTurn.turnId, receipt(uncertain.input.id));
+    store.applyStreamFrames(turn.turnId, [
+      ...receipt("different-input"), ...receipt(cancelled.input.id),
+    ]);
+    expect(store.getMessage(uncertain.message.id)).toMatchObject({ liveInputStatus: "uncertain" });
+    expect(store.getMessage(uncertain.message.id)?.turnId).toBeUndefined();
+    expect(store.getMessage(cancelled.message.id)).toMatchObject({ liveInputStatus: "cancelled" });
+    expect(store.getMessage(cancelled.message.id)?.turnId).toBeUndefined();
+    const write = store.applyStreamFrames(turn.turnId, receipt(uncertain.input.id));
+    expect(write.recoveredSteers).toEqual([expect.objectContaining({
+      id: uncertain.message.id, turnId: turn.turnId, liveInputStatus: "applied",
+    })]);
+    expect(store.applyStreamFrames(turn.turnId, receipt(uncertain.input.id)).recoveredSteers).toBeUndefined();
+    expect(store.markLiveInputApplied(uncertain.input.id)).toBeUndefined();
+    const assistant = store.getMessage(turn.assistantMessageId);
+    expect(assistant?.parts.filter((part) => part.type === "steer")).toEqual([
+      expect.objectContaining({ inputId: uncertain.input.id, messageId: uncertain.message.id }),
+    ]);
+    expect(assistant?.parts.filter((part) => part.type === "tool-call")).toHaveLength(2);
+    expect(store.getMessage(otherTurn.assistantMessageId)?.parts.filter((part) => part.type === "tool-call")).toHaveLength(1);
+    store.close();
+  });
+
   it("projects two applied steers in one turn as two markers at their own consumption points", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
