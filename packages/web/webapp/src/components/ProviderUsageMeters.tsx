@@ -3,12 +3,27 @@ import { formatProviderUsageLead, projectProviderUsageWindow } from "@mono-agent
 import { api } from "../api";
 import type { AgentSummary, ProviderUsage, ProviderUsageSnapshot } from "../types";
 
+/** A short status line for a manual refresh; `fetchedAt` backs the full timestamp in its title. */
+export interface ProviderUsageFeedback {
+  readonly text: string;
+  readonly tone: "pending" | "done" | "warning";
+  readonly fetchedAt?: string;
+}
+
+/** Time only for today, otherwise a short date: the full instant stays in the title. */
+export function formatUsageFetchedAt(fetchedAt: number, now = Date.now()): string {
+  const at = new Date(fetchedAt);
+  return at.toDateString() === new Date(now).toDateString()
+    ? at.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
+    : at.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
 /** Isolated from auth status/login: slow or failed quota reads never hide auth controls. */
 export function useProviderUsage(agent: AgentSummary, authRevision?: string) {
   const [snapshot, setSnapshot] = useState<ProviderUsageSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [feedback, setFeedback] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<ProviderUsageFeedback | null>(null);
   const owner = useRef<{ scope: string; refresh: () => Promise<void> } | null>(null);
   const scope = `${agent.sourceId}:${agent.generation ?? "unknown"}:${authRevision ?? ""}`;
   useEffect(() => {
@@ -30,7 +45,7 @@ export function useProviderUsage(agent: AgentSummary, authRevision?: string) {
       if (manual) {
         manualFlight = true;
         setRefreshing(true);
-        setFeedback("Refreshing usage…");
+        setFeedback({ text: "Refreshing usage…", tone: "pending" });
       }
       if (timer !== undefined) clearTimeout(timer);
       const request = ++sequence;
@@ -43,12 +58,12 @@ export function useProviderUsage(agent: AgentSummary, authRevision?: string) {
         setSnapshot(next);
         if (manual) {
           if (next.providers.some((item) => item.stale || item.error) || missing) {
-            setFeedback("Some usage could not be refreshed. Last known meters are retained where available.");
+            setFeedback({ text: "Some usage could not be refreshed · last known shown", tone: "warning" });
           } else if (next.providers.length === 0) {
-            setFeedback("No subscription usage is available.");
+            setFeedback({ text: "No subscription usage available", tone: "done" });
           } else {
             const oldest = Math.min(...next.providers.map((item) => Date.parse(item.fetchedAt)));
-            setFeedback(`Usage refreshed. Last fetched ${new Date(oldest).toLocaleString()}.`);
+            setFeedback({ text: `Updated ${formatUsageFetchedAt(oldest)}`, tone: "done", fetchedAt: new Date(oldest).toISOString() });
           }
         }
         // A stale automatic response started a coalesced refresh; read it once soon.
@@ -59,7 +74,7 @@ export function useProviderUsage(agent: AgentSummary, authRevision?: string) {
         setSnapshot((previous) => previous === null ? null : ({ ...previous, providers: previous.providers.map((provider) => ({
           ...provider, stale: true, error: { code: "unavailable", message: "Provider usage is unavailable." },
         })) }));
-        if (manual) setFeedback("Usage refresh failed. Last known meters are retained where available.");
+        if (manual) setFeedback({ text: "Usage refresh failed · last known shown", tone: "warning" });
       } finally {
         if (!controller.signal.aborted && request === sequence) {
           if (!manual) setLoading(false);

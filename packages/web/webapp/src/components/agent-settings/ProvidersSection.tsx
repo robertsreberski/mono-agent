@@ -16,15 +16,16 @@ export function ProvidersSection({ agent, controller, compact = false }: { reado
     <div className="settings-section-actions"><div className="settings-section-actions-row">
       {agent.supportsProviderUsageRefresh === true && agent.supportsProviderUsage === true && <span className="settings-hit"><button className="settings-button is-compact" type="button" aria-label="Refresh usage" title="Refresh usage" aria-describedby="settings-provider-disclosure" aria-busy={state.usageRefreshing} disabled={state.usageRefreshing || state.busy || state.checkActive || state.session !== null && !terminal(state.session.state)} onClick={() => void state.refreshUsage()}><Icon name="refresh" size={12} className={state.usageRefreshing ? "provider-usage-refreshing" : undefined} />Refresh usage</button></span>}
       {agent.supportsProviderAuthChecks === true && <span className="settings-hit"><button className="settings-button is-compact" type="button" aria-label={state.checkActive ? "Cancel live provider checks" : "Check access"} title={actionDisclosure} aria-describedby="settings-provider-disclosure" disabled={state.busy || state.usageRefreshing || !state.checkActive && (state.status === null || state.session !== null && !terminal(state.session.state))} onClick={() => { void (state.checkActive ? state.cancelCheck() : state.startCheck()); }}>{state.checkActive ? "Cancel checks" : "Check access"}</button></span>}
-    </div>{agent.supportsProviderAuthChecks === true && <span className="settings-disclosure">Check access may use quota</span>}<span className="sr-only" id="settings-provider-disclosure">{actionDisclosure}</span></div>
-    {state.usageFeedback && <p>{state.usageFeedback}</p>}
-    {state.status === null && agent.supportsProviderAuth === true && state.authError === null && <p>Loading provider status…</p>}
+    </div>{state.usageFeedback && <span className={`settings-usage-feedback is-${state.usageFeedback.tone}`}
+      title={state.usageFeedback.fetchedAt === undefined ? undefined : `Fetched ${new Date(state.usageFeedback.fetchedAt).toLocaleString()}`}>{state.usageFeedback.text}</span>}
+    {agent.supportsProviderAuthChecks === true && <span className="settings-disclosure">Check access may use quota</span>}<span className="sr-only" id="settings-provider-disclosure">{actionDisclosure}</span></div>
+    {state.status === null && agent.supportsProviderAuth === true && state.authError === null && <p className="settings-row-note">Loading provider status…</p>}
     <div className="settings-group">
       {agent.supportsProviderAuth === true && state.status?.providers.map((provider) => <ProviderRow key={provider.providerId} agent={agent} provider={provider} state={state} compact={compact} />)}
       {agent.supportsProviderAuth !== true && !state.usage?.providers.length && <p className="settings-row-note">No subscription usage available.</p>}
       {agent.supportsProviderAuth !== true && state.usage?.providers.map((usage) => <article className="settings-provider" key={usage.providerId}><div className="settings-provider-head"><b className="settings-provider-name">{usage.label}</b>{usage.plan && <span className="provider-usage-plan">{usage.plan}</span>}</div>{usage.stale && <span className="settings-freshness is-stale" title={usage.fetchedAt}>Last known · {relativeTime(usage.fetchedAt)} ago</span>}<ProviderUsageMeters usage={usage} density={compact ? "compact" : "default"} /></article>)}
     </div>
-    {state.restarting && <p>Restarting authentication…</p>}
+    {state.restarting && <p className="settings-row-note">Restarting authentication…</p>}
     {state.check && <p className="provider-auth-check-summary">{providerAuthCheckSummary(state.check)}</p>}
     {state.authError && <p className="settings-row-note is-danger" role="alert">{state.authError}</p>}
   </>;
@@ -46,7 +47,6 @@ function ProviderRow({ agent, provider, state, compact }: { readonly agent: Agen
       {provider.methods.length > 0 && <span className="settings-hit"><button type="button" className={`settings-button is-compact ${provider.state === "missing" ? "is-accent" : "is-ghost"}`} aria-label={`${provider.state === "missing" ? "Authenticate" : "Re-authenticate"} ${provider.label}`} disabled={state.usageRefreshing || state.busy || state.checkActive} onClick={() => state.openFlow(provider)}>{provider.state === "missing" ? "Authenticate" : "Re-authenticate"}</button></span>}
     </div>
     {usage ? <ProviderUsageMeters usage={usage} density={compact ? "compact" : "default"} /> : agent.supportsProviderUsage && provider.state === "missing" ? <p className="settings-provider-empty">Sign in to read subscription limits.</p> : provider.state === "missing" && <p className="settings-provider-empty">Sign in to use this provider.</p>}
-    {usage?.error && <span className="settings-row-note is-warning">Usage unavailable — {usage.error.message}</span>}
     {flowOpen && <ProviderAuthFlow provider={provider} state={state} />}
   </article>;
 }

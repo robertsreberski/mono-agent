@@ -2111,7 +2111,7 @@ button.process-job-call-head:focus-visible { outline: 2px solid var(--accent); o
 .provider-usage progress::-webkit-progress-bar { background: var(--line-strong); border-radius: 3px; }
 .provider-usage progress::-webkit-progress-value { background: var(--accent); border-radius: 3px; }
 .provider-usage progress::-moz-progress-bar { background: var(--accent); border-radius: 3px; }
-.provider-usage-error { grid-column: 1 / -1; color: var(--warning) !important; }
+.provider-usage-error { grid-column: 1 / -1; margin: 0; color: var(--warning) !important; font-size: 10.5px; line-height: 1.45; }
 @media (min-width: 901px) {
 }
 
@@ -2349,6 +2349,9 @@ textarea.wake-text { min-height: calc(3lh + 24px); max-height: calc(12lh + 24px)
 .settings-section-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; flex: none; }
 .settings-section-actions-row { display: flex; align-items: center; gap: 6px; }
 .settings-disclosure { color: var(--text-muted); font-size: 10px; line-height: 1.3; }
+/* Manual refresh status: the same quiet line as the disclosure, never a paragraph. */
+.settings-usage-feedback { color: var(--text-muted); font-size: 10px; line-height: 1.3; font-variant-numeric: tabular-nums; }
+.settings-usage-feedback.is-warning { color: var(--warning); font-weight: 600; }
 
 .settings-field { display: flex; flex-direction: column; gap: 8px; }
 .settings-field > .dashboard-section-label { margin: 0; justify-content: space-between; }
@@ -2477,7 +2480,7 @@ textarea.wake-text { min-height: calc(3lh + 24px); max-height: calc(12lh + 24px)
   /* styles.css:1577 hides .chat-status on phones (chat header); settings needs it. */
   .settings-screen .chat-status { display: inline-flex; }
   .settings-freshness { font-size: 11px; }
-  .settings-disclosure { font-size: 11px; }
+  .settings-disclosure, .settings-usage-feedback { font-size: 11px; }
   .settings-kv { grid-template-columns: minmax(0, 1fr) auto; }
   .settings-kv-label { grid-column: 1 / -1; font-size: 10.5px; }
   .settings-screen .context-display-plan-window { grid-template-columns: 62px minmax(0, 1fr) 40px; font-size: 12px; }
