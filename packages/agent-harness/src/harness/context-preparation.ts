@@ -15,7 +15,7 @@ import { AgentHarnessError } from "./error.js";
 import { representedContinuityToolRecordIds } from "./turn-continuity.js";
 import { sessionContextBlock } from "./session-context.js";
 import { memorySenderToken, memoryUserText } from "./memory-persistence.js";
-import { isCronRequest, runSourceFromRequest } from "./request-routing.js";
+import { isCronRequest, isOwnerHumanTurn, runSourceFromRequest } from "./request-routing.js";
 import { errorMessageText } from "./value-utils.js";
 import { buildToolHistoryProjection } from "../tool-history-projection.js";
 
@@ -257,11 +257,10 @@ async function loadHarnessMemory(
       const senderToken = request.captureSpeakerKind === "human-turn"
         ? memorySenderToken(runSourceFromRequest(request).source, request.sender)
         : undefined;
-      // Same owner rule as completed-turn capture: a human turn on the
-      // operator's own surface. Recall uses it only to read first-person
-      // questions and owner-report envelopes as about the owner.
-      const ownerTurn = request.captureSpeakerKind === "human-turn" && (request.metadata?.source === "web"
-        || request.metadata?.source === "tui" || request.metadata?.source === "acp");
+      // Share completed-turn capture's owner rule, excluding non-admin web
+      // humans. Recall uses it only to read first-person questions and
+      // owner-report envelopes as about the owner.
+      const ownerTurn = isOwnerHumanTurn(request);
       const observedAt = options.now?.() ?? new Date();
       const localDate = `${observedAt.getFullYear()}-${String(observedAt.getMonth() + 1).padStart(2, "0")}-${String(observedAt.getDate()).padStart(2, "0")}`;
       const base = originalUserMessage ?? request.userMessage;

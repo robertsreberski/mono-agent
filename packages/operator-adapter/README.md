@@ -131,8 +131,8 @@ Keep bearer values out of source config when possible. Set
   side-effecting action; status reads never start one. Cooldown responses use
   `429` plus `Retry-After`.
 - `POST {basePath}/v1/turns` accepts
-  `{ conversationId, text, attachments?, metadata? }`; attachment-only web
-  turns are valid. Web model/effort metadata is preserved and mirrored into the
+  `{ conversationId, text, client?, attachments?, metadata?, webActor? }`;
+  attachment-only web turns are valid. Web model/effort metadata is preserved and mirrored into the
   shared TUI override lane before the responder runs. The response is chunked
   `application/x-ndjson` with frames
   (`status | append | replace | event | finish | error`). Closing the socket
@@ -206,6 +206,32 @@ resource surface.
 The web consumer retains the legacy 8 MiB input ceiling so it can read an older
 agent even though current producers emit at most 256 KiB per frame. See
 [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/).
+
+### Web actor attribution
+
+The additive `webActor` turn field is
+`{ schema: 1, role: "admin" | "user", sender: { id, displayName, handle? } }`.
+`OperatorWebActor` and `parseOperatorWebActor` are exported from the package and
+its `/client` entrypoint. Each sender string must be non-blank and at most 256
+UTF-8 bytes; `id` and `displayName` are required. Unknown fields (including
+`isBot`), unknown roles/schemas, non-web clients and malformed values return
+HTTP 400 before a responder starts. The console authenticates the actor; this
+adapter trusts it only after operator authorization on a keyed or loopback
+boundary. Unkeyed non-loopback listeners reject attribution.
+
+`GET /v1/info` advertises `capabilities.webActor = { version: 1 }` only on that
+trusted boundary. Clients requiring attribution must fail closed when it is
+absent or unsupported. Older consoles may omit the field; wire schema 1 and
+legacy turn behavior remain unchanged. No login or user store is provided here.
+
+The adapter maps the sender to `AgentRequestBase.sender` and stamps only
+`metadata.webActor = { role }`. It strips client-supplied `metadata.webActor`
+on every turn, even without an envelope. `captureSpeakerKind` continues to come
+from server bind/key state. The harness treats admin web turns as owner turns
+and user web turns as non-owner human turns for recall and capture; the latter
+use the existing sender token for user-scoped preferences. Sender ids never
+enter the model prompt, while display names/handles are sanitized and bounded
+in `<current_speaker>`.
 
 ## Architecture
 
@@ -283,6 +309,8 @@ MAX_CRON_OPERATOR_RESPONSE_BYTES
 MAX_CRON_OPERATOR_RUN_PAGE
 MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES
 MAX_FRAME_BYTES
+OPERATOR_WEB_ACTOR_VERSION
+OperatorWebActor
 RedactedTuiAdapterConfig
 RequestToolEnvironmentConfig
 TUI_CONFIG_FIELDS
@@ -309,6 +337,7 @@ TuiSkillInfo
 TuiSkillRegistry
 TuiSkillUnavailableReason
 loadTuiAdapterConfig
+parseOperatorWebActor
 redactTuiAdapterConfig
 startTuiAdapter
 ```
@@ -316,10 +345,13 @@ startTuiAdapter
 **`@mono-agent/operator-adapter/client`**
 
 ```text
+OPERATOR_WEB_ACTOR_VERSION
 OperatorStreamFrameTooLargeError
+OperatorWebActor
 fetchLongLivedHostWake
 fetchLongLivedTurn
 operatorResponseFromFinishFrame
+parseOperatorWebActor
 readOperatorStreamFrames
 ```
 
