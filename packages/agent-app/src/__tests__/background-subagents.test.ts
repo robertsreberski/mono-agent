@@ -2344,3 +2344,27 @@ it("gives the child the absolute launch deadline and aborts at that deadline", a
   await vi.advanceTimersByTimeAsync(30_000);
   expect(await launched.completion).toMatchObject({ timedOut: true, durationMs: 30_000 });
 });
+
+it("a detached persistent child executing work blocks maintenance; awaiting AskParent alone is idle", async () => {
+  const f = await managedFixture(); const result = deferred<any>();
+  const { agent } = tools(f, async () => result.promise);
+  const started = await agent.execute("start", { id: "helper", persist: true, background: true, prompt: "Review fictional scope" });
+  expect(f.service.activeExecutionCount()).toBe(1);
+  result.resolve({ text: "", subagentQuestion: { question: "Choose fictional scope?", options: ["Small", "Large"] } });
+  await done(f.service, started.details.jobId);
+  await vi.waitFor(() => expect(f.service.activeExecutionCount()).toBe(0), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+  expect(await f.instances.get("helper")).toMatchObject({ status: "awaiting_reply" });
+});
+
+it("counts actual detached execution after its reporting cancellation grace, not just the active reporting map", async () => {
+  const f = await fixture(); const finish = deferred<void>();
+  const started = await f.service.internalController(origin, 0).startInternal({
+    kind: "internal", tool: "Agent", jobId: randomUUID(), instanceId: "slow-fictional-child", timeoutMs: 1_500,
+    run: async () => { await finish.promise; return { status: "ok", output: "", childStillBusy: false }; }, cleanup: async () => {},
+  });
+  try {
+    await done(f.service, started.jobId);
+    expect(f.service.activeExecutionCount()).toBe(1);
+  } finally { finish.resolve(); }
+  await vi.waitFor(() => expect(f.service.activeExecutionCount()).toBe(0), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+}, 30_000);

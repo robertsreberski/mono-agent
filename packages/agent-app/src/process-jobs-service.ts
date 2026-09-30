@@ -136,6 +136,7 @@ export interface ProcessJobWakeInput {
 }
 
 export interface OpenProcessJobsServiceOptions {
+  readonly onActivityChange?: (count: number) => void;
   readonly cwd: string;
   readonly workspace: string;
   readonly settings: ProcessJobsSettings;
@@ -188,6 +189,8 @@ export interface ProcessJobsServiceHandle {
   list(): Promise<readonly ProcessJobProjection[]>;
   get(jobId: string): Promise<ProcessJobProjection | undefined>;
   cancel(jobId: string): Promise<ProcessJobProjection>;
+  /** Synchronous admitted work/wake flights; an AskParent-awaiting child alone is idle. */
+  activeExecutionCount(): number;
   counts(): Promise<Readonly<Record<ProcessJobState, number>>>;
   capacity(normalizedReplyTarget: string): Promise<{
     observedAt: string;
@@ -312,6 +315,10 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   /** Coalesces a durable publication edge observed while this job's publisher is busy. */
   private readonly managedPublicationRearmPending = new Set<string>();
   private readonly managedRegistryOperations = new Set<Promise<unknown>>();
+  private readonly startingExecutions = new Set<string>();
+  /** Actual child lifetimes may outlast the bounded reporting/cancellation grace. */
+  private readonly internalExecutionFlights = new Set<string>();
+  private readonly managedExecutionFlights = new Set<string>();
   private readonly pending = new Map<string, PendingProcessJob>();
   private readonly active = new Map<string, ActiveProcessJob>();
   private readonly completionOverlays = new Map<string, ProcessJobProjection>();
@@ -841,13 +848,21 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     const liveInput = createLiveInputMailbox(jobId);
     this.subagentLiveInput.set(jobId, liveInput);
     return { ownedForegroundProcesses: commands.processes, liveInput,
-      started: async () => await this.withManagedLock(async () => await this.storeMutate("subagent.provider_start", (records) => {
-        const record = requireRecord(records, jobId);
-        const owner = record.subagentOwnership!;
-        if (record.state !== "running" || record.cancelRequested || owner.revoked || owner.owner.settlement !== "not_started" || this.now().getTime() >= deadlineAt) throw new Error("Managed subagent provider admission is revoked.");
-        owner.owner.settlement = "running";
-      })),
+      started: async () => {
+        this.managedExecutionFlights.add(jobId); this.activityChanged();
+        try {
+          await this.withManagedLock(async () => await this.storeMutate("subagent.provider_start", (records) => {
+            const record = requireRecord(records, jobId);
+            const owner = record.subagentOwnership!;
+            if (record.state !== "running" || record.cancelRequested || owner.revoked || owner.owner.settlement !== "not_started" || this.now().getTime() >= deadlineAt) throw new Error("Managed subagent provider admission is revoked.");
+            owner.owner.settlement = "running";
+          }));
+        } catch (error) {
+          this.managedExecutionFlights.delete(jobId); this.activityChanged(); throw error;
+        }
+      },
       settled: async (outcome) => {
+        this.managedExecutionFlights.delete(jobId); this.activityChanged();
         commands.revoke();
         const settlement = await this.withManagedLock(async () => await this.storeMutate("subagent.true_settlement", (records) => {
           const record = requireRecord(records, jobId);
@@ -1281,6 +1296,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         }
         if (notAdmitted) { rejectedManagedJob = jobId; throw notAdmitted; }
         this.pending.set(jobId, pending);
+        this.activityChanged();
         handedOff = true;
         // Drain existing eligible work first; a new request must not overtake it.
         await this.drainQueue(jobId);
@@ -1318,7 +1334,26 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     }
   }
 
+  activeExecutionCount(): number {
+    // Admitted queued work is lost on stop too. A completion's owed wake stays
+    // busy through pre-delivery work and durable receipt settlement, closing the
+    // hand-off gap before the central responder raises its own turn counter.
+    return new Set([...this.pending.keys(), ...this.startingExecutions, ...this.active.keys(),
+      ...this.internalExecutionFlights, ...this.managedExecutionFlights, ...this.wakeTasks.keys()]).size;
+  }
+
+  private activityChanged(): void {
+    this.options.onActivityChange?.(this.activeExecutionCount());
+  }
+
   private async launch(jobId: string, scheduleSurface = true): Promise<ProcessJobStartResult> {
+    this.startingExecutions.add(jobId);
+    this.activityChanged();
+    try { return await this.launchExecution(jobId, scheduleSurface); }
+    finally { this.startingExecutions.delete(jobId); this.activityChanged(); }
+  }
+
+  private async launchExecution(jobId: string, scheduleSurface: boolean): Promise<ProcessJobStartResult> {
     const pending = this.pending.get(jobId);
     if (pending === undefined) {
       throw new ProcessJobServiceError("process_job_agent_restarted", "Queued process-job launch ownership was lost.");
@@ -1371,10 +1406,19 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       }
       // PeerAgent reports its answer through output/preview, not subagent telemetry.
       const progress = pending.request.tool === "PeerAgent" ? undefined : new SubagentJobProgress(pending.redactionSecrets);
-      const handle = launchInternalProcessJob(pending.request, current.maxRuntimeMs, current.maxOutputBytes, undefined,
+      const internalRequest = pending.request;
+      this.internalExecutionFlights.add(jobId); this.activityChanged();
+      const executionRequest: InternalProcessJobRequest = { ...pending.request,
+        run: async (...args) => {
+          try { return await internalRequest.run(...args); }
+          finally { this.internalExecutionFlights.delete(jobId); this.activityChanged(); }
+        },
+      };
+      const handle = launchInternalProcessJob(executionRequest, current.maxRuntimeMs, current.maxOutputBytes, undefined,
         (chunk) => outputTail.writeStdout(chunk), (event) => this.reportSubagentProgress(jobId, event), Date.parse(startedAt) + current.maxRuntimeMs,
         pending.request.managed ? this.managedExecution(jobId, Date.parse(startedAt) + current.maxRuntimeMs) : undefined);
       this.active.set(jobId, { ...pending, handle, outputTail, ...(progress ? { progress } : {}) });
+      this.activityChanged();
       const settlement = handle.completion
         // Settlement closes the mailbox before any reporting can throw, so a
         // steer that arrives after the turn ends is refused rather than queued.
@@ -1410,6 +1454,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         });
       }
       this.pending.delete(jobId);
+      this.activityChanged();
       await this.storeMutate("launch.spawn_failed", (records) => {
         const record = requireRecord(records, jobId);
         if (!isTerminalProcessJobState(record.state)) {
@@ -1434,6 +1479,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     );
     const active: ActiveProcessJob = { ...pending, handle, outputTail };
     this.active.set(jobId, active);
+    this.activityChanged();
     try {
       const processIncarnation = await this.readIncarnation(handle.pid);
       if (processIncarnation === undefined) {
@@ -1484,7 +1530,9 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       }
       clearTimeout(this.active.get(jobId)?.progressTimer);
       this.active.delete(jobId);
+      this.activityChanged();
       this.pending.delete(jobId);
+      this.activityChanged();
       let failureRecorded = false;
       try {
         await this.storeMutate("launch.rollback", (records) => {
@@ -1798,7 +1846,9 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       }
       clearTimeout(this.active.get(jobId)?.progressTimer);
       this.active.delete(jobId);
+      this.activityChanged();
       this.pending.delete(jobId);
+      this.activityChanged();
       await this.storeApplyRetention("complete.retention");
       await this.drainQueue();
       } finally {
@@ -1806,8 +1856,10 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         // U/P still occupies the original slot; deleting this map entry is not
         // evidence of provider or command settlement.
         clearTimeout(this.active.get(jobId)?.progressTimer);
-      this.active.delete(jobId);
+        this.active.delete(jobId);
+        this.activityChanged();
         this.pending.delete(jobId);
+        this.activityChanged();
       }
     });
   }
@@ -1922,10 +1974,12 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       .finally(() => {
         if (this.wakeTasks.get(jobId) === task) {
           this.wakeTasks.delete(jobId);
+          this.activityChanged();
           if (this.wakeRearmPending.delete(jobId)) this.armWakeRearm(jobId);
         }
       });
     this.wakeTasks.set(jobId, task);
+    this.activityChanged();
   }
 
   private armWakeRearm(jobId: string): void {
@@ -2240,8 +2294,10 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
             }
             active.outputTail.discard();
             clearTimeout(this.active.get(jobId)?.progressTimer);
-      this.active.delete(jobId);
+            this.active.delete(jobId);
+            this.activityChanged();
             this.pending.delete(jobId);
+            this.activityChanged();
           }
         });
       } catch (error) {
@@ -2264,6 +2320,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   private async cleanupPending(jobId: string): Promise<void> {
     const pending = this.pending.get(jobId);
     this.pending.delete(jobId);
+    this.activityChanged();
     if (pending !== undefined) await pending.cleanup();
   }
 

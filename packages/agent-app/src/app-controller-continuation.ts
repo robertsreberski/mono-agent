@@ -1,3 +1,4 @@
+import type { WorkerActivityTracker } from "./worker-activity.js";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { NotifyDeliveryContext } from "@mono-agent/agent-contracts";
 
@@ -29,6 +30,7 @@ import type { ChannelId, MonoAgentAppLogger, RunningChannel } from "./channels.j
 import type { NotifyDeliveryResult } from "./proactive-notify.js";
 
 export interface ContinuationControllerPort {
+  readonly activityTracker?: WorkerActivityTracker;
   readonly cwd: string;
   readonly configReadPath: string;
   readonly privateRuntimePaths?: import("./app-config.js").PrivateBackgroundRuntimePaths | undefined;
@@ -91,6 +93,7 @@ export function ensureInteractionBridge(controller: ContinuationControllerPort, 
     }
     try {
       const bridge = await startInteractionBridge({
+        onActivityChange: (count) => controller.activityTracker?.set("asks", count),
         host: settings.host,
         port: settings.port,
         askTimeoutMs: settings.askTimeoutMs,
