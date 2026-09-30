@@ -68,6 +68,7 @@ import {
   type WebBootstrapScope,
   type WebChannelConfigView,
   type WebCronMutationResult,
+  type WebCronControlAcknowledgement,
   type WebCronOverview,
   type WebCronRunSummary,
   type WebCronRunPage,
@@ -1760,21 +1761,56 @@ export class WebService {
     return connection.info.skills ?? { status: "unsupported", items: [] };
   }
 
+  /** Async browser operations must not publish using an expired authority snapshot. */
+  private recheckBrowserAccess(): void {
+    const principal = this.store.access.current();
+    if (principal === undefined) return;
+    const current = "sessionHash" in principal && typeof principal.sessionHash === "string"
+      ? this.store.auth.authenticateHash(principal.sessionHash) : this.store.auth.getUser(principal.id);
+    if (current === undefined || current.disabled || current.id !== principal.id || current.version !== principal.version) {
+      throw new WebConsoleError("authentication_required", "Log in to continue.", 401);
+    }
+  }
+
+  private requireCronResults(sourceId: string, jobId: string): void {
+    this.recheckBrowserAccess();
+    if (this.store.access.current() !== undefined && this.store.cronThread(sourceId, jobId) === undefined) {
+      throw new WebConsoleError("cron_job_not_found", "Cron job not found for this agent.", 404);
+    }
+  }
+
+  private projectCronOverview(overview: WebCronOverview, sourceId: string): WebCronOverview {
+    if (this.store.access.current() === undefined) return overview;
+    this.recheckBrowserAccess();
+    const { degradedReason: _privateDiagnostic, ...safe } = overview;
+    return { ...safe, jobs: overview.jobs.map((job) => {
+      if (this.store.cronThread(sourceId, job.jobId) !== undefined) return job;
+      // Shared definitions are explicit: future operator fields must not become
+      // an accidental private-result side channel.
+      return { jobId: job.jobId, configured: job.configured, declaredEnabled: job.declaredEnabled,
+        effectiveEnabled: job.effectiveEnabled, health: job.health,
+        ...(job.expression === undefined ? {} : { expression: job.expression }),
+        ...(job.timezone === undefined ? {} : { timezone: job.timezone }),
+        ...(job.nextRunAt === undefined ? {} : { nextRunAt: job.nextRunAt }), resultsPrivate: true as const };
+    }) };
+  }
+
   async cronOverview(sourceId: string): Promise<WebCronOverview> {
     const agent = this.store.getAgent(sourceId);
     if (agent === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
     const connection = this.connections.get(sourceId);
     if (connection?.info.cron?.read === true) {
       const overview = await connection.client.cronOverview(AbortSignal.timeout(INFO_TIMEOUT_MS));
-      const synced = this.store.syncCronOverviewResult({ sourceId, ...overview });
+      this.recheckBrowserAccess();
+      const synced = this.store.access.internal(() => this.store.syncCronOverviewResult({ sourceId, ...overview }));
       if (synced.changed) {
         this.emit("cron.changed", undefined, { sourceId });
         this.emit("threads.changed");
       }
-      return synced.overview;
+      return this.projectCronOverview(synced.overview, sourceId);
     }
     const stored = this.store.storedCronOverview(sourceId);
-    if (stored !== undefined) return { ...stored, actionsEnabled: false };
+    if (stored !== undefined) return this.projectCronOverview({ ...stored, actionsEnabled: false }, sourceId);
     throw new WebConsoleError(
       "cron_unavailable",
       "This agent does not expose first-class cron operator state.",
@@ -1787,6 +1823,7 @@ export class WebService {
     jobId: string,
     input: { readonly limit: number; readonly before?: string },
   ): Promise<WebCronRunPage> {
+    this.requireCronResults(sourceId, jobId);
     const agent = this.store.getAgent(sourceId);
     if (agent === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
     const connection = this.connections.get(sourceId);
@@ -1805,7 +1842,8 @@ export class WebService {
       ...(input.before === undefined ? {} : { before: input.before }),
       signal: AbortSignal.timeout(INFO_TIMEOUT_MS),
     });
-    const reconciled = this.store.reconcileCronRunsResult(sourceId, jobId, page.runs);
+    this.requireCronResults(sourceId, jobId);
+    const reconciled = this.store.access.internal(() => this.store.reconcileCronRunsResult(sourceId, jobId, page.runs));
     if (reconciled.changed) {
       this.announceReconciledMessages(reconciled);
       this.emitStoredThread(this.store.cronThread(sourceId, jobId)?.id, ["thread.changed", "threads.changed"]);
@@ -1814,9 +1852,11 @@ export class WebService {
   }
 
   async cronRun(sourceId: string, jobId: string, runId: string): Promise<WebMessage> {
+    this.requireCronResults(sourceId, jobId);
     const connection = this.requireCronConnection(sourceId, false);
     const run = await connection.client.cronRun(jobId, runId, AbortSignal.timeout(INFO_TIMEOUT_MS));
-    const reconciled = this.store.reconcileCronRunsResult(sourceId, jobId, [run]);
+    this.requireCronResults(sourceId, jobId);
+    const reconciled = this.store.access.internal(() => this.store.reconcileCronRunsResult(sourceId, jobId, [run]));
     const message = reconciled.messages[0];
     if (reconciled.changed) {
       this.announceReconciledMessages(reconciled);
@@ -1837,7 +1877,12 @@ export class WebService {
     runId: string,
     input: CreateWebCronReplyInput,
   ): Promise<WebCronReplyReceipt> {
-    const running = this.activeCronReplies.get(input.operationId);
+    try { this.requireCronResults(sourceId, jobId); }
+    catch (error) { return Promise.reject(error); }
+    const principal = this.store.access.current();
+    const key = principal === undefined ? input.operationId
+      : `${principal.id}:${"sessionHash" in principal ? principal.sessionHash : principal.version}:${input.operationId}`;
+    const running = this.activeCronReplies.get(key);
     if (running !== undefined) {
       if (running.sourceId !== sourceId || running.jobId !== jobId || running.runId !== runId) {
         return Promise.reject(new WebConsoleError(
@@ -1849,11 +1894,14 @@ export class WebService {
       return running.promise;
     }
     const operation = this.createCronReplyThreadOnce(sourceId, jobId, runId, input)
-      .then((receipt) => ({ ...receipt, messages: this.shapeMessages(receipt.messages) }));
-    this.activeCronReplies.set(input.operationId, { sourceId, jobId, runId, promise: operation });
+      .then((receipt) => {
+        this.requireCronResults(sourceId, jobId);
+        return { ...receipt, messages: this.shapeMessages(receipt.messages) };
+      });
+    this.activeCronReplies.set(key, { sourceId, jobId, runId, promise: operation });
     const release = (): void => {
-      if (this.activeCronReplies.get(input.operationId)?.promise === operation) {
-        this.activeCronReplies.delete(input.operationId);
+      if (this.activeCronReplies.get(key)?.promise === operation) {
+        this.activeCronReplies.delete(key);
       }
     };
     void operation.then(release, release);
@@ -1919,6 +1967,7 @@ export class WebService {
         reservation.idempotencyKey,
       );
     } catch (error) {
+      this.requireCronResults(sourceId, jobId);
       if (error instanceof WebConsoleError
         && (error.code === "context_import_conflict"
           || error.code === "context_import_failed"
@@ -1947,6 +1996,7 @@ export class WebService {
       );
     }
 
+    this.requireCronResults(sourceId, jobId);
     const completed = this.store.completeCronReplyOperation(input.operationId, canonicalStatus);
     const receipt = this.cronReplyTerminalResult(completed);
     if (receipt === undefined) {
@@ -2081,23 +2131,33 @@ export class WebService {
   }
 
   async cronConfigView(sourceId: string): Promise<WebChannelConfigView> {
+    this.recheckBrowserAccess();
     const connection = this.requireCronConnection(sourceId, false);
-    return await connection.client.cronConfigView(AbortSignal.timeout(INFO_TIMEOUT_MS));
+    const view = await connection.client.cronConfigView(AbortSignal.timeout(INFO_TIMEOUT_MS));
+    this.recheckBrowserAccess();
+    return view;
   }
 
   async cronRunNow(
     sourceId: string,
     jobId: string,
     input: { readonly idempotencyKey: string; readonly confirmationToken?: string },
-  ): Promise<WebCronMutationResult<{ readonly run: WebCronRunSummary }>> {
+  ): Promise<WebCronMutationResult<{ readonly run: WebCronRunSummary } | WebCronControlAcknowledgement>> {
+    this.recheckBrowserAccess();
     const connection = this.requireCronConnection(sourceId, true);
     const result = await connection.client.cronRunNow(jobId, input, AbortSignal.timeout(INFO_TIMEOUT_MS));
+    this.recheckBrowserAccess();
     if (result.kind === "completed") {
-      const reconciled = this.store.reconcileCronRunsResult(sourceId, jobId, [result.value.run]);
+      const reconciled = this.store.access.internal(() => this.store.reconcileCronRunsResult(sourceId, jobId, [result.value.run]));
       if (reconciled.changed) {
         this.announceReconciledMessages(reconciled);
         this.emitStoredThread(this.store.cronThread(sourceId, jobId)?.id, ["thread.changed", "threads.changed"]);
       }
+    }
+    if (this.store.access.current() !== undefined) {
+      if (result.kind === "confirmation_required") return { ...result,
+        confirmation: { ...result.confirmation, message: "Confirm this cron control action." } };
+      if (this.store.cronThread(sourceId, jobId) === undefined) return { ...result, value: { acknowledged: true, jobId } };
     }
     return result;
   }
@@ -2107,7 +2167,8 @@ export class WebService {
     jobId: string,
     enabled: boolean,
     input: { readonly idempotencyKey: string; readonly confirmationToken?: string },
-  ): Promise<WebCronMutationResult<{ readonly job: WebCronOverview["jobs"][number] }>> {
+  ): Promise<WebCronMutationResult<{ readonly job: WebCronOverview["jobs"][number] } | WebCronControlAcknowledgement>> {
+    this.recheckBrowserAccess();
     const connection = this.requireCronConnection(sourceId, true);
     const result = await connection.client.cronSetEffectiveEnabled(
       jobId,
@@ -2115,15 +2176,21 @@ export class WebService {
       input,
       AbortSignal.timeout(INFO_TIMEOUT_MS),
     );
-    if (result.kind === "confirmation_required") return result;
+    this.recheckBrowserAccess();
+    if (result.kind === "confirmation_required") return this.store.access.current() === undefined ? result : { ...result,
+      confirmation: { ...result.confirmation, message: "Confirm this cron control action." } };
     const refreshed = await connection.client.cronOverview(AbortSignal.timeout(INFO_TIMEOUT_MS));
-    const synced = this.store.syncCronOverviewResult({ sourceId, ...refreshed });
+    this.recheckBrowserAccess();
+    const synced = this.store.access.internal(() => this.store.syncCronOverviewResult({ sourceId, ...refreshed }));
     const overview = synced.overview;
     const job = overview.jobs.find((candidate) => candidate.jobId === jobId);
     if (job === undefined) throw new WebConsoleError("invalid_operator_cron", "Updated cron job disappeared.", 502);
     if (synced.changed) {
       this.emit("cron.changed", job.threadId, { sourceId, jobId });
       this.emitStoredThread(job.threadId, ["thread.changed", "threads.changed"]);
+    }
+    if (this.store.access.current() !== undefined && this.store.cronThread(sourceId, jobId) === undefined) {
+      return { ...result, value: { acknowledged: true, jobId } };
     }
     return { ...result, value: { job } };
   }

@@ -993,8 +993,17 @@ export type WebCronRunSummary = CronOperatorRunSummary;
 export type WebCronRunDetail = CronOperatorRunDetail;
 export type WebCronRun = CronOperatorRun;
 
-export interface WebCronJob extends CronOperatorJob {
-  readonly threadId: string;
+export interface WebCronJob extends Omit<CronOperatorJob, "conversationId"> {
+  /** Absent when the recipient cannot see the cron channel's results. */
+  readonly conversationId?: string;
+  readonly threadId?: string;
+  readonly resultsPrivate?: true;
+}
+
+/** A successful shared control action, without a private run/channel snapshot. */
+export interface WebCronControlAcknowledgement {
+  readonly acknowledged: true;
+  readonly jobId: string;
 }
 
 export interface WebCronOverview extends Omit<CronOperatorOverview, "jobs"> {

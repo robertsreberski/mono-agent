@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep opted-in web cron definitions and controls available to granted users
+  without disclosing private results, and bind imported Reply conversations and
+  replay receipts to their authenticated requester.
+
 - Add offline web administrator bootstrap and recovery with confirmed hidden
   passwords under the web state lease, and preserve explicit multi-user mode
   selections across managed restarts without permitting partially protected

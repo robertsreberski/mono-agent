@@ -3,6 +3,8 @@ import {
   AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES,
   AGENT_CONTEXT_IMPORT_VERSION,
   CronOperatorWireError,
+  type CronOperatorJob,
+  type CronOperatorOverview,
   MCP_APP_SUPPORTED_VERSIONS,
   parseCronOperatorJob,
   parseCronOperatorOverview,
@@ -41,9 +43,7 @@ import {
 
 import type {
   WebChannelConfigView,
-  WebCronJob,
   WebCronMutationResult,
-  WebCronOverview,
   WebCronRunDetail,
   WebCronRunPage,
   WebCronRunSummary,
@@ -737,9 +737,7 @@ export class OperatorClient {
     return body?.ask === null ? undefined : body?.ask as ChannelAskSnapshot | undefined;
   }
 
-  async cronOverview(signal?: AbortSignal): Promise<Omit<WebCronOverview, "jobs"> & {
-    readonly jobs: readonly Omit<WebCronJob, "threadId">[];
-  }> {
+  async cronOverview(signal?: AbortSignal): Promise<CronOperatorOverview> {
     const response = await this.request(`${this.baseUrl}/v1/cron`, {
       headers: this.headers(false),
       ...(signal === undefined ? {} : { signal }),
@@ -829,7 +827,7 @@ export class OperatorClient {
     enabled: boolean,
     input: { readonly idempotencyKey: string; readonly confirmationToken?: string },
     signal?: AbortSignal,
-  ): Promise<WebCronMutationResult<{ readonly job: Omit<WebCronJob, "threadId"> }>> {
+  ): Promise<WebCronMutationResult<{ readonly job: CronOperatorJob }>> {
     const result = await this.cronMutation(
       `${this.baseUrl}/v1/cron/jobs/${encodeURIComponent(jobId)}/effective-enabled`,
       { ...input, enabled },
@@ -1136,13 +1134,11 @@ function parseMcpAppsCapability(value: unknown): OperatorInfo["mcpApps"] | undef
     : undefined;
 }
 
-function parseCronOverview(value: unknown): Omit<WebCronOverview, "jobs"> & {
-  readonly jobs: readonly Omit<WebCronJob, "threadId">[];
-} {
+function parseCronOverview(value: unknown): CronOperatorOverview {
   return parseSharedCron(parseCronOperatorOverview, value);
 }
 
-function parseCronJob(value: unknown): Omit<WebCronJob, "threadId"> {
+function parseCronJob(value: unknown): CronOperatorJob {
   return parseSharedCron(parseCronOperatorJob, value);
 }
 

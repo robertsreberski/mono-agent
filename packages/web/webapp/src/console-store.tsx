@@ -5919,7 +5919,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // Nothing owns this route: the operator navigated browser history back
       // onto a cron URL the overview already names. Follow it as before; a job
       // the overview does not carry has no request to fail either.
-      if (job !== undefined && selectedThreadRef.current !== job.threadId) selectThread(job.threadId);
+      if (job?.threadId !== undefined && selectedThreadRef.current !== job.threadId) selectThread(job.threadId);
       return;
     }
     if (job === undefined) {
@@ -5930,7 +5930,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       ));
       return;
     }
-    if (selectedThreadRef.current !== job.threadId) selectThread(job.threadId);
+    if (job.threadId !== undefined && selectedThreadRef.current !== job.threadId) selectThread(job.threadId);
   }, [failOwnedSelection, routeRevision, selectThread, selectedAgentId, selectedCronOverview]);
 
   const createThread = useCallback(async (projectId?: string) => {

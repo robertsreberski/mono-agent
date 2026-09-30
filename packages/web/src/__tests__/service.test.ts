@@ -1290,7 +1290,7 @@ describe("WebService", () => {
         cronRun: { ...run, projection: "detail", events: [], eventsIncluded: 0 },
       }),
     });
-    const cronThreadId = (await service.cronOverview("agent-one")).jobs[0]!.threadId;
+    const cronThreadId = (await service.cronOverview("agent-one")).jobs[0]!.threadId!;
     const events: WebEvent[] = [];
     const unsubscribe = service.subscribe((event) => { events.push(event); });
 
@@ -1479,7 +1479,7 @@ describe("WebService", () => {
       fetchImpl: operatorFetch({ cronOverview: operatorCronOverview() }),
     });
     const overview = await service.cronOverview("agent-one");
-    const threadId = overview.jobs[0]!.threadId;
+    const threadId = overview.jobs[0]!.threadId!;
     const expected = {
       code: "cron_channel_read_only",
       message: "Cron channels are read-only. Scheduled runs and history are managed by the agent.",
@@ -1678,7 +1678,7 @@ describe("WebService", () => {
       fetchImpl,
       clock: () => new Date(clockMs += 1_000),
     });
-    const threadId = (await service.cronOverview("agent-one")).jobs[0]!.threadId;
+    const threadId = (await service.cronOverview("agent-one")).jobs[0]!.threadId!;
     const database = new DatabaseSync(service.store.paths.database, { readOnly: true });
     const snapshot = () => ({
       thread: database.prepare("SELECT revision, updated_at FROM threads WHERE id = ?").get(threadId),
@@ -1724,7 +1724,7 @@ describe("WebService", () => {
       return await delegated(input, init);
     }) as typeof fetch;
     const service = await createService({ fetchImpl });
-    const threadId = (await service.cronOverview("agent-one")).jobs[0]!.threadId;
+    const threadId = (await service.cronOverview("agent-one")).jobs[0]!.threadId!;
     currentOverview = operatorCronOverview({
       generatedAt: "2026-08-14T10:01:00.000Z",
       jobs: [{
@@ -7614,7 +7614,7 @@ describe("authenticated console project callback", () => {
       await expect(call({ operationId: randomUUID(), tool: "ListProjects", args: {} })).rejects.toMatchObject({ code: "console_tool_revoked" });
 
       // A cron channel keeps its own exclusion, wake or not.
-      const cronThreadId = (await service.cronOverview("agent-one")).jobs[0]!.threadId;
+      const cronThreadId = (await service.cronOverview("agent-one")).jobs[0]!.threadId!;
       expect(() => service.assertConsoleToolTurn({ sourceId: "agent-one", threadId: cronThreadId, turnId }))
         .toThrowError(expect.objectContaining({ code: "console_tool_revoked" }));
     } finally { try { stream?.close(); } catch { /* already settled */ } await ingress.stop(); await service.stop(); }

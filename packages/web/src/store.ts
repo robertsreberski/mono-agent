@@ -1,4 +1,6 @@
 import { WebAccessContext } from "./access.js";
+import { parseStoredWebActor, webActorForUser } from "./actors.js";
+import type { OperatorWebActor } from "@mono-agent/operator-adapter";
 import { WebAuthStore } from "./auth.js";
 import type { WebCancelOrigin } from "./contracts.js";
 import { CONSOLE_READ_TOOL_NAMES, executeConsoleTool, type ConsoleToolScope, type ConsoleToolOperation, type ConsoleToolCommit } from "./console-tools.js";
@@ -19,6 +21,8 @@ import {
   classifyNotifySuppression,
   NOTHING_TO_REPORT_SENTINEL,
   type AgentReplyPart,
+  type CronOperatorJob,
+  type CronOperatorOverview,
   parseProcessJobProjection,
   type AgentStreamEvent,
   type AgentStreamWireFrame,
@@ -44,8 +48,6 @@ import {
   type WebMessageDeltaOp,
   type WebMessagePart,
   type WebMessageStatus,
-  type WebCronJob,
-  type WebCronOverview,
   type WebCronRun,
   type WebCronRunSummary,
   type WebCronRunPage,
@@ -314,9 +316,11 @@ interface CronReplyOperationRow {
   completed_at: string | null;
   failed_at: string | null;
   tombstoned_at: string | null;
+  web_actor_json: string | null;
 }
 
 export interface StoredCronReplyOperation {
+  readonly webActor?: OperatorWebActor;
   readonly operationId: string;
   readonly sourceId: string;
   readonly jobId: string;
@@ -367,12 +371,14 @@ export interface CronRunReconciliationResult {
 }
 
 export interface CronOverviewSyncResult {
-  readonly overview: WebCronOverview;
+  readonly overview: StoredWebCronOverview;
   readonly changed: boolean;
 }
 
-type IncomingCronJob = Omit<WebCronJob, "threadId">;
-type IncomingCronOverview = Omit<WebCronOverview, "jobs"> & {
+interface StoredWebCronJob extends CronOperatorJob { readonly threadId: string }
+interface StoredWebCronOverview extends Omit<CronOperatorOverview, "jobs"> { readonly jobs: readonly StoredWebCronJob[] }
+type IncomingCronJob = CronOperatorJob;
+type IncomingCronOverview = Omit<CronOperatorOverview, "jobs"> & {
   readonly sourceId: string;
   readonly jobs: readonly IncomingCronJob[];
 };
@@ -1643,13 +1649,13 @@ export class WebStore {
     return { overview: this.syncCronOverview(overview), changed: true };
   }
 
-  syncCronOverview(overview: IncomingCronOverview): WebCronOverview {
+  syncCronOverview(overview: IncomingCronOverview): StoredWebCronOverview {
     if (this.getAgent(overview.sourceId) === undefined) {
       throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
     }
     const effectiveJobs = this.effectiveIncomingCronJobs(overview.sourceId, overview.jobs);
     const now = this.now();
-    const jobs: WebCronJob[] = [];
+    const jobs: StoredWebCronJob[] = [];
     this.transaction(() => {
       this.database.prepare("UPDATE cron_channels SET configured = 0, updated_at = ? WHERE source_id = ?")
         .run(now, overview.sourceId);
@@ -1790,7 +1796,7 @@ export class WebStore {
     return stored.jobs.every((job) => incomingIds.has(job.jobId) || job.configured === false);
   }
 
-  storedCronOverview(sourceId: string): WebCronOverview | undefined {
+  storedCronOverview(sourceId: string): StoredWebCronOverview | undefined {
     const overview = this.database.prepare("SELECT * FROM cron_overviews WHERE source_id = ?")
       .get(sourceId) as unknown as {
         generated_at: string;
@@ -1834,7 +1840,14 @@ export class WebStore {
     return row === undefined ? undefined : parseStoredCronJob(row.payload_json).conversationId;
   }
 
+  private requireVisibleCronChannel(sourceId: string, jobId: string): void {
+    if (this.access.current() !== undefined && this.cronThread(sourceId, jobId) === undefined) {
+      throw new WebConsoleError("cron_job_not_found", "Cron job not found for this agent.", 404);
+    }
+  }
+
   storedCronRuns(sourceId: string, jobId: string, limit = 100): WebCronRunPage {
+    this.requireVisibleCronChannel(sourceId, jobId);
     const bounded = boundedPageLimit(limit, 100);
     const rows = this.database.prepare(`
       SELECT payload_json, message_id FROM cron_run_messages
@@ -1856,6 +1869,7 @@ export class WebStore {
     runId: string,
     snapshotKind: WebCronReplySnapshotKind,
   ): CronReplySnapshotCandidate {
+    this.requireVisibleCronChannel(sourceId, jobId);
     const row = this.database.prepare(`
       SELECT r.payload_json, m.parts_json, m.cron_suppressed,
         t.text, t.error_code, t.error_message
@@ -1951,7 +1965,9 @@ export class WebStore {
     return this.transaction(() => {
       const row = this.database.prepare("SELECT * FROM cron_reply_operations WHERE operation_id = ?")
         .get(operationId) as unknown as CronReplyOperationRow | undefined;
-      return row === undefined ? undefined : this.cronReplyState(row);
+      if (row === undefined) return undefined;
+      this.requireCronReplyAccess(row);
+      return this.cronReplyState(row);
     });
   }
 
@@ -1960,9 +1976,11 @@ export class WebStore {
     candidate: CronReplySnapshotCandidate,
   ): CronReplyReservationResult {
     return this.transaction(() => {
+      this.requireVisibleCronChannel(candidate.sourceId, candidate.jobId);
       const existing = this.database.prepare("SELECT * FROM cron_reply_operations WHERE operation_id = ?")
         .get(operationId) as unknown as CronReplyOperationRow | undefined;
       if (existing !== undefined) {
+        this.requireCronReplyAccess(existing);
         this.assertCronReplyIdentity(existing, candidate.sourceId, candidate.jobId, candidate.runId);
         return this.cronReplyState(existing);
       }
@@ -1970,7 +1988,10 @@ export class WebStore {
         SELECT * FROM cron_reply_operations
         WHERE source_id = ? AND job_id = ? AND run_id = ? AND state = 'pending'
       `).get(candidate.sourceId, candidate.jobId, candidate.runId) as unknown as CronReplyOperationRow | undefined;
-      if (pending !== undefined) return { kind: "pending", operation: mapCronReplyOperation(pending) };
+      if (pending !== undefined) {
+        this.requireCronReplyAccess(pending);
+        return { kind: "pending", operation: mapCronReplyOperation(pending) };
+      }
       // Revalidate only eligibility/identity. The candidate remains the exact
       // activation snapshot and is never replaced by a later detail refresh.
       const eligible = this.database.prepare(`
@@ -2000,8 +2021,8 @@ export class WebStore {
         INSERT INTO cron_reply_operations (
           operation_id, source_id, job_id, run_id, thread_id, conversation_id,
           provenance_message_id, result_message_id, idempotency_key, state, snapshot_kind,
-          snapshot_text, snapshot_sha256, title, run_model, run_effort, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
+          snapshot_text, snapshot_sha256, title, run_model, run_effort, created_at, web_actor_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         operationId,
         candidate.sourceId,
@@ -2019,6 +2040,7 @@ export class WebStore {
         override?.model ?? null,
         override?.effort ?? null,
         candidate.capturedAt,
+        this.access.current() === undefined ? null : JSON.stringify(webActorForUser(this.access.requirePrincipal())),
       );
       const row = this.requireCronReplyOperationRow(operationId);
       return { kind: "reserved", operation: mapCronReplyOperation(row) };
@@ -2041,8 +2063,8 @@ export class WebStore {
       this.database.prepare(`
         INSERT INTO threads (
           id, source_id, conversation_id, title, title_manual, archived_at,
-          created_at, updated_at, run_model, run_effort, revision
-        ) VALUES (?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, 1)
+          created_at, updated_at, run_model, run_effort, revision, owner_user_id
+        ) VALUES (?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, 1, ?)
       `).run(
         row.thread_id,
         row.source_id,
@@ -2052,6 +2074,7 @@ export class WebStore {
         now,
         row.run_model,
         row.run_effort,
+        parseStoredWebActor(row.web_actor_json)?.sender.id ?? null,
       );
       this.database.prepare(`
         INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
@@ -7596,12 +7619,23 @@ export class WebStore {
     return row === undefined ? undefined : mapWebSubmission(row);
   }
 
+  private requireCronReplyAccess(row: CronReplyOperationRow): void {
+    const principal = this.access.current();
+    if (principal === undefined) return;
+    const actor = parseStoredWebActor(row.web_actor_json);
+    if (actor?.sender.id !== principal.id || actor.role !== principal.role) {
+      throw new WebConsoleError("cron_reply_operation_not_found", "Cron reply operation not found.", 404);
+    }
+    this.requireVisibleCronChannel(row.source_id, row.job_id);
+  }
+
   private requireCronReplyOperationRow(operationId: string): CronReplyOperationRow {
     const row = this.database.prepare("SELECT * FROM cron_reply_operations WHERE operation_id = ?")
       .get(operationId) as unknown as CronReplyOperationRow | undefined;
     if (row === undefined) {
       throw new WebConsoleError("cron_reply_operation_not_found", "Cron reply operation not found.", 404);
     }
+    this.requireCronReplyAccess(row);
     return row;
   }
 
@@ -7686,7 +7720,9 @@ function mapWebSubmission(row: WebSubmissionRow): StoredWebSubmission {
 }
 
 function mapCronReplyOperation(row: CronReplyOperationRow): StoredCronReplyOperation {
+  const actor = parseStoredWebActor(row.web_actor_json);
   return {
+    ...(actor === undefined ? {} : { webActor: actor }),
     operationId: row.operation_id,
     sourceId: row.source_id,
     jobId: row.job_id,
@@ -8142,7 +8178,7 @@ function isSyntheticCronStateText(text: string): boolean {
     || text === "Run is in progress.";
 }
 
-function parseStoredCronJob(serialized: string): Omit<WebCronJob, "threadId"> {
+function parseStoredCronJob(serialized: string): CronOperatorJob {
   let value: unknown;
   try {
     value = JSON.parse(serialized) as unknown;
@@ -8152,7 +8188,7 @@ function parseStoredCronJob(serialized: string): Omit<WebCronJob, "threadId"> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new WebConsoleError("storage_corrupt", "Stored cron job metadata is invalid.", 500);
   }
-  const job = value as Partial<Omit<WebCronJob, "threadId">>;
+  const job = value as Partial<CronOperatorJob>;
   if (typeof job.jobId !== "string"
     || typeof job.conversationId !== "string"
     || typeof job.configured !== "boolean"
@@ -8161,7 +8197,7 @@ function parseStoredCronJob(serialized: string): Omit<WebCronJob, "threadId"> {
     || !["healthy", "warning", "unhealthy", "disabled", "unknown"].includes(String(job.health))) {
     throw new WebConsoleError("storage_corrupt", "Stored cron job metadata is invalid.", 500);
   }
-  return job as Omit<WebCronJob, "threadId">;
+  return job as CronOperatorJob;
 }
 
 function parseStoredCronRun(serialized: string): WebCronRunSummary {

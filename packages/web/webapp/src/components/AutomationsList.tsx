@@ -306,7 +306,7 @@ export function AutomationsList({
               live={live}
               active={highlightSelected && selectedThreadId === job.threadId}
               onOpen={() => {
-                selectCronJob(selectedAgentId, job.jobId, job.threadId);
+                if (job.threadId !== undefined) selectCronJob(selectedAgentId, job.jobId, job.threadId);
                 onSelect?.();
               }}
             />
