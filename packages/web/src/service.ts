@@ -746,6 +746,7 @@ export class WebService {
       options.maxQueuedAttachmentTurns ?? WEB_MAX_QUEUED_ATTACHMENT_TURNS,
     );
     this.pushDispatcher = new WebPushDispatcher(store, pushIdentity, pushSubject, {
+      enabled: () => this.options.multiUser !== true,
       ...(options.pushSendImpl === undefined ? {} : { send: options.pushSendImpl }),
       ...(options.pushDnsResolver === undefined ? {} : { resolve: options.pushDnsResolver }),
       ...(options.pushDispatchIntervalMs === undefined ? {} : { intervalMs: options.pushDispatchIntervalMs }),
@@ -769,7 +770,7 @@ export class WebService {
     try {
       // Recovery mutates active rows, so it must happen only after singleton
       // ownership is established. A losing second process never opens the DB.
-      store = await WebStore.openPrepared(paths, options);
+      store = await WebStore.openPrepared(paths, { ...options, pushEnabled: () => options.multiUser !== true });
     } catch (error) {
       await lease.release();
       throw error;
@@ -1367,6 +1368,10 @@ export class WebService {
     );
   }
 
+  private requirePushEnabled(): void {
+    if (this.options.multiUser === true) throw new WebConsoleError("push_disabled", "Push is disabled in multi-user mode.", 404);
+  }
+
   async registerWebPushSubscription(input: {
     readonly endpoint: string;
     readonly p256dh: string;
@@ -1376,6 +1381,7 @@ export class WebService {
     readonly previousSubscriptionId?: string;
     readonly previousEndpoint?: string;
   }): Promise<WebPushSubscriptionStatus> {
+    this.requirePushEnabled();
     if (input.previousSubscriptionId !== undefined && input.previousEndpoint !== undefined) {
       throw new WebConsoleError(
         "invalid_push_subscription",
@@ -1392,6 +1398,7 @@ export class WebService {
       && (!Number.isSafeInteger(input.expirationTime) || input.expirationTime <= this.currentDate().getTime())) {
       throw new WebConsoleError("invalid_push_subscription", "The push subscription expiration is invalid.", 400);
     }
+    this.requirePushEnabled();
     return this.store.registerWebPushSubscription({
       endpoint: endpoint.endpoint,
       p256dh: input.p256dh,
@@ -1417,6 +1424,7 @@ export class WebService {
   }
 
   testWebPushSubscription(id: string): WebPushSubscriptionStatus {
+    this.requirePushEnabled();
     this.store.enqueueWebPushTest(id);
     this.pushDispatcher.wake();
     return this.webPushSubscription(id);
@@ -4531,7 +4539,7 @@ export class WebService {
 
   private enqueueAskPush(threadId: string, snapshot: ChannelAskSnapshot): void {
     const question = snapshot.questions[snapshot.activeQuestionIndex];
-    if (this.stopped || question === undefined || !isFuturePendingAsk(snapshot, this.currentDate())) return;
+    if (this.options.multiUser === true || this.stopped || question === undefined || !isFuturePendingAsk(snapshot, this.currentDate())) return;
     const thread = this.store.getThread(threadId);
     if (thread === undefined) return;
     const agent = this.store.getAgent(thread.sourceId);
@@ -5227,6 +5235,7 @@ export class WebService {
   }
 
   private announcePushEvent(logicalKey: string): void {
+    if (this.options.multiUser === true) return;
     const event = this.store.webPushEventByLogicalKey(logicalKey);
     if (event === undefined) return;
     this.pushDispatcher.wake();

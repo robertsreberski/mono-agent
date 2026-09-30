@@ -723,6 +723,8 @@ const MAX_PENDING_PUSH_DELIVERIES_PER_SUBSCRIPTION = 200;
 const PUSH_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 
 export interface OpenWebStoreOptions extends WebStatePathOptions {
+  /** Host policy, checked at every push production boundary. */
+  readonly pushEnabled?: () => boolean;
   readonly clock?: () => Date;
 }
 
@@ -1087,7 +1089,8 @@ export class WebStore {
    */
   private readonly partsWriteStatements = new Map<string, StatementSync>();
 
-  private constructor(database: DatabaseSync, paths: WebStatePaths, clock: () => Date) {
+  private constructor(database: DatabaseSync, paths: WebStatePaths, clock: () => Date,
+    private readonly pushEnabled: () => boolean = () => true) {
     this.database = database;
     this.paths = paths;
     this.clock = clock;
@@ -1106,7 +1109,7 @@ export class WebStore {
     return WebStore.openPrepared(paths, options);
   }
 
-  static async openPrepared(paths: WebStatePaths, options: Pick<OpenWebStoreOptions, "clock"> = {}): Promise<WebStore> {
+  static async openPrepared(paths: WebStatePaths, options: Pick<OpenWebStoreOptions, "clock" | "pushEnabled"> = {}): Promise<WebStore> {
     const existing = await lstat(paths.database).catch(() => undefined);
     if (existing !== undefined && (!existing.isFile() || existing.isSymbolicLink())) {
       throw new WebConsoleError("invalid_state_database", "Web state database must be a regular file.", 409);
@@ -1116,7 +1119,7 @@ export class WebStore {
       throw new WebConsoleError("invalid_state_owner", "Web state database is not owned by the current user.", 409);
     }
     const database = new DatabaseSync(paths.database, { timeout: 5_000 });
-    const store = new WebStore(database, paths, options.clock ?? (() => new Date()));
+    const store = new WebStore(database, paths, options.clock ?? (() => new Date()), options.pushEnabled);
     try {
       store.initialize();
       await Promise.all([
@@ -7555,6 +7558,7 @@ export class WebStore {
     readonly notBefore?: string;
     readonly subscriptionId?: string;
   }): StoredWebPushEvent | undefined {
+    if (!this.pushEnabled()) return undefined;
     const existing = this.database.prepare("SELECT * FROM push_events WHERE logical_key = ?")
       .get(input.logicalKey) as unknown as PushEventRow | undefined;
     if (existing !== undefined) return mapPushEvent(existing);

@@ -24,6 +24,51 @@ import { temporaryRoot } from "./helpers.js";
 
 const cleanup: string[] = [];
 
+describe("multi-user push host policy", () => {
+  it("retains subscriptions/outbox without claiming or sending while disabled, including restart and shutdown", async () => {
+    const now = new Date("2027-01-02T10:00:00Z");
+    const original = await storeAt(() => now);
+    const identity = original.ensureWebPushIdentity(generateWebPushIdentity);
+    const subscription = original.registerWebPushSubscription(subscriptionInput(identity.fingerprint));
+    const event = original.enqueueWebPushEvent({ logicalKey: "fictional-retained", kind: "response.ready", title: "Fictional title",
+      body: "Fictional retained content", expiresAt: "2027-01-02T11:00:00Z", notBefore: now.toISOString() })!;
+    const stateDir = original.paths.root; original.close();
+    const store = await WebStore.open({ stateDir, clock: () => now, pushEnabled: () => false });
+    const send = vi.fn(async () => ({ statusCode: 201, headers: {} }));
+    const dispatcher = new WebPushDispatcher(store, identity, "mailto:fictional@example.test", { enabled: () => false, send });
+    try {
+      dispatcher.start(); dispatcher.wake(); await dispatcher.stopAndDrain();
+      expect(send).not.toHaveBeenCalled();
+      expect(deliveryStatus(store, event.id)).toBe("pending");
+      expect(store.getWebPushSubscription(subscription.id)?.state).toBe("active");
+      expect(store.enqueueWebPushEvent({ logicalKey: "fictional-disabled", kind: "response.ready", title: "No production", body: "No content",
+        expiresAt: "2027-01-02T11:00:00Z" })).toBeUndefined();
+      expect(store.webPushEventByLogicalKey("fictional-disabled")).toBeUndefined();
+      store.replaceAgents([agent]);
+      const thread = store.createThread(agent.sourceId);
+      const turn = store.beginTurn({ threadId: thread.id, text: "Fictional input", attachmentIds: [] });
+      store.completeTurn(turn.turnId, "Fictional terminal response");
+      expect(store.webPushEventByLogicalKey(`turn:${turn.turnId}:terminal`)).toBeUndefined();
+    } finally { await dispatcher.stopAndDrain(); store.close(); }
+  });
+
+  it("rechecks the delivery policy after an asynchronous relevance check", async () => {
+    const now = new Date("2027-01-02T10:00:00Z"); const store = await storeAt(() => now);
+    const identity = store.ensureWebPushIdentity(generateWebPushIdentity);
+    store.registerWebPushSubscription(subscriptionInput(identity.fingerprint));
+    const event = store.enqueueWebPushEvent({ logicalKey: "ask:fictional-policy", kind: "input.required", title: "Fictional input", body: "Question",
+      expiresAt: "2027-01-02T11:00:00Z", notBefore: now.toISOString() })!;
+    let enabled = true;
+    const send = vi.fn(async () => ({ statusCode: 201, headers: {} }));
+    const dispatcher = new WebPushDispatcher(store, identity, "mailto:fictional@example.test", { enabled: () => enabled, send,
+      beforeSend: async () => { enabled = false; return "current"; } });
+    try {
+      dispatcher.wake(); await waitFor(() => deliveryStatus(store, event.id) === "dropped");
+      expect(send).not.toHaveBeenCalled();
+    } finally { await dispatcher.stopAndDrain(); store.close(); }
+  });
+});
+
 afterEach(async () => {
   vi.restoreAllMocks();
   await Promise.all(cleanup.splice(0).map(async (path) => rm(path, { recursive: true, force: true })));

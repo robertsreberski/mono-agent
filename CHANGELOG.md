@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Disable push production and delivery in multi-user mode, including retained
+  subscriptions and outbox work, without changing legacy notification behavior.
+
 - Keep multi-user web automation non-human at the trusted operator boundary,
   scope scheduled wakes to their current editor, and suspend inaccessible or
   unsupported schedules instead of falling back to legacy owner authority.
