@@ -1,4 +1,6 @@
 import { createSubagentRecoveryAccess } from "../subagent-recovery-access.js";
+import { bindProcessJobWakeContextToResponder, registerProcessJobSteeringTarget, runWithProcessJobWakeContext } from "../process-jobs-context.js";
+import { createLiveInputMailbox } from "@mono-agent/agent-harness";
 import { formatHostCapabilities } from "@mono-agent/agent-harness";
 // @ts-expect-error Real direct kernel execution seam.
 import { execToolRun } from "../../../agent-runtime/src/agent/tools/exec.js";
@@ -476,6 +478,142 @@ describe("parent steer", () => {
         .toContain('"AgentManage.steer":{"available":false,"reason":"controller_unavailable"}');
     } finally { gate.resolve({ text: "done" }); await foreground; }
   }, 20_000);
+});
+
+describe("managed background admission", () => {
+  it("releases healthy pre-persistence refusals and surfaces the allowlisted cause", async () => {
+    const f = await managedFixture(); const run = vi.fn(async () => ({ text: "done" }));
+    await f.instances.create(spec);
+    await f.instances.begin("helper");
+    const question = { question: "Which scope?", options: ["Small", "Large"] };
+    await f.instances.finish("helper", { status: "awaiting_reply", question });
+    let depth = f.service.settings.maxChainDepth;
+    const { agent, send } = tools(f, run, { backgroundSubagentController: f.service.internalController(origin, () => depth) });
+    await expect(send.execute("refused-continuation", { id: "helper", message: "Small", background: true }))
+      .rejects.toMatchObject({ code: "process_job_chain_depth_exceeded", message: "The process-job chain-depth limit was reached." });
+    expect(await f.instances.get("helper")).toMatchObject({ status: "awaiting_reply", turns: 1, pendingQuestion: question });
+    expect((await f.instances.get("helper"))?.activeTurn).toBeUndefined();
+    await expect(agent.execute("refused-create", { id: "fresh", persist: true, background: true, prompt: "work" }))
+      .rejects.toMatchObject({ code: "process_job_chain_depth_exceeded" });
+    expect(await f.instances.get("fresh")).toMatchObject({ status: "closed", turns: 0 });
+    expect(await f.store.list()).toEqual([]); expect(run).not.toHaveBeenCalled();
+    depth = 0;
+    const resumed = await send.execute("retry-continuation", { id: "helper", message: "Small", background: true });
+    await done(f.service, resumed.details.jobId);
+    const fresh = await agent.execute("retry-create", { id: "fresh", persist: true, background: true, prompt: "work" });
+    await done(f.service, fresh.details.jobId);
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it("bounds never-admitted proof to the exact healthy admission and cleanup flight", async () => {
+    const f = await managedFixture();
+    const created = await f.instances.create(spec); const jobId = randomUUID();
+    await f.instances.reserve(created.id, jobId);
+    const identity = { storeRoot: f.store.stateDir, jobId, conversationId: origin.conversationId,
+      instanceId: created.id, instanceIncarnation: created.incarnation!, turnToken: jobId };
+    const cleanup = vi.fn(async () => {
+      expect(await f.service.resolveSubagentOwner!(identity)).toMatchObject({ state: "not_admitted", neverStarted: true });
+      expect(await f.service.resolveSubagentOwner!({ ...identity, instanceIncarnation: randomUUID() })).toEqual({ state: "unavailable" });
+      await f.instances.releaseReservation(created.id, jobId);
+    });
+    await expect(f.service.internalController(origin, 0).startInternal({ kind: "internal", tool: "Agent", jobId,
+      instanceId: created.id, managed: { instanceIncarnation: created.incarnation!, turnToken: jobId }, timeoutMs: 0,
+      run: async () => ({ status: "ok", output: "must not run" }), cleanup })).rejects.toMatchObject({ code: "process_job_invalid" });
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(await f.instances.get(created.id)).toMatchObject({ status: "idle", turns: 0 });
+    expect(await f.service.resolveSubagentOwner!(identity)).toEqual({ state: "unavailable" });
+    expect(await f.store.list()).toEqual([]);
+  });
+
+  it("does not release a collided admission against an existing managed job", async () => {
+    const f = await managedFixture(); const gate = deferred<any>();
+    const { agent } = tools(f, () => gate.promise);
+    const started = await agent.execute("first", { id: "helper", persist: true, background: true, prompt: "work" });
+    const instance = (await f.instances.get("helper"))!; const cleanup = vi.fn();
+    try {
+      await expect(f.service.internalController(origin, f.service.settings.maxChainDepth).startInternal({ kind: "internal", tool: "Agent",
+        jobId: started.details.jobId, instanceId: instance.id, managed: { instanceIncarnation: instance.incarnation!, turnToken: started.details.jobId },
+        run: async () => ({ status: "ok", output: "must not run" }), cleanup })).rejects.toMatchObject({ code: "process_job_chain_depth_exceeded" });
+      expect(cleanup).not.toHaveBeenCalled();
+      expect((await f.instances.get("helper"))?.activeTurn?.token).toBe(started.details.jobId);
+    } finally { gate.resolve({ text: "done" }); await done(f.service, started.details.jobId); }
+    // Terminal snapshots may be evicted while the durable job still exists.
+    (f.service as unknown as { recordSnapshot: Map<string, unknown> }).recordSnapshot.delete(started.details.jobId);
+    await expect(f.service.internalController(origin, f.service.settings.maxChainDepth).startInternal({ kind: "internal", tool: "Agent",
+      jobId: started.details.jobId, instanceId: instance.id, managed: { instanceIncarnation: instance.incarnation!, turnToken: started.details.jobId },
+      run: async () => ({ status: "ok", output: "must not run" }), cleanup })).rejects.toMatchObject({ code: "process_job_chain_depth_exceeded" });
+    expect(cleanup).not.toHaveBeenCalled();
+  });
+
+  it("keeps background starts available after native completion steering and proactive compaction", async () => {
+    const f = await managedFixture(undefined, { maxQueued: 1 });
+    const target = registerProcessJobSteeringTarget({ conversationId: origin.conversationId, runId: origin.runId, chainDepth: 0 });
+    const mailbox = createLiveInputMailbox(origin.runId);
+    const responder = bindProcessJobWakeContextToResponder({ respond: async () => ({ text: "unused" }), offerLiveInput: mailbox.offer });
+    let offered = 0;
+    f.options.wake.mockImplementation(async (value: unknown) => {
+      const input = value as ProcessJobWakeInput;
+      const key = `process-job:${input.projection.jobId}`;
+      return await runWithProcessJobWakeContext({ jobId: input.projection.jobId, chainDepth: input.chainDepth }, async () => {
+        const offer = responder.offerLiveInput!({ conversationId: origin.conversationId, id: key, deliveryKey: key,
+          text: "Background work finished.", receivedAt: new Date().toISOString() });
+        // Later completions use the ordinary delivered-wake fixture once this
+        // native parent has settled; only the first two must be steered.
+        if (offer.status !== "accepted") return { delivered: true as const };
+        offered++;
+        await offer.settled;
+        return { delivered: true as const };
+      }, key);
+    });
+    const run = vi.fn(async () => ({ text: "done" }));
+    const { agent, send } = tools(f, run, { backgroundSubagentController: f.service.internalController(origin, target.chainDepth) });
+    const piPath = fileURLToPath(new URL("../../../agent-runtime/node_modules/@earendil-works/pi-ai/dist/index.js", import.meta.url));
+    const { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } = await import(piPath);
+    const faux = fauxProvider({ provider: "faux", models: [{ id: "parent", contextWindow: 30_000, maxTokens: 8_000 }], tokensPerSecond: undefined });
+    const models = createModels(); models.setProvider(faux.provider);
+    const events: any[] = []; const receipts: any[] = [];
+    const bulk = "lorem ipsum dolor sit amet ".repeat(1_600).slice(0, 40_000);
+    await writeFile(resolve(f.root, "notes.txt"), "notes\n");
+    let stage = 0;
+    faux.setResponses(Array.from({ length: 8 }, () => async () => {
+      const compaction = events.filter((e) => e.type === "context_compaction").at(-1);
+      if (compaction?.status === "running") return fauxAssistantMessage([fauxText("## Goal\nEarlier work summarized.")]);
+      if (stage === 0) {
+        stage++;
+        receipts.push(await agent.execute("first", { id: "helper", persist: true, background: true, prompt: "work" }));
+        await vi.waitFor(() => expect(offered).toBe(1), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+        return fauxAssistantMessage([fauxText(bulk), fauxToolCall("Read", { file_path: "notes.txt" })]);
+      }
+      if (stage === 1) {
+        stage++;
+        receipts.push(await send.execute("second", { id: "helper", background: true, message: "continue" }));
+        await vi.waitFor(() => expect(offered).toBe(2), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
+        return fauxAssistantMessage([fauxText(bulk), fauxToolCall("Read", { file_path: "notes.txt" })]);
+      }
+      if (compaction?.status !== "succeeded") return fauxAssistantMessage([fauxText("Another checkpoint."), fauxToolCall("Read", { file_path: "notes.txt" })]);
+      if (stage === 2) {
+        stage++;
+        expect(compaction.trigger).toBe("proactive");
+        expect(mailbox.applied()).toHaveLength(2);
+        expect(target.chainDepth()).toBe(2);
+        receipts.push(await send.execute("after-compaction", { id: "helper", background: true, message: "continue again" }));
+        receipts.push(await agent.execute("fresh-after-compaction", { id: "fresh", persist: true, background: true, prompt: "work" }));
+      }
+      return fauxAssistantMessage([fauxText("done")]);
+    }));
+    try {
+      const result = await generatePiNativeResponse("system", { model: { provider: "faux", model: "parent", reference: "faux:parent" },
+        piResolvedModel: faux.getModel(), piResolvedModels: models, effort: "none", cwd: f.root, allowedTools: ["Read"],
+        messages: [{ role: "user", content: "Read notes while background work completes." }], liveInput: mailbox,
+        onEvent: (event: any) => events.push(event), runId: origin.runId });
+      expect(result.error).toBeNull(); expect(result.text).toBe("done");
+      expect(receipts).toHaveLength(4);
+      expect(mailbox.applied().length).toBeGreaterThanOrEqual(2);
+      mailbox.close("closed");
+      for (const receipt of receipts) await done(f.service, receipt.details.jobId);
+      expect(run).toHaveBeenCalledTimes(4);
+    } finally { mailbox.close("closed"); target.release(); }
+  }, 60_000);
 });
 
 describe("managed detached production execution", () => {

@@ -305,6 +305,8 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   // Retain through negative publication so a delayed verified call cannot race
   // around a durable not-admitted tombstone and its registry release.
   private readonly managedAdmissionTickets = new Set<string>();
+  /** Scoped positive proof from this admission, never inferred from a missing job. */
+  private readonly unadmittedManagedStarts = new Map<string, SubagentOwnerIdentity>();
   private managedWritesClosed = false;
   private managedRegistry: ManagedSubagentRegistry | undefined;
   private readonly managedCommands = new Map<string, ReturnType<typeof createSubagentOwnedCommands>>();
@@ -779,6 +781,8 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   async resolveSubagentOwner(identity: SubagentOwnerIdentity): Promise<SubagentOwnerResolution> {
     return await this.withManagedLock(async (): Promise<SubagentOwnerResolution> => {
       if (!this.storageOperational || this.stopping || identity.storeRoot !== this.settings.stateDir) return { state: "unavailable" };
+      const unadmitted = this.unadmittedManagedStarts.get(identity.jobId);
+      if (unadmitted && sameSubagentOwner(identity, unadmitted)) return { state: "not_admitted", identity, sequence: 1, neverStarted: true, continuity: "retained" };
       const record = await this.storeGet(identity.jobId, "subagent.resolve");
       if (!record?.subagentOwnership || !sameSubagentOwner(identity, this.managedIdentity(record))) return { state: "unavailable" };
       const owner = record.subagentOwnership;
@@ -1191,6 +1195,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     let handedOff = false;
     let admissionTicket: string | undefined;
     let rejectedManagedJob: string | undefined;
+    let admissionPersistAttempted = false;
     let verification: SubagentVerificationTarget | undefined;
     const pending = pendingRequest(isInternal(request) && request.managed ? { ...request, cleanup: async () => {} } : request);
     try {
@@ -1198,9 +1203,9 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         const managed = request.managed;
         if (!this.managedRegistry) throw new ProcessJobServiceError("process_job_controller_unavailable");
         await this.withManagedLock(async () => {
-          this.assertAvailable(origin, chainDepth, request);
           if (this.managedAdmissionTickets.has(request.jobId) || this.managedAdmissionTickets.size >= 128) throw new ProcessJobServiceError("process_job_conflict");
           this.managedAdmissionTickets.add(request.jobId); admissionTicket = request.jobId;
+          this.assertAvailable(origin, chainDepth, request);
         });
         const verified = await this.withManagedRegistry(async (registry) => await registry.verify({ storeRoot: this.settings.stateDir, jobId: request.jobId, conversationId: origin.conversationId,
           instanceId: request.instanceId, instanceIncarnation: managed.instanceIncarnation, turnToken: managed.turnToken }));
@@ -1286,6 +1291,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           record.subagentOwnership!.disposition = { status: "failed", reason: "continuation_not_started", continuity: "retained" };
         }
         try {
+          admissionPersistAttempted = true;
           await this.storeMutate("admission.persist", (records) => {
             if (records.has(jobId)) throw new ProcessJobServiceError("process_job_conflict");
             records.set(jobId, record);
@@ -1317,6 +1323,31 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       return result;
     } catch (error) {
       if (rejectedManagedJob) await this.publishManaged(rejectedManagedJob).catch(() => undefined); // P remains pinned on publication failure.
+      if (isInternal(request) && request.managed && admissionTicket && !admissionPersistAttempted
+        && this.storageOperational && !this.stopping && !this.managedWritesClosed
+        && !this.recordSnapshot.has(request.jobId) && !this.pending.has(request.jobId) && !this.active.has(request.jobId)
+        && isSubagentUuid(request.managed.instanceIncarnation) && request.managed.turnToken === request.jobId) {
+        // This exact controller call owns the admission ticket and never entered
+        // persistence or handed work off. Keep the positive proof only through
+        // registry rollback. Ambiguous writes, collisions and owner loss stay
+        // fenced; a caller-supplied error/absence is never release authority.
+        const identity = { storeRoot: this.settings.stateDir, jobId: request.jobId,
+          conversationId: origin.conversationId, instanceId: request.instanceId,
+          instanceIncarnation: request.managed.instanceIncarnation, turnToken: request.managed.turnToken };
+        const rollback = await this.withManagedLock(async () => {
+          if (!this.storageOperational || this.stopping) return false;
+          // The snapshot is bounded: an older terminal collision may not be in
+          // memory. Check the owned store as well before issuing this proof.
+          if (await this.storeGet(request.jobId, "admission.rollback")) return false;
+          this.unadmittedManagedStarts.set(request.jobId, identity);
+          return true;
+        }).catch(() => false);
+        if (rollback) {
+          try { await request.cleanup(); }
+          catch { /* The tool's normal release reports any unresolved registry fence. */ }
+          finally { this.unadmittedManagedStarts.delete(request.jobId); }
+        }
+      }
       let cleanupIncomplete = false;
       if (!handedOff) {
         try { await pending.cleanup(); } catch { cleanupIncomplete = true; }

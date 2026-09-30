@@ -237,7 +237,9 @@ function offerProcessJobWakeToActiveRun(
   if (candidates.length !== 1) return { status: "unavailable", reason: "inactive" };
   const target = candidates[0]!;
   const wakeToken = Object.freeze({});
-  target.wakeDepths.set(wakeToken, flight.chainDepth + 1);
+  // The service already advances the lineage when it creates this wake. Live
+  // steering and a separate wake turn must carry the same depth.
+  target.wakeDepths.set(wakeToken, flight.chainDepth);
   const rollback = (): void => {
     target.wakeDepths.delete(wakeToken);
   };

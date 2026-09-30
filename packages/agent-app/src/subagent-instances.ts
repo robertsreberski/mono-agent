@@ -697,6 +697,8 @@ export function createSubagentInstanceRegistry(options: {
             if (record.ownerLink) {
               await reconcileOwner(record);
               if (record.activeTurn) throw new SubagentRecoveryError("subagent_owner_unavailable");
+              released = turns.get(turnPath(id));
+              return; // Reconciliation already restored/retired the exact admission.
             }
             released = turns.get(turnPath(id));
             restoreNeverStarted(record);
