@@ -95,9 +95,12 @@ the navigation shell, accent controls, browser chrome, and PWA background; text,
 online/degraded state, warnings, and destructive actions keep shared semantic
 colors. Theme choice is explicit rather than inferred from the hostname.
 
-## Security boundary: trusted network, no login
+## Security boundary and opt-in accounts
 
-The console intentionally has no application authentication or multi-user accounts. Anyone who can reach its HTTP listener can read retained conversations, upload files, cancel turns, send instructions to every discovered agent, and operate provider-authentication flows. Treat the listener as an owner-equivalent operator surface:
+By default the console has no application login. Anyone who can reach its HTTP
+listener can read retained conversations, upload files, cancel turns, send
+instructions to every discovered agent, and operate provider-authentication
+flows. Treat the default listener as an owner-equivalent operator surface:
 
 - run it only on a trusted LAN or tailnet;
 - when other devices must not reach it, keep the foreground `mono-agent web run --loopback` and confirm nothing else publishes it; a managed `start`/`restart` re-verifies an existing owned Tailscale Serve route and publishes a new one only with `--share-tailnet`; `web stop` removes that exact owned route, and no mode removes an unowned Serve handler, reverse proxy, or tunnel that already points at the port;
@@ -106,16 +109,77 @@ The console intentionally has no application authentication or multi-user accoun
 
 Neither the bind nor the absence of a mono-agent-owned route proves local-only access: other proxies, tunnels, or routes are not inspected. Inspect `tailscale serve status` and your own proxy configuration before relying on loopback for local-only access — this matters most for a machine that ran a managed console before. A managed `--share-tailnet` failure is reported with a nonzero exit and the healthy local console stays running; it never claims the route was published.
 
-The server rejects unexpected Host/Origin combinations and does not enable cross-origin API access, but those checks are browser request-integrity controls, not authentication. Cron mutations additionally require the addressed agent's operator API key, an explicit agent-side opt-in, a source-qualified job route, and an agent-issued confirmation; those gates do not turn the web console into a multi-user authenticated application. Plain LAN HTTP is not encrypted. Tailscale transport protects direct tailnet traffic, while Tailscale Serve provides browser-trusted HTTPS when available.
+The server rejects unexpected Host/Origin combinations and does not enable cross-origin API access, but those checks are browser request-integrity controls, not authentication. Cron mutations additionally require the addressed agent's operator API key, an explicit agent-side opt-in, a source-qualified job route, and an agent-issued confirmation; those gates do not replace console authentication when multi-user mode is enabled. Plain LAN HTTP is not encrypted. Tailscale transport protects direct tailnet traffic, while Tailscale Serve provides browser-trusted HTTPS when available.
 
 Cron read routes preserve the operator endpoint's compatibility posture: they are keyless only when that endpoint has no API key, and otherwise require its bearer. The retained cron config-view proxy reuses the agent's source-annotated field view; it can return the already-visible job prompt, but never reads the console-discovered config path or exposes arbitrary keys and credentials. A stopped or failed cron registry degrades only the advertised cron capability—agent liveness still returns from `/v1/info`.
 
 Provider-auth routes use the same compatibility posture: they are keyless when
 the addressed operator endpoint has no API key and otherwise require its bearer.
-This does not add a separate authentication boundary; the trusted LAN/tailnet
-and operating-system admission controls remain the boundary.
+In default mode this does not add a separate authentication boundary; the
+trusted LAN/tailnet and operating-system admission controls remain the boundary.
 
 At startup, mono-agent inspects the existing Tailscale Serve configuration. It prefers HTTPS `:443` only when free; otherwise it chooses the first free port in `8443`–`8499`. It never resets or replaces another Serve handler. Ownership is recorded locally, and `web stop` removes only the route this console created. If the first route cannot be created, the local/LAN service stays healthy and status prints the direct URLs plus remediation. If a restart cannot migrate an existing owned route to a changed app port, mono-agent restores the prior worker and exact route and exits nonzero.
+
+## Enable multi-user mode
+
+Stop the console and create its designated administrator offline. The CLI asks
+for a hidden, confirmed password and holds the server’s exclusive state lease:
+
+```bash
+mono-agent web stop
+mono-agent web users bootstrap --username riley
+mono-agent web start --multi-user
+```
+
+`web run --multi-user` also enables accounts for a foreground console.
+Managed start/restart retain the selected mode; `--no-multi-user` explicitly
+returns to the no-login mode. Enabled startup fails closed without an active
+designated administrator. For recovery, stop the server and use the same
+bootstrap command for the designated account; existing ownership is preserved.
+First enablement assigns old unowned conversations to that administrator,
+privately. There is no public setup screen.
+
+Use HTTPS for authenticated access. When terminating HTTPS at a proxy, set
+`MONO_AGENT_WEB_PUBLIC_ORIGIN` to its exact origin (for example,
+`https://console.example.test`), preserve the Host header and allow the hostname
+through the existing host policy. Managed services retain the origin; owned
+macOS Tailscale sharing derives it when possible. Arbitrary forwarded headers do
+not establish TLS trust. Plain HTTP uses non-Secure cookies and belongs only on
+a trusted network.
+
+The browser shows a login panel before loading conversation data. **Your
+profile** in the Dashboard header offers display-name/password changes and
+logout. Administrators also have **Users**, with role/disabled controls,
+password reset and per-agent grant checkboxes. Administrators are owner-level
+operators; regular users are non-owner operators. Agent settings/run defaults,
+provider authorization/usage, restart and user administration are admin-only.
+Cron controls, wake schedules, projects and tags remain available to granted
+users. Older agents without authenticated actor support are read-only.
+
+Conversations are private to their creator, even from administrators. Only the
+idle creator can share the entire history with everyone allowed on that agent,
+make it private again, or delete it. Other visible participants can chat,
+rename, archive, cancel, compact, answer `AskUser`, edit wakes and change
+project/tag membership. Shared messages name their senders; follow-ups queue,
+while private conversations retain same-account live steering. Unsharing cannot
+retract already-viewed content. Cron results follow their channel’s ownership;
+inaccessible results show **Private results** with no history link. Existing
+cron jobs and unattributed automation default to the bootstrap administrator;
+running a job does not change its owner.
+
+Multi-user mode clears legacy browser transcript/draft caches, disables durable
+transcript storage, offline fallback and all notifications, and resets mounted
+account state on logout, revocation or a 401. The caching/notification behavior
+described below applies to the default mode. Per-user offline storage and
+notifications are tracked in
+[issue #1160](https://github.com/robertsreberski/mono-agent/issues/1160).
+
+Privacy is application policy, not cryptographic isolation: an administrator
+can reset another user’s password and impersonate that account. Agent tools and
+global memory are not isolated by conversation privacy. Shared project/tag
+names and context are visible to granted users and must not contain private
+material. Shared `AskUser` questions can be answered by any visible participant.
+SSO, 2FA, email reset, audit logs and per-conversation ACL lists are not provided.
 
 ## Restart one agent
 

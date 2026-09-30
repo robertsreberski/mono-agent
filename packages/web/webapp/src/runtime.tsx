@@ -483,6 +483,7 @@ export const convertWebMessage = (
           ? { conversationMarker: content[0] } : {}),
         turnId: message.turnId,
         threadId: message.threadId,
+        ...(message.sender === undefined ? {} : { sender: message.sender }),
         updatedAt: message.updatedAt,
         ...(message.finishedAt === undefined ? {} : { finishedAt: message.finishedAt }),
         ...(message.liveInputStatus === undefined ? {} : { liveInputStatus: message.liveInputStatus }),

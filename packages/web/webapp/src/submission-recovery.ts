@@ -1,3 +1,5 @@
+import { isMultiUser } from "./auth-state";
+
 export interface SubmissionRecoveryReference {
   readonly threadId: string;
   readonly submissionId: string;
@@ -16,6 +18,7 @@ const isReference = (value: unknown): value is SubmissionRecoveryReference => {
 };
 
 export function readSubmissionRecoveryReferences(storage: Storage): SubmissionRecoveryReference[] {
+  if (isMultiUser()) return [];
   const raw = storage.getItem(STORAGE_KEY);
   if (raw === null) return [];
   try {
@@ -37,6 +40,7 @@ export function rememberSubmissionRecoveryReference(
   storage: Storage,
   reference: SubmissionRecoveryReference,
 ): void {
+  if (isMultiUser()) return;
   const references = readSubmissionRecoveryReferences(storage).filter((candidate) =>
     candidate.threadId !== reference.threadId || candidate.submissionId !== reference.submissionId);
   references.push(reference);
@@ -47,6 +51,7 @@ export function forgetSubmissionRecoveryReference(
   storage: Storage,
   reference: SubmissionRecoveryReference,
 ): void {
+  if (isMultiUser()) return;
   const references = readSubmissionRecoveryReferences(storage).filter((candidate) =>
     candidate.threadId !== reference.threadId || candidate.submissionId !== reference.submissionId);
   if (references.length === 0) storage.removeItem(STORAGE_KEY);

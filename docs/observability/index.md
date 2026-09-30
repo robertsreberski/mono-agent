@@ -81,7 +81,7 @@ mono-agent web start
 mono-agent web
 ```
 
-A fresh install binds `127.0.0.1:5050`; `--host <addr>` explicitly widens the listener. There is no application login, so network reachability is authority to operate the agents. See the [web console guide](/observability/web-console/) for the complete boundary.
+A fresh install binds `127.0.0.1:5050`; `--host <addr>` explicitly widens the listener. By default there is no application login, so network reachability is authority to operate the agents. See the [web console guide](/observability/web-console/) for the complete boundary.
 
 ## Related
 

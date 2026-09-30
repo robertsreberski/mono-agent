@@ -26,7 +26,7 @@ The browser-first onboarding and safer console-network defaults also **shipped i
 - bare `mono-agent web` is status/help, while `mono-agent web status --json` reports the listener and owned route separately.
 
 :::caution[Trusted network, no application login]
-Neither the 0.22.0 console nor the current source console has application login. Anyone who can reach it can operate discovered agents and complete provider sign-in. A loopback bind limits the listener, but it does not inspect or remove an existing Tailscale handler, reverse proxy, tunnel, or other route. Existing managed definitions can also preserve their configured host. Inspect `mono-agent web`, `mono-agent web status --json`, `tailscale serve status`, and any operator-managed proxies before treating a console as local-only. Widening the listener with `--host` or publishing a route with `--share-tailnet` is an explicit trust decision.
+The 0.22.0 console has no application login. Current source still defaults to no login, but offers [opt-in multi-user accounts](/observability/web-console/#enable-multi-user-mode). Without that mode, anyone who can reach it can operate discovered agents and complete provider sign-in. A loopback bind limits the listener, but it does not inspect or remove an existing Tailscale handler, reverse proxy, tunnel, or other route. Existing managed definitions can also preserve their configured host. Inspect `mono-agent web`, `mono-agent web status --json`, `tailscale serve status`, and any operator-managed proxies before treating a console as local-only. Widening the listener with `--host` or publishing a route with `--share-tailnet` is an explicit trust decision.
 :::
 
 ## Source-only capability groups after 0.22.0

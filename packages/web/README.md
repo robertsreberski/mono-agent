@@ -251,7 +251,48 @@ Scheduled wakes recheck their editor and use non-human operator provenance;
 unsupported/inaccessible schedules pause. Push production/delivery is disabled
 in multi-user mode, including retained subscriptions and outbox work (follow-up
 #1160). This server-side boundary does not sandbox the agent's arbitrary tools or
-global memory. Browser login/sharing/cache UX is a separate webapp follow-up.
+global memory.
+
+### Multi-user browser console
+
+The browser resolves authentication before loading any conversations. Log in
+with the username and password supplied by your administrator; there is no
+public setup or registration screen. **Your profile** in the Dashboard header
+lets you change your display name or password, or log out. Name/password changes
+require a fresh login on every device; logout also resets other tabs.
+
+Administrators use **Your profile → Users** to create users, edit display names,
+roles and disabled state, reset passwords, and select an agent grant checkbox
+for each discovered agent. Administrators have access to every agent, but not
+to other users’ private conversations. Regular users can chat with their granted
+agents and use cron controls, wake schedules, projects and tags. Agent settings,
+new-conversation defaults, provider authorization/usage, restart and user
+administration are administrator-only. Shared project/tag names and context
+are visible to granted users: do not put private material in those definitions.
+
+New conversations are private. The creator can choose **Conversation actions →
+Share with everyone allowed on this agent** while idle, after confirming that
+**the entire history** becomes visible. Shared rows and headers name the creator,
+and human messages show sender names. Participants can chat, rename, archive,
+cancel, compact, answer `AskUser`, edit wakes, and change project/tag membership.
+Only the creator can share, make private again, or delete; making private removes
+other participants’ access but cannot retract content already viewed. Shared
+follow-ups queue instead of steering a current response. Private conversations
+retain same-account live steering.
+
+Cron definitions and controls remain available, but inaccessible channel output
+shows **Private results**, without a history link. Existing configured/unknown
+cron jobs and unattributed automation belong to the bootstrap administrator;
+clicking Run does not transfer their ownership. Cron Reply makes a private
+conversation owned by the requester.
+
+In multi-user mode the browser clears legacy transcript/draft caches before
+mounting the console. It keeps transcripts and drafts only in memory, clears
+account state on logout/revocation, and offers neither offline transcript
+fallback nor notifications/push. Per-user offline storage and notifications are
+tracked in [issue #1160](https://github.com/robertsreberski/mono-agent/issues/1160).
+Mode off retains the existing no-login caching, notifications and steering.
+There is no SSO, 2FA, email reset or per-conversation participant list.
 
 Privacy against administrators is an application policy, not cryptographic
 isolation: an administrator can reset another account's password through the

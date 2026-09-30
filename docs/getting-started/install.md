@@ -95,7 +95,7 @@ mono-agent web            # read-only status, effective URLs, and lifecycle help
 
 Two differences matter before you use the managed path:
 
-- **macOS**: managed `start`/`restart` re-verifies an existing mono-agent-owned Tailscale Serve HTTPS route and creates a new one only with `--share-tailnet`. The bind narrows only the local HTTP listener, so a console with an owned route can still be reachable from the tailnet, and other proxies/routes are not inspected — because there is **no application login**, anyone who can reach it can operate the discovered agents. `mono-agent web` prints the effective URLs; `mono-agent web status --json` separates the listener from the owned route; `tailscale serve status` shows the route.
+- **macOS**: managed `start`/`restart` re-verifies an existing mono-agent-owned Tailscale Serve HTTPS route and creates a new one only with `--share-tailnet`. The bind narrows only the local HTTP listener, so a console with an owned route can still be reachable from the tailnet, and other proxies/routes are not inspected — because the default mode has **no application login**, anyone who can reach it can operate the discovered agents. `mono-agent web` prints the effective URLs; `mono-agent web status --json` separates the listener from the owned route; `tailscale serve status` shows the route.
 - **Linux**: `start` uses the systemd user service and HTTPS routes are managed externally. See [Linux services](/observability/linux-services/).
 
 Where no usable service manager exists, the foreground command above is the supported path. Read the [web console guide](/observability/web-console/) for persistent threads, attachments, notifications, service lifecycle, and the full security boundary.

@@ -35,6 +35,7 @@
         "../src/thread-usage.ts",
         "../src/push-preview.ts",
         "../src/contracts.ts",
+        "../src/auth-contracts.ts",
         "../../agent-contracts/src/provider-usage.ts"
       ],
       "exclude": ["src/stories/**", "src/**/*.stories.tsx"]

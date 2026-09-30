@@ -9,6 +9,7 @@ import { api, ApiError } from "../../api";
 import type { AgentSummary, ProviderUsageId, ThreadDetail } from "../../types";
 import { contextLevel, conversationCacheHitPercent, formatTokenCount, formatUsd, type ConsoleContextProjection } from "../../usage";
 import { useThreadUsage } from "../../use-thread-usage";
+import { useAuth } from "../../auth";
 import { ProviderUsageMeters, useProviderUsage } from "../ProviderUsageMeters";
 import { shortModelName } from "../route-label";
 
@@ -230,7 +231,8 @@ export function ContextDisplay({ threadId, detail, compactThreadId, compactBlock
     : size === undefined ? `${exact(used)} tokens; context window size not reported`
       : `${estimate ? "about " : last ? "last measured " : ""}${exact(used)} of ${exact(size)} tokens (${estimate ? "about " : ""}${percentText(percent!)}${estimate ? ") after compaction" : ")"}${context.status === "updating" || running ? ", updating" : ""}`;
   const ariaLabel = `Context usage: ${label}${busy ? ", compacting" : ""}.${totals?.total.costUsd === undefined ? "" : ` Estimated cost ${formatUsd(totals.total.costUsd)}.`}`;
-  const availableProviderUsage = providerUsage !== undefined && providerUsage.agent.supportsProviderUsage === true
+  const { admin } = useAuth();
+  const availableProviderUsage = admin && providerUsage !== undefined && providerUsage.agent.supportsProviderUsage === true
     && providerUsage.agent.status !== "offline" && isProviderUsageId(providerUsage.providerId)
     ? { agent: providerUsage.agent, providerId: providerUsage.providerId } : undefined;
   const compact = async () => {

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add browser login, profiles, administrator user/grant editing and explicit
+  conversation sharing for opt-in multi-user consoles. Show shared senders and
+  private cron results, hide administrator-only controls from regular users, and
+  disable durable transcripts, offline fallback and notifications in this mode.
+
 - Harden multi-user authentication throttles and administrator recovery, retain
   shared automation outcomes after browser revocation, isolate staged upload
   quotas, and configure the owned tailnet HTTPS origin for authenticated use.

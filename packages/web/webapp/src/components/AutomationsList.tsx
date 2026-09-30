@@ -1,3 +1,4 @@
+import { CronChannelHeader } from "./CronChannelHeader";
 import { useMemo } from "react";
 import { useConsoleStore } from "../console-store";
 import { formatCronSchedule } from "../cron-schedule";
@@ -98,7 +99,7 @@ function AutomationRow({
   const lastRunAtMs = lastRunAt === undefined ? undefined : Date.parse(lastRunAt);
   // The row's stamp carries WHEN the job last ran, the way a conversation row
   // carries when it last moved, so the line below only has to say how it went.
-  const lastRunLabel = job.activeRunId !== undefined
+  const lastRunLabel = job.resultsPrivate ? "Private results" : job.activeRunId !== undefined
     ? "Run in progress"
     : lastRun === undefined
       ? "No runs yet"
@@ -106,11 +107,12 @@ function AutomationRow({
   const schedule = formatCronSchedule(job.expression, job.timezone);
 
   return (
-    <div className={`thread-item${active ? " is-active" : ""}`}>
+    <div className={`thread-item${active ? " is-active" : ""}${job.resultsPrivate ? " has-private-results" : ""}`}>
       <button
         type="button"
         className="thread-trigger"
-        aria-label={`Open run history for ${job.jobId}`}
+        aria-label={job.resultsPrivate ? `${job.jobId} · Private results` : `Open run history for ${job.jobId}`}
+        disabled={job.resultsPrivate}
         onClick={onOpen}
       >
         <span className="thread-kind is-cron" role="img" aria-label="Scheduled" title="Scheduled">
@@ -154,6 +156,7 @@ function AutomationRow({
           </span>
         </span>
       </button>
+      {job.resultsPrivate && <CronChannelHeader controlJob={job} />}
     </div>
   );
 }

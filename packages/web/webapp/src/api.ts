@@ -1,3 +1,5 @@
+import { invalidateAuthentication, isMultiUser } from "./auth-state";
+import type { CreateWebUserInput, PatchWebUserInput, WebUser } from "../../src/auth-contracts.js";
 import { parseProviderUsageSnapshot } from "@mono-agent/agent-contracts/provider-usage";
 import type { WebThreadUsage, WebUsageSlice } from "../../src/contracts.js";
 import type { TagSummary, TagColor, ProjectColor } from "./types";
@@ -77,6 +79,7 @@ const readJson = async <T>(response: Response): Promise<T> => {
 };
 
 const readError = async (response: Response): Promise<ApiError> => {
+  if (response.status === 401) invalidateAuthentication();
   let message = `${response.status} ${response.statusText}`.trim();
   let code: string | undefined;
   let details: Readonly<Record<string, unknown>> | undefined;
@@ -120,6 +123,7 @@ const readError = async (response: Response): Promise<ApiError> => {
 const send = async (path: string, init?: RequestInit): Promise<Response> => {
   const response = await fetch(path, {
     ...init,
+    ...(isMultiUser() ? { cache: "no-store" as const } : {}),
     headers: {
       Accept: "application/json",
       ...(init?.body ? { "Content-Type": "application/json" } : {}),
@@ -415,6 +419,16 @@ export function parseThreadUsage(value: unknown): WebThreadUsage {
 }
 
 export const api = {
+  authStatus: () => request<{ readonly multiUser: boolean; readonly user: WebUser | null }>("/api/v1/auth/status", { cache: "no-store" }),
+  login: (username: string, password: string) => request<{ readonly user: WebUser }>("/api/v1/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }),
+  logout: async (): Promise<void> => { await send("/api/v1/auth/logout", { method: "POST" }); },
+  profile: () => request<{ readonly user: WebUser }>("/api/v1/profile"),
+  patchProfile: (displayName: string) => request<{ readonly user: WebUser; readonly reauthenticate: boolean }>("/api/v1/profile", { method: "PATCH", body: JSON.stringify({ displayName }) }),
+  changePassword: async (currentPassword: string, password: string): Promise<void> => { await send("/api/v1/profile/password", { method: "POST", body: JSON.stringify({ currentPassword, password }) }); },
+  users: () => request<{ readonly users: readonly WebUser[] }>("/api/v1/users"),
+  createUser: (input: CreateWebUserInput) => request<{ readonly user: WebUser }>("/api/v1/users", { method: "POST", body: JSON.stringify(input) }),
+  patchUser: (id: string, input: PatchWebUserInput) => request<{ readonly user: WebUser }>(`/api/v1/users/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) }),
+  resetPassword: async (id: string, password: string): Promise<void> => { await send(`/api/v1/users/${encodeURIComponent(id)}/password`, { method: "POST", body: JSON.stringify({ password }) }); },
   threadUsage: async (threadId: string, signal?: AbortSignal): Promise<WebThreadUsage> => {
     const response = await request<{ usage: unknown }>(`/api/v1/threads/${encodeURIComponent(threadId)}/usage`, { signal });
     return parseThreadUsage(response.usage);
@@ -972,6 +986,7 @@ export const api = {
       tagIds?: readonly string[];
       projectId?: string | null;
       ifRunConfigUnset?: boolean;
+      shared?: boolean;
     },
     signal?: AbortSignal,
   ) => {

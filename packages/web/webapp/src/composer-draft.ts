@@ -1,3 +1,5 @@
+import { isMultiUser } from "./auth-state";
+
 /**
  * Unsent prompt text, kept per agent and conversation and retained on the
  * device.
@@ -202,6 +204,7 @@ export const flushComposerDrafts = (): void => {
     clearTimeout(flushTimer);
     flushTimer = null;
   }
+  if (isMultiUser()) { persisting = false; return; }
   if (touchedKeys.size === 0 && clampedKeys.size === 0) return;
   const store = storage();
   if (store === null) {
@@ -293,6 +296,7 @@ const listenForTeardown = (): void => {
 const hydrate = (): void => {
   if (hydrated) return;
   hydrated = true;
+  if (isMultiUser()) { persisting = false; return; }
   // A clamped stamp is this tab's correction of the record: written back at
   // the next flush, so the merge takes this hydration's "now" and not a later
   // one, unless another tab has moved that key since.

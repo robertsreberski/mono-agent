@@ -5,34 +5,11 @@ import { WebConsoleError } from "./errors.js";
 import { acquireWebStateLease, prepareWebStatePaths, type WebStatePathOptions } from "./state-paths.js";
 import type { WebStore } from "./store.js";
 
-export type WebUserRole = "admin" | "user";
-export interface WebUser {
-  readonly id: string;
-  readonly username: string;
-  readonly displayName: string;
-  readonly role: WebUserRole;
-  readonly disabled: boolean;
-  readonly version: number;
-  readonly grants: readonly string[];
-  readonly createdAt: string;
-  readonly updatedAt: string;
-}
+import type { CreateWebUserInput, PatchWebUserInput, WebUser, WebUserRole } from "./auth-contracts.js";
+export type { CreateWebUserInput, PatchWebUserInput, WebUser, WebUserRole } from "./auth-contracts.js";
 export interface WebPrincipal extends WebUser {
   readonly sessionHash: string;
   readonly expiresAt: string;
-}
-export interface CreateWebUserInput {
-  readonly username: string;
-  readonly displayName?: string;
-  readonly password: string;
-  readonly role: WebUserRole;
-  readonly grants?: readonly string[];
-}
-export interface PatchWebUserInput {
-  readonly displayName?: string;
-  readonly role?: WebUserRole;
-  readonly disabled?: boolean;
-  readonly grants?: readonly string[];
 }
 interface UserRow {
   id: string; username: string; display_name: string; role: WebUserRole; disabled: number;

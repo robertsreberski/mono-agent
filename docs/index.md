@@ -32,7 +32,7 @@ The latest published npm release is `create-mono-agent@0.22.0`. It includes the 
 - **Your models, including local ones** — route to subscription and API providers such as OpenAI Codex, Anthropic, GitHub Copilot, and OpenCode-Go, or run locally through Ollama and LM Studio. Add ordered fallback routes so a provider failure does not end the turn. See [Runtime & providers](/runtime/).
 - **Channels when you want them** — Telegram, Slack, WhatsApp, webhook, an OpenAI-compatible API, A2A, and cron all feed the same configured runtime. Each channel keeps its own conversation history. See [Channels](/channels/).
 - **Powerful surfaces without writing a host** — tools, tool policy, MCP servers, selected skills, tiered memory, and a native sandbox are all declarable in the config file. See [Tools, MCP & sandbox](/tools/) and [Selected skills](/context/skills/).
-- **Local-first by default** — run artifacts stay on disk, credentials live in an owner-only `.env` or the provider's auth store, and the browser console has no application login, so reachability is the access boundary. See [Security policy](https://github.com/robertsreberski/mono-agent/blob/main/SECURITY.md) and [Setup security and managed runtime](/reference/setup-security/).
+- **Local-first by default** — run artifacts stay on disk, credentials live in an owner-only `.env` or the provider's auth store, and the browser console has no application login by default, so reachability is the access boundary unless you enable multi-user accounts. See [Security policy](https://github.com/robertsreberski/mono-agent/blob/main/SECURITY.md) and [Setup security and managed runtime](/reference/setup-security/).
 
 An agent can be small. This is a complete config:
 

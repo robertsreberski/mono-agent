@@ -1,3 +1,4 @@
+import { isMultiUser } from "./auth-state";
 import { routeWriteState } from "./mobile-history";
 import { webPushPreview } from "../../src/push-preview";
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useRef, useState } from "react";
@@ -128,6 +129,10 @@ interface NotificationsValue {
 const NotificationsContext = createContext<NotificationsValue | null>(null);
 
 export function NotificationsProvider({ children }: { readonly children: ReactNode }) {
+  return isMultiUser() ? <>{children}</> : <LegacyNotificationsProvider>{children}</LegacyNotificationsProvider>;
+}
+
+function LegacyNotificationsProvider({ children }: { readonly children: ReactNode }) {
   const store = useConsoleStore();
   const [currentPreference, setCurrentPreference] = useState<NotificationPreference>(preference);
   const [pushActive, setPushActive] = useState(false);
@@ -419,6 +424,7 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
 
 export function NotificationBell() {
   const notifications = useContext(NotificationsContext);
+  if (isMultiUser()) return null;
   if (!notifications) throw new Error("NotificationBell must be used inside NotificationsProvider.");
   const enabled = notifications.preference === "enabled";
   const unavailable = notifications.preference === "unsupported";
