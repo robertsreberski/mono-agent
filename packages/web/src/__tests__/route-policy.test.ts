@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { installWebAuthentication } from "../auth-http.js";
 import { WebConsoleError } from "../errors.js";
+import { MCP_APP_PROXY_PATH } from "../mcp-app-proxy.js";
 import { authorizeWebPayload, authorizeWebRoute, classifyWebRoute } from "../route-policy.js";
 import { WebService } from "../service.js";
 import { fakeDiscoveredAgent, operatorFetch, temporaryRoot } from "./helpers.js";
@@ -73,6 +74,8 @@ describe("closed browser route policy", () => {
     const routes = [...source.matchAll(/app\.(get|post|patch|put|delete)\(\s*"([^"]+)"/gu)]
       .filter((match) => match[2]!.startsWith("/api/"));
     expect(routes.length).toBeGreaterThan(50);
+    expect(source).toContain("app.get(MCP_APP_PROXY_PATH");
+    expect(classifyWebRoute("GET", MCP_APP_PROXY_PATH)).toEqual({ family: "mcp-app-proxy" });
     for (const route of routes) {
       const path = route[2]!.replace(/:[A-Za-z]+/gu, "resource");
       if (path.startsWith("/api/v1/push/")) expect(() => classifyWebRoute(route[1]!.toUpperCase(), path)).toThrow("Push is disabled");

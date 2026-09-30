@@ -8,11 +8,11 @@ const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const clean of cleanup.splice(0)) await clean(); });
 const snapshot = { interactionId: "fictional-private-interaction", questions: [{ id: "q", header: "Fictional private heading", question: "Fictional private question", options: [], multiSelect: false }],
   answers: [], activeQuestionIndex: 0, status: "pending", createdAt: "2027-01-02T10:00:00Z", expiresAt: null };
-async function fixture() {
+async function fixture(supportsWebActor = true) {
   const root = await temporaryRoot("web-ask-access-");
   const asks = new Map<string, Record<string, unknown> | null>();
   let exactCalls = 0; let submissions = 0; let beforePending: (() => void) | undefined;
-  const base = operatorFetch({ supportsAskUser: true, supportsAskById: true, exactAsks: { [snapshot.interactionId]: snapshot }, onAskSubmit: () => { submissions += 1; } });
+  const base = operatorFetch({ supportsWebActor, supportsAskUser: true, supportsAskById: true, exactAsks: { [snapshot.interactionId]: snapshot }, onAskSubmit: () => { submissions += 1; } });
   const options: CreateWebServiceOptions = { stateDir: join(root, "state"), discoveryIntervalMs: 0, purgeIntervalMs: 0, discoverImpl: async () => [fakeDiscoveredAgent()],
     fetchImpl: async (input, init) => {
       const url = String(input);
@@ -47,6 +47,12 @@ describe("AskUser thread association and async access", () => {
     f.asks.set(`web:${f.privateThread.id}`, null); // terminal snapshots remain bound to their original conversation
     expect(await f.store.access.run(f.a, () => f.service.ask(f.privateThread.id, snapshot.interactionId))).toEqual(snapshot);
     await expect(f.store.access.run(f.b, () => f.service.ask(f.other.id, snapshot.interactionId))).rejects.toMatchObject({ code: "interaction_not_found" });
+  });
+
+  it("refuses human answers on an older agent before submitting to its legacy-owner run", async () => {
+    const f = await fixture(false);
+    await expect(f.store.access.run(f.a, () => f.service.submitAsk(f.privateThread.id, snapshot.interactionId, []))).rejects.toMatchObject({ code: "web_actor_unsupported" });
+    expect(f.submissions()).toBe(0);
   });
 
   it("rechecks grant/account state before publishing an asynchronous pending snapshot", async () => {

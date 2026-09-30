@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from "express";
 
 import { WebConsoleError } from "./errors.js";
+import { MCP_APP_PROXY_PATH } from "./mcp-app-proxy.js";
 import type { WebService } from "./service.js";
 
 export interface WebRouteRule {
@@ -26,6 +27,7 @@ export function classifyWebRoute(method: string, pathname: string): WebRouteRule
   const [family, id, action, detail, subaction, item, leaf, operation] = parts.slice(2);
   const count = parts.length - 2;
   const get = method === "GET" || method === "HEAD";
+  if (pathname === MCP_APP_PROXY_PATH && get) return { family: "mcp-app-proxy" };
   if (family === "bootstrap" && count === 1 && get) return { family: "bootstrap" };
   if (family === "events" && count === 1 && get) return { family: "events" };
   if (family === "push") throw new WebConsoleError("push_disabled", "Push is disabled in multi-user mode.", 404);

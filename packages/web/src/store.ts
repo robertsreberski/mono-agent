@@ -1985,6 +1985,11 @@ export class WebStore {
   ): CronReplyReservationResult {
     return this.transaction(() => {
       this.requireVisibleCronChannel(candidate.sourceId, candidate.jobId);
+      if (this.access.current() !== undefined) {
+        this.database.prepare(`UPDATE cron_reply_operations SET state = 'failed', failure_reason = 'pending_expired',
+          failed_at = ?, snapshot_text = NULL, snapshot_sha256 = NULL, title = NULL, provenance_message_id = NULL, result_message_id = NULL WHERE source_id = ? AND job_id = ? AND run_id = ? AND state = 'pending' AND created_at <= ?`)
+          .run(this.now(), candidate.sourceId, candidate.jobId, candidate.runId, new Date(Date.parse(this.now()) - 5 * 60_000).toISOString());
+      }
       const existing = this.database.prepare("SELECT * FROM cron_reply_operations WHERE operation_id = ?")
         .get(operationId) as unknown as CronReplyOperationRow | undefined;
       if (existing !== undefined) {
@@ -1997,6 +2002,11 @@ export class WebStore {
         WHERE source_id = ? AND job_id = ? AND run_id = ? AND state = 'pending'
       `).get(candidate.sourceId, candidate.jobId, candidate.runId) as unknown as CronReplyOperationRow | undefined;
       if (pending !== undefined) {
+        const principal = this.access.current();
+        const actor = parseStoredWebActor(pending.web_actor_json);
+        if (principal !== undefined && (actor?.sender.id !== principal.id || actor.role !== principal.role)) {
+          throw new WebConsoleError("cron_reply_busy", "Another Reply is still being settled; retry later.", 409);
+        }
         this.requireCronReplyAccess(pending);
         return { kind: "pending", operation: mapCronReplyOperation(pending) };
       }
@@ -3583,7 +3593,8 @@ export class WebStore {
       values.push(parseProjectColor(patch.color));
     }
     if (patch.archived === true && this.database.prepare("SELECT 1 FROM pending_project_memberships WHERE project_id = ? LIMIT 1").get(id)) {
-      throw new WebConsoleError("project_busy", "Wait for pending conversation turns before archiving this project.", 409);
+      throw new WebConsoleError(this.access.isScoped() ? "project_unavailable" : "project_busy",
+        this.access.isScoped() ? "This project cannot be changed right now; retry later." : "Wait for pending conversation turns before archiving this project.", 409);
     }
     if (patch.name !== undefined) {
       sets.push("name = ?");
@@ -3630,7 +3641,8 @@ export class WebStore {
         UNION ALL SELECT 1 FROM turns JOIN threads ON threads.id = turns.thread_id
         WHERE threads.project_id = ? AND turns.status = 'running' LIMIT 1
       `).get(id, id)) {
-        throw new WebConsoleError("project_busy", "Wait for active and pending conversation turns before deleting this project.", 409);
+        throw new WebConsoleError(this.access.isScoped() ? "project_unavailable" : "project_busy",
+          this.access.isScoped() ? "This project cannot be changed right now; retry later." : "Wait for active and pending conversation turns before deleting this project.", 409);
       }
       for (const memberId of members) {
         this.applyProjectMembership(memberId, id, null);
@@ -4543,10 +4555,12 @@ export class WebStore {
   }
 
   stagedUploadUsage(): { readonly count: number; readonly bytes: number } {
+    const principal = this.access.current();
     const row = this.database.prepare(`
       SELECT COUNT(*) AS count, COALESCE(SUM(size_bytes), 0) AS bytes
       FROM attachments WHERE status = 'staged' AND thread_id IS NULL
-    `).get() as unknown as { count: number; bytes: number };
+      ${principal === undefined ? "" : "AND owner_user_id = ?"}
+    `).get(...(principal === undefined ? [] : [principal.id])) as unknown as { count: number; bytes: number };
     return row;
   }
 

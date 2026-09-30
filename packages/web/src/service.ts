@@ -1489,6 +1489,7 @@ export class WebService {
     if (connection === undefined || !connection.info.supportsAskUser) {
       throw new WebConsoleError("ask_user_unavailable", "This agent does not support interactive questions.", 409);
     }
+    this.requireHumanActorSupport(thread.sourceId);
     const conversationId = this.store.cronConversationIdForThread(thread.id) ?? `web:${thread.id}`;
     if (this.options.multiUser === true && !this.store.askBelongsToThread(thread.sourceId, thread.id, interactionId)) {
       const pending = await this.pendingAsk(thread.id);
@@ -2026,15 +2027,15 @@ export class WebService {
         reservation.idempotencyKey,
       );
     } catch (error) {
-      this.requireCronResults(sourceId, jobId);
       if (error instanceof WebConsoleError
         && (error.code === "context_import_conflict"
           || error.code === "context_import_failed"
           || error.code === "context_import_unsupported")) {
-        const failed = this.store.failCronReplyOperation(
+        const failed = this.store.access.internal(() => this.store.failCronReplyOperation(
           input.operationId,
           typeof error.details?.reason === "string" ? error.details.reason : error.code,
-        );
+        ));
+        this.requireCronResults(sourceId, jobId);
         const wonRace = this.cronReplyTerminalResult(failed);
         if (wonRace !== undefined) return wonRace;
         throw new WebConsoleError(
@@ -2055,9 +2056,12 @@ export class WebService {
       );
     }
 
+    const completed = this.store.access.internal(() => this.store.completeCronReplyOperation(input.operationId, canonicalStatus));
     this.requireCronResults(sourceId, jobId);
-    const completed = this.store.completeCronReplyOperation(input.operationId, canonicalStatus);
-    const receipt = this.cronReplyTerminalResult(completed);
+    const projected = this.store.access.current() !== undefined ? this.store.cronReplyOperation(input.operationId) : completed;
+    const terminal = this.cronReplyTerminalResult(projected ?? completed);
+    const receipt = terminal === undefined ? undefined : { ...terminal,
+      duplicate: completed.kind === "completed" ? completed.receipt.duplicate : terminal.duplicate };
     if (receipt === undefined) {
       throw new WebConsoleError("cron_reply_operation_conflict", "Cron reply operation did not complete.", 409);
     }
@@ -2361,32 +2365,33 @@ export class WebService {
         this.conversationIdForThread(threadId),
         model === undefined ? undefined : { model },
       );
-      this.recheckThreadAccess(threadId);
-      // A thread deleted meanwhile keeps the agent's outcome but records nothing.
-      if (this.store.getThread(threadId) !== undefined) {
-        const messageId = this.store.recordManualCompaction(threadId, result);
-        if (messageId !== undefined) {
-          this.emit("message.changed", threadId, { messageId, updatedAt: new Date().toISOString() });
+      // Shared durable outcomes survive revocation of the requesting browser.
+      this.store.access.internal(() => {
+        if (this.store.getThread(threadId) !== undefined) {
+          const messageId = this.store.recordManualCompaction(threadId, result);
+          if (messageId !== undefined) this.emit("message.changed", threadId, { messageId, updatedAt: new Date().toISOString() });
         }
-      }
+      });
       return result;
     })().catch((error: unknown) => {
-      this.recheckThreadAccess(threadId);
       // Only an explicit agent failure is known to have failed. A lost or
       // malformed response can race an already committed provider revision.
-      if (this.store.getThread(threadId) !== undefined) {
-        this.store.recordManualCompactionFailure(threadId,
+      this.store.access.internal(() => {
+        if (this.store.getThread(threadId) !== undefined) this.store.recordManualCompactionFailure(threadId,
           error instanceof WebConsoleError && ["compaction_failed", "compaction_busy", "compaction_unsupported"].includes(error.code)
             ? undefined : "outcome_unknown");
-      }
+      });
       throw error;
     });
     this.activeCompactions.set(threadId, operation.catch(() => undefined));
     this.manualCompactionStartedAt.set(threadId, this.currentDate().toISOString());
     this.emitStoredThread(threadId, ["thread.changed"]);
     try {
-      return await operation;
-    } finally {
+      const result = await operation;
+      this.recheckThreadAccess(threadId);
+      return result;
+    } catch (error) { this.recheckThreadAccess(threadId); throw error; }
+    finally {
       // Service restarts forget the in-memory hint; completed requests now
       // leave a durable outcome (including an explicitly unknown one).
       this.activeCompactions.delete(threadId);
@@ -2688,7 +2693,10 @@ export class WebService {
     if (attachment.status !== "staged" || attachment.uploaded) {
       throw new WebConsoleError("attachment_unavailable", "This attachment is not available for upload.", 409);
     }
-    if (this.activeUploads.size >= WEB_MAX_CONCURRENT_UPLOADS || this.activeUploads.has(id)) {
+    const principal = this.store.access.current();
+    const activeCount = principal === undefined ? this.activeUploads.size
+      : [...this.activeUploads.keys()].filter((uploadId) => this.store.attachmentOwner(uploadId) === principal.id).length;
+    if (activeCount >= WEB_MAX_CONCURRENT_UPLOADS || this.activeUploads.has(id)) {
       throw new WebConsoleError("upload_concurrency_limit", "Too many uploads are already in progress.", 429);
     }
     const usage = this.store.stagedUploadUsage();
@@ -5296,7 +5304,10 @@ export class WebService {
 
   private activeReservedUploadBytes(): number {
     let total = 0;
-    for (const bytes of this.activeUploads.values()) total += bytes;
+    const principal = this.store.access.current();
+    for (const [id, bytes] of this.activeUploads) {
+      if (principal === undefined || this.store.attachmentOwner(id) === principal.id) total += bytes;
+    }
     return total;
   }
 }

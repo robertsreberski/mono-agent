@@ -53,6 +53,8 @@ describe("enabled production HTTP policy", () => {
       expect((await f.request(path!, undefined, method!, method === "POST" ? {} : undefined)).status, path).toBe(401);
     }
     expect((await f.request("/api/v1/unknown", f.a)).status).toBe(404);
+    expect((await f.request("/api/v1/mcp-app-proxy")).status).toBe(401);
+    expect((await f.request("/api/v1/mcp-app-proxy", f.a)).status).toBe(200);
     expect((await f.request("/api/v1/push/subscriptions/fake", f.admin)).status).toBe(404);
     for (const [path, method] of [["/api/v1/users", "GET"], ["/api/v1/agents/agent-one", "PATCH"], ["/api/v1/agents/agent-one/run-defaults", "PUT"],
       ["/api/v1/agents/agent-one/restart", "POST"], ["/api/v1/agents/agent-one/provider-auth", "GET"], ["/api/v1/agents/agent-one/provider-usage", "GET"]]) {

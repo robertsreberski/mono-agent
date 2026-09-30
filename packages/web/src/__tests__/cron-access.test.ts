@@ -1,5 +1,6 @@
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -90,7 +91,7 @@ describe("principal-scoped cron definitions and results", () => {
     await expect(pending).rejects.toMatchObject({ status: 401 });
   });
 
-  it("does not complete a pending import after its requester loses channel visibility", async () => {
+  it("settles a canonical import before refusing a requester who lost channel visibility", async () => {
     const f = await fixture();
     f.store.access.run(f.admin, () => f.service.patchThread(f.channel.id, { shared: true }));
     await f.store.access.run(f.a, () => f.service.cronRuns("agent-one", "digest", { limit: 1 }));
@@ -100,8 +101,20 @@ describe("principal-scoped cron definitions and results", () => {
     f.store.access.run(f.admin, () => f.service.patchThread(f.channel.id, { shared: false }));
     f.resume();
     await expect(pending).rejects.toMatchObject({ status: 404 });
-    expect(f.store.cronReplyOperation(input.operationId)?.kind).toBe("pending");
-    expect(f.store.listThreadsPage({ sourceId: "agent-one", archived: false, limit: 50 }).threads).toHaveLength(1);
+    expect(f.store.cronReplyOperation(input.operationId)?.kind).toBe("completed");
+    expect(f.store.listThreadsPage({ sourceId: "agent-one", archived: false, limit: 50 }).threads).toHaveLength(2);
+  });
+
+  it("expires stale actor-owned pending reservations instead of locking the run indefinitely", async () => {
+    const f = await fixture(); f.store.access.run(f.admin, () => f.service.patchThread(f.channel.id, { shared: true }));
+    await f.store.access.run(f.a, () => f.service.cronRuns("agent-one", "digest", { limit: 1 }));
+    const candidate = f.store.access.run(f.a, () => f.store.captureCronReplySnapshot("agent-one", "digest", run.runId, "summary"));
+    f.store.access.run(f.a, () => f.store.reserveCronReplyOperation("fictional-stale-reply", candidate));
+    const db = new DatabaseSync(f.store.paths.database);
+    try { db.prepare("UPDATE cron_reply_operations SET created_at = ? WHERE operation_id = ?").run("2000-01-01T00:00:00.000Z", "fictional-stale-reply"); }
+    finally { db.close(); }
+    expect(f.store.access.run(f.b, () => f.store.reserveCronReplyOperation("fictional-fresh-reply", candidate)).kind).toBe("reserved");
+    expect(f.store.cronReplyOperation("fictional-stale-reply")?.kind).toBe("failed");
   });
 
   it("makes Reply private to its requester, binds pending/completed receipts to actor, and rechecks source visibility", async () => {
@@ -112,6 +125,8 @@ describe("principal-scoped cron definitions and results", () => {
     f.pause();
     const first = f.store.access.run(f.a, () => f.service.createCronReplyThread("agent-one", "digest", run.runId, input));
     await expect(f.store.access.run(f.b, () => f.service.createCronReplyThread("agent-one", "digest", run.runId, input))).rejects.toMatchObject({ status: 404 });
+    await expect(f.store.access.run(f.b, () => f.service.createCronReplyThread("agent-one", "digest", run.runId,
+      { ...input, operationId: "fictional-different-actor-reply" }))).rejects.toMatchObject({ code: "cron_reply_busy", status: 409 });
     expect(f.imports()).toBe(0);
     f.resume();
     const receipt = await first;
