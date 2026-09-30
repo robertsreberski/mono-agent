@@ -148,7 +148,19 @@ describe("compact Agent settings subscription meters", () => {
     expect(document.body.textContent).not.toContain("PRIVATE_VENDOR_DETAIL");
     expect(screen.getByRole("progressbar", { name: /GitHub Copilot Credits used/ })).toHaveAttribute("value", "42.1");
     expect(screen.queryByText("Usage only")).toBeNull();
+    const failed = screen.getByText(/Usage refresh failed/);
+    expect(failed.closest(".settings-section-actions")).not.toBeNull();
+    expect(getComputedStyle(failed).fontSize).toBe(touch ? "11px" : "10px");
     if (directory) await page.screenshot({ path: `${directory}/synthetic-agent-settings-${name}-refresh-error.png` });
+    // Success is one quiet line under the actions, sized like the disclosure, not a paragraph.
+    mocks.refreshProviderUsage.mockResolvedValueOnce(snapshot);
+    fireEvent.click(button);
+    const updated = await screen.findByText(/^Updated /);
+    expect(updated.tagName).toBe("SPAN");
+    expect(updated.closest(".settings-section-actions")).not.toBeNull();
+    expect(getComputedStyle(updated).fontSize).toBe(touch ? "11px" : "10px");
+    expect(updated.getAttribute("title")).toMatch(/^Fetched /);
+    if (directory) await page.screenshot({ path: `${directory}/synthetic-agent-settings-${name}-refresh-done.png` });
   });
 
   it("renders scoped meters without auth controls for an independent usage capability", async () => {

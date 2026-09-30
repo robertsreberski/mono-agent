@@ -4,14 +4,22 @@ import { agent } from "../test/fixtures";
 import type { AgentSummary, ProviderUsage, ProviderUsageSnapshot } from "../types";
 const mocks = vi.hoisted(() => ({ providerUsage: vi.fn(), refreshProviderUsage: vi.fn() }));
 vi.mock("../api", () => ({ api: mocks }));
-import { ProviderUsageMeters, useProviderUsage } from "./ProviderUsageMeters";
+import { formatUsageFetchedAt, ProviderUsageMeters, useProviderUsage } from "./ProviderUsageMeters";
 const snapshot: ProviderUsageSnapshot = { schema: "mono-agent.provider-usage.v1", providers: [{ providerId: "opencode-go", label: "OpenCode Go", plan: "Go", fetchedAt: "2026-09-14T12:00:00Z", stale: false, windows: [{ kind: "session", label: "Session", usedPercent: 0, periodMs: 18000000, resetsAt: "2026-09-14T13:00:00Z" }] }] };
 function Loader({ selected }: { selected: AgentSummary }) {
   const { snapshot: usage, refresh, refreshing, feedback } = useProviderUsage(selected);
-  return <><button onClick={() => void refresh()} disabled={refreshing}>Refresh</button><p role="status">{feedback}</p>{usage?.providers.map((item) => <ProviderUsageMeters key={item.providerId} usage={item} />)}</>;
+  return <><button onClick={() => void refresh()} disabled={refreshing}>Refresh</button><p role="status" title={feedback?.fetchedAt}>{feedback?.text}</p>{usage?.providers.map((item) => <ProviderUsageMeters key={item.providerId} usage={item} />)}</>;
 }
 afterEach(() => { vi.useRealTimers(); vi.resetAllMocks(); });
 describe("usage rows and lifecycle", () => {
+  it("formats the refresh time compactly: time today, short date otherwise", () => {
+    const now = new Date(2026, 8, 30, 9, 30).getTime();
+    const today = new Date(2026, 8, 30, 9, 6).getTime();
+    const earlier = new Date(2026, 8, 28, 22, 15).getTime();
+    expect(formatUsageFetchedAt(today, now)).toBe(new Date(today).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }));
+    expect(formatUsageFetchedAt(today, now)).not.toContain("2026");
+    expect(formatUsageFetchedAt(earlier, now)).toBe(new Date(earlier).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }));
+  });
   it("omits absent credentials without placeholders and renders fixed errors with last-good", () => {
     const view = render(<ProviderUsageMeters />);
     expect(view.container.textContent).toBe("");
@@ -46,7 +54,7 @@ describe("usage rows and lifecycle", () => {
     const next = { ...snapshot, providers: [{ ...snapshot.providers[0]!, fetchedAt: "2026-09-14T12:01:00Z", windows: [{ ...snapshot.providers[0]!.windows[0]!, usedPercent: 54 }] }] };
     await act(async () => finish(next));
     expect(screen.getByRole("progressbar")).toHaveAttribute("value", "54");
-    expect(screen.getByText(/Usage refreshed. Last fetched/)).toHaveTextContent(new Date(next.providers[0]!.fetchedAt).toLocaleString());
+    expect(screen.getByText(/^Updated /)).toHaveAttribute("title", new Date(next.providers[0]!.fetchedAt).toISOString());
     mocks.refreshProviderUsage.mockRejectedValueOnce(new Error("RAW_SECRET"));
     fireEvent.click(screen.getByRole("button"));
     await screen.findByText(/Usage refresh failed/);
@@ -71,7 +79,7 @@ describe("usage rows and lifecycle", () => {
     expect(signal.aborted).toBe(true);
     await act(async () => finish(snapshot));
     expect(screen.queryByRole("progressbar")).toBeNull();
-    expect(screen.queryByText(/Usage refreshed/)).toBeNull();
+    expect(screen.queryByText(/^Updated /)).toBeNull();
   });
   it("does not let an older automatic response overwrite a newer manual result", async () => {
     let automatic!: (value: ProviderUsageSnapshot) => void;
@@ -90,7 +98,7 @@ describe("usage rows and lifecycle", () => {
     await screen.findByRole("progressbar");
     fireEvent.click(screen.getByRole("button"));
     await screen.findByText(/Some usage could not be refreshed/);
-    expect(screen.queryByText(/Usage refreshed/)).toBeNull();
+    expect(screen.queryByText(/^Updated /)).toBeNull();
     expect(screen.getByRole("progressbar")).toHaveAttribute("value", "0");
   });
   it("polls at five minutes, updates countdown, and stops on unmount", async () => {
