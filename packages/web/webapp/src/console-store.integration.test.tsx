@@ -566,10 +566,17 @@ describe("ConsoleStoreProvider integration", () => {
     });
     const scrollToDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTo");
     Object.defineProperty(HTMLElement.prototype, "scrollTo", { configurable: true, value: vi.fn() });
+    // A failed findByText prints only the truncated dashboard DOM in CI. Observe
+    // which stage the initial read reached without changing the assertion or its
+    // deadline; these spies retain the real IndexedDB and console.debug behavior.
+    let observedStore: Store | undefined;
+    const deviceOpens = vi.spyOn(indexedDB, "open");
+    const deviceLogs = vi.spyOn(console, "debug");
 
     try {
       render(
         <ConsoleStoreProvider>
+          <StoreProbe onChange={(store) => { observedStore = store; }} />
           <NotificationsProvider>
             <WebRuntimeProvider>
               <div className="app-shell">
@@ -581,7 +588,41 @@ describe("ConsoleStoreProvider integration", () => {
         </ConsoleStoreProvider>,
       );
 
-      expect(await screen.findByText("Alpha first answer", {}, { timeout: REAL_SHELL_RENDER_TIMEOUT_MS })).toBeInTheDocument();
+      try {
+        expect(await screen.findByText("Alpha first answer", {}, { timeout: REAL_SHELL_RENDER_TIMEOUT_MS })).toBeInTheDocument();
+      } catch (error) {
+        // No transcript or prompt text: bounded facts that distinguish a stuck
+        // hydration, selection, detail request, and runtime projection on the
+        // next failure. Keep the original Testing Library failure and DOM dump.
+        console.error("Real-shell initial detail diagnostic:", JSON.stringify({
+          store: observedStore === undefined ? null : {
+            loading: observedStore.loading,
+            error: observedStore.error,
+            selectedAgentId: observedStore.selectedAgentId,
+            selectedThreadId: observedStore.selectedThreadId,
+            detailThreadId: observedStore.detail?.thread.id ?? null,
+            detailMessages: observedStore.detail?.messages.length ?? null,
+            detailLoading: observedStore.detailLoading,
+            selectionLoading: observedStore.selectionLoading,
+          },
+          calls: {
+            bootstrap: vi.mocked(api.bootstrap).mock.calls.length,
+            threads: vi.mocked(api.threads).mock.calls.slice(0, 8).map(([sourceId]) => sourceId),
+            thread: vi.mocked(api.thread).mock.calls.slice(0, 8).map(([threadId]) => threadId),
+            threadIfChanged: vi.mocked(api.threadIfChanged).mock.calls.slice(0, 8).map(([threadId]) => threadId),
+          },
+          deviceOpens: deviceOpens.mock.results.slice(0, 8).map((result) =>
+            result.type === "return" ? result.value.readyState : result.type),
+          deviceLogs: deviceLogs.mock.calls.flat().map(String)
+            .filter((message) => message.includes("device") || message.includes("conversation store"))
+            .slice(-3).map((message) => message.slice(0, 160)),
+          chat: {
+            status: document.querySelector(".chat-status")?.textContent?.trim() ?? null,
+            messageColumn: document.querySelector(".message-column")?.textContent?.trim().slice(0, 120) ?? null,
+          },
+        }));
+        throw error;
+      }
       const input = () => screen.getByRole("combobox", { name: "Message" }) as HTMLTextAreaElement;
       fireEvent.change(input(), { target: { value: "unfinished thought" } });
       await waitFor(() => expect(readComposerDraft("alpha", first.id)).toBe("unfinished thought"));
@@ -600,6 +641,8 @@ describe("ConsoleStoreProvider integration", () => {
       expect(readComposerDraft("alpha", first.id)).toBe("unfinished thought");
     } finally {
       cleanupDom();
+      deviceOpens.mockRestore();
+      deviceLogs.mockRestore();
       if (scrollToDescriptor === undefined) Reflect.deleteProperty(HTMLElement.prototype, "scrollTo");
       else Object.defineProperty(HTMLElement.prototype, "scrollTo", scrollToDescriptor);
     }
