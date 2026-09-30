@@ -1,4 +1,4 @@
-import { WebAccessContext } from "./access.js";
+import { WebAccessContext, type WebThreadAccess } from "./access.js";
 import { parseStoredWebActor, webActorForUser } from "./actors.js";
 import type { OperatorWebActor } from "@mono-agent/operator-adapter";
 import { WebAuthStore } from "./auth.js";
@@ -4609,6 +4609,18 @@ export class WebStore {
   }
 
   /** Trusted capability binding; callers must subsequently enter/recheck actor access. */
+  /** Internal previous-visibility evidence for deletion/unshare, never a browser DTO. */
+  threadAccess(threadId: string): WebThreadAccess | undefined {
+    const row = this.database.prepare("SELECT source_id, owner_user_id, shared FROM threads WHERE id = ?")
+      .get(this.resolveThreadId(threadId)) as { source_id: string; owner_user_id: string | null; shared: number } | undefined;
+    return row === undefined ? undefined : { sourceId: row.source_id, ownerUserId: row.owner_user_id, shared: row.shared === 1 };
+  }
+
+  attachmentOwner(id: string): string | undefined {
+    const row = this.database.prepare("SELECT owner_user_id FROM attachments WHERE id = ?").get(id) as { owner_user_id: string | null } | undefined;
+    return row?.owner_user_id ?? undefined;
+  }
+
   turnWebActor(turnId: string): OperatorWebActor | undefined {
     const row = this.database.prepare("SELECT web_actor_json FROM turns WHERE id = ?").get(turnId) as { web_actor_json: string | null } | undefined;
     return row === undefined ? undefined : parseStoredWebActor(row.web_actor_json);

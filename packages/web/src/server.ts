@@ -1,4 +1,6 @@
 import { installWebAuthentication, validateWebPublicOrigin } from "./auth-http.js";
+import { subscribeWebRecipient } from "./event-recipient.js";
+import type { WebPrincipal } from "./auth.js";
 import { authorizeWebRoute, authorizeWebPayload } from "./route-policy.js";
 import { isProviderUsageId } from "@mono-agent/agent-contracts";
 import type { CreateWebTagInput, PatchWebTagInput } from "./contracts.js";
@@ -1223,14 +1225,17 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
         logger?.error?.("Web console event stream failed.", { error: errorMessage(error) });
       },
     });
-    const unsubscribe = service.subscribe(send);
+    const recipient = options.multiUser === true
+      ? subscribeWebRecipient(service, service.store.access.requirePrincipal() as WebPrincipal, send, closeStream) : undefined;
+    const unsubscribe = recipient === undefined ? service.subscribe(send) : () => recipient.close();
     const heartbeat = setInterval(() => {
       writer?.writeHeartbeat(`: heartbeat ${Date.now()}\n\n`);
     }, HEARTBEAT_INTERVAL_MS);
     heartbeat.unref();
     activeStreams.add(closeStream);
     res.once("close", closeStream);
-    send(service.readyEvent());
+    if (recipient === undefined) send(service.readyEvent());
+    else recipient.send(service.readyEvent());
   });
 
   app.use("/api", (_req, res) => {

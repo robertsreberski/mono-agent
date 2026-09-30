@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Project multi-user web events for each recipient, remove inaccessible shared
+  conversations with content-free notices, and close revoked or expired streams.
+
 - Keep multi-user attachment downloads and event streams out of browser caches.
 
 - Bind web console tools and receipt replay to their initiating account's current

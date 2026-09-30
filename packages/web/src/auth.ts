@@ -191,8 +191,24 @@ export class WebAuthStore {
     this.database.prepare("UPDATE web_users SET password_record = ?, version = version + 1, updated_at = ? WHERE id = ?").run(record, this.clock().toISOString(), id);
     this.revokeUserSessions(id);
   }
-  revokeUserSessions(id: string): void { this.database.prepare("DELETE FROM web_sessions WHERE user_id = ?").run(id); }
-  revokeSession(hash: string): void { this.database.prepare("DELETE FROM web_sessions WHERE token_hash = ?").run(hash); }
+  private readonly invalidationListeners = new Set<(userId?: string, sessionHash?: string) => void>();
+  subscribeInvalidation(listener: (userId?: string, sessionHash?: string) => void): () => void {
+    this.invalidationListeners.add(listener);
+    return () => this.invalidationListeners.delete(listener);
+  }
+  private invalidate(userId?: string, sessionHash?: string): void {
+    for (const listener of [...this.invalidationListeners]) {
+      try { listener(userId, sessionHash); } catch { this.invalidationListeners.delete(listener); }
+    }
+  }
+  revokeUserSessions(id: string): void {
+    this.database.prepare("DELETE FROM web_sessions WHERE user_id = ?").run(id);
+    this.invalidate(id);
+  }
+  revokeSession(hash: string): void {
+    this.database.prepare("DELETE FROM web_sessions WHERE token_hash = ?").run(hash);
+    this.invalidate(undefined, hash);
+  }
   authenticate(token: string | undefined): WebPrincipal | undefined {
     if (token === undefined || !/^[A-Za-z0-9_-]{43}$/u.test(token)) return undefined;
     return this.authenticateHash(webSessionHash(token));

@@ -3,6 +3,8 @@ import type { WebCancelOrigin, WebExternalConversationChannel } from "./contract
 import type { ConsoleToolScope, ConsoleToolOperation, ExternalConsoleToolScope } from "./console-tools.js";
 import type { ExternalConversationObservation } from "./external-conversations.js";
 import type { ExternalTurnContext } from "./store.js";
+import { projectWebEvent, type WebEventAccess } from "./event-access.js";
+import type { WebThreadAccess } from "./access.js";
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 
@@ -1047,9 +1049,9 @@ export class WebService {
       const tag = this.store.getTag(id);
       if (tag !== undefined) this.emitTag({ tag });
     }
-    for (const tagId of commit.deletedTags) this.emitTag({ tagId, removed: true });
+    for (const tagId of commit.deletedTags) this.emitTag({ tagId, removed: true }, scope.sourceId);
     for (const id of commit.projects) this.refreshProject(id);
-    for (const projectId of commit.deletedProjects) this.emitProject({ projectId, removed: true });
+    for (const projectId of commit.deletedProjects) this.emitProject({ projectId, removed: true }, scope.sourceId);
     if (commit.threads.length > 0 && (operation.tool === "SetWakeSchedule" || operation.tool === "ClearWakeSchedule")) this.dispatchWakes();
     return commit.result;
   }
@@ -1069,12 +1071,13 @@ export class WebService {
   }
 
   deleteTag(id: string): void {
+    const sourceId = this.store.getTag(id)?.sourceId;
     for (const threadId of this.store.deleteTag(id)) {
       const thread = this.store.getThread(threadId)!;
       this.emitThread("thread.changed", { thread });
       this.emitThread("threads.changed", { thread });
     }
-    this.emitTag({ tagId: id, removed: true });
+    this.emitTag({ tagId: id, removed: true }, sourceId);
   }
 
   projects(sourceId: string): WebProject[] {
@@ -1114,6 +1117,7 @@ export class WebService {
    * its member page must close.
    */
   deleteProject(id: string): void {
+    const sourceId = this.store.getProject(id)?.sourceId;
     const members = this.store.deleteProject(id);
     for (const memberId of members) {
       const thread = this.store.getThread(memberId);
@@ -1121,7 +1125,7 @@ export class WebService {
       this.emitThread("thread.changed", { thread });
       this.emitThread("threads.changed", { thread });
     }
-    this.emitProject({ projectId: id, removed: true });
+    this.emitProject({ projectId: id, removed: true }, sourceId);
   }
 
   threadUsage(id: string): Promise<import("./contracts.js").WebThreadUsage> {
@@ -1479,10 +1483,11 @@ export class WebService {
       if (this.activeCompactions.has(before.id) || this.activeTurns.has(before.id) || this.activeLiveInputs.has(before.id)) {
         throw new WebConsoleError("sharing_busy", "Wait until this conversation is idle before changing sharing.", 409);
       }
+      const previousAccess = this.store.threadAccess(before.id);
       const thread = this.store.setThreadShared(before.id, patch.shared);
       if (before.revision !== thread.revision) {
-        this.emitThread("thread.changed", { thread });
-        this.emitThread("threads.changed", { thread });
+        this.emitThread("thread.changed", { thread }, previousAccess);
+        this.emitThread("threads.changed", { thread }, previousAccess);
       }
       return this.projectThread(thread);
     }
@@ -1521,6 +1526,7 @@ export class WebService {
 
   async deleteThread(id: string, options: { readonly emptyOnly?: boolean } = {}): Promise<void> {
     const resolved = this.store.requireThreadCreator(id).id;
+    const previousAccess = this.store.threadAccess(resolved);
     const projectId = this.store.getThread(resolved)?.projectId ?? null;
     if (this.activeTurns.has(resolved)) {
       throw new WebConsoleError("turn_active", "Cancel the active turn before deleting this conversation.", 409);
@@ -1532,8 +1538,8 @@ export class WebService {
         count: result.orphanedFiles,
       });
     }
-    this.emitThread("thread.changed", { threadId: resolved, removed: true });
-    this.emitThread("threads.changed", { threadId: resolved, removed: true });
+    this.emitThread("thread.changed", { threadId: resolved, removed: true }, previousAccess);
+    this.emitThread("threads.changed", { threadId: resolved, removed: true }, previousAccess);
     if (projectId !== null) this.refreshProject(projectId);
   }
 
@@ -2660,13 +2666,24 @@ export class WebService {
 
   async removeUpload(id: string): Promise<void> {
     if (this.activeUploads.has(id)) throw new WebConsoleError("upload_active", "This upload is still in progress.", 409);
+    const uploadOwnerUserId = this.store.attachmentOwner(id);
     await this.store.removeStagedAttachment(id);
-    this.emit("attachment.changed", undefined, { attachmentId: id, removed: true });
+    this.emit("attachment.changed", undefined, { attachmentId: id, removed: true },
+      uploadOwnerUserId === undefined ? undefined : { uploadOwnerUserId });
   }
 
   subscribe(callback: (event: WebEvent) => boolean | void): () => void {
     this.subscribers.add(callback);
     return () => this.subscribers.delete(callback);
+  }
+
+  private readonly eventAccess = new WeakMap<WebEvent, WebEventAccess>();
+
+  /** Every enabled recipient is scoped and authenticated before this call. */
+  projectEvent(event: WebEvent): WebEvent | undefined {
+    const projected = projectWebEvent(this.store, event, this.eventAccess.get(event));
+    const payload = projected?.payload as { thread?: WebThread } | undefined;
+    return payload?.thread === undefined ? projected : { ...projected!, payload: { thread: this.projectThread(payload.thread) } };
   }
 
   readyEvent(): WebEvent {
@@ -4161,9 +4178,10 @@ export class WebService {
    * named one conversation while carrying another would have every console
    * apply the wrong row.
    */
-  private emitThread(type: "thread.changed" | "threads.changed", payload: WebThreadChangedPayload): void {
+  private emitThread(type: "thread.changed" | "threads.changed", payload: WebThreadChangedPayload, previousThread?: WebThreadAccess): void {
     const projected = "thread" in payload ? { thread: this.projectThread(payload.thread) } : payload;
-    this.emit(type, "thread" in projected ? projected.thread.id : projected.threadId, projected);
+    this.emit(type, "thread" in projected ? projected.thread.id : projected.threadId, projected,
+      previousThread === undefined ? undefined : { previousThread });
   }
 
   private projectThread(thread: WebThread): WebThread {
@@ -4179,12 +4197,14 @@ export class WebService {
    * Projects are global hints, so one event updates both the page and listing;
    * a second singular event would duplicate the full context on the wire.
    */
-  private emitTag(payload: WebTagChangedPayload): void {
-    this.emit("tags.changed", undefined, payload);
+  private emitTag(payload: WebTagChangedPayload, removedSourceId?: string): void {
+    const sourceId = "tag" in payload ? payload.tag.sourceId : removedSourceId;
+    this.emit("tags.changed", undefined, payload, sourceId === undefined ? undefined : { sourceId });
   }
 
-  private emitProject(payload: WebProjectChangedPayload): void {
-    this.emit("projects.changed", undefined, payload);
+  private emitProject(payload: WebProjectChangedPayload, removedSourceId?: string): void {
+    const sourceId = "project" in payload ? payload.project.sourceId : removedSourceId;
+    this.emit("projects.changed", undefined, payload, sourceId === undefined ? undefined : { sourceId });
   }
 
   /**
@@ -4328,9 +4348,10 @@ export class WebService {
     this.emit("message.delta", threadId, shaped);
   }
 
-  private emit(type: WebEventType, threadId?: string, payload?: unknown): void {
+  private emit(type: WebEventType, threadId?: string, payload?: unknown, access?: WebEventAccess): void {
     if (this.stopped) return;
     const event = this.createEvent(type, threadId, payload);
+    if (access !== undefined) this.eventAccess.set(event, access);
     for (const subscriber of [...this.subscribers]) {
       try {
         if (subscriber(event) === false) this.subscribers.delete(subscriber);
