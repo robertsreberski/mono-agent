@@ -768,7 +768,7 @@ describe("process-job request availability", () => {
         });
       }, deliveryKey);
       expect(offeredRequests[0]).toMatchObject({ targetRunId: "active-run" });
-      expect(target.chainDepth()).toBe(4);
+      expect(target.chainDepth()).toBe(3);
       if (offer.status !== "accepted") throw new Error("expected accepted offer");
       offers[0]!.resolve({ status: "requeue", reason: "closed" });
       await expect(offer.settled).resolves.toEqual({ status: "requeue", reason: "closed" });
@@ -787,7 +787,7 @@ describe("process-job request availability", () => {
       if (applied.status !== "accepted") throw new Error("expected accepted offer");
       offers[1]!.resolve({ status: "applied", runId: "active-run" });
       await expect(applied.settled).resolves.toEqual({ status: "applied", runId: "active-run" });
-      expect(target.chainDepth()).toBe(3);
+      expect(target.chainDepth()).toBe(2);
 
       let wrongRun!: ReturnType<NonNullable<typeof responder.offerLiveInput>>;
       await runWithProcessJobWakeContext({ jobId: "parent", chainDepth: 4 }, async () => {
@@ -802,7 +802,7 @@ describe("process-job request availability", () => {
       if (wrongRun.status !== "accepted") throw new Error("expected accepted offer");
       offers[2]!.resolve({ status: "applied", runId: "different-run" });
       await expect(wrongRun.settled).resolves.toEqual({ status: "uncertain", reason: "delivery_uncertain" });
-      expect(target.chainDepth()).toBe(3);
+      expect(target.chainDepth()).toBe(2);
 
       let rejected!: ReturnType<NonNullable<typeof responder.offerLiveInput>>;
       await runWithProcessJobWakeContext({ jobId: "parent", chainDepth: 5 }, async () => {
@@ -817,7 +817,7 @@ describe("process-job request availability", () => {
       if (rejected.status !== "accepted") throw new Error("expected accepted offer");
       offers[3]!.reject(new Error("settlement lost"));
       await expect(rejected.settled).resolves.toEqual({ status: "uncertain", reason: "delivery_uncertain" });
-      expect(target.chainDepth()).toBe(3);
+      expect(target.chainDepth()).toBe(2);
     } finally {
       target.release();
     }

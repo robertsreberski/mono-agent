@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix background `Agent` and `AgentManage` admission after live completion
+  steering, and release proven never-admitted reservations without masking the
+  allowlisted start failure.
+
 ## 0.25.1 — Busy-aware worker maintenance restarts (2026-09-30)
 
 - Keep unattended macOS worker maintenance from interrupting active turns,
