@@ -127,7 +127,7 @@ async function fixture(answer = "ok", askUser: boolean | "sensitive" | "long" = 
     ...(expectedKey === undefined ? {} : { configPath }),
     metadata: { channels: { tui: { kind: "running", baseUrl: `http://127.0.0.1:${address.port}/gui`,
       acpBridge: { schema: "mono-agent.acp-source.v1", bridgeVersion: 1, protocolVersion: 1,
-        installedVersion: "0.25.0", workspacePath: root } } },
+        installedVersion: "0.25.1", workspacePath: root } } },
     ...(expectedKey === undefined ? {} : { backgroundSnapshot: {
       schema: "mono-agent.background-snapshot.v1", configPath, configFingerprint: "config-proof",
       dotenvPath, dotenvFingerprint: "dotenv-proof",

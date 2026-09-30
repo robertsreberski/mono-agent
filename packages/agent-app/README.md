@@ -495,6 +495,47 @@ inventory is unavailable. They also render the owner-private monitor's last
 inspection, cumulative wake count, last outcome, and wall-clock rendering of
 the monotonic cooldown deadline. They never rotate or chmod logs.
 
+
+Unattended macOS maintenance waits for an idle worker before ordinary log-size
+rotation or replacing a healthy worker for snapshot, definition, or runtime
+drift. The worker publishes an owner-private, content-free activity snapshot
+under `~/.mono-agent/worker-activity/`: in-flight responder invocations across
+all channels and wakes, admitted queued/starting/running ProcessJobs work (including background commands,
+detached persistent children, and in-flight completion wakes), and pending `AskUser`.
+A child waiting only for an `AskParent` reply is idle. Memory curation/capture
+model calls and MCP-app or context-import work outside a responder turn are not
+counted as busy. The helper checks the
+snapshot against launchd's current PID and OS process incarnation immediately
+before stopping; missing, unsafe, malformed, or mismatched snapshots are
+unknown and receive the same bounded protection as busy workers. A dead or
+unready worker still recovers immediately.
+
+Busy size checks record `deferred-busy` without waking the helper or increasing
+the request cooldown. Retries reuse the five-minute worker monitor and hourly
+helper schedule; there is no extra helper retry loop. The helper persists a
+per-agent deferral episode in `~/.mono-agent/launchd-maintenance/`. It proceeds
+when idle, or forces after four hours or 48 deferrals (the count backstop bounds
+clock rollback). Log-size maintenance also forces when an active stream reaches
+10 MiB: this is an emergency scheduling threshold, **not** a new log cap. The
+monitor reads the helper episode when available and otherwise remembers its
+first over-limit observation until restart. Sampling and deferrals can let logs
+exceed these thresholds.
+
+Permission repair, authenticated started-transaction recovery/cleanup, explicit
+CLI lifecycle commands, and accepted supervised restarts/signals remain
+immediate. Ceilings never override unsafe-path refusals, lock contention, or
+stopped-writer proof. Snapshot publication and a final re-read reduce but do not
+eliminate the residual sub-second race with newly arriving work; there is no
+admission reservation and jobs do not survive a forced restart.
+
+`doctor` and `status` (including `status --json`) show the monitor outcome and
+helper decision, pending reasons, first deferral, count, probe counts, force-by
+time, and retained forced-decision history. A stop decision retains the episode
+until successful rotation/reconciliation or a fresh healthy explicit start/restart;
+a failed stop or explicit stop does not reset its budget. The files contain no prompts or job
+text. Linux systemd workers have no scheduled maintenance helper today; explicit
+Linux lifecycle behavior is unchanged.
+
 The loaded launchd definition, not the plist bytes on disk, is authoritative
 for migration. Existing agents retain their previously loaded interval until
 each agent is explicitly restarted after upgrade; a fleet restart is not

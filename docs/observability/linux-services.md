@@ -57,6 +57,10 @@ A machine without systemd or a usable user bus can still use
 `mono-agent web` and `mono-agent web status` fall back to the foreground-state
 view when the user manager is unavailable.
 
+Linux currently has no scheduled maintenance helper equivalent to macOS's
+hourly launchd controller or busy-aware log rotation. Explicit systemd
+start/restart/stop and supervised restart behavior remain synchronous.
+
 ## Web console
 
 ```bash

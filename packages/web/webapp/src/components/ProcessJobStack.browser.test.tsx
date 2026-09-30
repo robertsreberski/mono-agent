@@ -319,9 +319,11 @@ describe("the background jobs shelf in Chromium", () => {
         expect(glyph).toHaveClass("is-running", "is-half");
         expect(getComputedStyle(glyph).animationName).toBe("none");
       }
-      // Give opening transitions time to settle; no CSS animation remains anywhere in the shelf.
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      expect(stack.getAnimations({ subtree: true })).toHaveLength(0);
+      // Reject keyframe animations immediately, but let finite opening transitions finish.
+      expect(stack.getAnimations({ subtree: true }).filter((animation) => animation instanceof CSSAnimation)).toHaveLength(0);
+      await vi.waitFor(() => {
+        expect(stack.getAnimations({ subtree: true })).toHaveLength(0);
+      }, { timeout: 3_000, interval: 25 });
     };
 
     // Test normal motion preferences, not only reduced motion.
