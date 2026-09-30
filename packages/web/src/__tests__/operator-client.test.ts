@@ -45,6 +45,31 @@ const replyPartOutcomes = [{
 }];
 
 describe("OperatorClient", () => {
+  it("reads v1 web actor capability and fails closed for old or unknown producers", async () => {
+    for (const capability of [undefined, null, true, {}, { version: 2 }, { version: "1" }]) {
+      const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui",
+        fetchImpl: async () => Response.json({ schema: 1, capabilities: { webActor: capability } }) });
+      expect((await client.info()).webActor).toBeUndefined();
+    }
+    const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: async () => Response.json({ schema: 1, capabilities: { webActor: { version: 1 } } }) });
+    expect((await client.info()).webActor).toEqual({ version: 1 });
+  });
+
+  it("serializes the optional actor without altering the legacy request body", async () => {
+    const bodies: string[] = [];
+    const fetchImpl = async (_url: unknown, init?: RequestInit) => {
+      bodies.push(String(init?.body));
+      return new Response('{"kind":"finish","finalText":"ok"}\n', { headers: { "content-type": "application/x-ndjson" } });
+    };
+    const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", fetchImpl });
+    await client.turn(turnInput());
+    expect(bodies[0]).toBe(JSON.stringify({ conversationId: "c", text: "prompt", client: "web", metadata: {} }));
+    const webActor = { schema: 1, role: "user", sender: { id: "web-morgan", displayName: "Morgan", handle: "morgan" } } as const;
+    await client.turn({ ...turnInput(), webActor });
+    expect(JSON.parse(bodies[1]!)).toEqual({ conversationId: "c", text: "prompt", client: "web", metadata: {}, webActor });
+  });
+
   it("fails closed on missing/malformed restart capability and preserves verified keyed support", async () => {
     for (const capability of [undefined, null, {}, { supported: "true" }, { supported: true, reason: "unexpected" }, { supported: true, url: "http://elsewhere" }]) {
       const client = new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui", apiKey: "key",

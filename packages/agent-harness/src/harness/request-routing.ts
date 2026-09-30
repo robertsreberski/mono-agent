@@ -112,3 +112,15 @@ function modelOverrideDeclaration(metadata: AgentHarnessRequest["metadata"]): Mo
               ? { origin: "slack", value: metadata.slack }
               : undefined;
 }
+
+/** Shared recall/capture owner rule. Metadata role is stamped by the operator host. */
+export function isOwnerHumanTurn(request: AgentHarnessRequest): boolean {
+  if (request.captureSpeakerKind !== "human-turn") return false;
+  const source = request.metadata?.source;
+  if (source !== "web" && source !== "tui" && source !== "acp") return false;
+  if (source !== "web") return true;
+  const actor = request.metadata?.webActor;
+  // Absence preserves the legacy single-owner operator behavior. A present but
+  // malformed host marker fails closed instead of granting owner authority.
+  return actor === undefined || (isRecord(actor) && actor.role === "admin");
+}
