@@ -56,6 +56,7 @@ export interface AdditionalLaunchdLogMaintenanceResult {
 export interface LaunchdLogMaintenanceDeps {
   /** Agent helper only; deliberately absent from web and explicit lifecycle mutations. */
   readonly maintenanceNotNeeded?: () => Promise<void>;
+  readonly maintenanceCompleted?: () => Promise<void>;
   readonly unattendedLogStop?: (request: MaintenanceActivityRequest) => Promise<boolean>;
   readonly runner: LaunchctlRunner;
   readonly getuid: () => number;
@@ -517,6 +518,7 @@ export async function maintainLaunchdLogsWithSharedLockOperation(
     }
     try {
       await deps.clearLaunchdLogMaintenanceIntent(target.paths, maintenanceIntent);
+      await deps.maintenanceCompleted?.();
     } catch (error) {
       reportMaintenanceFailure(target, deps, "clear recovered launchd-log restoration intent", error);
       return 1;
@@ -692,6 +694,7 @@ export async function maintainLaunchdLogsWithSharedLockOperation(
   try {
     await deps.clearLaunchdLogMaintenanceIntent(target.paths, maintenanceIntent);
     await deps.recordMaintenancePhase?.("complete");
+    await deps.maintenanceCompleted?.();
   } catch (error) {
     reportMaintenanceFailure(target, deps, "clear durable launchd-log maintenance intent", error);
     return 1;

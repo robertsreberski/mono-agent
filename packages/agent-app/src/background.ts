@@ -290,6 +290,7 @@ export async function canonicalBackgroundConfigPath(
 
 export interface BackgroundDeps {
   readonly maintenanceNotNeeded?: () => Promise<void>;
+  readonly maintenanceCompleted?: () => Promise<void>;
   readonly clearMaintenanceDeferral?: (target: BackgroundLifecycleTarget) => Promise<void>;
   readonly unattendedLogStop?: (request: MaintenanceActivityRequest) => Promise<boolean>;
   readonly allowUnattendedStop?: (target: BackgroundLifecycleTarget, request: MaintenanceActivityRequest) => Promise<boolean>;
@@ -574,8 +575,7 @@ async function maintainLaunchdControllerWithLifecycleLease(
           preserveMaintenanceService: true,
           preserveDefinitionsOnFailure: true,
           sharedLockMode: "automatic",
-          unattendedMaintenance: { reasons: recoveryReasons,
-            ...(!workerReady ? { override: "worker-unready" as const } : {}) },
+          unattendedMaintenance: { reasons: recoveryReasons },
         },
       );
       resultCode = recovered.ok || recovered.reason === "shared-contention" || recovered.reason === "deferred-busy" ? 0 : 1;
@@ -764,7 +764,10 @@ function unattendedLogDeps(target: BackgroundLifecycleTarget, deps: BackgroundDe
   const { clearMaintenanceDeferral, allowUnattendedStop } = deps;
   return {
     ...deps,
-    ...(clearMaintenanceDeferral === undefined ? {} : { maintenanceNotNeeded: () => clearMaintenanceDeferral(target) }),
+    ...(clearMaintenanceDeferral === undefined ? {} : {
+      maintenanceNotNeeded: () => clearMaintenanceDeferral(target),
+      maintenanceCompleted: () => clearMaintenanceDeferral(target),
+    }),
     ...(allowUnattendedStop === undefined ? {} : {
       unattendedLogStop: (request: MaintenanceActivityRequest) => allowUnattendedStop(target, request),
     }),
@@ -910,10 +913,17 @@ async function ensureBackgroundReadyAfterPublicationBarrier(
       if (options.unattendedMaintenance !== undefined && deps.allowUnattendedStop !== undefined) {
         const inspection = await deps.inspectLaunchdLogs(launchTarget.paths);
         if (!inspection.canMaintain) throw new Error("Unsafe launchd log inventory before unattended replacement.");
+        // Runtime preparation can outlast startup. The override belongs to the
+        // current launchd PID's readiness NOW, not the reconciliation-entry trace.
+        const current = await launchdServiceInfo(deps.runner, launchTarget.label, uid);
+        const currentSource = (await findInstances(launchTarget, deps)).find((source) => source.pid === current.pid);
+        const readyNow = current.loaded && current.pid !== undefined && deps.isAlive(current.pid)
+          && currentSource !== undefined && isReady(currentSource);
         const override = interruptedMaintenance !== undefined || inspection.pendingTransaction
           ? "transaction-recovery" as const
-          : permissionRepair || logPermissionRepairNeeded(inspection) ? "permission-repair" as const : options.unattendedMaintenance.override;
-        if (!await deps.allowUnattendedStop(launchTarget, { ...options.unattendedMaintenance, inspection,
+          : permissionRepair || logPermissionRepairNeeded(inspection) ? "permission-repair" as const
+          : !readyNow ? "worker-unready" as const : undefined;
+        if (!await deps.allowUnattendedStop(launchTarget, { reasons: options.unattendedMaintenance.reasons, inspection,
           ...(override === undefined ? {} : { override }) })) throw new MaintenanceDeferred();
       }
     };
@@ -997,6 +1007,13 @@ async function ensureBackgroundReadyAfterPublicationBarrier(
     const stopped = await cleanUpUnreadyBackground(launchTarget, deps, controlPoll, options);
     reportReadinessCleanup(launchTarget, deps, stopped, options);
     return { ok: false, action, reason: "timeout" };
+  }
+  // Successful explicit start/restart also satisfies an older helper episode.
+  // Stop deliberately leaves it; no completion is claimed until readiness proof.
+  try { await deps.clearMaintenanceDeferral?.(launchTarget); }
+  catch (error) {
+    reportLifecycleException(launchTarget, deps, "acknowledge completed maintenance", error);
+    return { ok: false, action, reason: "preparation" };
   }
   const completedAction = outcome.restarted ? "restarted" as const : "started" as const;
   printInstanceInfo(ready, launchTarget, deps, completedAction);

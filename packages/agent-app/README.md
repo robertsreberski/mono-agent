@@ -500,9 +500,11 @@ Unattended macOS maintenance waits for an idle worker before ordinary log-size
 rotation or replacing a healthy worker for snapshot, definition, or runtime
 drift. The worker publishes an owner-private, content-free activity snapshot
 under `~/.mono-agent/worker-activity/`: in-flight responder invocations across
-all channels and wakes, starting/running ProcessJobs executions (including
-background commands and detached persistent children), and pending `AskUser`.
-A child waiting only for an `AskParent` reply is idle. The helper checks the
+all channels and wakes, admitted queued/starting/running ProcessJobs work (including background commands,
+detached persistent children, and in-flight completion wakes), and pending `AskUser`.
+A child waiting only for an `AskParent` reply is idle. Memory curation/capture
+model calls and MCP-app or context-import work outside a responder turn are not
+counted as busy. The helper checks the
 snapshot against launchd's current PID and OS process incarnation immediately
 before stopping; missing, unsafe, malformed, or mismatched snapshots are
 unknown and receive the same bounded protection as busy workers. A dead or
@@ -528,7 +530,9 @@ admission reservation and jobs do not survive a forced restart.
 
 `doctor` and `status` (including `status --json`) show the monitor outcome and
 helper decision, pending reasons, first deferral, count, probe counts, force-by
-time, and retained forced-decision history. The files contain no prompts or job
+time, and retained forced-decision history. A stop decision retains the episode
+until successful rotation/reconciliation or a fresh healthy explicit start/restart;
+a failed stop or explicit stop does not reset its budget. The files contain no prompts or job
 text. Linux systemd workers have no scheduled maintenance helper today; explicit
 Linux lifecycle behavior is unchanged.
 

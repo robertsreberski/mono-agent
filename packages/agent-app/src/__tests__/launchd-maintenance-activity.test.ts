@@ -30,7 +30,7 @@ it.each(["turns", "jobs", "asks"] as const)("%s independently defers and idle pr
   expect(describeMaintenanceActivity(h.status())).toContain(`${source}=1`);
   h.activity({ disposition: "idle", counts: { turns: 0, jobs: 0, asks: 0 } });
   expect(await h.allow()).toBe(true);
-  expect(h.status().pending).toBeUndefined();
+  expect(h.status().pending).toMatchObject({ count: 2 }); // Not completed until lifecycle acknowledgement.
   expect(h.status().lastDecision?.outcome).toBe("proceeded-idle");
 });
 
@@ -81,4 +81,15 @@ it("persists episodes privately across invocations and clears vanished work with
   await clearMaintenanceDeferral(t);
   expect(await readLaunchdMaintenanceActivityStatus(t.label, t.paths)).toEqual({ version: 1, lastDecision: h.status().lastDecision });
   await expect(writeLaunchdMaintenanceActivityStatus(t, { version: 1, pending: { ...h.status().pending!, count: -1 } })).rejects.toThrow("Malformed");
+});
+
+it("a forced decision retains the original episode until lifecycle completion, so failed stops cannot reset it", async () => {
+  const h = harness(); expect(await h.allow()).toBe(false);
+  const firstDeferredAt = h.status().pending!.firstDeferredAt;
+  h.time(1_000_000 + MAINTENANCE_MAX_DEFERRAL_MS);
+  expect(await h.allow()).toBe(true); expect(h.status().lastDecision?.outcome).toBe("forced-ceiling");
+  expect(h.status().pending?.firstDeferredAt).toBe(firstDeferredAt);
+  // No acknowledgement: bootout failed. Next helper pass must force immediately.
+  expect(await h.allow()).toBe(true); expect(h.status().lastDecision?.outcome).toBe("forced-ceiling");
+  expect(h.status().pending).toMatchObject({ firstDeferredAt, count: 3 });
 });

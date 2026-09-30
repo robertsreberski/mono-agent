@@ -86,7 +86,9 @@ export async function allowUnattendedMaintenanceStop(
   await (deps.writeStatus ?? writeLaunchdMaintenanceActivityStatus)(target, {
     version: 1, lastDecision,
     ...(lastForced === undefined ? {} : { lastForced }),
-    ...(outcome !== "deferred-busy" ? {} : { pending: {
+    // A decision is not stopped-writer proof. Preserve the original budget
+    // through a failed stop; only lifecycle completion/vanished need clears it.
+    ...(status.pending === undefined && !["deferred-busy", "forced-ceiling", "forced-size"].includes(outcome) ? {} : { pending: {
       reasons, firstDeferredAt, count, lastProbe: probe,
       forcedBy: new Date(Date.parse(firstDeferredAt) + MAINTENANCE_MAX_DEFERRAL_MS).toISOString(),
     } }),
@@ -151,7 +153,7 @@ export class MaintenanceDeferred extends Error {
   constructor() { super("Unattended maintenance deferred while worker activity is busy or unknown."); }
 }
 
-/** Work disappeared without a stop; retain the last decision/forced history. */
+/** Acknowledge completed maintenance/fresh healthy startup or vanished need; retain history. */
 export async function clearMaintenanceDeferral(target: BackgroundLifecycleTarget): Promise<void> {
   const status = await readLaunchdMaintenanceActivityStatus(target.label, target.paths);
   if (status?.pending === undefined) return;

@@ -1,7 +1,12 @@
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { constants as fsConstants } from "node:fs";
+import { promisify } from "node:util";
+import * as privateState from "../private-launchd-state.js";
+import { access, chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WorkerActivityTracker, trackResponderActivity } from "../worker-activity.js";
+import { allowUnattendedMaintenanceStop } from "../launchd-maintenance-activity.js";
 import { probeWorkerActivity, publishWorkerActivity } from "../worker-activity-snapshot.js";
 import { writePrivateLaunchdState } from "../private-launchd-state.js";
 import { currentProcessIncarnation } from "../process-incarnation.js";
@@ -9,8 +14,18 @@ import type { BackgroundLifecycleTarget } from "../background.js";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 import { bindProcessJobWakeContextToResponder, runWithProcessJobWakeContext } from "../process-jobs-context.js";
 
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, access: vi.fn(actual.access) };
+});
+
 const roots: string[] = [];
-afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => {
+  vi.restoreAllMocks();
+  const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+  vi.mocked(access).mockReset().mockImplementation(actual.access);
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
 async function target(): Promise<BackgroundLifecycleTarget> {
   const root = await mkdtemp(join(process.cwd(), ".activity-test-")); roots.push(root);
   const logDir = join(root, "logs"); await mkdir(logDir);
@@ -97,4 +112,103 @@ it("each service retracts only its own job contribution across overlapping lifet
   oldService(0); expect(tracker.snapshot().jobs).toBe(1); expect(tracker.busy()).toBe(true);
   oldService(0); expect(tracker.snapshot().jobs).toBe(1);
   newService(0); expect(tracker.snapshot().jobs).toBe(0); expect(tracker.busy()).toBe(false);
+});
+
+it("retires the main idle snapshot before a poisoned temporary makes busy publication and cleanup fail", async () => {
+  const t = await target(); const tracker = new WorkerActivityTracker(); const failures = vi.fn();
+  const publisher = await publishWorkerActivity(t, tracker, failures);
+  const directory = join(t.paths.logDir, "..", "worker-activity");
+  const file = join(directory, (await readdir(directory)).find((name) => name.endsWith(".json"))!);
+  const sentinel = join(t.paths.logDir, "..", "sentinel"); await writeFile(sentinel, "unchanged");
+  await symlink(sentinel, `${file}.next`);
+  tracker.set("jobs", 1);
+  await vi.waitFor(() => expect(failures).toHaveBeenCalledOnce());
+  await expect(lstat(file)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await probeWorkerActivity(t.label, t.paths, process.pid, () => true)).toEqual({ disposition: "unknown" });
+  expect(await readFile(sentinel, "utf8")).toBe("unchanged");
+  await expect(publisher.stop()).rejects.toThrow("owner-private regular file");
+});
+
+it("retries a dirty busy snapshot after BOTH publication and authoritative retirement fail, without a new activity transition", async () => {
+  const t = await target(); const tracker = new WorkerActivityTracker(); const failures = vi.fn();
+  const write = privateState.writePrivateLaunchdState; const remove = privateState.removePrivateLaunchdState;
+  let busyAttempts = 0; let retireAttempts = 0;
+  vi.spyOn(privateState, "writePrivateLaunchdState").mockImplementation(async (...args) => {
+    if ((args[2] as { busy?: boolean }).busy && ++busyAttempts <= 2) throw new Error("fictional restored-previous publication failure");
+    await write(...args);
+  });
+  vi.spyOn(privateState, "removePrivateLaunchdState").mockImplementation(async (...args) => {
+    if (++retireAttempts <= 2) throw new Error("fictional transient unlink failure");
+    await remove(...args);
+  });
+  const publisher = await publishWorkerActivity(t, tracker, failures);
+  try {
+    expect(await probeWorkerActivity(t.label, t.paths, process.pid, () => true)).toMatchObject({ disposition: "idle" });
+    tracker.set("jobs", 1); // The only transition; two failures cannot wait for another one.
+    await vi.waitFor(async () => expect(await probeWorkerActivity(t.label, t.paths, process.pid, () => true)).toMatchObject({ disposition: "busy", counts: { jobs: 1 } }), { timeout: 5_000 });
+    expect(busyAttempts).toBe(3); expect(retireAttempts).toBe(2);
+    expect(failures).toHaveBeenCalledOnce();
+  } finally { await publisher.stop(); }
+});
+
+it("keeps standalone MCP-app/context-import work outside the documented responder-turn busy scope", async () => {
+  const tracker = new WorkerActivityTracker(); let finish!: () => void;
+  const pending = new Promise<void>((resolve) => { finish = resolve; });
+  const responder = trackResponderActivity({ respond: async () => ({ text: "" }),
+    importContext: async () => await pending, requestMcpApp: async () => await pending,
+  } as unknown as AgentResponder, tracker);
+  const imports = responder.importContext!("web:fictional", {} as never);
+  const appRequest = responder.requestMcpApp!({} as never);
+  expect(tracker.snapshot()).toEqual({ turns: 0, jobs: 0, asks: 0 });
+  expect(tracker.busy()).toBe(false);
+  finish(); await Promise.all([imports, appRequest]);
+});
+
+it("classifies write-denied activity files/directories as unknown without changing ordinary private-state reads", async () => {
+  const t = await target(); const tracker = new WorkerActivityTracker();
+  const publisher = await publishWorkerActivity(t, tracker, vi.fn());
+  const directory = join(t.paths.logDir, "..", "worker-activity");
+  const file = join(directory, (await readdir(directory)).find((name) => name.endsWith(".json"))!);
+  try {
+    const { access: actualAccess } = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    for (const denied of [directory, file]) {
+      vi.mocked(access).mockImplementation(async (path, mode) => {
+        if (path === denied && mode === fsConstants.W_OK) throw Object.assign(new Error("fictional access denial"), { code: "EACCES" });
+        await actualAccess(path, mode);
+      });
+      // Generic readers still read owned private state, even when read-only.
+      expect(await privateState.readPrivateLaunchdState(t.label, t.paths, "worker-activity")).toMatchObject({ busy: false });
+      expect(await probeWorkerActivity(t.label, t.paths, process.pid, () => true)).toEqual({ disposition: "unknown" });
+    }
+    expect(access).toHaveBeenCalledWith(directory, fsConstants.W_OK);
+    expect(access).toHaveBeenCalledWith(file, fsConstants.W_OK);
+  } finally { await publisher.stop(); }
+});
+
+it.skipIf(process.platform !== "darwin")("protects a busy worker behind an immutable old idle snapshot while dirty retries continue", async () => {
+  const t = await target(); const tracker = new WorkerActivityTracker(); const failures = vi.fn();
+  const publisher = await publishWorkerActivity(t, tracker, failures);
+  const directory = join(t.paths.logDir, "..", "worker-activity");
+  const file = join(directory, (await readdir(directory)).find((name) => name.endsWith(".json"))!);
+  const run = promisify(execFile);
+  const writes = vi.spyOn(privateState, "writePrivateLaunchdState");
+  try {
+    await run("/usr/bin/chflags", ["uchg", file]);
+    tracker.set("jobs", 1);
+    await vi.waitFor(() => expect(writes.mock.calls.length).toBeGreaterThanOrEqual(2));
+    expect(failures).toHaveBeenCalledOnce();
+    expect(await privateState.readPrivateLaunchdState(t.label, t.paths, "worker-activity")).toMatchObject({ busy: false, counts: { jobs: 0 } });
+    expect(tracker.snapshot().jobs).toBe(1);
+    expect(await probeWorkerActivity(t.label, t.paths, process.pid, () => true)).toEqual({ disposition: "unknown" });
+    const allowed = await allowUnattendedMaintenanceStop(t, {
+      runner: async () => ({ code: 0, stdout: `state = running\npid = ${process.pid}\n`, stderr: "" }),
+      getuid: () => process.getuid?.() ?? 0, now: Date.now, isAlive: () => true,
+    }, { reasons: ["log-size"] });
+    expect(allowed).toBe(false);
+  } finally {
+    // The file is exclusively this test's scratch artifact. Always remove the
+    // flag before stopping the publisher or the ordinary afterEach rm cleanup.
+    await run("/usr/bin/chflags", ["nouchg", file]);
+    await publisher.stop();
+  }
 });

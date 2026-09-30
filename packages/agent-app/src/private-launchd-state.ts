@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants as fsConstants, type Stats } from "node:fs";
-import { lstat, mkdir, open, rm } from "node:fs/promises";
+import { access, lstat, mkdir, open, rm } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import process from "node:process";
 
@@ -109,6 +109,17 @@ export async function readPrivateLaunchdState(
   }
 }
 
+/** Activity-only mutability proof; ordinary status readers remain read-only tolerant. */
+export async function assertPrivateLaunchdStateWritable(
+  mainLabel: string,
+  paths: Pick<LaunchdPaths, "logDir">,
+  directory: string,
+): Promise<void> {
+  const status = statusPaths(mainLabel, paths, directory);
+  await access(status.directory, fsConstants.W_OK);
+  await access(status.file, fsConstants.W_OK);
+}
+
 /**
  * Inspect but never create or chmod the shared ~/.mono-agent root. An owned
  * read-only/traversable root such as 0755 can still contain a private 0700
@@ -138,7 +149,9 @@ export async function removePrivateLaunchdState(target: BackgroundLifecycleTarge
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw error;
   }
-  for (const path of [paths.temporary, paths.file]) {
+  // Retire the authoritative snapshot before inspecting a poisoned leftover
+  // temporary. Temporary cleanup failure must not preserve an old idle record.
+  for (const path of [paths.file, paths.temporary]) {
     try {
       assertPrivateFile(await lstat(path), path);
       await rm(path);

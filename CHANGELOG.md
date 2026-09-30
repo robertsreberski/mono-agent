@@ -8,7 +8,8 @@
   under the Providers actions ("Updated 9:06 AM", full timestamp on hover), and
   report a failed refresh once per provider at note size.
 - Keep unattended macOS worker maintenance from interrupting active turns,
-  running process jobs, or pending `AskUser` until idle or a bounded ceiling;
+  admitted process jobs and completion wakes, or pending `AskUser` until idle
+  or a bounded ceiling;
   report deferrals and forced stops in `doctor` and `status`, and fix shutdown
   diagnostics to name the received signal.
 

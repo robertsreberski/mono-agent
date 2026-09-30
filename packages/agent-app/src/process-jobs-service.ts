@@ -189,7 +189,7 @@ export interface ProcessJobsServiceHandle {
   list(): Promise<readonly ProcessJobProjection[]>;
   get(jobId: string): Promise<ProcessJobProjection | undefined>;
   cancel(jobId: string): Promise<ProcessJobProjection>;
-  /** Synchronous executions only: an AskParent-awaiting child is idle. */
+  /** Synchronous admitted work/wake flights; an AskParent-awaiting child alone is idle. */
   activeExecutionCount(): number;
   counts(): Promise<Readonly<Record<ProcessJobState, number>>>;
   capacity(normalizedReplyTarget: string): Promise<{
@@ -1296,6 +1296,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         }
         if (notAdmitted) { rejectedManagedJob = jobId; throw notAdmitted; }
         this.pending.set(jobId, pending);
+        this.activityChanged();
         handedOff = true;
         // Drain existing eligible work first; a new request must not overtake it.
         await this.drainQueue(jobId);
@@ -1334,7 +1335,11 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   }
 
   activeExecutionCount(): number {
-    return new Set([...this.startingExecutions, ...this.active.keys(), ...this.internalExecutionFlights, ...this.managedExecutionFlights]).size;
+    // Admitted queued work is lost on stop too. A completion's owed wake stays
+    // busy through pre-delivery work and durable receipt settlement, closing the
+    // hand-off gap before the central responder raises its own turn counter.
+    return new Set([...this.pending.keys(), ...this.startingExecutions, ...this.active.keys(),
+      ...this.internalExecutionFlights, ...this.managedExecutionFlights, ...this.wakeTasks.keys()]).size;
   }
 
   private activityChanged(): void {
@@ -1449,6 +1454,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         });
       }
       this.pending.delete(jobId);
+      this.activityChanged();
       await this.storeMutate("launch.spawn_failed", (records) => {
         const record = requireRecord(records, jobId);
         if (!isTerminalProcessJobState(record.state)) {
@@ -1526,6 +1532,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       this.active.delete(jobId);
       this.activityChanged();
       this.pending.delete(jobId);
+      this.activityChanged();
       let failureRecorded = false;
       try {
         await this.storeMutate("launch.rollback", (records) => {
@@ -1841,6 +1848,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       this.active.delete(jobId);
       this.activityChanged();
       this.pending.delete(jobId);
+      this.activityChanged();
       await this.storeApplyRetention("complete.retention");
       await this.drainQueue();
       } finally {
@@ -1851,6 +1859,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         this.active.delete(jobId);
         this.activityChanged();
         this.pending.delete(jobId);
+        this.activityChanged();
       }
     });
   }
@@ -1965,10 +1974,12 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       .finally(() => {
         if (this.wakeTasks.get(jobId) === task) {
           this.wakeTasks.delete(jobId);
+          this.activityChanged();
           if (this.wakeRearmPending.delete(jobId)) this.armWakeRearm(jobId);
         }
       });
     this.wakeTasks.set(jobId, task);
+    this.activityChanged();
   }
 
   private armWakeRearm(jobId: string): void {
@@ -2286,6 +2297,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
             this.active.delete(jobId);
             this.activityChanged();
             this.pending.delete(jobId);
+            this.activityChanged();
           }
         });
       } catch (error) {
@@ -2308,6 +2320,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   private async cleanupPending(jobId: string): Promise<void> {
     const pending = this.pending.get(jobId);
     this.pending.delete(jobId);
+    this.activityChanged();
     if (pending !== undefined) await pending.cleanup();
   }
 
