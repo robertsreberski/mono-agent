@@ -27,6 +27,7 @@ import type {
  */
 
 export interface InteractionBridgeOptions {
+  readonly onActivityChange?: (count: number) => void;
   readonly host?: string;
   /** TCP port; 0 picks an ephemeral port. Default {@link DEFAULT_INTERACTION_BRIDGE_PORT}. */
   readonly port?: number;
@@ -62,6 +63,7 @@ export interface TelegramProjectsBridgePort {
 export interface InteractionBridgeHandle {
   readonly url: string;
   readonly token: string;
+  pendingAskCount(): number;
   registerSink(channelId: string, sink: ChannelInteractionSink): void;
   /**
    * Install the Telegram project destination port. The returned function
@@ -405,6 +407,7 @@ export async function startInteractionBridge(
       clearTimeout(ask.expiryTimer);
     }
     asksByConversation.delete(ask.conversationId);
+    options.onActivityChange?.(asksByConversation.size);
     if (status === "answered" || status === "expired") {
       appendInteractionJournal(ask, status);
     }
@@ -453,6 +456,7 @@ export async function startInteractionBridge(
       waiters: new Set(),
     };
     asksByConversation.set(conversationId, ask);
+    options.onActivityChange?.(asksByConversation.size);
     asksById.set(interactionId, ask);
     return ask;
   }
@@ -876,6 +880,7 @@ export async function startInteractionBridge(
   const url = formatInteractionBridgeUrl(host, port);
 
   return {
+    pendingAskCount: () => asksByConversation.size,
     url,
     token,
     registerTelegramProjects(port) {

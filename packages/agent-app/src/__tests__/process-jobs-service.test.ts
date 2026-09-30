@@ -1,3 +1,4 @@
+import { WorkerActivityTracker } from "../worker-activity.js";
 import { randomUUID } from "node:crypto";
 import { lstat, mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -3855,3 +3856,50 @@ describe("accepted restart drain", () => {
     expect((await service.get(started.jobId))?.state).toBe("interrupted");
   });
 });
+
+it("counts starting/running executions synchronously, including attestation, and releases on settlement/spawn failure", async () => {
+  const fixture = await createFixture(); const changes: number[] = [];
+  const attestation = deferred<void>(); const entered = deferred<void>();
+  const service = await startService(fixture, { onActivityChange: (count) => changes.push(count),
+    readIncarnation: async () => { entered.resolve(); await attestation.promise; return INCARNATION; } });
+  const completion = deferred<ProcessJobProcessResult>();
+  const starting = service.controller(ORIGIN, 0).start(requestOf(handleOf(completion)));
+  await entered.promise; expect(service.activeExecutionCount()).toBe(1); expect(changes.at(-1)).toBe(1);
+  attestation.resolve(); const started = await starting;
+  expect(service.activeExecutionCount()).toBe(1);
+  completion.resolve(processResult({ aborted: true, signal: "SIGTERM" }));
+  await waitFor(async () => service.activeExecutionCount() === 0);
+  expect(changes.at(-1)).toBe(0);
+  await waitFor(async () => (await service.get(started.jobId))?.state === "cancelled");
+  await expect(service.controller(ORIGIN, 0).start({ ...requestOf(handleOf(deferred<ProcessJobProcessResult>())), launch: () => { throw new Error("spawn failed"); } })).rejects.toMatchObject({ code: "process_job_spawn_failed" });
+  expect(service.activeExecutionCount()).toBe(0); expect(changes.at(-1)).toBe(0);
+});
+
+it("late settlement from a stopped service cannot erase a replacement service's executing jobs", async () => {
+  const tracker = new WorkerActivityTracker();
+  const oldFinish = deferred<void>(); const newFinish = deferred<ProcessJobProcessResult>();
+  const oldService = await startService(await createFixture(), { onActivityChange: tracker.jobExecutionObserver() });
+  const newService = await startService(await createFixture(), { onActivityChange: tracker.jobExecutionObserver() });
+  try {
+    await oldService.internalController(ORIGIN, 0).startInternal({
+      kind: "internal", tool: "Agent", jobId: randomUUID(), instanceId: "old-fictional-child", timeoutMs: 60_000,
+      run: async () => { await oldFinish.promise; return { status: "ok", output: "", childStillBusy: false }; },
+      cleanup: async () => {}, wakeOnCompletion: false,
+    });
+    expect(tracker.snapshot().jobs).toBe(1);
+    // Reporting grace releases service ownership, but the actual old invocation
+    // is deliberately still executing as the replacement begins new work.
+    await oldService.stop();
+    expect(oldService.activeExecutionCount()).toBe(1);
+    expect(tracker.snapshot().jobs).toBe(1);
+    await newService.controller(ORIGIN, 0).start(requestOf(handleOf(newFinish)));
+    expect(tracker.snapshot().jobs).toBe(2);
+    oldFinish.resolve();
+    await waitFor(async () => oldService.activeExecutionCount() === 0);
+    expect(newService.activeExecutionCount()).toBe(1);
+    expect(tracker.snapshot().jobs).toBe(1); expect(tracker.busy()).toBe(true);
+    newFinish.resolve(processResult());
+    await waitFor(async () => newService.activeExecutionCount() === 0);
+    expect(tracker.snapshot().jobs).toBe(0); expect(tracker.busy()).toBe(false);
+  } finally { oldFinish.resolve(); newFinish.resolve(processResult()); }
+}, 30_000);

@@ -7,6 +7,10 @@
 - Show the web console's provider usage refresh result as a short muted line
   under the Providers actions ("Updated 9:06 AM", full timestamp on hover), and
   report a failed refresh once per provider at note size.
+- Keep unattended macOS worker maintenance from interrupting active turns,
+  running process jobs, or pending `AskUser` until idle or a bounded ceiling;
+  report deferrals and forced stops in `doctor` and `status`, and fix shutdown
+  diagnostics to name the received signal.
 
 - Fix PeerAgent, ACP bridge, and web console operator key selection to prefer
   each agent's own key over the caller's ambient key; report allowlisted peer

@@ -99,3 +99,24 @@ describe("shutdown-wide restart deadline", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 });
+
+it.each(["SIGINT", "SIGTERM"] as const)("logs literal %s before synchronous latch dispatch and stops once", async (signal) => {
+  const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+  const latch = createSupervisedRestartLatch(); const app = { stop: vi.fn(async () => {}) };
+  const pending = waitForShutdownSignal(app, undefined, latch);
+  process.emit(signal); process.emit(signal);
+  await expect(pending).resolves.toBe(0);
+  expect(app.stop).toHaveBeenCalledOnce();
+  expect(stdout.mock.calls.map(([text]) => String(text)).join("")).toContain(`Received ${signal}`);
+  expect(stdout.mock.calls.map(([text]) => String(text)).join("")).not.toContain("undefined");
+});
+it("supervised restart has a distinct diagnostic without an undefined signal", async () => {
+  const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+  const latch = createSupervisedRestartLatch(); const app = { stop: vi.fn(async () => {}) };
+  const pending = waitForShutdownSignal(app, undefined, latch); const accepted = latch.accept(verified);
+  if (accepted.kind !== "accepted") throw new Error("accept failed");
+  latch.beginStop(accepted.operationId); await pending;
+  const text = stdout.mock.calls.map(([text]) => String(text)).join("");
+  expect(text).toContain("Supervised restart accepted"); expect(text).not.toContain("undefined");
+  expect(app.stop).toHaveBeenCalledOnce();
+});

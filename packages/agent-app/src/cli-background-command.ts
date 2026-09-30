@@ -1,3 +1,6 @@
+import { WorkerActivityTracker } from "./worker-activity.js";
+import { publishWorkerActivity } from "./worker-activity-snapshot.js";
+import { readLaunchdMaintenanceActivityStatus } from "./launchd-maintenance-activity.js";
 import { stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import process from "node:process";
@@ -327,6 +330,8 @@ async function runForeground(
   let runtimeInputs: Awaited<ReturnType<typeof materializeBackgroundRuntimeInputs>> | undefined;
   let app: MonoAgentApp | undefined;
   let logMonitor: ReturnType<typeof startManagedLaunchdLogMonitor> | undefined;
+  const activityTracker = new WorkerActivityTracker();
+  let activityPublisher: Awaited<ReturnType<typeof publishWorkerActivity>> | undefined;
   let shutdownWaitStarted = false;
   const restartLatch = managedBackgroundWorker || systemdBackgroundWorker ? createSupervisedRestartLatch() : undefined;
   const restartAuthority: TuiRestartAuthority | undefined = restartLatch === undefined ? undefined
@@ -387,7 +392,13 @@ async function runForeground(
       return managedBackgroundWorker ? 0 : 1;
     }
 
+    if (managedBackgroundWorker) {
+      const label = deriveLaunchdLabel(configPath);
+      activityPublisher = await publishWorkerActivity({ label, paths: launchdPathsFor(label) }, activityTracker,
+        () => process.stderr.write(ui.errorLine("Could not publish managed worker activity; maintenance will treat it as unknown.")));
+    }
     const appOptions = {
+      activityTracker,
       cwd,
       configPath,
       ...(runtimeInputs === undefined ? {} : {
@@ -413,7 +424,10 @@ async function runForeground(
     // traceability-only config, now that the operator console is retired and the
     // trace heartbeat timer is unref'd.
     if (managedBackgroundWorker) {
-      logMonitor = startManagedBackgroundLogMonitorForConfig(configPath, defaultBackgroundDeps());
+      logMonitor = startManagedBackgroundLogMonitorForConfig(configPath, {
+        ...defaultBackgroundDeps(), isWorkerBusy: () => activityTracker.busy(),
+        maintenanceEpisode: async () => (await readLaunchdMaintenanceActivityStatus(deriveLaunchdLabel(configPath), launchdPathsFor(deriveLaunchdLabel(configPath))))?.pending,
+      });
     }
     const shutdown = waitForShutdownSignal(app, () => {
       logMonitor?.stop();
@@ -426,6 +440,7 @@ async function runForeground(
     // The shutdown waiter already called stop exactly once; even if it failed,
     // do not issue a second process shutdown for one accepted operation.
     if (!shutdownWaitStarted) await app?.stop().catch(() => undefined);
+    await activityPublisher?.stop().catch(() => undefined);
     await runtimeInputs?.dispose().catch(() => undefined);
     await lease.release().catch((error) => {
       process.stderr.write(ui.style.yellow(
@@ -447,6 +462,8 @@ export function startManagedBackgroundLogMonitorForConfig(
     runner: deps.runner,
     getuid: deps.getuid,
     stderr: deps.stderr,
+    ...(deps.isWorkerBusy === undefined ? {} : { isWorkerBusy: deps.isWorkerBusy }),
+    ...(deps.maintenanceEpisode === undefined ? {} : { maintenanceEpisode: deps.maintenanceEpisode }),
     ...(deps.monotonicNow === undefined ? {} : { monotonicNow: deps.monotonicNow }),
     ...(deps.wallClockNow === undefined ? {} : { wallClockNow: deps.wallClockNow }),
     ...(deps.isStopped === undefined ? {} : { isStopped: deps.isStopped }),
@@ -898,17 +915,18 @@ export function waitForShutdownSignal(
   return new Promise<number>((resolve) => {
     const keepAlive = setInterval(() => {}, KEEP_ALIVE_INTERVAL_MS);
     let stopping = false;
+    let receivedSignal: NodeJS.Signals | undefined;
     const beginShutdown = (signal?: NodeJS.Signals): void => {
       if (stopping) {
         return;
       }
       stopping = true;
-      process.off("SIGINT", onSignal);
-      process.off("SIGTERM", onSignal);
+      process.off("SIGINT", onSigint);
+      process.off("SIGTERM", onSigterm);
       clearInterval(keepAlive);
       void (async () => {
         try {
-          process.stdout.write("\n" + ui.hint(`Received ${signal}; stopping mono agent app…`));
+          process.stdout.write("\n" + ui.hint(signal === undefined ? "Supervised restart accepted; stopping mono agent app…" : `Received ${signal}; stopping mono agent app…`));
         } catch {
           // Reporter failure cannot prevent app shutdown or become unhandled.
         }
@@ -944,12 +962,15 @@ export function waitForShutdownSignal(
       })();
     };
     const onSignal = (signal: NodeJS.Signals): void => {
+      receivedSignal = signal;
       restartLatch?.signal();
       beginShutdown(signal);
     };
-    process.on("SIGINT", onSignal);
-    process.on("SIGTERM", onSignal);
-    restartLatch?.onStop(() => beginShutdown());
+    const onSigint = () => onSignal("SIGINT");
+    const onSigterm = () => onSignal("SIGTERM");
+    process.on("SIGINT", onSigint);
+    process.on("SIGTERM", onSigterm);
+    restartLatch?.onStop(() => beginShutdown(receivedSignal));
   });
 }
 

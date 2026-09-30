@@ -1,3 +1,9 @@
+import {
+  clearMaintenanceDeferral, allowUnattendedMaintenanceStop, describeMaintenanceActivity,
+  readLaunchdMaintenanceActivityStatus, MaintenanceDeferred, logPermissionRepairNeeded,
+  type MaintenanceActivityRequest, type MaintenanceReason,
+} from "./launchd-maintenance-activity.js";
+import { readLaunchdLogMonitorStatus } from "./launchd-log-monitor-status.js";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, type Stats } from "node:fs";
@@ -283,6 +289,10 @@ export async function canonicalBackgroundConfigPath(
 }
 
 export interface BackgroundDeps {
+  readonly maintenanceNotNeeded?: () => Promise<void>;
+  readonly clearMaintenanceDeferral?: (target: BackgroundLifecycleTarget) => Promise<void>;
+  readonly unattendedLogStop?: (request: MaintenanceActivityRequest) => Promise<boolean>;
+  readonly allowUnattendedStop?: (target: BackgroundLifecycleTarget, request: MaintenanceActivityRequest) => Promise<boolean>;
   readonly runner: LaunchctlRunner;
   readonly getuid: () => number;
   readonly currentPid: () => number;
@@ -354,7 +364,9 @@ export interface BackgroundDeps {
 }
 
 export function defaultBackgroundDeps(): BackgroundDeps {
-  return {
+  const deps: BackgroundDeps = {
+    clearMaintenanceDeferral,
+    allowUnattendedStop: async (target, request) => allowUnattendedMaintenanceStop(target, deps, request),
     runner: makeLaunchctlRunner(),
     getuid: () => process.getuid?.() ?? 0,
     currentPid: () => process.pid,
@@ -415,6 +427,7 @@ export function defaultBackgroundDeps(): BackgroundDeps {
         child.on("close", (code) => resolvePromise(code ?? 0));
       }),
   };
+  return deps;
 }
 
 export interface ReadyPollOptions extends PollOptions {
@@ -437,7 +450,7 @@ export type BackgroundLaunchResult =
   | {
       readonly ok: false;
       readonly action: "start" | "restart";
-      readonly reason: "runtime" | "snapshot" | "preparation" | "ownership" | "shared-contention" | "launchctl" | "readiness" | "timeout";
+      readonly reason: "runtime" | "snapshot" | "preparation" | "ownership" | "deferred-busy" | "shared-contention" | "launchctl" | "readiness" | "timeout";
     };
 
 export async function startBackground(
@@ -519,17 +532,24 @@ async function maintainLaunchdControllerWithLifecycleLease(
       ? undefined
       : sources.find((candidate) => candidate.pid === worker.pid);
     const durableSnapshotStillMatches = await snapshotStillMatches(target, deps);
-    const workerHealthy = worker.loaded
+    const workerReady = worker.loaded
       && worker.pid !== undefined
       && deps.isAlive(worker.pid)
       && source !== undefined
-      && isReady(source)
-      && snapshotMetadataMatches(source, target.expectedSnapshot)
-      && durableSnapshotStillMatches;
+      && isReady(source);
+    const snapshotMatches = source !== undefined
+      && snapshotMetadataMatches(source, target.expectedSnapshot) && durableSnapshotStillMatches;
+    const workerHealthy = workerReady && snapshotMatches;
     const definitionMatches = worker.definition !== undefined
       && managedWorkerDefinitionMatchesTarget(worker.definition, target);
     const runtimeMatches = loadedIdentity !== undefined
       && sameManagedRuntimeIdentity(loadedIdentity, desiredIdentity);
+    const recoveryReasons: MaintenanceReason[] = [
+      ...(!snapshotMatches ? ["snapshot-drift" as const] : []),
+      ...(!definitionMatches ? ["definition-drift" as const] : []),
+      ...(loadedIdentity === undefined ? ["runtime-unverified" as const] : []),
+      ...(options.sourceAvailable && !runtimeMatches ? ["runtime-upgrade" as const] : []),
+    ];
     const needsRecovery = !workerHealthy
       || !definitionMatches
       || loadedIdentity === undefined
@@ -554,9 +574,11 @@ async function maintainLaunchdControllerWithLifecycleLease(
           preserveMaintenanceService: true,
           preserveDefinitionsOnFailure: true,
           sharedLockMode: "automatic",
+          unattendedMaintenance: { reasons: recoveryReasons,
+            ...(!workerReady ? { override: "worker-unready" as const } : {}) },
         },
       );
-      resultCode = recovered.ok || recovered.reason === "shared-contention" ? 0 : 1;
+      resultCode = recovered.ok || recovered.reason === "shared-contention" || recovered.reason === "deferred-busy" ? 0 : 1;
     }
   } catch (error) {
     reportMaintenanceFailure(target, deps, "reconcile the managed worker", error);
@@ -565,7 +587,7 @@ async function maintainLaunchdControllerWithLifecycleLease(
   return maintainLogsOnly
     ? await maintainLaunchdLogsWithLifecycleLockOperation(
         target,
-        deps,
+        unattendedLogDeps(target, deps),
         options.controlPoll ?? DEFAULT_CONTROL_POLL,
         async () => await acquireSharedLaunchdLogLock(target, deps, "automatic"),
       )
@@ -658,7 +680,7 @@ export async function maintainLaunchdLogs(
 ): Promise<number> {
   return await maintainLaunchdLogsOperation(
     target,
-    deps,
+    unattendedLogDeps(target, deps),
     poll,
     async () => await acquireSharedLaunchdLogLock(target, deps, "automatic"),
   );
@@ -738,7 +760,19 @@ async function ensureBackgroundReadyUnlocked(
   );
 }
 
+function unattendedLogDeps(target: BackgroundLifecycleTarget, deps: BackgroundDeps): BackgroundDeps {
+  const { clearMaintenanceDeferral, allowUnattendedStop } = deps;
+  return {
+    ...deps,
+    ...(clearMaintenanceDeferral === undefined ? {} : { maintenanceNotNeeded: () => clearMaintenanceDeferral(target) }),
+    ...(allowUnattendedStop === undefined ? {} : {
+      unattendedLogStop: (request: MaintenanceActivityRequest) => allowUnattendedStop(target, request),
+    }),
+  };
+}
+
 interface BackgroundReadyInternalOptions {
+  readonly unattendedMaintenance?: MaintenanceActivityRequest;
   /** Recovery helpers cannot boot out and wait for their own launchd process. */
   readonly preserveMaintenanceService?: boolean;
   /** Scheduled recovery keeps both definitions so the calendar schedule can retry. */
@@ -859,6 +893,9 @@ async function ensureBackgroundReadyAfterPublicationBarrier(
   let prepared = false;
   deps.stdout(ui.hint("Replacing the managed worker…"));
   try {
+    const priorInspection = options.unattendedMaintenance === undefined ? undefined : await deps.inspectLaunchdLogs(launchTarget.paths);
+    if (priorInspection !== undefined && !priorInspection.canMaintain) throw new Error("Unsafe launchd log inventory before unattended replacement.");
+    const permissionRepair = priorInspection !== undefined && logPermissionRepairNeeded(priorInspection);
     await prepareLaunchdDirectories(launchTarget, deps);
     let interruptedMaintenance = await deps.readLaunchdLogMaintenanceIntent(launchTarget.paths);
     if (interruptedMaintenance?.phase === "stopping" || interruptedMaintenance?.phase === "restoring") {
@@ -869,6 +906,17 @@ async function ensureBackgroundReadyAfterPublicationBarrier(
         );
       }
     }
+    const checkUnattendedActivity = async (): Promise<void> => {
+      if (options.unattendedMaintenance !== undefined && deps.allowUnattendedStop !== undefined) {
+        const inspection = await deps.inspectLaunchdLogs(launchTarget.paths);
+        if (!inspection.canMaintain) throw new Error("Unsafe launchd log inventory before unattended replacement.");
+        const override = interruptedMaintenance !== undefined || inspection.pendingTransaction
+          ? "transaction-recovery" as const
+          : permissionRepair || logPermissionRepairNeeded(inspection) ? "permission-repair" as const : options.unattendedMaintenance.override;
+        if (!await deps.allowUnattendedStop(launchTarget, { ...options.unattendedMaintenance, inspection,
+          ...(override === undefined ? {} : { override }) })) throw new MaintenanceDeferred();
+      }
+    };
     outcome = await bootstrapOrRestart(launchTarget, deps, uid, controlPoll, async () => {
       const stoppedIntent = interruptedMaintenance;
       if (stoppedIntent?.phase === "stopped") {
@@ -899,8 +947,9 @@ async function ensureBackgroundReadyAfterPublicationBarrier(
       // The replacement plist now contains the finalized-runtime proof. Let
       // launchd respawn only after the stopped-window commit is complete.
       await releaseBarrier();
-    }, { preserveMaintenanceService: options.preserveMaintenanceService === true });
+    }, { preserveMaintenanceService: options.preserveMaintenanceService === true, checkUnattendedActivity });
   } catch (error) {
+    if (error instanceof MaintenanceDeferred) return { ok: false, action: "start", reason: "deferred-busy" };
     reportLifecycleException(
       launchTarget,
       deps,
@@ -1181,7 +1230,7 @@ async function bootstrapOrRestart(
   poll: PollOptions,
   beforeMainBootout: () => Promise<void>,
   whileStopped: (mainStopProven: boolean) => Promise<void>,
-  options: { readonly preserveMaintenanceService?: boolean } = {},
+  options: { readonly preserveMaintenanceService?: boolean; readonly checkUnattendedActivity?: () => Promise<void> } = {},
 ): Promise<LaunchOutcome> {
   const maintenance = maintenancePathsForTarget(target);
   const [service, maintenanceService] = await Promise.all([
@@ -1219,6 +1268,8 @@ async function bootstrapOrRestart(
         .filter((source) => source.health !== "stopped")
         .map((source) => source.pid),
     ]);
+    // Outside unloadLaunchdService: a deferral is not a failed bootout.
+    await options.checkUnattendedActivity?.();
     const mainStopped = await unloadLaunchdService(
       target.label,
       service,
@@ -1561,11 +1612,15 @@ export async function statusBackground(
     .filter((entry) => !entry.matches && entry.source.health !== "stopped")
     .map((entry) => entry.source);
 
+  const maintenanceActivity = await readLaunchdMaintenanceActivityStatus(target.label, target.paths).catch(() => "unavailable" as const);
+  const logMonitor = await readLaunchdLogMonitorStatus(target.label, target.paths).catch(() => "unavailable" as const);
   if (options.json === true) {
     const instance = current === undefined ? null : await assembleInstanceStatus(current, target, deps);
     deps.stdout(`${JSON.stringify({
       ok: active,
       instance,
+      maintenanceActivity: maintenanceActivity ?? null,
+      logMonitor: logMonitor ?? null,
       ...(snapshotRefused ? { startupFailure: { reason: "snapshot-refused", message: SNAPSHOT_REFUSAL_MESSAGE } } : {}),
       others: others.map(assembleOtherInstanceStatus),
     })}\n`);
@@ -1580,6 +1635,8 @@ export async function statusBackground(
     await writeRunsHealthDetail(current, deps);
   }
 
+  if (maintenanceActivity !== undefined) deps.stdout((maintenanceActivity === "unavailable" ? "Maintenance: owner-private status is unavailable or unsafe." : describeMaintenanceActivity(maintenanceActivity)) + "\n");
+  if (logMonitor !== undefined) deps.stdout(logMonitor === "unavailable" ? "Log monitor: owner-private status is unavailable or unsafe.\n" : `Log monitor: ${logMonitor.lastOutcome}; wakes=${logMonitor.wakeCount}\n`);
   if (snapshotRefused) deps.stdout(ui.errorLine(SNAPSHOT_REFUSAL_MESSAGE));
 
   if (others.length > 0) {

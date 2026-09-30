@@ -1,3 +1,6 @@
+import { allowUnattendedMaintenanceStop, type LaunchdMaintenanceActivityStatus } from "../launchd-maintenance-activity.js";
+import type { WorkerActivityProbe } from "../worker-activity-snapshot.js";
+import { LAUNCHD_LOG_MAX_BYTES } from "../launchd-logs.js";
 import { execFile } from "node:child_process";
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -3531,5 +3534,93 @@ describe("tailLogs", () => {
     await tailLogs(target, harness.deps, { follow: false, lines: 200 });
 
     expect(harness.tailCalls[0]).toEqual(["-n", "200", target.paths.stderrPath, target.paths.stdoutPath]);
+  });
+});
+
+function withActivityGate(deps: BackgroundDeps, activity: () => WorkerActivityProbe) {
+  let status: LaunchdMaintenanceActivityStatus | undefined;
+  return {
+    status: () => status,
+    deps: { ...deps, allowUnattendedStop: (target, request) => allowUnattendedMaintenanceStop(target, {
+      ...deps, probe: async () => activity(), readStatus: async () => status,
+      writeStatus: async (_target, value) => { status = value; },
+    }, request) } satisfies BackgroundDeps,
+  };
+}
+
+describe("unattended maintenance activity protection", () => {
+  it.each(["turns", "jobs", "asks"] as const)("busy %s prevents log intent/bootout; idle retries rotate", async (source) => {
+    const target = makeTarget();
+    const { runner, calls } = makeRunner({ loaded: true, initialPid: 1111, bootstrapPid: 2222 });
+    const beginIntent = vi.fn(async () => undefined);
+    const harness = makeHarness({ runner, list: listReturning(() => []), beginLaunchdLogMaintenanceIntent: beginIntent,
+      inspectLaunchdLogs: async () => emptyLogInspection({ present: true, needsMaintenance: true, perAgentFileReasons: ["oversize"] }) });
+    let busy = true;
+    const gate = withActivityGate(harness.deps, () => ({ disposition: busy ? "busy" : "idle", counts: { turns: 0, jobs: 0, asks: 0, [source]: busy ? 1 : 0 } }));
+    expect(await maintainLaunchdLogs(target, gate.deps, POLL)).toBe(0);
+    expect(gate.status()?.lastDecision?.outcome).toBe("deferred-busy");
+    expect(beginIntent).not.toHaveBeenCalled();
+    expect(calls.some((call) => call[0] === "bootout")).toBe(false);
+    expect(harness.rotations).toEqual([]);
+    busy = false;
+    expect(await maintainLaunchdLogs(target, gate.deps, POLL)).toBe(0);
+    expect(beginIntent).toHaveBeenCalledOnce();
+    expect(harness.rotations).toHaveLength(1);
+    expect(gate.status()?.lastDecision?.outcome).toBe("proceeded-idle");
+  });
+
+  it.each(["snapshot", "runtime", "definition"] as const)("healthy busy worker defers %s drift without disguising it as unready recovery", async (drift) => {
+    const target = makeTarget(); const prior = makeSnapshot(target, "prior");
+    const { runner, calls } = makeRunner({ loaded: true, initialPid: 4321, maintenanceLoaded: true, maintenancePid: process.pid,
+      mainPrintOutput: managedLaunchctlPrint(target, { ...(drift === "snapshot" ? { snapshot: prior } : {}) }) });
+    const harness = makeHarness({ runner, currentPid: () => process.pid,
+      list: listReturning(() => [makeSource(target, { ...(drift === "snapshot" ? { metadata: { backgroundSnapshot: prior } } : {}) })]),
+      ...(drift === "runtime" ? { inspectManagedRuntimeSourceIdentity: async () => ({ packageVersion: "0.9.0", cliSha256: "b".repeat(64) }) } : {}),
+    });
+    const gate = withActivityGate(harness.deps, () => ({ disposition: "busy", counts: { turns: 1, jobs: 0, asks: 0 } }));
+    // Definition drift: change desired environment while retaining a ready trace.
+    const desired = drift === "definition" ? { ...target, environment: { ...target.environment, PATH: "/usr/bin:/bin:/fictional" } } : target;
+    expect(await maintainLaunchdController(desired, gate.deps, { sourceAvailable: true, controlPoll: POLL, readinessPoll: POLL }), harness.err.join(" ")).toBe(0);
+    expect(gate.status()?.lastDecision?.outcome).toBe("deferred-busy");
+    expect(gate.status()?.lastDecision?.reasons).toContain(drift === "runtime" ? "runtime-upgrade" : drift === "snapshot" ? "snapshot-drift" : "definition-drift");
+    expect(calls.some((call) => call[0] === "bootout" || call[0] === "bootstrap")).toBe(false);
+    expect(harness.written).toEqual([]);
+  });
+
+  it("a live but unready worker recovers immediately even with unknown activity", async () => {
+    const target = makeTarget();
+    const { runner, calls } = makeRunner({ loaded: true, initialPid: 4321, bootstrapPid: 5432, maintenanceLoaded: true, maintenancePid: process.pid,
+      mainPrintOutput: managedLaunchctlPrint(target) });
+    const harness = makeHarness({ runner, currentPid: () => process.pid, list: listReturning(() =>
+      calls.some((call) => call[0] === "bootstrap") ? [makeSource(target, { pid: 5432 })] : [makeSource(target, { health: "stopped" })]) });
+    const gate = withActivityGate(harness.deps, () => ({ disposition: "unknown" }));
+    expect(await maintainLaunchdController(target, gate.deps, { sourceAvailable: true, controlPoll: POLL, readinessPoll: POLL })).toBe(0);
+    expect(gate.status()?.lastDecision?.outcome, JSON.stringify({ calls, err: harness.err })).toBe("override-worker-unready");
+    expect(calls.some((call) => call[0] === "bootout")).toBe(true);
+  });
+
+  it.each(["size", "permissions", "intent"] as const)("%s forces/overrides busy log maintenance with a recorded reason", async (mode) => {
+    const target = makeTarget(); const { runner } = makeRunner({ loaded: true, initialPid: 1111, bootstrapPid: 2222 });
+    const empty = emptyLogInspection();
+    const harness = makeHarness({ runner, list: listReturning(() => []),
+      inspectLaunchdLogs: async () => emptyLogInspection({ present: true, needsMaintenance: true,
+        ...(mode === "size" ? { stdout: { ...empty.stdout, activeBytes: 2 * LAUNCHD_LOG_MAX_BYTES } } : {}),
+        ...(mode === "permissions" ? { stderr: { ...empty.stderr, files: [{ generation: 0, state: "repairable", bytes: 0 }] } } : {}),
+        ...(mode === "intent" ? { pendingMaintenance: true } : {}) }),
+      ...(mode === "intent" ? { readLaunchdLogMaintenanceIntent: async () => ({ version: 1 as const, phase: "stopping" as const, label: target.label, plistFingerprint: "plist-identity" }) } : {}),
+    });
+    const gate = withActivityGate(harness.deps, () => ({ disposition: "busy", counts: { turns: 1, jobs: 0, asks: 0 } }));
+    expect(await maintainLaunchdLogs(target, gate.deps, POLL)).toBe(0);
+    expect(harness.rotations).toHaveLength(1);
+    expect(gate.status()?.lastDecision?.outcome).toBe(mode === "size" ? "forced-size" : mode === "permissions" ? "override-permission-repair" : "override-transaction-recovery");
+  });
+
+  it("explicit stop/restart never consult the unattended gate", async () => {
+    const target = makeTarget(); const { runner, calls } = makeRunner({ loaded: true, initialPid: 4321, bootstrapPid: 5432 });
+    const harness = makeHarness({ runner, list: listReturning(() => [makeSource(target, { pid: calls.some((c) => c[0] === "bootstrap") ? 5432 : 4321 })]) });
+    const gate = vi.fn(async () => false); const deps = { ...harness.deps, allowUnattendedStop: gate };
+    expect(await restartBackground(target, deps, POLL), harness.err.join(" ")).toBe(0);
+    expect(await stopBackground(target, deps, POLL)).toBe(0);
+    expect(gate).not.toHaveBeenCalled();
   });
 });

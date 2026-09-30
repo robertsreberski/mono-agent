@@ -1,3 +1,4 @@
+import type { WorkerActivityTracker } from "./worker-activity.js";
 import { loadAppCoreConfig, isAppCoreConfigError } from "./app-config.js";
 import type {
   ChannelDriver,
@@ -40,6 +41,7 @@ import {
 } from "./process-jobs-protection.js";
 
 export interface ProcessJobsControllerPort {
+  readonly activityTracker?: WorkerActivityTracker;
   readonly cwd: string;
   readonly configReadPath: string;
   readonly privateRuntimePaths?: import("./app-config.js").PrivateBackgroundRuntimePaths | undefined;
@@ -110,6 +112,9 @@ export function ensureProcessJobsService(
       );
       if (!isCurrentFlight()) return undefined;
       const service = await openProcessJobsService({
+        ...(controller.activityTracker === undefined ? {} : {
+          onActivityChange: controller.activityTracker.jobExecutionObserver(),
+        }),
         cwd: controller.cwd,
         workspace,
         settings,
