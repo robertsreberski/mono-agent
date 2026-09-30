@@ -1,3 +1,4 @@
+import { trackResponderActivity, type WorkerActivityTracker } from "./worker-activity.js";
 import { createProviderUsageRuntimeExtension } from "./provider-usage-tool.js";
 import { readJsonSection, readSettingsJson, type ProviderUsageOperator } from "@mono-agent/agent-contracts";
 import { createConsoleProjectsRuntimeExtension } from "./console-projects.js";
@@ -89,6 +90,7 @@ import { bindProcessJobWakeContextToResponder } from "./process-jobs-context.js"
 type ConfiguredMemory = Awaited<ReturnType<typeof createConfiguredMemory>>;
 
 export interface ResponderControllerPort {
+  readonly activityTracker?: WorkerActivityTracker;
   readonly backgroundSnapshot?: BackgroundSnapshot | undefined;
   readonly cwd: string;
   readonly configPath: string;
@@ -467,7 +469,8 @@ export async function buildResponder(
   const richReplyResponder = postedReplyHistory.wrapResponder(
     mcpApps === undefined ? proposedReplyResponder : mcpApps.wrapResponder(proposedReplyResponder),
   );
-  return bindProcessJobWakeContextToResponder(richReplyResponder);
+  const wakeResponder = bindProcessJobWakeContextToResponder(richReplyResponder);
+  return controller.activityTracker === undefined ? wakeResponder : trackResponderActivity(wakeResponder, controller.activityTracker);
 }
 
 export function requestModelOverrideRuntimeOptions(

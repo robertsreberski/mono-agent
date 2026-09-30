@@ -334,3 +334,23 @@ describe("managed launchd log monitor", () => {
     monitor.stop();
   });
 });
+
+
+describe("busy-aware monitor", () => {
+  it("defers without wake/backoff while busy, then wakes once idle", async () => {
+    const calls: string[][] = []; const now = () => 300_000; const state = dueState(now); let busy = true;
+    const deps = { inspectLaunchdLogs: async () => triggerInspection(), runner: recordingRunner(calls), getuid: () => 501, monotonicNow: now, isWorkerBusy: () => busy };
+    for (let i = 0; i < 3; i++) expect(await requestLaunchdLogMaintenanceIfNeeded(target(), deps, state)).toBe("deferred-busy");
+    expect(calls).toEqual([]); expect(state.cooldownIndex).toBe(0);
+    busy = false; expect(await requestLaunchdLogMaintenanceIfNeeded(target(), deps, state)).toBe("requested");
+  });
+  it.each(["size", "time", "permissions"] as const)("%s bypasses busy deferral", async (reason) => {
+    const calls: string[][] = []; const now = () => 20_000_000;
+    const inspected = triggerInspection(reason === "size" ? { stderr: { activeBytes: 10 * 1024 * 1024, retainedBytes: 0, totalBytes: 10 * 1024 * 1024, byteAccountingComplete: true, files: [] } } : reason === "permissions" ? { stdout: { activeBytes: 0, retainedBytes: 0, totalBytes: 0, byteAccountingComplete: true, files: [{ generation: 0, state: "repairable", bytes: 0 }] } } : {});
+    expect(await requestLaunchdLogMaintenanceIfNeeded(target(), { inspectLaunchdLogs: async () => inspected, runner: recordingRunner(calls), getuid: () => 501,
+      monotonicNow: now, wallClockNow: now, isWorkerBusy: () => true,
+      maintenanceEpisode: async () => reason === "time" ? { firstDeferredAt: new Date(0).toISOString(), count: 4 } : undefined,
+    }, dueState(now))).toBe("requested");
+    expect(calls.some((call) => call[0] === "kickstart")).toBe(true);
+  });
+});

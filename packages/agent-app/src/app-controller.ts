@@ -1,3 +1,4 @@
+import { WorkerActivityTracker } from "./worker-activity.js";
 import { createAgentProviderUsage } from "./provider-usage-scope.js";
 import { createProviderUsageService } from "./provider-usage.js";
 // Internal host implementation; `app.ts` remains the stable public facade.
@@ -120,6 +121,7 @@ export interface MonoAgentAppOptions {
   readonly memoryHealthWorkerUrl?: URL;
   /** Test seam for exercising the isolated memory-health request deadline. */
   readonly memoryHealthWorkerTimeoutMs?: number;
+  readonly activityTracker?: WorkerActivityTracker;
   readonly restartAuthority?: TuiRestartAuthority;
 }
 
@@ -210,6 +212,7 @@ async function startMonoAgentAppInternal(
       ...(options.backgroundSnapshot === undefined ? {} : { backgroundSnapshot: options.backgroundSnapshot }),
       ...(options.memoryHealthWorkerUrl === undefined ? {} : { memoryHealthWorkerUrl: options.memoryHealthWorkerUrl }),
       ...(options.memoryHealthWorkerTimeoutMs === undefined ? {} : { memoryHealthWorkerTimeoutMs: options.memoryHealthWorkerTimeoutMs }),
+      ...(options.activityTracker === undefined ? {} : { activityTracker: options.activityTracker }),
       ...(options.restartAuthority === undefined ? {} : { restartAuthority: options.restartAuthority }),
       trustedRuntimeReadRoots,
     });
@@ -281,6 +284,7 @@ interface MonoAgentAppControllerInput {
   readonly backgroundSnapshot?: BackgroundSnapshot;
   readonly memoryHealthWorkerUrl?: URL;
   readonly memoryHealthWorkerTimeoutMs?: number;
+  readonly activityTracker?: WorkerActivityTracker;
   readonly restartAuthority?: TuiRestartAuthority;
   readonly trustedRuntimeReadRoots: readonly string[];
 }
@@ -312,6 +316,7 @@ export class MonoAgentAppController implements MonoAgentApp {
   readonly sandboxEngine: SandboxEngine | undefined;
   readonly traceDefaults: AppTraceDefaults | undefined;
   readonly backgroundSnapshot: BackgroundSnapshot | undefined;
+  readonly activityTracker: WorkerActivityTracker;
   readonly restartAuthority: TuiRestartAuthority | undefined;
   /** Live keyed app-owned TUI state, never inferred from a config file alone. */
   restartToolKeyed = false;
@@ -422,6 +427,7 @@ export class MonoAgentAppController implements MonoAgentApp {
   readonly providerAuthObservations = createProviderAuthObservationTracker();
 
   constructor(input: MonoAgentAppControllerInput) {
+    this.activityTracker = input.activityTracker ?? new WorkerActivityTracker();
     this.cwd = input.cwd;
     this.agentRootOwnership = input.agentRootOwnership;
     this.configPath = input.configPath;
