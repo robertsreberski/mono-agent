@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { buildWebLaunchdProgramArguments, WEB_LAUNCHD_LABEL } from "../launchd.js";
-import { decodeManagedWebDefinition } from "../web-service-definition.js";
+import { decodeManagedWebDefinition, selectedWebPublicOrigin } from "../web-service-definition.js";
 
 /** The macOS LaunchAgent prefix: env -i … <node> <cli> */
 const launchdPrefix = ["/usr/bin/env", "-i", "PATH=/usr/bin", "/managed/node", "/managed/dist/cli.js"];
@@ -9,6 +9,17 @@ const launchdPrefix = ["/usr/bin/env", "-i", "PATH=/usr/bin", "/managed/node", "
 const systemdPrefix = ["/usr/bin/env", "-i", "PATH=/usr/bin", "/managed/node", "--", "/managed/dist/cli.js"];
 
 describe("managed web definition decoding", () => {
+  it.each([{ prefix: launchdPrefix }, { prefix: systemdPrefix }])("recovers a canonical public origin from the environment prefix", ({ prefix }) => {
+    const argv = [...prefix]; argv.splice(3, 0, "MONO_AGENT_WEB_PUBLIC_ORIGIN=https://console.example.test:443/");
+    expect(decodeManagedWebDefinition([...argv, "web", "run", "--port", "5050"])?.publicOrigin).toBe("https://console.example.test");
+    argv.splice(3, 0, "MONO_AGENT_WEB_PUBLIC_ORIGIN=https://other.example.test");
+    expect(decodeManagedWebDefinition([...argv, "web", "run", "--port", "5050"])).toBeUndefined();
+  });
+  it.each(["", "file:///tmp/site", "https://user:password@console.example.test", "https://console.example.test/path", "https://console.example.test/?q=1", "https://console.example.test/#fragment"])("rejects a non-origin deployment value without accepting a malformed installed definition: %s", (value) => {
+    expect(() => selectedWebPublicOrigin(value)).toThrow();
+    const argv = [...launchdPrefix]; argv.splice(3, 0, `MONO_AGENT_WEB_PUBLIC_ORIGIN=${value}`);
+    expect(decodeManagedWebDefinition([...argv, "web", "run", "--port", "5050"])).toBeUndefined();
+  });
   it.each([true, false])("round-trips an explicit multi-user mode on macOS and Linux (enabled=%s)", (multiUser) => {
     const argv = buildWebLaunchdProgramArguments({
       label: WEB_LAUNCHD_LABEL, nodePath: "/managed/node", cliPath: "/managed/dist/cli.js",

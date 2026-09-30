@@ -246,6 +246,18 @@ Managed `web start`/`restart` retain an explicit `--multi-user` or
 `--no-multi-user` selection. Enabled startup remains fail-closed until the complete
 server-side access policy is available; it never exposes partially protected APIs.
 
+For HTTPS termination, set `MONO_AGENT_WEB_PUBLIC_ORIGIN` to the exact external
+origin (for example, `https://console.example.test`) when starting or restarting
+the managed worker. launchd and systemd retain that validated origin across
+restarts; an explicit new value replaces it. Embedded hosts may instead pass
+`publicOrigin` to `startWebServer`. No path, query, fragment or credentials are
+allowed. Keep the hostname in the existing allowed-host policy and preserve the
+external Host header at the proxy. HTTPS origins issue Secure cookies; plain HTTP
+without a terminator uses non-Secure cookies and is appropriate only on a trusted
+network. Arbitrary forwarded protocol/address headers never establish TLS or
+origin trust. A configured HTTPS origin must not be used through a different
+plain-HTTP hostname; use its external HTTPS address for authenticated requests.
+
 The service uses the operating-system hostname as its machine identity and as
 the default display name. An operator-selected `name` replaces that default in
 the desktop/mobile header, browser title, and installed PWA name while the

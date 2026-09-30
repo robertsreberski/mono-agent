@@ -184,6 +184,19 @@ describe("Linux agent command composition", () => {
 });
 
 describe("Linux web command composition", () => {
+  it.each([undefined, "http://replacement.example.test:5050"])("retains or explicitly overrides the installed deployment origin (%s)", async (override) => {
+    const installed = managedWebArgv("web", "run", "--port", "5050");
+    installed.splice(3, 0, "MONO_AGENT_WEB_PUBLIC_ORIGIN=https://console.example.test");
+    mocks.read.mockResolvedValue({ argv: installed }); mocks.health.mockResolvedValue(true);
+    expect(await runSystemdWebCommand({ positionals: ["restart"], env: override === undefined ? {} : { MONO_AGENT_WEB_PUBLIC_ORIGIN: override } }, output())).toBe(0);
+    expect(mocks.start.mock.calls[0]![0].argv).toContain(`MONO_AGENT_WEB_PUBLIC_ORIGIN=${override ?? "https://console.example.test"}`);
+  });
+
+  it("rejects invalid origin before service publication or restart", async () => {
+    mocks.read.mockResolvedValue({ argv: managedWebArgv("web", "run", "--port", "5050") });
+    expect(await runSystemdWebCommand({ positionals: ["restart"], env: { MONO_AGENT_WEB_PUBLIC_ORIGIN: "https://console.example.test/private-path" } }, output())).toBe(1);
+    expect(mocks.start).not.toHaveBeenCalled();
+  });
   it.each([undefined, true, false])("retains or overrides installed multi-user mode (override=%s)", async (multiUser) => {
     mocks.read.mockResolvedValue({ argv: managedWebArgv("web", "run", "--host", "127.0.0.1", "--port", "5050", "--multi-user") });
     mocks.health.mockResolvedValue(true);

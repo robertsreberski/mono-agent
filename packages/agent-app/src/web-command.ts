@@ -18,6 +18,7 @@ import {
   invalidWebConsoleName,
   isWebTheme,
   LEGACY_DEFAULT_WEB_HOST,
+  selectedWebPublicOrigin,
   WEB_THEMES,
 } from "./web-service-definition.js";
 import type { ManagedWebDefinition } from "./web-service-definition.js";
@@ -218,6 +219,7 @@ interface WebServiceRecord {
   /** Absent means the console labels itself with the machine hostname. */
   readonly name?: string;
   readonly multiUser?: boolean;
+  readonly publicOrigin?: string;
   readonly updatedAt: string;
 }
 
@@ -460,6 +462,10 @@ async function runWebUsersBootstrap(options: RunWebCommandOptions, deps: RunWebC
 const WEB_ACTIONS: ReadonlySet<string> = new Set(["start", "stop", "restart", "status", "logs", "run", "reset"]);
 
 function validateWebFlags(action: string | undefined, options: RunWebCommandOptions): string | undefined {
+  if (action === "run" || action === "start" || action === "restart") {
+    try { selectedWebPublicOrigin(options.env.MONO_AGENT_WEB_PUBLIC_ORIGIN); }
+    catch { return "MONO_AGENT_WEB_PUBLIC_ORIGIN must be an exact HTTP(S) origin."; }
+  }
   if (options.username !== undefined) return "--username is only supported for web users bootstrap.";
   if (options.loopback === true && options.host !== undefined) {
     return "Choose either --loopback or --host, not both.";
@@ -504,6 +510,7 @@ async function runWebForeground(options: RunWebCommandOptions, deps: RunWebComma
   const port = options.port ?? DEFAULT_WEB_PORT;
   const theme = selectedWebTheme(options.theme);
   const consoleName = selectedWebConsoleName(options.name);
+  const publicOrigin = selectedWebPublicOrigin(options.env.MONO_AGENT_WEB_PUBLIC_ORIGIN);
   const paths = webPaths(deps.homeDir);
   await (deps.prepareState ?? defaultPrepareWebState)({ stateDir: paths.stateDir, env: options.env });
   const registryDir = resolveGlobalTraceRegistryDir(options.env);
@@ -517,6 +524,7 @@ async function runWebForeground(options: RunWebCommandOptions, deps: RunWebComma
       theme,
       ...(consoleName === undefined ? {} : { name: consoleName }),
       ...(options.multiUser === undefined ? {} : { multiUser: options.multiUser }),
+      ...(publicOrigin === undefined ? {} : { publicOrigin }),
       registryDirs: [registryDir],
       stateDir: paths.stateDir,
       env: options.env,
@@ -736,6 +744,7 @@ async function startWebBackground(
       );
     }
     const prior = priorRecord ?? priorDefinition;
+    const publicOrigin = selectedWebPublicOrigin(options.env.MONO_AGENT_WEB_PUBLIC_ORIGIN ?? prior?.publicOrigin);
     if (pendingMaintenanceIntent !== undefined) {
       let currentMainIdentity: string;
       try {
@@ -884,6 +893,7 @@ async function startWebBackground(
         ? {}
         : { MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: options.env.MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR }),
       ...(allowedHosts === undefined ? {} : { MONO_AGENT_WEB_ALLOWED_HOSTS: allowedHosts }),
+      ...(publicOrigin === undefined ? {} : { MONO_AGENT_WEB_PUBLIC_ORIGIN: publicOrigin }),
       ...(options.env.MONO_AGENT_WEB_PUSH_SUBJECT === undefined
         ? {}
         : { MONO_AGENT_WEB_PUSH_SUBJECT: options.env.MONO_AGENT_WEB_PUSH_SUBJECT }),
@@ -894,6 +904,7 @@ async function startWebBackground(
       port,
       theme,
       ...(multiUser === undefined ? {} : { multiUser }),
+      ...(publicOrigin === undefined ? {} : { publicOrigin }),
       ...(consoleName === undefined ? {} : { name: consoleName }),
       updatedAt: new Date((deps.now ?? Date.now)()).toISOString(),
     };
@@ -2550,6 +2561,10 @@ async function readServiceRecord(path: string): Promise<WebServiceRecordRead> {
     || typeof value.updatedAt !== "string") {
     return { kind: "invalid", detail: "the web service record has an invalid schema; repair or remove ~/.mono-agent/web/service.json" };
   }
+  try {
+    if (value.publicOrigin !== undefined && typeof value.publicOrigin !== "string") throw new Error("Invalid origin type.");
+    selectedWebPublicOrigin(value.publicOrigin as string | undefined);
+  } catch { return { kind: "invalid", detail: "the web service record has an invalid public origin" }; }
   return { kind: "valid", record: value as unknown as WebServiceRecord, contents };
 }
 

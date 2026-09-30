@@ -32,6 +32,7 @@ import {
   DEFAULT_WEB_THEME,
   decodeManagedWebDefinition,
   LEGACY_DEFAULT_WEB_HOST,
+  selectedWebPublicOrigin,
 } from "./web-service-definition.js";
 
 const cliPath = fileURLToPath(new URL("./cli.js", import.meta.url));
@@ -273,6 +274,8 @@ export async function runSystemdWebCommand(options: RunWebCommandOptions, deps: 
     }
     if (action !== "start" && action !== "restart") throw new Error(`Unsupported systemd web action: ${action}`);
     const environment = operationalEnvironment(options.env);
+    const publicOrigin = selectedWebPublicOrigin(options.env.MONO_AGENT_WEB_PUBLIC_ORIGIN ?? installedDefinition?.publicOrigin);
+    if (publicOrigin !== undefined) environment.MONO_AGENT_WEB_PUBLIC_ORIGIN = publicOrigin;
     const previousAllowed = installed?.argv.find((arg) => arg.startsWith("MONO_AGENT_WEB_ALLOWED_HOSTS="))?.slice("MONO_AGENT_WEB_ALLOWED_HOSTS=".length);
     const allowed = options.env.MONO_AGENT_WEB_ALLOWED_HOSTS ?? previousAllowed;
     if (allowed !== undefined) environment.MONO_AGENT_WEB_ALLOWED_HOSTS = allowed;

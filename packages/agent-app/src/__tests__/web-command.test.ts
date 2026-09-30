@@ -139,16 +139,24 @@ describe("runWebCommand", () => {
     expect(bootstrapUser).not.toHaveBeenCalled();
   });
 
+  it.each(["run", "start", "restart"])("rejects invalid public origin before any %s worker/state action", async (action) => {
+    const startServer = vi.fn(); const prepareState = vi.fn(); const launchctl = vi.fn();
+    expect(await runWebCommand({ positionals: [action], env: { MONO_AGENT_WEB_PUBLIC_ORIGIN: "https://console.example.test/private" } }, {
+      startServer, prepareState, launchctl, stderr: { write: () => undefined },
+    })).toBe(2);
+    expect(startServer).not.toHaveBeenCalled(); expect(prepareState).not.toHaveBeenCalled(); expect(launchctl).not.toHaveBeenCalled();
+  });
+
   it.each([true, false])("forwards foreground multi-user mode explicitly (enabled=%s)", async (multiUser) => {
     const home = await testHome();
     const stop = vi.fn(async () => undefined);
     const startServer = vi.fn(async () => ({ url: "http://127.0.0.1:5050/", host: "127.0.0.1", port: 5050, stop }));
     let output = "";
-    expect(await runWebCommand({ positionals: ["run"], multiUser, env: {} }, {
+    expect(await runWebCommand({ positionals: ["run"], multiUser, env: { MONO_AGENT_WEB_PUBLIC_ORIGIN: "https://console.example.test:443/" } }, {
       homeDir: home, prepareState, startServer, waitForShutdown: async () => undefined,
       stdout: { write: (text) => { output += text; } }, discoverNetworkAddresses: () => [],
     })).toBe(0);
-    expect(startServer).toHaveBeenCalledWith(expect.objectContaining({ multiUser }));
+    expect(startServer).toHaveBeenCalledWith(expect.objectContaining({ multiUser, publicOrigin: "https://console.example.test" }));
     expect(output).toContain(multiUser ? "Multi-user authentication is enabled" : "No app authentication is enabled");
     expect(stop).toHaveBeenCalledOnce();
   });
@@ -1502,6 +1510,7 @@ describe("runWebCommand", () => {
       port: 5050,
       theme: "plum",
       multiUser: true,
+      publicOrigin: "https://console.example.test",
       updatedAt: "2026-07-17T00:00:00.000Z",
     })}\n`, { mode: 0o600 });
     let workerLoaded = true;
@@ -1525,7 +1534,7 @@ describe("runWebCommand", () => {
 
     let errors = "";
     const result = await runWebCommand(
-      { positionals: ["restart"], env: {}, ...(multiUser === undefined ? {} : { multiUser }) },
+      { positionals: ["restart"], env: multiUser === true ? { MONO_AGENT_WEB_PUBLIC_ORIGIN: "http://replacement.example.test:5050/" } : {}, ...(multiUser === undefined ? {} : { multiUser }) },
       {
         platform: "darwin",
         homeDir: home,
@@ -1543,10 +1552,12 @@ describe("runWebCommand", () => {
     );
     expect(result, errors).toBe(0);
 
-    expect(JSON.parse(await readFile(paths.recordPath, "utf8"))).toMatchObject({ theme: "plum", multiUser: multiUser ?? true });
+    const publicOrigin = multiUser === true ? "http://replacement.example.test:5050" : "https://console.example.test";
+    expect(JSON.parse(await readFile(paths.recordPath, "utf8"))).toMatchObject({ theme: "plum", multiUser: multiUser ?? true, publicOrigin });
     const plist = await readFile(paths.launchd.plistPath, "utf8");
     expect(plist).toContain("<string>plum</string>");
     expect(plist).toContain(`<string>${multiUser === false ? "--no-multi-user" : "--multi-user"}</string>`);
+    expect(plist).toContain(`MONO_AGENT_WEB_PUBLIC_ORIGIN=${publicOrigin}`);
   });
 
 

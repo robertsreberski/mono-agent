@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Retain the explicitly configured web public origin across managed restarts,
+  validate it before publication, and keep HTTPS cookie trust independent of
+  forwarded headers.
+
 - Disable push production and delivery in multi-user mode, including retained
   subscriptions and outbox work, without changing legacy notification behavior.
 
