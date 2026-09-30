@@ -195,6 +195,7 @@
  * @property {{persistentSubagents?: boolean, askParent?: boolean}} [toolExposure] Stable profile exposure, not execution authority.
  * @property {Record<string, {available: boolean, reason?: string, limits?: Record<string, number|null>}>} [hostCapabilities] Current non-authorizing host facts.
  * @property {{submit(question: {question: string, options?: string[]}): Promise<void>}} [askParentController]
+ * @property {{eligible(): boolean}} [finishSilentlyController]
  * The options object a host passes to `createRuntime(host).run(systemPrompt, options)`.
  * @property {RuntimeModelRef} model                     Resolved model reference; see parseRuntimeModelReference.
  * @property {string} [sessionId]                         Host conversation/session key for resumable bridges.
@@ -377,6 +378,7 @@
  * @property {{turnToken: string, state: "retained"|"unknown"|"lost"}} [subagentContinuity] App-owned detached settlement evidence.
  * @property {{question: string, options?: string[]}} [subagentQuestion]
  * @property {string|null} [text]
+ * @property {"silent"|"visible"} [turnDisposition] Host-certified silent completion, when applicable.
  * @property {*} [structuredResult]
  * @property {string|null} [structuredResultSource]
  * @property {Array<RuntimeEvent>} [events]

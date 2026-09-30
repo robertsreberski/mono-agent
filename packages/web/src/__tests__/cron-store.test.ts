@@ -1214,6 +1214,19 @@ describe("silent cron projections", () => {
     } finally { store.close(); }
   });
 
+  it("hides typed silent completion but preserves visible rich/error content", async () => {
+    const { store } = await fixture();
+    try {
+      const silent = cronRun({ runId: "typed-silent", sequence: 1, status: "succeeded",
+        text: "", turnDisposition: "silent" });
+      expect(store.reconcileCronRunsResult("agent-one", "daily:brief", [silent]).messages).toEqual([]);
+      const rich = cronRun({ runId: "typed-rich", sequence: 2, status: "succeeded",
+        text: "", turnDisposition: "silent", replyPartOutcomes: [{ partIndex: 0, partType: "attachment", status: "failed",
+          code: "unsupported_destination", message: "Attachment reply parts are unsupported on this destination." }] });
+      expect(store.reconcileCronRunsResult("agent-one", "daily:brief", [rich]).messages).toHaveLength(1);
+    } finally { store.close(); }
+  });
+
   it("hides a running row from every public read and preserves history and stable revisions", async () => {
     const { store, thread } = await fixture();
     try {

@@ -736,6 +736,9 @@ export function createTuiChannelDriver(
             const hasText = response.text !== undefined && response.text.trim().length > 0;
             const hasParts = response.parts !== undefined && response.parts.length > 0;
             if (!hasText && !hasParts) {
+              if (response.metadata?.turnDisposition === "silent") {
+                return { delivered: true, code: "delivered", channelId: "tui", historyRecorded: true };
+              }
               return { delivered: false, code: "empty_response", reason: "The process-job wake produced no answer.", retryable: false };
             }
             const threadId = webThreadId(conversationId);

@@ -2808,6 +2808,45 @@ describe("AgentHarness", () => {
     });
   }
 
+  it("commits certified textless silence without empty_response or memory capture", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const memoryCapture = vi.fn();
+    const history = createInMemoryHistoryStore();
+    const harness = createAgentHarness({
+      identityPath, model, historyStore: history,
+      runtime: createFakeRuntime(async () => ({ text: "", turnDisposition: "silent", error: null })).runtime,
+      memory: { load: async () => undefined, persistCompletedTurn: memoryCapture },
+      memoryWriteMode: "capture",
+    });
+    const response = await harness.run({ conversationId: "c-silent", userMessage: "Check", abortSignal: new AbortController().signal });
+    expect(response.failure).toBeUndefined();
+    expect(response.metadata.summary?.status).toBe("succeeded");
+    expect(response).toMatchObject({ text: "", metadata: { turnDisposition: "silent" } });
+    expect(memoryCapture).not.toHaveBeenCalled();
+    expect(await history.load("c-silent")).toContainEqual(expect.objectContaining({
+      role: "assistant", content: "[Host: silent completion]",
+    }));
+  });
+
+  it("retains certified silence when the best-effort recorder export fails", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const response = await createAgentHarness({
+      identityPath, model,
+      runtime: createFakeRuntime(async () => ({ text: "", turnDisposition: "silent", error: null })).runtime,
+      recorderFactory: () => ({
+        onEvent() {},
+        async finish(): Promise<never> { throw new Error("export unavailable"); },
+        async fail(): Promise<never> { throw new Error("export unavailable"); },
+      }),
+    }).run({ conversationId: "c-export", userMessage: "Check", abortSignal: new AbortController().signal });
+    expect(response).toMatchObject({ text: "", metadata: { turnDisposition: "silent" } });
+    expect(response.failure).toBeUndefined();
+  });
+
   it("does not write a host summary when memoryWriteMode is omitted", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");

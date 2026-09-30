@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { MAX_AGENT_REPLY_PARTS, type AgentReplyPart, type AgentResponder } from "@mono-agent/agent-contracts";
+import { MAX_AGENT_REPLY_PARTS, isNativeNotifyRequest, type AgentReplyPart, type AgentResponder } from "@mono-agent/agent-contracts";
 
 import type {
   CronAdapterOptions,
@@ -189,6 +189,7 @@ describe("Cron adapter", () => {
     const calls: unknown[] = [];
     const responder: AgentResponder = {
       async respond(request, stream) {
+        expect(isNativeNotifyRequest(request)).toBe(true);
         calls.push(request);
         await stream.append(`ran: ${request.text}`);
         return {};

@@ -49,7 +49,9 @@ export async function deliverNativeCronNotification(input: {
     return;
   }
   const text = input.result.text;
-  if (text === undefined || suppressesNotification(text, { jobId: job.id }, input.logger)) {
+  if (text === undefined || input.result.metadata?.turnDisposition === "silent"
+    || (input.result.metadata?.turnDisposition === undefined
+      && suppressesNotification(text, { jobId: job.id }, input.logger))) {
     return;
   }
   try {
@@ -124,7 +126,9 @@ export async function deliverNativeWebhookNotification(input: {
   }
   const source = { endpointName: input.request.metadata.webhook.endpointName };
   const text = input.status.text;
-  if (text === undefined || suppressesNotification(text, source, input.logger)) {
+  if (text === undefined || input.status.metadata?.turnDisposition === "silent"
+    || (input.status.metadata?.turnDisposition === undefined
+      && suppressesNotification(text, source, input.logger))) {
     return;
   }
   try {

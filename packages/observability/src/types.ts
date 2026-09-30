@@ -16,6 +16,7 @@ export interface RunCancellationReason {
 }
 
 export interface RuntimeResultLike {
+  readonly turnDisposition?: "silent" | "visible";
   readonly cancelled?: boolean;
   readonly cancellationReason?: RunCancellationReason;
   readonly error?: string | null;
@@ -119,6 +120,9 @@ export interface FailoverAttempt {
 }
 
 export interface RunSummary {
+  readonly turnDisposition?: "silent" | "visible";
+  /** Empty only for a host-certified silent completion; not model-written prose. */
+  readonly assistantText?: "";
   readonly runId: string;
   readonly conversationId: string;
   readonly status: RunSummaryStatus;

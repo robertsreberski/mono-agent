@@ -46,6 +46,10 @@
   `AgentManage inspect`: distinguish placed tool results from unknown outcomes,
   without resuming the old instance or guaranteeing tool-effect completeness.
 
+- Add `FinishSilently({})` for admitted host-raised process-job wakes and
+  notify-enabled cron/webhook turns, recording silent completion without a
+  model-written answer; keep `NOTHING_TO_REPORT` as a fallback.
+
 - Keep every in-progress Background jobs shelf indicator static, using the same
   half-filled circle in the closed bar and open rows.
 

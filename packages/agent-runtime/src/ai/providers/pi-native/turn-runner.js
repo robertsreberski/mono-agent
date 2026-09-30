@@ -137,6 +137,8 @@ export async function buildTurnTools(runState, {
       toolExecutionMode,
       subagents: options.subagents,
       askParentController: options.askParentController,
+      finishSilentlyController: options.finishSilentlyController,
+      silentTurnState: runState.silentTurn,
       toolExposure: options.toolExposure,
       // The child inherits the parent's route and workspace unless its profile
       // pins a model; the tool closure reads these to build each child request.
@@ -187,6 +189,7 @@ export async function buildTurnTools(runState, {
       sandboxEngine,
       ctx: runCtx,
       mcpApps: options.mcpApps,
+      onRichOutput: () => { runState.silentTurn.visibleContent = true; },
       runId: runCtx?.runId,
     }));
   // Surface MCP init/list failures BOTH to the live event stream and to runtimeWarnings, so a
@@ -293,6 +296,7 @@ export async function buildTurnHarness(runState, {
     systemPrompt: appendStructuredOutputInstruction(systemPrompt, outputSchema, options.prompts),
     tools,
     toolExecutionMode,
+    silentTurnState: runState.silentTurn,
     streamOptions: { transport, maxRetries, maxRetryDelayMs,
       ...(model.api === "anthropic-messages" && options.cacheRetention !== undefined ? { cacheRetention: options.cacheRetention } : {}),
     },

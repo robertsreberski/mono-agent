@@ -667,6 +667,28 @@ describe("cron channel driver — native notification delivery", () => {
     expect(notifyDestination).not.toHaveBeenCalled();
   });
 
+  it("skips native delivery for a typed silent disposition", async () => {
+    const notifyDestination = vi.fn(async () => ({ delivered: true }));
+    const captured = await startCapturingCron({ ...baseInput, notifyDestination, config: {
+      jobs: [{ id: "j", expression: "* * * * *", timezone: "UTC", prompt: "p", enabled: true,
+        notify: true, notifyConversationId: "telegram:42" }],
+    } });
+    await captured.onResult?.({ ...succeededResult(), metadata: { turnDisposition: "silent" } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(notifyDestination).not.toHaveBeenCalled();
+  });
+
+  it("honors an explicit visible disposition before the legacy sentinel classifier", async () => {
+    const notifyDestination = vi.fn(async () => ({ delivered: true }));
+    const captured = await startCapturingCron({ ...baseInput, notifyDestination, config: {
+      jobs: [{ id: "j", expression: "* * * * *", timezone: "UTC", prompt: "p", enabled: true,
+        notify: true, notifyConversationId: "telegram:42" }],
+    } });
+    await captured.onResult?.({ ...succeededResult("Narration\nNOTHING_TO_REPORT"),
+      metadata: { turnDisposition: "visible" } });
+    await vi.waitFor(() => expect(notifyDestination).toHaveBeenCalledOnce());
+  });
+
   it("skips native delivery when the final text is the NOTHING_TO_REPORT sentinel", async () => {
     const notifyDestination = vi.fn(async () => ({ delivered: true }));
     const captured = await startCapturingCron({

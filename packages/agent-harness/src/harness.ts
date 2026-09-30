@@ -1443,7 +1443,15 @@ export class MonoAgentHarness implements AgentHarness {
         return { metadata: responseMetadata(runId, request, context, summary, runtimeResult), failure };
       }
 
-      const text = normalizeAssistantText(runtimeResult.text);
+      const silentTurn = runtimeResult.turnDisposition === "silent"
+        && !request.abortSignal.aborted
+        && (request.attachments?.length ?? 0) === 0
+        && runtimeResult.subagentQuestion === undefined
+        && !normalizeAssistantText(runtimeResult.text);
+      if (runtimeResult.turnDisposition === "silent" && !silentTurn) {
+        runtimeResult = { ...runtimeResult, turnDisposition: "visible" };
+      }
+      const text = silentTurn ? "" : normalizeAssistantText(runtimeResult.text);
       if (text === undefined) {
         const failure: AgentHarnessFailure = {
           kind: "empty_response",
@@ -1542,6 +1550,7 @@ export class MonoAgentHarness implements AgentHarness {
           runId,
           request.sender,
           request,
+          silentTurn,
         );
         throwIfCancellationOwned();
         try {
@@ -1687,7 +1696,7 @@ export class MonoAgentHarness implements AgentHarness {
 
       // Persist memory from the ORIGINAL caption + redacted attachment
       // metadata (persistText), never the expanded provider prompt.
-      if (completedTurn !== undefined) {
+      if (completedTurn !== undefined && !silentTurn) {
         await persistSuccessfulMemory(this.options,
           request.conversationId,
           completedTurn.userMemoryText,

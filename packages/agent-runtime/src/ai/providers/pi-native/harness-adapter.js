@@ -270,6 +270,18 @@ export async function createPiHarnessAdapter(session, options) {
       if (event.reason === "threshold" && midRunCompactionArmed) return undefined;
       return { decline: true };
     }, { id: "mono-agent-compaction-owner" });
+    // The only accepted silent call is a sole-call batch. Record the provider's
+    // actual batch, not a model-supplied argument; sequential execution ensures
+    // a later rich-output call cannot race an accepted termination.
+    if (activeToolNames.includes("FinishSilently") && options.silentTurnState) {
+      rawHarness.hooks.on("after_response", (event) => {
+        const calls = event.message.content.filter((part) => part.type === "toolCall");
+        options.silentTurnState.soleCall = calls.length === 1 && calls[0].name === "FinishSilently";
+        if (event.message.content.some((part) => part.type === "text" && part.text?.trim())) {
+          options.silentTurnState.visibleContent = true;
+        }
+      }, { id: "mono-agent-silent-batch" });
+    }
     // Pi terminates only when every result in a batch carries the hint. Keep
     // mixed batches closed too, and never execute calls after a durable question.
     if (activeToolNames.includes("AskParent")) {

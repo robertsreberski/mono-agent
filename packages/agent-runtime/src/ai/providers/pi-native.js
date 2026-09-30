@@ -377,6 +377,8 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     toolExecutionsThisTurn: 0,
     toolFailureThisTurn: false,
     structuredOutputCompletedThisTurn: false,
+    silentCompletedThisTurn: false,
+    silentTurn: { soleCall: false, visibleContent: false, pendingQuestion: false, failed: false, accepted: false, completed: false },
     // Populated by the StructuredOutput tool callback (built in the turn runner);
     // read by the finalization retry predicate and the result assembly.
     structuredResult: null,
@@ -561,6 +563,9 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       ...(options.toolLimits?.bashTimeoutMs === undefined ? {} : { bashTimeoutMs: options.toolLimits.bashTimeoutMs }),
     };
     const toolExecution = resolvePiToolExecutionMode(options);
+    // The after_response gate refuses mixed batches before any tool executes.
+    // Preserve normal parallel scheduling for all other admitted calls.
+    const effectiveToolExecutionMode = toolExecution.mode;
     for (const warning of toolExecution.warnings) {
       runtimeWarnings.push(warning);
       onEvent({ type: "runtime_warning", ...warning });
@@ -585,7 +590,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       resolved,
       onEvent,
       runtimeWarnings,
-      toolExecutionMode: toolExecution.mode,
+      toolExecutionMode: effectiveToolExecutionMode,
     });
     mcpClients = builtMcpClients;
     closeRunTools = builtCloseRunTools;
@@ -616,7 +621,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       systemPrompt,
       outputSchema: options.outputSchema,
       tools,
-      toolExecutionMode: toolExecution.mode,
+      toolExecutionMode: effectiveToolExecutionMode,
       transport: piTransport,
       maxRetries,
       maxRetryDelayMs,
@@ -1061,6 +1066,10 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       ? await captureSessionRecovery(runState, { options, providerSessionId, modelKey: `${resolved.provider}:${resolved.model}`, model: runtime.model, pending: !!errorMessage || runState.externalAbort })
       : undefined;
     if (runState.retainRecoveryTail) runState.externalAbort ||= !!options.abortSignal?.aborted;
+    const silentCertified = runState.silentTurn.completed
+      && !runState.silentTurn.visibleContent && !runState.silentTurn.pendingQuestion
+      && !runState.silentTurn.failed && !errorMessage && !runState.externalAbort
+      && runState.recoveryInputIds?.length === 0 && !finalText?.trim() && options.finishSilentlyController?.eligible() === true;
     return { ...buildSuccessResult({
       finalText,
       finalThinking,
@@ -1083,7 +1092,8 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       usageMeasured: hasMeasuredUsage(runTranscript) || runState.compaction.carriedUsageMeasured === true,
       structuredResult: runState.structuredResult,
       effectiveEffort: providerEffectiveEffort,
-    }), ...(providerSessionRecovery ? { providerSessionRecovery } : {}) };
+    }), ...(providerSessionRecovery ? { providerSessionRecovery } : {}),
+    ...(silentCertified ? { turnDisposition: "silent" } : {}) };
   } catch (err) {
     runState.externalAbort ||= !!options.abortSignal?.aborted;
     // Drop a just-created fresh durable session, release a create-on-miss

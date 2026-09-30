@@ -13,6 +13,7 @@ import {
 export interface ProcessJobWakeContext {
   readonly jobId: string;
   readonly chainDepth: number;
+  readonly pendingQuestion?: boolean;
 }
 
 interface ProcessJobWakeFlight extends ProcessJobWakeContext {
@@ -166,7 +167,9 @@ export function bindProcessJobWakeContextToResponder(responder: AgentResponder):
         // A stale/missing/ambiguous key, narration, or any rich part stays visible.
         if (context !== undefined
           && active.length === 1 && active[0]?.token === context.token
-          && classifyNotifySuppression(response.text) === "sentinel"
+          && (response.metadata?.turnDisposition === "silent"
+            || (response.metadata?.turnDisposition === undefined
+              && classifyNotifySuppression(response.text) === "sentinel"))
           && (response.parts?.length ?? 0) === 0) {
           if (silentWakeDeliveryKeys.size >= 10_096) {
             const oldest = silentWakeDeliveryKeys.values().next().value;
@@ -340,5 +343,6 @@ function resolveFlights(
 }
 
 function publicWakeContext(context: ProcessJobWakeFlight): ProcessJobWakeContext {
-  return Object.freeze({ jobId: context.jobId, chainDepth: context.chainDepth });
+  return Object.freeze({ jobId: context.jobId, chainDepth: context.chainDepth,
+    ...(context.pendingQuestion === true ? { pendingQuestion: true } : {}) });
 }

@@ -208,6 +208,7 @@ export interface AgentHarnessResponse {
     readonly conversationId: string;
     readonly contextSources: readonly string[];
     readonly contextSectionIds: readonly string[];
+    readonly turnDisposition?: "silent" | "visible";
     readonly runtime?: Record<string, unknown>;
     readonly summary?: ExternalRunSummary;
   };

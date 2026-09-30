@@ -32,7 +32,8 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve as resolvePath } from "node:path";
 
-import { normalizeOptionalString, setToolActivityPathRoots } from "@mono-agent/agent-contracts";
+import { isNativeNotifyRequest, isSilentTurnAlreadyVisible, normalizeOptionalString, setToolActivityPathRoots } from "@mono-agent/agent-contracts";
+import { processJobWakeContextForRequest } from "./process-jobs-context.js";
 import { isProviderAuthFailureText } from "@mono-agent/agent-runtime/ai/failure.js";
 import type { AgentResponder, MemoryStore } from "@mono-agent/agent-contracts";
 import { assertNoRetiredMonoAgentConfig } from "@mono-agent/config";
@@ -1257,6 +1258,20 @@ async function createConfiguredAgentHarnessInternal(
     conversationScheme: internalHooks.processJobs?.conversationScheme,
   });
   const composedRuntimeOptionsForRequest = composeRuntimeOptionExtensions([
+    ({ request }) => {
+      const admitted = () => {
+        const wake = processJobWakeContextForRequest(request);
+        return !isSilentTurnAlreadyVisible(request)
+          && ((wake.kind === "resolved" && wake.context.pendingQuestion !== true)
+            || isNativeNotifyRequest(request));
+      };
+      return admitted() && (request.attachments?.length ?? 0) === 0
+        ? { runtimeOptions: { finishSilentlyController: {
+            eligible: () => !request.abortSignal.aborted && admitted()
+              && (request.attachments?.length ?? 0) === 0,
+          } } }
+        : {};
+    },
     peerAgent,
     memoryRecall,
     memoryJournal,

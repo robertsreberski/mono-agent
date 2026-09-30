@@ -355,6 +355,9 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
     // proves a startup-interrupted turn belonged to the still-running agent.
     addColumn(database, "turns", "web_recovery_generation_confirmed_at", "TEXT");
   } },
+  { version: 41, name: "turn-reply-disposition", up: ({ database }) => {
+    addColumn(database, "turns", "reply_disposition", "TEXT CHECK (reply_disposition IN ('silent', 'visible'))");
+  } },
 ] satisfies WebStorageMigration[]).map((step) => Object.freeze(step)));
 
 export const WEB_STORAGE_SCHEMA_VERSION = WEB_STORAGE_MIGRATIONS.at(-1)!.version;
@@ -423,7 +426,7 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       message_search_writes: ["message_id"],
       process_job_cards: ["state", "completed_at"],
       parent_turn_interruptions: ["source_id", "turn_id", "thread_id", "message_id", "wake_key", "state", "associated_turn_id", "created_at", "deadline"],
-      turns: ["dispatch_generation", "web_recovery_generation_confirmed_at", "conversation_markers_json", "dispatch_started_at", "cancel_origin", "project_context_json", "requested_model", "requested_effort", "effective_effort", "routing_json"],
+      turns: ["reply_disposition", "dispatch_generation", "web_recovery_generation_confirmed_at", "conversation_markers_json", "dispatch_started_at", "cancel_origin", "project_context_json", "requested_model", "requested_effort", "effective_effort", "routing_json"],
       live_inputs: ["dispatch_started_at"],
       web_submissions: [
         "thread_id", "submission_id", "payload_sha256", "outcome", "reason", "message_id", "turn_id", "input_id", "created_at",
