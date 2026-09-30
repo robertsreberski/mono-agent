@@ -1,4 +1,5 @@
 import { installWebAuthentication, validateWebPublicOrigin } from "./auth-http.js";
+import { authorizeWebRoute, authorizeWebPayload } from "./route-policy.js";
 import { isProviderUsageId } from "@mono-agent/agent-contracts";
 import type { CreateWebTagInput, PatchWebTagInput } from "./contracts.js";
 import { parseTagColor, parseTagName } from "./tag-color.js";
@@ -172,6 +173,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   let stopPromise: Promise<void> | undefined;
 
   app.disable("x-powered-by");
+  if (options.multiUser === true) app.set("etag", false);
   // Mounted first so every response body, error JSON included, is negotiated.
   // Brotli quality 4 keeps a phone-sized payload under a few milliseconds of
   // CPU; the default filter already declines anything the response marked
@@ -204,7 +206,9 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   });
   installWebAuthentication(app, service.store, { enabled: options.multiUser === true,
     ...(publicOrigin === undefined ? {} : { publicOrigin }) });
+  app.use("/api", authorizeWebRoute(service));
   app.use("/api/v1", express.json({ limit: "256kb", strict: true }));
+  app.use("/api", authorizeWebPayload(service));
 
   app.get("/healthz", (_req, res) => {
     res.status(200).json({
@@ -954,7 +958,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
 
   app.patch("/api/v1/threads/:id", (req, res, next) => {
     try {
-      const input = parsePatchThread(req.body);
+      const input = parsePatchThread(req.body, options.multiUser === true);
       res.status(200).json({ thread: service.patchThread(pathParam(req.params.id), input) });
     } catch (error) {
       next(error);
@@ -1189,7 +1193,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     let closed = false;
     res.status(200);
     res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Cache-Control", res.locals.webMultiUser === true ? "private, no-store, no-transform" : "no-cache, no-transform");
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders();
@@ -1500,7 +1504,9 @@ async function handleDownloadContent(id: string, res: Response, service: WebServ
   // An upload id is a fresh UUID whose bytes are written exactly once, so this
   // URL can never change meaning. `no-transform` keeps the declared length
   // honest for the client that streams these bytes back into a Blob.
-  res.setHeader("Cache-Control", `private, max-age=${IMMUTABLE_MAX_AGE_SECONDS}, immutable, no-transform`);
+  res.setHeader("Cache-Control", res.locals.webMultiUser === true
+    ? "private, no-store, no-transform"
+    : `private, max-age=${IMMUTABLE_MAX_AGE_SECONDS}, immutable, no-transform`);
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
   res.setHeader("Content-Disposition", contentDisposition(attachment.name, image ? "inline" : "attachment"));
@@ -1545,7 +1551,9 @@ function setReplyDownloadHeaders(
   // read itself. `private`, because the URL is a capability and no shared cache
   // may keep it; never past the key, because the response is only servable while
   // the key is.
-  res.setHeader("Cache-Control", `private, max-age=${String(maxAgeSeconds)}, no-transform`);
+  res.setHeader("Cache-Control", res.locals.webMultiUser === true
+    ? "private, no-store, no-transform"
+    : `private, max-age=${String(maxAgeSeconds)}, no-transform`);
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'; base-uri 'none'; form-action 'none'");
   res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
@@ -1817,8 +1825,14 @@ function wakeMutationBody(value: unknown): { expectedRevision: number; fields: R
   return { expectedRevision: expectedRevision as number, fields };
 }
 
-function parsePatchThread(value: unknown): PatchWebThreadInput {
+function parsePatchThread(value: unknown, multiUser = false): PatchWebThreadInput {
   const body = requireRecord(value);
+  if (multiUser && body.shared !== undefined) {
+    if (typeof body.shared !== "boolean" || Object.keys(body).some((key) => key !== "shared")) {
+      throw invalidBody("Change shared with a boolean value separately from other fields.");
+    }
+    return { shared: body.shared };
+  }
   const title = optionalString(body.title, "title", 120);
   const model = optionalNullableString(body.model, "model", 120);
   const effort = optionalNullableString(body.effort, "effort", 120);

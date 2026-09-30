@@ -1450,6 +1450,21 @@ export class WebService {
   }
 
   patchThread(id: string, patch: PatchWebThreadInput): WebThread {
+    if (patch.shared !== undefined) {
+      const before = this.store.requireThreadCreator(id);
+      if (Object.keys(patch).some((key) => key !== "shared")) {
+        throw new WebConsoleError("invalid_request", "Change sharing separately from other conversation fields.", 400);
+      }
+      if (this.activeCompactions.has(before.id) || this.activeTurns.has(before.id) || this.activeLiveInputs.has(before.id)) {
+        throw new WebConsoleError("sharing_busy", "Wait until this conversation is idle before changing sharing.", 409);
+      }
+      const thread = this.store.setThreadShared(before.id, patch.shared);
+      if (before.revision !== thread.revision) {
+        this.emitThread("thread.changed", { thread });
+        this.emitThread("threads.changed", { thread });
+      }
+      return this.projectThread(thread);
+    }
     if ((patch.projectId !== undefined || patch.tagIds !== undefined) && patch.ifRunConfigUnset === true) {
       throw new WebConsoleError("invalid_request", "projectId and tagIds cannot be combined with ifRunConfigUnset.", 400);
     }
@@ -1484,8 +1499,7 @@ export class WebService {
   }
 
   async deleteThread(id: string, options: { readonly emptyOnly?: boolean } = {}): Promise<void> {
-    const resolved = this.store.getThread(id)?.id;
-    if (resolved === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+    const resolved = this.store.requireThreadCreator(id).id;
     const projectId = this.store.getThread(resolved)?.projectId ?? null;
     if (this.activeTurns.has(resolved)) {
       throw new WebConsoleError("turn_active", "Cancel the active turn before deleting this conversation.", 409);
@@ -4976,8 +4990,12 @@ export class WebService {
     partId: string,
     expires: string,
   ): string {
+    const principal = this.store.access.current();
+    const session = principal !== undefined && "sessionHash" in principal && typeof principal.sessionHash === "string"
+      ? principal.sessionHash : "unbound";
+    const binding = principal === undefined ? [] : ["web-session-v1", principal.id, session];
     return createHmac("sha256", this.replyAccessKey)
-      .update(["v1", threadId, messageId, type, partId, expires].join("\0"))
+      .update(["v1", threadId, messageId, type, partId, expires, ...binding].join("\0"))
       .digest("base64url");
   }
 

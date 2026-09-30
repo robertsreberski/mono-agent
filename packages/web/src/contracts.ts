@@ -1307,6 +1307,8 @@ export interface PatchWebAgentInput {
 }
 
 export interface PatchWebThreadInput {
+  /** Creator-only, idle-only, and cannot be combined with other changes. */
+  readonly shared?: boolean;
   readonly tagIds?: readonly string[];
   readonly title?: string;
   readonly archived?: boolean;

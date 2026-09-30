@@ -4128,6 +4128,33 @@ describe("WebService", () => {
       headers: { "x-mono-agent-mcp-connection-id": "connection-one" },
     });
 
+    // Scoped capabilities bind both account and session, while legacy tokens
+    // retain their previous wire shape outside multi-user scope.
+    const admin = await service.store.auth.bootstrap("Morgan", "fictional-resource-password");
+    service.store.auth.initializeOwnership();
+    const user = await service.store.auth.createUser({ username: "Avery", password: "fictional-resource-password", role: "user", grants: ["agent-one"] });
+    const other = await service.store.auth.createUser({ username: "Riley", password: "fictional-resource-password", role: "user", grants: ["agent-one"] });
+    service.store.access.run(admin, () => service.patchThread(thread.id, { shared: true }));
+    const firstSession = await service.store.auth.login(user.username, "fictional-resource-password", "one");
+    const secondSession = await service.store.auth.login(user.username, "fictional-resource-password", "two");
+    const otherSession = await service.store.auth.login(other.username, "fictional-resource-password", "three");
+    const scopedPart = service.store.access.run(firstSession.principal, () => service.replyPartAccess(thread.id, message.id, attachment.id, "attachment"));
+    if (scopedPart.type !== "attachment") throw new Error("Expected attachment");
+    const scopedUrl = new URL(scopedPart.contentUrl!, "http://console.local");
+    const readScoped = () => service.replyAttachment(thread.id, message.id, attachment.id,
+      scopedUrl.searchParams.get("expires")!, scopedUrl.searchParams.get("token")!);
+    await expect(service.store.access.run(firstSession.principal, readScoped)).resolves.toMatchObject({ part: { id: attachment.id } });
+    await expect(service.store.access.run(secondSession.principal, readScoped)).rejects.toMatchObject({ status: 404 });
+    await expect(service.store.access.run(otherSession.principal, readScoped)).rejects.toMatchObject({ status: 404 });
+    const scopedApp = service.store.access.run(firstSession.principal, () => service.replyPartAccess(thread.id, message.id, app.id, "mcp_app"));
+    if (scopedApp.type !== "mcp_app") throw new Error("Expected MCP App");
+    const scopedAppUrl = new URL(scopedApp.resourceUrl!, "http://console.local");
+    const readApp = () => service.mcpAppResource(thread.id, message.id, app.id,
+      scopedAppUrl.searchParams.get("expires")!, scopedAppUrl.searchParams.get("token")!);
+    await expect(service.store.access.run(firstSession.principal, readApp)).resolves.toMatchObject({ connected: true });
+    await expect(service.store.access.run(secondSession.principal, readApp)).rejects.toMatchObject({ status: 404 });
+    await expect(service.store.access.run(otherSession.principal, readApp)).rejects.toMatchObject({ status: 404 });
+
     clockMs += 11 * 60 * 1_000;
     await expect(service.replyAttachment(
       thread.id,

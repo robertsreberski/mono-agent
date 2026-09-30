@@ -466,6 +466,7 @@ export interface StoredAttachment {
 }
 
 interface AttachmentRow {
+  owner_user_id: string | null;
   id: string;
   thread_id: string | null;
   message_id: string | null;
@@ -3287,6 +3288,32 @@ export class WebStore {
     this.setSetting("current_thread_id", resolved);
   }
 
+  requireThreadCreator(id: string): WebThread {
+    const thread = this.requireThread(this.resolveThreadId(id));
+    const principal = this.access.current();
+    if (principal !== undefined && thread.ownerUserId !== principal.id) {
+      throw new WebConsoleError("forbidden", "Only the conversation creator can change sharing or delete it.", 403);
+    }
+    return thread;
+  }
+
+  setThreadShared(id: string, shared: boolean): WebThread {
+    this.access.requirePrincipal();
+    return this.transaction(() => {
+      const thread = this.requireThreadCreator(id);
+      if (typeof shared !== "boolean") throw new WebConsoleError("invalid_request", "shared must be boolean.", 400);
+      if (this.database.prepare("SELECT 1 FROM turns WHERE thread_id = ? AND status = 'running' LIMIT 1").get(thread.id)
+        || this.database.prepare("SELECT 1 FROM live_inputs WHERE thread_id = ? AND status IN ('offered', 'queued') LIMIT 1").get(thread.id)) {
+        throw new WebConsoleError("sharing_busy", "Wait until the conversation and queued inputs are idle before changing sharing.", 409);
+      }
+      if (thread.shared === shared) return thread;
+      const now = this.now();
+      this.database.prepare("UPDATE threads SET shared = ?, revision = revision + 1, updated_at = ? WHERE id = ?").run(Number(shared), now, thread.id);
+      this.recordThreadRevision(thread.id, "sharing", now);
+      return this.requireThread(thread.id);
+    });
+  }
+
   patchThread(id: string, patch: ThreadPatch): WebThread {
     return this.transaction(() => this.writeThreadPatch(id, patch));
   }
@@ -3465,11 +3492,18 @@ export class WebStore {
     return this.transaction(() => {
       this.requireTagForAgent(id);
       const members = this.database.prepare("SELECT thread_id FROM thread_tags WHERE tag_id = ?").all(id) as Array<{ thread_id: string }>;
-      for (const { thread_id: threadId } of members) {
-        this.patchThread(threadId, { tagIds: this.requireThread(threadId).tagIds.filter((tagId) => tagId !== id) });
-      }
+      const visible = this.access.current() === undefined ? members.map((row) => ({ id: row.thread_id }))
+        : this.database.prepare(`SELECT t.id FROM threads t JOIN thread_tags tt ON tt.thread_id = t.id
+          WHERE tt.tag_id = ? ${this.access.threadSql("t")}`).all(id) as Array<{ id: string }>;
+      // Definition deletion is agent-shared. Detach all members internally, but
+      // expose only the caller's visible IDs in receipts and subsequent events.
+      this.access.internal(() => {
+        for (const { thread_id: threadId } of members) {
+          this.patchThread(threadId, { tagIds: this.requireThread(threadId).tagIds.filter((tagId) => tagId !== id) });
+        }
+      });
       this.database.prepare("DELETE FROM tags WHERE id = ?").run(id);
-      return members.map((row) => row.thread_id);
+      return visible.map((row) => row.id);
     });
   }
 
@@ -3556,6 +3590,9 @@ export class WebStore {
       const members = (this.database.prepare(`
         SELECT id FROM threads WHERE project_id = ? ORDER BY updated_at ASC, id ASC
       `).all(id) as Array<{ id: string }>).map((member) => member.id);
+      const visible = this.access.current() === undefined ? members
+        : (this.database.prepare(`SELECT t.id FROM threads t WHERE t.project_id = ? ${this.access.threadSql("t")}`)
+          .all(id) as Array<{ id: string }>).map((member) => member.id);
       if (this.database.prepare(`
         SELECT 1 FROM pending_project_memberships WHERE project_id = ?
         UNION ALL SELECT 1 FROM turns JOIN threads ON threads.id = turns.thread_id
@@ -3573,7 +3610,7 @@ export class WebStore {
       this.database.prepare(`UPDATE external_conversations SET project_id = NULL, detached_at = ?, updated_at = ?
         WHERE project_id = ?`).run(now, now, id);
       this.database.prepare("DELETE FROM projects WHERE id = ?").run(id);
-      return members;
+      return visible;
     });
   }
 
@@ -4271,7 +4308,7 @@ export class WebStore {
     options: { readonly emptyOnly?: boolean } = {},
   ): Promise<{ readonly orphanedFiles: number }> {
     id = this.resolveThreadId(id);
-    const thread = this.requireThread(id);
+    const thread = this.requireThreadCreator(id);
     if (thread.archivedAt === null) {
       throw new WebConsoleError("thread_not_archived", "Archive the conversation before deleting it.", 409);
     }
@@ -4357,9 +4394,9 @@ export class WebStore {
     this.database.prepare(`
       INSERT INTO attachments (
         id, thread_id, message_id, name, content_type, size_bytes, kind,
-        status, uploaded, storage_name, created_at, updated_at
-      ) VALUES (?, NULL, NULL, ?, ?, ?, ?, 'staged', 0, ?, ?, ?)
-    `).run(id, input.name, input.contentType, input.declaredSize ?? 0, input.kind, storageName, now, now);
+        status, uploaded, storage_name, created_at, updated_at, owner_user_id
+      ) VALUES (?, NULL, NULL, ?, ?, ?, ?, 'staged', 0, ?, ?, ?, ?)
+    `).run(id, input.name, input.contentType, input.declaredSize ?? 0, input.kind, storageName, now, now, this.access.current()?.id ?? null);
     return this.requireStoredAttachment(id);
   }
 
@@ -4376,7 +4413,15 @@ export class WebStore {
 
   getStoredAttachment(id: string): StoredAttachment | undefined {
     const row = this.database.prepare("SELECT * FROM attachments WHERE id = ?").get(id) as unknown as AttachmentRow | undefined;
-    return row === undefined ? undefined : mapStoredAttachment(row);
+    const principal = this.access.current();
+    if (row === undefined) return undefined;
+    if (principal !== undefined) {
+      if (row.thread_id === null) {
+        if (row.owner_user_id !== principal.id) return undefined;
+      } else if (this.database.prepare(`SELECT 1 FROM threads t WHERE t.id = ? ${this.access.threadSql("t")}`)
+        .get(row.thread_id) === undefined) return undefined;
+    }
+    return mapStoredAttachment(row);
   }
 
   /**

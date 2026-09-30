@@ -158,6 +158,60 @@ describe("principal-aware web selection", () => {
     });
   });
 
+  it("permits creator-only sharing while idle, exposes all history, and reserves deletion to the creator", async () => {
+    const { store, a, b, admin, create } = await fixture();
+    const thread = create(a);
+    const turn = store.beginTurn({ threadId: thread.id, text: "Private original history", attachmentIds: [] });
+    expect(() => store.access.run(a, () => store.setThreadShared(thread.id, true))).toThrow("idle");
+    store.completeTurn(turn.turnId, "Private original answer");
+    store.reserveLiveInput(thread.id, "Queued follow-up");
+    expect(() => store.access.run(a, () => store.setThreadShared(thread.id, true))).toThrow("idle");
+    store.cancelLiveInputs(thread.id);
+    store.access.run(a, () => store.setThreadShared(thread.id, true));
+    expect(store.access.run(b, () => store.listMessagesPage(thread.id)).messages.map((message) => message.id)).toContain(turn.userMessageId);
+    for (const principal of [b, admin]) {
+      expect(() => store.access.run(principal, () => store.setThreadShared(thread.id, false))).toThrow("creator");
+      await expect(store.access.run(principal, () => store.deleteArchivedThread(thread.id))).rejects.toMatchObject({ status: 403 });
+    }
+    store.access.run(b, () => store.patchThread(thread.id, { title: "Participant edit", archived: true }));
+    store.access.run(a, () => store.setThreadShared(thread.id, false));
+    expect(store.access.run(b, () => store.getThread(thread.id))).toBeUndefined();
+    expect(store.access.run(admin, () => store.getThread(thread.id))).toBeUndefined();
+    await store.access.run(a, () => store.deleteArchivedThread(thread.id));
+    expect(store.getThread(thread.id)).toBeUndefined();
+  });
+
+  it("detaches shared definitions from private members without returning their identifiers", async () => {
+    const { store, a, b, create } = await fixture();
+    const own = create(a), hidden = create(b);
+    const tag = store.createTag({ sourceId: "one", name: "Shared tag" });
+    const project = store.createProject({ sourceId: "one", name: "Shared project" });
+    for (const thread of [own, hidden]) store.patchThread(thread.id, { projectId: project.id, tagIds: [tag.id] });
+    expect(store.access.run(a, () => store.deleteTag(tag.id))).toEqual([own.id]);
+    expect(store.access.run(a, () => store.deleteProject(project.id))).toEqual([own.id]);
+    expect(store.getThread(hidden.id)).toMatchObject({ projectId: null, tagIds: [] });
+  });
+
+  it("keeps staging uploads uploader-only and follows the thread predicate after attachment", async () => {
+    const { store, a, b, admin, create } = await fixture();
+    store.replaceAgents([{ ...agent("one"), supportsAttachments: true }, agent("two")]);
+    const thread = create(a);
+    const upload = store.access.run(a, () => store.createUpload({ name: "fictional.txt", contentType: "text/plain", kind: "document", declaredSize: 1 }));
+    store.access.run(a, () => store.markUploadComplete(upload.id, 1));
+    for (const principal of [b, admin]) {
+      expect(store.access.run(principal, () => store.getStoredAttachment(upload.id))).toBeUndefined();
+      await expect(store.access.run(principal, () => store.removeStagedAttachment(upload.id))).rejects.toMatchObject({ status: 404 });
+    }
+    const turn = store.access.run(a, () => store.beginTurn({ threadId: thread.id, text: "File", attachmentIds: [upload.id] }));
+    store.completeTurn(turn.turnId, "Received");
+    expect(store.access.run(b, () => store.getStoredAttachment(upload.id))).toBeUndefined();
+    store.access.run(a, () => store.setThreadShared(thread.id, true));
+    expect(store.access.run(b, () => store.getStoredAttachment(upload.id))?.id).toBe(upload.id);
+    expect(store.access.run(admin, () => store.getStoredAttachment(upload.id))?.id).toBe(upload.id);
+    store.access.run(a, () => store.setThreadShared(thread.id, false));
+    expect(store.access.run(b, () => store.getStoredAttachment(upload.id))).toBeUndefined();
+  });
+
   it("does not bleed principals across overlapping asynchronous operations", async () => {
     const { store, a, b, create } = await fixture();
     const first = create(a), second = create(b);
