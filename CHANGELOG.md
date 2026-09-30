@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.25.0 — Telegram topics, web wake-ups and language-neutral memory (2026-09-30)
+
 - Show the web console's provider usage refresh result as a short muted line
   under the Providers actions ("Updated 9:06 AM", full timestamp on hover), and
   report a failed refresh once per provider at note size.
