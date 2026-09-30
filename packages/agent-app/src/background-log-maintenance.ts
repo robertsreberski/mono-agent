@@ -1,3 +1,4 @@
+import { logEmergencySize, logPermissionRepairNeeded, maintenanceCeilingReached, type MaintenanceActivityRequest } from "./launchd-maintenance-activity.js";
 import {
   bootstrap,
   deriveLaunchdMaintenanceLabel,
@@ -28,6 +29,8 @@ export interface ManagedLaunchdLogInspectionDependencies {
   readonly monotonicNow?: () => number;
   readonly wallClockNow?: () => number;
   readonly isStopped?: () => boolean;
+  readonly isWorkerBusy?: () => boolean;
+  readonly maintenanceEpisode?: () => Promise<{ readonly firstDeferredAt: string; readonly count: number } | undefined>;
 }
 
 export interface ManagedLaunchdLogMonitorDependencies extends ManagedLaunchdLogInspectionDependencies {
@@ -51,6 +54,10 @@ export interface AdditionalLaunchdLogMaintenanceResult {
 
 /** Narrow mutation port shared by agent maintenance and the isolated web helper. */
 export interface LaunchdLogMaintenanceDeps {
+  /** Agent helper only; deliberately absent from web and explicit lifecycle mutations. */
+  readonly maintenanceNotNeeded?: () => Promise<void>;
+  readonly maintenanceCompleted?: () => Promise<void>;
+  readonly unattendedLogStop?: (request: MaintenanceActivityRequest) => Promise<boolean>;
   readonly runner: LaunchctlRunner;
   readonly getuid: () => number;
   readonly now: () => number;
@@ -80,6 +87,7 @@ export interface LaunchdLogMaintenanceDeps {
 }
 
 export type ManagedLaunchdLogMonitorOutcome =
+  | "deferred-busy"
   | "idle"
   | "shared-only"
   | "pending-artifact"
@@ -100,6 +108,8 @@ export interface ManagedLaunchdLogMonitorStatus {
 }
 
 export interface ManagedLaunchdLogWakeState {
+  firstOverLimitAtMonotonicMs?: number;
+  busyDeferrals?: number;
   cooldownIndex: number;
   cooldownDeadlineMonotonicMs: number;
   wakeCount: number;
@@ -152,8 +162,23 @@ export async function requestLaunchdLogMaintenanceIfNeeded(
     return setOutcome(state, "pending-artifact");
   }
   if (inspection.perAgentFileReasons.length === 0) {
+    delete state.firstOverLimitAtMonotonicMs;
+    delete state.busyDeferrals;
     resetWakeCooldown(state, monotonicNow());
     return setOutcome(state, inspection.sharedDirectoryNeedsMaintenance ? "shared-only" : "idle");
+  }
+  if (deps.isWorkerBusy?.() === true && !logPermissionRepairNeeded(inspection)) {
+    state.firstOverLimitAtMonotonicMs ??= monotonicNow();
+    state.busyDeferrals = (state.busyDeferrals ?? 0) + 1;
+    const episode = await deps.maintenanceEpisode?.();
+    const ceiling = episode === undefined
+      ? maintenanceCeilingReached(state.firstOverLimitAtMonotonicMs, state.busyDeferrals, monotonicNow())
+      : maintenanceCeilingReached(Date.parse(episode.firstDeferredAt), episode.count, (deps.wallClockNow ?? Date.now)());
+    if (!logEmergencySize(inspection) && !ceiling) {
+      // Keep the five-minute inspection cadence; busy is not a failed wake and
+      // must not advance the exponential request cooldown.
+      return setOutcome(state, "deferred-busy");
+    }
   }
   if (monotonicNow() < state.cooldownDeadlineMonotonicMs) {
     return setOutcome(state, "cooldown");
@@ -493,6 +518,7 @@ export async function maintainLaunchdLogsWithSharedLockOperation(
     }
     try {
       await deps.clearLaunchdLogMaintenanceIntent(target.paths, maintenanceIntent);
+      await deps.maintenanceCompleted?.();
     } catch (error) {
       reportMaintenanceFailure(target, deps, "clear recovered launchd-log restoration intent", error);
       return 1;
@@ -516,7 +542,18 @@ export async function maintainLaunchdLogsWithSharedLockOperation(
   }
   if (!inspection.needsMaintenance
     && !additionalInspection.needsMaintenance
-    && maintenanceIntent === undefined) return additionalRefused ? 1 : 0;
+    && maintenanceIntent === undefined) {
+    await deps.maintenanceNotNeeded?.();
+    return additionalRefused ? 1 : 0;
+  }
+
+  const activityOverride = maintenanceIntent !== undefined || inspection.pendingTransaction
+    ? "transaction-recovery" as const
+    : logPermissionRepairNeeded(inspection) ? "permission-repair" as const : undefined;
+  const activityRequest: MaintenanceActivityRequest = { reasons: ["log-size"], inspection,
+    ...(activityOverride === undefined ? {} : { override: activityOverride }) };
+  if (activityOverride !== "permission-repair" && deps.unattendedLogStop !== undefined
+    && !await deps.unattendedLogStop(activityRequest)) return 0;
 
   if (maintenanceIntent === undefined) {
     maintenanceIntent = {
@@ -532,6 +569,13 @@ export async function maintainLaunchdLogsWithSharedLockOperation(
       reportMaintenanceFailure(target, deps, "publish durable launchd-log maintenance intent", error);
       return 1;
     }
+  }
+
+  // Permission repair is already an immediate override. Publishing the intent
+  // repairs the authenticated shared directory chain first, making private
+  // decision status writable even when the root's permissions needed repair.
+  if (activityOverride === "permission-repair" && deps.unattendedLogStop !== undefined) {
+    await deps.unattendedLogStop(activityRequest);
   }
 
   if (maintenanceIntent.phase === "stopping") {
@@ -650,6 +694,7 @@ export async function maintainLaunchdLogsWithSharedLockOperation(
   try {
     await deps.clearLaunchdLogMaintenanceIntent(target.paths, maintenanceIntent);
     await deps.recordMaintenancePhase?.("complete");
+    await deps.maintenanceCompleted?.();
   } catch (error) {
     reportMaintenanceFailure(target, deps, "clear durable launchd-log maintenance intent", error);
     return 1;

@@ -360,3 +360,15 @@ describe("Telegram project destinations on the bridge", () => {
     }
   });
 });
+
+it("counts pending AskUser registrations synchronously and releases on cancellation/stop", async () => {
+  const changes: number[] = [];
+  const bridge = await startInteractionBridge({ askTimeoutMs: null, onActivityChange: (count) => changes.push(count) }); handles.push(bridge);
+  bridge.registerSink("web", { presentAsk: async () => undefined, updateAsk: async () => undefined, postStatus: async () => undefined });
+  expect(bridge.pendingAskCount()).toBe(0);
+  const first = await createAsk(bridge, { conversationId: "web:fictional", runId: "run-1", questions: questions() });
+  expect(first.status).toBe(201); expect(bridge.pendingAskCount()).toBe(1); expect(changes).toEqual([1]);
+  bridge.cancelAsks("web:fictional"); expect(bridge.pendingAskCount()).toBe(0); expect(changes).toEqual([1, 0]);
+  await createAsk(bridge, { conversationId: "web:fictional", runId: "run-2", questions: questions() });
+  await bridge.stop(); handles.splice(handles.indexOf(bridge), 1); expect(bridge.pendingAskCount()).toBe(0); expect(changes).toEqual([1, 0, 1, 0]);
+});

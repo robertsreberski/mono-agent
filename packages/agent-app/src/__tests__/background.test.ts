@@ -1,3 +1,6 @@
+import { allowUnattendedMaintenanceStop, MAINTENANCE_MAX_DEFERRAL_MS, type LaunchdMaintenanceActivityStatus } from "../launchd-maintenance-activity.js";
+import type { WorkerActivityProbe } from "../worker-activity-snapshot.js";
+import { LAUNCHD_LOG_MAX_BYTES } from "../launchd-logs.js";
 import { execFile } from "node:child_process";
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -3532,4 +3535,187 @@ describe("tailLogs", () => {
 
     expect(harness.tailCalls[0]).toEqual(["-n", "200", target.paths.stderrPath, target.paths.stdoutPath]);
   });
+});
+
+function withActivityGate(deps: BackgroundDeps, activity: () => WorkerActivityProbe) {
+  let status: LaunchdMaintenanceActivityStatus | undefined;
+  const complete = vi.fn(async () => {
+    if (status === undefined) return;
+    const { pending: _pending, ...history } = status;
+    status = history;
+  });
+  return {
+    complete,
+    status: () => status,
+    deps: { ...deps, clearMaintenanceDeferral: complete, allowUnattendedStop: (target, request) => allowUnattendedMaintenanceStop(target, {
+      ...deps, probe: async () => activity(), readStatus: async () => status,
+      writeStatus: async (_target, value) => { status = value; },
+    }, request) } satisfies BackgroundDeps,
+  };
+}
+
+describe("unattended maintenance activity protection", () => {
+  it.each(["turns", "jobs", "asks"] as const)("busy %s prevents log intent/bootout; idle retries rotate", async (source) => {
+    const target = makeTarget();
+    const { runner, calls } = makeRunner({ loaded: true, initialPid: 1111, bootstrapPid: 2222 });
+    const beginIntent = vi.fn(async () => undefined);
+    const harness = makeHarness({ runner, list: listReturning(() => []), beginLaunchdLogMaintenanceIntent: beginIntent,
+      inspectLaunchdLogs: async () => emptyLogInspection({ present: true, needsMaintenance: true, perAgentFileReasons: ["oversize"] }) });
+    let busy = true;
+    const gate = withActivityGate(harness.deps, () => ({ disposition: busy ? "busy" : "idle", counts: { turns: 0, jobs: 0, asks: 0, [source]: busy ? 1 : 0 } }));
+    expect(await maintainLaunchdLogs(target, gate.deps, POLL)).toBe(0);
+    expect(gate.status()?.lastDecision?.outcome).toBe("deferred-busy");
+    expect(beginIntent).not.toHaveBeenCalled();
+    expect(calls.some((call) => call[0] === "bootout")).toBe(false);
+    expect(harness.rotations).toEqual([]);
+    busy = false;
+    expect(await maintainLaunchdLogs(target, gate.deps, POLL)).toBe(0);
+    expect(beginIntent).toHaveBeenCalledOnce();
+    expect(harness.rotations).toHaveLength(1);
+    expect(gate.status()?.lastDecision?.outcome).toBe("proceeded-idle");
+  });
+
+  it.each(["snapshot", "runtime", "definition"] as const)("healthy busy worker defers %s drift without disguising it as unready recovery", async (drift) => {
+    const target = makeTarget(); const prior = makeSnapshot(target, "prior");
+    const { runner, calls } = makeRunner({ loaded: true, initialPid: 4321, maintenanceLoaded: true, maintenancePid: process.pid,
+      mainPrintOutput: managedLaunchctlPrint(target, { ...(drift === "snapshot" ? { snapshot: prior } : {}) }) });
+    const harness = makeHarness({ runner, currentPid: () => process.pid,
+      list: listReturning(() => [makeSource(target, { ...(drift === "snapshot" ? { metadata: { backgroundSnapshot: prior } } : {}) })]),
+      ...(drift === "runtime" ? { inspectManagedRuntimeSourceIdentity: async () => ({ packageVersion: "0.9.0", cliSha256: "b".repeat(64) }) } : {}),
+    });
+    const gate = withActivityGate(harness.deps, () => ({ disposition: "busy", counts: { turns: 1, jobs: 0, asks: 0 } }));
+    // Definition drift: change desired environment while retaining a ready trace.
+    const desired = drift === "definition" ? { ...target, environment: { ...target.environment, PATH: "/usr/bin:/bin:/fictional" } } : target;
+    expect(await maintainLaunchdController(desired, gate.deps, { sourceAvailable: true, controlPoll: POLL, readinessPoll: POLL }), harness.err.join(" ")).toBe(0);
+    expect(gate.status()?.lastDecision?.outcome).toBe("deferred-busy");
+    expect(gate.status()?.lastDecision?.reasons).toContain(drift === "runtime" ? "runtime-upgrade" : drift === "snapshot" ? "snapshot-drift" : "definition-drift");
+    expect(calls.some((call) => call[0] === "bootout" || call[0] === "bootstrap")).toBe(false);
+    expect(harness.written).toEqual([]);
+  });
+
+  it("a live but unready worker recovers immediately even with unknown activity", async () => {
+    const target = makeTarget();
+    const { runner, calls } = makeRunner({ loaded: true, initialPid: 4321, bootstrapPid: 5432, maintenanceLoaded: true, maintenancePid: process.pid,
+      mainPrintOutput: managedLaunchctlPrint(target) });
+    const harness = makeHarness({ runner, currentPid: () => process.pid, list: listReturning(() =>
+      calls.some((call) => call[0] === "bootstrap") ? [makeSource(target, { pid: 5432 })] : [makeSource(target, { health: "stopped" })]) });
+    const gate = withActivityGate(harness.deps, () => ({ disposition: "unknown" }));
+    expect(await maintainLaunchdController(target, gate.deps, { sourceAvailable: true, controlPoll: POLL, readinessPoll: POLL })).toBe(0);
+    expect(gate.status()?.lastDecision?.outcome, JSON.stringify({ calls, err: harness.err })).toBe("override-worker-unready");
+    expect(calls.some((call) => call[0] === "bootout")).toBe(true);
+  });
+
+  it.each(["size", "permissions", "intent"] as const)("%s forces/overrides busy log maintenance with a recorded reason", async (mode) => {
+    const target = makeTarget(); const { runner } = makeRunner({ loaded: true, initialPid: 1111, bootstrapPid: 2222 });
+    const empty = emptyLogInspection();
+    const harness = makeHarness({ runner, list: listReturning(() => []),
+      inspectLaunchdLogs: async () => emptyLogInspection({ present: true, needsMaintenance: true,
+        ...(mode === "size" ? { stdout: { ...empty.stdout, activeBytes: 2 * LAUNCHD_LOG_MAX_BYTES } } : {}),
+        ...(mode === "permissions" ? { stderr: { ...empty.stderr, files: [{ generation: 0, state: "repairable", bytes: 0 }] } } : {}),
+        ...(mode === "intent" ? { pendingMaintenance: true } : {}) }),
+      ...(mode === "intent" ? { readLaunchdLogMaintenanceIntent: async () => ({ version: 1 as const, phase: "stopping" as const, label: target.label, plistFingerprint: "plist-identity" }) } : {}),
+    });
+    const gate = withActivityGate(harness.deps, () => ({ disposition: "busy", counts: { turns: 1, jobs: 0, asks: 0 } }));
+    expect(await maintainLaunchdLogs(target, gate.deps, POLL)).toBe(0);
+    expect(harness.rotations).toHaveLength(1);
+    expect(gate.status()?.lastDecision?.outcome).toBe(mode === "size" ? "forced-size" : mode === "permissions" ? "override-permission-repair" : "override-transaction-recovery");
+  });
+
+  it("explicit stop/restart never consult the unattended gate", async () => {
+    const target = makeTarget(); const { runner, calls } = makeRunner({ loaded: true, initialPid: 4321, bootstrapPid: 5432 });
+    const harness = makeHarness({ runner, list: listReturning(() => [makeSource(target, { pid: calls.some((c) => c[0] === "bootstrap") ? 5432 : 4321 })]) });
+    const gate = vi.fn(async () => false); const deps = { ...harness.deps, allowUnattendedStop: gate };
+    expect(await restartBackground(target, deps, POLL), harness.err.join(" ")).toBe(0);
+    expect(await stopBackground(target, deps, POLL)).toBe(0);
+    expect(gate).not.toHaveBeenCalled();
+  });
+});
+
+describe("maintenance review regressions", () => {
+  it("rechecks readiness when an initially unready worker becomes ready and busy during runtime preparation", async () => {
+    const target = makeTarget();
+    const { runner, calls } = makeRunner({ loaded: true, initialPid: 4321, maintenanceLoaded: true, maintenancePid: process.pid,
+      mainPrintOutput: managedLaunchctlPrint(target) });
+    let ready = false; let beginInstall!: () => void; let finishInstall!: () => void;
+    const began = new Promise<void>((resolve) => { beginInstall = resolve; });
+    const finish = new Promise<void>((resolve) => { finishInstall = resolve; });
+    const runtime = makeHarness({ runner, list: listReturning(() => []) }).deps.ensureManagedRuntime;
+    const harness = makeHarness({ runner, currentPid: () => process.pid,
+      list: listReturning(() => [makeSource(target, { health: ready ? "running" : "stopped" })]),
+      ensureManagedRuntime: async (input) => { beginInstall(); await finish; return await runtime(input); },
+    });
+    const gate = withActivityGate(harness.deps, () => ({ disposition: "busy", counts: { turns: 1, jobs: 0, asks: 0 } }));
+    const attempt = maintainLaunchdController(target, gate.deps, { sourceAvailable: true, controlPoll: POLL, readinessPoll: POLL });
+    await began; ready = true; finishInstall();
+    expect(await attempt).toBe(0);
+    expect(gate.status()?.lastDecision?.outcome).toBe("deferred-busy");
+    expect(calls.some((call) => call[0] === "bootout")).toBe(false);
+    expect(gate.complete).not.toHaveBeenCalled();
+  });
+
+  it("a forced ceiling followed by failed bootout forces again next pass with the same episode", async () => {
+    const target = makeTarget();
+    const { runner } = makeRunner({ loaded: true, initialPid: 4321, bootoutKeepsLoaded: true,
+      maintenanceLoaded: true, maintenancePid: process.pid, mainPrintOutput: managedLaunchctlPrint(target) });
+    const harness = makeHarness({ runner, currentPid: () => process.pid,
+      list: listReturning(() => [makeSource(target)]),
+      inspectManagedRuntimeSourceIdentity: async () => ({ packageVersion: "0.9.0", cliSha256: "b".repeat(64) }),
+    });
+    const gate = withActivityGate(harness.deps, () => ({ disposition: "busy", counts: { turns: 1, jobs: 0, asks: 0 } }));
+    const attempt = () => maintainLaunchdController(target, gate.deps, { sourceAvailable: true, controlPoll: POLL, readinessPoll: POLL });
+    expect(await attempt()).toBe(0);
+    const firstDeferredAt = gate.status()?.pending?.firstDeferredAt;
+    await harness.deps.sleep(MAINTENANCE_MAX_DEFERRAL_MS);
+    expect(await attempt()).toBe(1); expect(gate.status()?.lastDecision?.outcome).toBe("forced-ceiling");
+    expect(gate.status()?.pending).toMatchObject({ firstDeferredAt, count: 2 });
+    expect(await attempt()).toBe(1); expect(gate.status()?.lastDecision?.outcome).toBe("forced-ceiling");
+    expect(gate.status()?.pending).toMatchObject({ firstDeferredAt, count: 3 });
+    expect(gate.complete).not.toHaveBeenCalled();
+  });
+
+  it.each(["start", "restart"] as const)("explicit stop preserves the episode; successful explicit %s clears only pending state", async (command) => {
+    const target = makeTarget();
+    const { runner, calls } = makeRunner({ loaded: true, initialPid: 4321, bootstrapPid: 5432 });
+    const harness = makeHarness({ runner, list: listReturning(() => [makeSource(target, {
+      pid: calls.some((call) => call[0] === "bootstrap" && call[2] === target.paths.plistPath) ? 5432 : 4321,
+      // After the simulated ceiling elapsed, the replacement needs a fresh startup timestamp.
+      startedAt: new Date(harness.deps.now()).toISOString(),
+    })]) });
+    const gate = withActivityGate(harness.deps, () => ({ disposition: "busy", counts: { turns: 1, jobs: 0, asks: 0 } }));
+    await gate.deps.allowUnattendedStop!(target, { reasons: ["runtime-upgrade"] });
+    await harness.deps.sleep(MAINTENANCE_MAX_DEFERRAL_MS);
+    await gate.deps.allowUnattendedStop!(target, { reasons: ["runtime-upgrade"] });
+    const before = gate.status(); expect(before?.lastForced?.outcome).toBe("forced-ceiling");
+    expect(await stopBackground(target, gate.deps, POLL)).toBe(0);
+    expect(gate.status()).toEqual(before); expect(gate.complete).not.toHaveBeenCalled();
+    expect(await (command === "start" ? startBackground : restartBackground)(target, gate.deps, POLL), harness.err.join(" ")).toBe(0);
+    expect(gate.status()?.pending).toBeUndefined();
+    expect(gate.status()?.lastDecision).toEqual(before?.lastDecision);
+    expect(gate.status()?.lastForced).toEqual(before?.lastForced);
+    expect(gate.complete).toHaveBeenCalledOnce();
+  });
+});
+
+it("acknowledges a deferred log episode only after successful rotation/restoration, not merely an idle decision", async () => {
+  const target = makeTarget(); const { runner } = makeRunner({ loaded: true, initialPid: 1111, bootstrapPid: 2222 });
+  let entered!: () => void; let release!: () => void; let busy = true;
+  const rotating = new Promise<void>((resolve) => { entered = resolve; });
+  const finish = new Promise<void>((resolve) => { release = resolve; });
+  const harness = makeHarness({ runner, list: listReturning(() => []),
+    inspectLaunchdLogs: async () => emptyLogInspection({ present: true, needsMaintenance: true }),
+    rotateStoppedLaunchdLogs: async () => { entered(); await finish; },
+  });
+  const gate = withActivityGate(harness.deps, () => ({ disposition: busy ? "busy" : "idle", counts: { turns: busy ? 1 : 0, jobs: 0, asks: 0 } }));
+  expect(await maintainLaunchdLogs(target, gate.deps, POLL)).toBe(0);
+  const firstDeferredAt = gate.status()?.pending?.firstDeferredAt;
+  busy = false;
+  const attempt = maintainLaunchdLogs(target, gate.deps, POLL);
+  try {
+    await rotating;
+    expect(gate.status()?.lastDecision?.outcome).toBe("proceeded-idle");
+    expect(gate.status()?.pending?.firstDeferredAt).toBe(firstDeferredAt);
+    expect(gate.complete).not.toHaveBeenCalled();
+  } finally { release(); }
+  expect(await attempt).toBe(0);
+  expect(gate.status()?.pending).toBeUndefined(); expect(gate.complete).toHaveBeenCalledOnce();
 });

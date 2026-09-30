@@ -18,6 +18,13 @@
   can identify console senders and keep non-admin web preferences user-scoped;
   preserve legacy owner behavior when no actor is supplied.
 
+## 0.25.1 — Busy-aware worker maintenance restarts (2026-09-30)
+
+- Keep unattended macOS worker maintenance from interrupting active turns,
+  admitted process jobs and completion wakes, or pending `AskUser` until idle
+  or a bounded ceiling; report deferrals and forced stops in `doctor` and
+  `status`, and fix shutdown diagnostics to name the received signal.
+
 ## 0.25.0 — Telegram topics, web wake-ups and language-neutral memory (2026-09-30)
 
 - Show the web console's provider usage refresh result as a short muted line

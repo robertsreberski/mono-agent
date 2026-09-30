@@ -1,3 +1,4 @@
+import { WorkerActivityTracker } from "../worker-activity.js";
 import { randomUUID } from "node:crypto";
 import { lstat, mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -3854,4 +3855,102 @@ describe("accepted restart drain", () => {
     expect(handle.cancel).toHaveBeenCalledOnce();
     expect((await service.get(started.jobId))?.state).toBe("interrupted");
   });
+});
+
+it("counts starting/running executions synchronously, including attestation, and releases on settlement/spawn failure", async () => {
+  const fixture = await createFixture(); const changes: number[] = [];
+  const attestation = deferred<void>(); const entered = deferred<void>();
+  const service = await startService(fixture, { onActivityChange: (count) => changes.push(count),
+    readIncarnation: async () => { entered.resolve(); await attestation.promise; return INCARNATION; } });
+  const completion = deferred<ProcessJobProcessResult>();
+  const starting = service.controller(ORIGIN, 0).start(requestOf(handleOf(completion)));
+  await entered.promise; expect(service.activeExecutionCount()).toBe(1); expect(changes.at(-1)).toBe(1);
+  attestation.resolve(); const started = await starting;
+  expect(service.activeExecutionCount()).toBe(1);
+  completion.resolve(processResult({ aborted: true, signal: "SIGTERM" }));
+  await waitFor(async () => service.activeExecutionCount() === 0);
+  expect(changes.at(-1)).toBe(0);
+  await waitFor(async () => (await service.get(started.jobId))?.state === "cancelled");
+  await expect(service.controller(ORIGIN, 0).start({ ...requestOf(handleOf(deferred<ProcessJobProcessResult>())), launch: () => { throw new Error("spawn failed"); } })).rejects.toMatchObject({ code: "process_job_spawn_failed" });
+  expect(service.activeExecutionCount()).toBe(0); expect(changes.at(-1)).toBe(0);
+});
+
+it("late settlement from a stopped service cannot erase a replacement service's executing jobs", async () => {
+  const tracker = new WorkerActivityTracker();
+  const oldFinish = deferred<void>(); const newFinish = deferred<ProcessJobProcessResult>();
+  const oldService = await startService(await createFixture(), { onActivityChange: tracker.jobExecutionObserver() });
+  const newService = await startService(await createFixture(), { onActivityChange: tracker.jobExecutionObserver() });
+  try {
+    await oldService.internalController(ORIGIN, 0).startInternal({
+      kind: "internal", tool: "Agent", jobId: randomUUID(), instanceId: "old-fictional-child", timeoutMs: 60_000,
+      run: async () => { await oldFinish.promise; return { status: "ok", output: "", childStillBusy: false }; },
+      cleanup: async () => {}, wakeOnCompletion: false,
+    });
+    expect(tracker.snapshot().jobs).toBe(1);
+    // Reporting grace releases service ownership, but the actual old invocation
+    // is deliberately still executing as the replacement begins new work.
+    await oldService.stop();
+    expect(oldService.activeExecutionCount()).toBe(1);
+    expect(tracker.snapshot().jobs).toBe(1);
+    await newService.controller(ORIGIN, 0).start(requestOf(handleOf(newFinish)));
+    expect(tracker.snapshot().jobs).toBe(2);
+    oldFinish.resolve();
+    await waitFor(async () => oldService.activeExecutionCount() === 0);
+    expect(newService.activeExecutionCount()).toBe(1);
+    expect(tracker.snapshot().jobs).toBe(1); expect(tracker.busy()).toBe(true);
+    newFinish.resolve(processResult());
+    await waitFor(async () => newService.activeExecutionCount() === 0);
+    expect(tracker.snapshot().jobs).toBe(0); expect(tracker.busy()).toBe(false);
+  } finally { oldFinish.resolve(); newFinish.resolve(processResult()); }
+}, 30_000);
+
+it.each(["delivered", "failed"] as const)("keeps a completed job busy across pre-wake work and %s receipt settlement", async (outcome) => {
+  const tracker = new WorkerActivityTracker();
+  const surfaceBlocked = deferred<void>(); const releaseSurface = deferred<void>();
+  const wakeEntered = deferred<void>(); const releaseWake = deferred<void>();
+  const completion = deferred<ProcessJobProcessResult>();
+  const service = await startService(await createFixture(), {
+    onActivityChange: tracker.jobExecutionObserver(),
+    surfaceUpdate: async (projection) => {
+      if (projection.wake.attempts === 1 && projection.wake.state === "pending") {
+        surfaceBlocked.resolve(); await releaseSurface.promise;
+      }
+    },
+    wake: async () => {
+      wakeEntered.resolve(); await releaseWake.promise;
+      if (outcome === "failed") throw new Error("fictional wake failure");
+      return { delivered: true as const };
+    },
+  });
+  try {
+    await service.activateWakes();
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion)));
+    completion.resolve(processResult());
+    await surfaceBlocked.promise;
+    expect((await service.get(started.jobId))?.state).toBe("succeeded");
+    expect(service.activeExecutionCount()).toBe(1); expect(tracker.busy()).toBe(true);
+    releaseSurface.resolve(); await wakeEntered.promise;
+    expect(service.activeExecutionCount()).toBe(1); expect(tracker.busy()).toBe(true);
+    releaseWake.resolve();
+    await waitFor(async () => service.activeExecutionCount() === 0);
+    expect((await service.get(started.jobId))?.wake.state).toBe(outcome === "delivered" ? "delivered" : "unknown");
+    expect(tracker.busy()).toBe(false);
+  } finally { releaseSurface.resolve(); releaseWake.resolve(); completion.resolve(processResult()); }
+});
+
+it("counts admitted queued jobs and never advertises idle while handing a slot to them", async () => {
+  const first = deferred<ProcessJobProcessResult>(); const second = deferred<ProcessJobProcessResult>();
+  const observed: number[] = [];
+  const service = await startService(await createFixture({ maxConcurrent: 1, maxActivePerConversation: 2, maxQueued: 1 }),
+    { onActivityChange: (count) => observed.push(count) });
+  try {
+    await service.controller(ORIGIN, 0).start(requestOf(handleOf(first)));
+    const queued = await service.controller(ORIGIN, 0).start(requestOf(handleOf(second)));
+    expect(queued.state).toBe("queued"); expect(service.activeExecutionCount()).toBe(2);
+    first.resolve(processResult());
+    await waitFor(async () => (await service.get(queued.jobId))?.state === "running");
+    expect(service.activeExecutionCount()).toBe(1);
+    expect(observed).not.toContain(0);
+    second.resolve(processResult()); await waitFor(async () => service.activeExecutionCount() === 0);
+  } finally { first.resolve(processResult()); second.resolve(processResult()); }
 });

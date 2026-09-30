@@ -1,3 +1,4 @@
+import { describeMaintenanceActivity, readLaunchdMaintenanceActivityStatus } from "./launchd-maintenance-activity.js";
 import { persistentSubagentsEnabled, subagentInstancesRoot } from "./subagent-instances.js";
 import { inspectLocalWeb, inspectParallelWeb } from "@mono-agent/agent-runtime/agent/tools/index.js";
 import { inspectWebControl } from "./web-request-coordinator.js";
@@ -346,6 +347,7 @@ export async function validateMonoAgentFolder(
 
 /** Read-only launchd log inventory used by both `validate` and its `doctor` alias. */
 export async function launchdLogsSection(configPath: string): Promise<ValidationSection> {
+  let maintenanceDetail: string | undefined;
   let inspection: LaunchdLogInspection;
   let monitorStatus: ManagedLaunchdLogMonitorStatus | "unavailable" | undefined;
   try {
@@ -357,9 +359,14 @@ export async function launchdLogsSection(configPath: string): Promise<Validation
       : "";
     try {
       monitorStatus = await readLaunchdLogMonitorStatus(mainLabel, paths);
+
     } catch {
       monitorStatus = "unavailable";
     }
+    try {
+      const maintenanceStatus = await readLaunchdMaintenanceActivityStatus(mainLabel, paths);
+      if (maintenanceStatus !== undefined) maintenanceDetail = describeMaintenanceActivity(maintenanceStatus);
+    } catch { maintenanceDetail = "Maintenance: owner-private status is unavailable or unsafe."; }
   } catch {
     return {
       id: "launchd-logs",
@@ -369,7 +376,8 @@ export async function launchdLogsSection(configPath: string): Promise<Validation
     };
   }
 
-  return launchdLogsSectionFromInspection(inspection, monitorStatus);
+  const section = launchdLogsSectionFromInspection(inspection, monitorStatus);
+  return { ...section, details: [...section.details, ...(maintenanceDetail === undefined ? [] : [maintenanceDetail])] };
 }
 
 /** Pure renderer kept separate so exact byte accounting is deterministic in tests. */
