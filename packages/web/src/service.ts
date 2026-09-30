@@ -2822,7 +2822,12 @@ export class WebService {
       // webhook channels stay excluded here and in `assertConsoleToolTurn`.
       const actor = this.options.multiUser === true ? this.store.turnWebActor(started.turnId) : undefined;
       const human = "userMessageId" in started && hostWakeDeliveryKey === undefined && !scheduledWake;
-      if (this.options.multiUser === true && human) {
+      if (this.options.multiUser === true && !human
+        && (this.connections.get(started.thread.sourceId)?.info.webAutomation?.version !== 1
+          || this.connections.get(started.thread.sourceId)?.client !== client)) {
+        throw new WebConsoleError("web_automation_unsupported", "This agent does not support non-human web automation.", 409);
+      }
+      if (this.options.multiUser === true && (human || actor !== undefined)) {
         const connection = this.connections.get(started.thread.sourceId);
         if (actor === undefined || connection?.client !== client || connection.info.webActor?.version !== 1) {
           throw new WebConsoleError("web_actor_unsupported", "Authenticated human dispatch is unavailable.", 409);
@@ -2830,6 +2835,7 @@ export class WebService {
         const principal = this.store.auth.getUser(actor.sender.id);
         if (principal.disabled || principal.role !== actor.role
           || this.store.access.run(principal, () => this.store.getThread(started.thread.id)) === undefined) {
+          if (scheduledWake) { this.store.suspendWake(started.thread.id); this.emitWakeThread(started.thread.id); }
           throw new WebConsoleError("actor_access_revoked", "The initiating account no longer has access to this conversation.", 403);
         }
       }
@@ -2839,7 +2845,8 @@ export class WebService {
       let response;
       try {
         response = await client.turn({
-        ...(human && actor !== undefined ? { webActor: actor } : {}),
+        ...(this.options.multiUser === true && actor !== undefined ? { webActor: actor } : {}),
+        ...(this.options.multiUser === true && !human ? { webAutomation: { schema: 1 } } : {}),
         conversationId: started.conversationId,
         text: operatorText,
         attachments,
@@ -4162,23 +4169,38 @@ export class WebService {
   /** Indexed due scan; sync admission avoids an interleaving with ordinary user input. */
   private dispatchWakes(): void {
     if (this.stopped) return;
-    for (const threadId of this.store.wakeDueThreadIds()) this.dispatchWake(threadId);
+    this.store.access.internal(() => { for (const threadId of this.store.wakeDueThreadIds()) this.dispatchWake(threadId); });
   }
 
   private dispatchWake(threadId: string): void {
+    this.store.access.internal(() => this.dispatchWakeInternal(threadId));
+  }
+
+  private dispatchWakeInternal(threadId: string): void {
     if (this.stopped) return;
     const thread = this.store.getThread(threadId);
     if (thread === undefined) return;
     const connection = this.connections.get(thread.sourceId);
+    const editorId = this.options.multiUser === true ? this.store.wakeEditor(threadId) : undefined;
+    const editor = editorId === undefined ? undefined : this.store.auth.getUser(editorId);
+    if (this.options.multiUser === true && thread.wakeSchedule?.state === "active"
+      && (editor === undefined || editor.disabled
+        || this.store.access.run(editor, () => this.store.getThread(threadId)) === undefined
+        || (connection !== undefined && (connection.info.webAutomation?.version !== 1 || connection.info.webActor?.version !== 1)))) {
+      this.store.suspendWake(threadId);
+      this.emitWakeThread(threadId);
+      return;
+    }
     const revision = thread.revision;
     this.store.reconcileWake(threadId, connection !== undefined);
     if (this.store.getThread(threadId)?.revision !== revision) this.emitWakeThread(threadId);
     if (connection === undefined || this.activeTurns.has(threadId) || this.activeCompactions.has(threadId)
       || this.hostWakeReservations.has(threadId) || this.drainingLiveInputThreads.has(threadId)) return;
     const selection = this.resolveTurnSelection(threadId);
-    const claimed = this.store.claimWake(threadId, thread.sourceId,
+    const claim = () => this.store.claimWake(threadId, thread.sourceId,
       () => !this.stopped && this.connections.get(thread.sourceId) === connection
         && !this.hostWakeReservations.has(threadId) && !this.activeCompactions.has(threadId), selection);
+    const claimed = editor === undefined ? claim() : this.store.access.run(editor, claim);
     if (claimed === null) return;
     const { started, prompt } = claimed;
     this.emitWakeThread(threadId);

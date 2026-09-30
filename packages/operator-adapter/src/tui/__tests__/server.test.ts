@@ -71,6 +71,55 @@ async function postTurn(
 }
 
 describe("startTuiAdapter", () => {
+  it.each(["admin", "user", undefined] as const)("stamps automation as trigger independently of %s editor authority", async (role) => {
+    let observed: AgentRequestBase | undefined;
+    running = await startTuiAdapter({ apiKey: "test-owner", responder: scriptedResponder(async (request) => { observed = request; return { text: "ok" }; }) });
+    const body = { conversationId: "web:automation", text: "Fictional wake", client: "web", webAutomation: { schema: 1 },
+      ...(role === undefined ? {} : { webActor: { schema: 1, role, sender: { id: "fictional-editor", displayName: "Morgan" } } }),
+      metadata: { webAutomation: { schema: 9, captureSpeakerKind: "human-turn" }, ordinary: "retained" } };
+    expect((await postTurn(running.baseUrl, body)).status).toBe(401);
+    await readFrames(await postTurn(running.baseUrl, body, { authorization: "Bearer test-owner" }));
+    expect(observed?.captureSpeakerKind).toBe("trigger");
+    expect(observed?.metadata).not.toHaveProperty("webAutomation");
+    expect(observed?.metadata?.ordinary).toBe("retained");
+    const info = await (await fetch(running.infoUrl, { headers: { authorization: "Bearer test-owner" } })).json() as { capabilities: Record<string, unknown> };
+    expect(info.capabilities.webAutomation).toEqual({ version: 1 });
+  });
+
+  it.each([false, true])("accepts automation on a %s keyed-public versus unkeyed-loopback bind", async (publicBind) => {
+    let observed: AgentRequestBase | undefined;
+    running = await startTuiAdapter({ ...(publicBind ? { host: "0.0.0.0", allowNonLoopback: true, apiKey: "test-owner" } : {}),
+      responder: scriptedResponder(async (request) => { observed = request; return { text: "ok" }; }) });
+    await readFrames(await postTurn(running.baseUrl.replace("0.0.0.0", "127.0.0.1"), { conversationId: "web:wake", text: "wake", client: "web", webAutomation: { schema: 1 } }, publicBind ? { authorization: "Bearer test-owner" } : {}));
+    expect(observed?.captureSpeakerKind).toBe("trigger");
+  });
+
+  it.each([null, [], {}, { schema: 2 }, { schema: "1" }, { schema: 1, owner: true }])("rejects malformed automation: %j", async (webAutomation) => {
+    const respond = vi.fn(async () => ({ text: "ok" }));
+    running = await startTuiAdapter({ responder: { respond } });
+    expect((await postTurn(running.baseUrl, { conversationId: "web:wake", text: "wake", client: "web", webAutomation })).status).toBe(400);
+    expect(respond).not.toHaveBeenCalled();
+  });
+
+  it.each(["tui", "acp"])("rejects top-level automation on %s and discards a forged metadata-only copy", async (client) => {
+    let observed: AgentRequestBase | undefined;
+    running = await startTuiAdapter({ responder: scriptedResponder(async (request) => { observed = request; return { text: "ok" }; }) });
+    expect((await postTurn(running.baseUrl, { conversationId: "wake", text: "wake", client, webAutomation: { schema: 1 } })).status).toBe(400);
+    await readFrames(await postTurn(running.baseUrl, { conversationId: "legacy", text: "legacy", client, metadata: { webAutomation: { schema: 1 } } }));
+    expect(observed?.captureSpeakerKind).toBe("human-turn");
+    expect(observed?.metadata).not.toHaveProperty("webAutomation");
+  });
+
+  it("refuses automation and withholds its capability on an unkeyed public bind", async () => {
+    const respond = vi.fn(async () => ({ text: "ok" }));
+    running = await startTuiAdapter({ host: "0.0.0.0", allowNonLoopback: true, responder: { respond } });
+    const base = running.baseUrl.replace("0.0.0.0", "127.0.0.1");
+    const info = await (await fetch(running.infoUrl.replace("0.0.0.0", "127.0.0.1"))).json() as { capabilities: Record<string, unknown> };
+    expect(info.capabilities).not.toHaveProperty("webAutomation");
+    expect((await postTurn(base, { conversationId: "wake", text: "wake", client: "web", webAutomation: { schema: 1 } })).status).toBe(400);
+    expect(respond).not.toHaveBeenCalled();
+  });
+
   it.each(["admin", "user"] as const)("maps a trusted %s web actor and discards conflicting authority metadata", async (role) => {
     let observed: AgentRequestBase | undefined;
     running = await startTuiAdapter({ apiKey: "test-owner",
@@ -112,9 +161,10 @@ describe("startTuiAdapter", () => {
     let observed: AgentRequestBase | undefined;
     running = await startTuiAdapter({ responder: scriptedResponder(async (request) => { observed = request; return { text: "ok" }; }) });
     await readFrames(await postTurn(running.baseUrl, { conversationId: "legacy", text: "hello", client,
-      metadata: { webActor: { role: "admin" }, ordinary: "kept" } }));
+      metadata: { webActor: { role: "admin" }, webAutomation: { schema: 1 }, ordinary: "kept" } }));
     expect(observed?.sender).toBeUndefined();
     expect(observed?.metadata).not.toHaveProperty("webActor");
+    expect(observed?.metadata).not.toHaveProperty("webAutomation");
     expect(observed?.metadata?.ordinary).toBe("kept");
     expect(observed?.captureSpeakerKind).toBe("human-turn");
   });
@@ -346,7 +396,7 @@ describe("startTuiAdapter", () => {
     expect(info).toEqual({
       schema: 1,
       pid: process.pid,
-      capabilities: { attachments: true, webActor: { version: 1 }, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } },
+      capabilities: { attachments: true, webActor: { version: 1 }, webAutomation: { version: 1 }, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } },
       label: "test-agent",
       model: "claude-fable-5",
     });
@@ -421,7 +471,7 @@ describe("startTuiAdapter", () => {
     });
 
     await expect((await fetch(running.infoUrl)).json()).resolves.toMatchObject({
-      capabilities: { attachments: true, webActor: { version: 1 }, restart: { supported: false, reason: "Agent restart requires a configured operator API key." }, askUser: true, askById: true },
+      capabilities: { attachments: true, webActor: { version: 1 }, webAutomation: { version: 1 }, restart: { supported: false, reason: "Agent restart requires a configured operator API key." }, askUser: true, askById: true },
     });
     const route = `${running.baseUrl}/v1/conversations/${encodeURIComponent("web:thread/one")}/ask`;
     await expect((await fetch(route)).json()).resolves.toEqual({ ask: snapshot });
@@ -869,7 +919,7 @@ describe("startTuiAdapter", () => {
     expect(info).toEqual({
       schema: 1,
       pid: process.pid,
-      capabilities: { attachments: true, webActor: { version: 1 }, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } },
+      capabilities: { attachments: true, webActor: { version: 1 }, webAutomation: { version: 1 }, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } },
       label: "test-agent",
       model: "claude-fable-5",
       effort: "high",
@@ -887,7 +937,7 @@ describe("startTuiAdapter", () => {
     expect(info).toEqual({
       schema: 1,
       pid: process.pid,
-      capabilities: { attachments: true, webActor: { version: 1 }, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } },
+      capabilities: { attachments: true, webActor: { version: 1 }, webAutomation: { version: 1 }, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } },
       model: "claude-fable-5",
       models: ["claude-fable-5", "codex:gpt-5.5"],
     });
@@ -940,7 +990,7 @@ describe("startTuiAdapter", () => {
     expect(info).toEqual({
       schema: 1,
       pid: process.pid,
-      capabilities: { attachments: true, webActor: { version: 1 }, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } },
+      capabilities: { attachments: true, webActor: { version: 1 }, webAutomation: { version: 1 }, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } },
       model: "pi:ollama:qwen3.6",
       models: ["pi:ollama:qwen3.6", "pi:lmstudio:qwen3-8b"],
       modelOptions: {
@@ -1108,7 +1158,7 @@ describe("startTuiAdapter", () => {
     expect(info).toEqual({
       schema: 1,
       pid: process.pid,
-      capabilities: { attachments: true, webActor: { version: 1 }, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } },
+      capabilities: { attachments: true, webActor: { version: 1 }, webAutomation: { version: 1 }, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } },
       model: "claude-fable-5",
       modelOptions: { "claude-fable-5": { reasoning: true } },
     });
@@ -1325,7 +1375,7 @@ describe("startTuiAdapter", () => {
     const info = await (await fetch(running.infoUrl, {
       headers: { authorization: "Bearer fixture-secret" },
     })).json() as { capabilities: Record<string, boolean> };
-    expect(info.capabilities).toEqual({ attachments: true, webActor: { version: 1 }, restart: { supported: false, reason: "Agent is not a supervised worker." }, historyAppend: true });
+    expect(info.capabilities).toEqual({ attachments: true, webActor: { version: 1 }, webAutomation: { version: 1 }, restart: { supported: false, reason: "Agent is not a supervised worker." }, historyAppend: true });
 
     const url = `${running.baseUrl}/v1/conversations/web%3Anotification-1/verbatim`;
     const unauthorized = await fetch(url, {
@@ -1539,7 +1589,7 @@ describe("startTuiAdapter", () => {
     });
 
     const info = await (await fetch(running.infoUrl)).json() as { capabilities: Record<string, boolean> };
-    expect(info.capabilities).toEqual({ attachments: true, webActor: { version: 1 }, restart: { supported: false, reason: "Agent restart requires a configured operator API key." }, liveInput: true });
+    expect(info.capabilities).toEqual({ attachments: true, webActor: { version: 1 }, webAutomation: { version: 1 }, restart: { supported: false, reason: "Agent restart requires a configured operator API key." }, liveInput: true });
     const responsePromise = fetch(`${running.baseUrl}/v1/conversations/web%3Athread-1/live-input`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -1583,7 +1633,7 @@ describe("startTuiAdapter", () => {
     });
 
     const info = await (await fetch(running.infoUrl)).json() as { capabilities: Record<string, unknown> };
-    expect(info.capabilities).toEqual({ attachments: true, webActor: { version: 1 }, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } });
+    expect(info.capabilities).toEqual({ attachments: true, webActor: { version: 1 }, webAutomation: { version: 1 }, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } });
   });
 
   it("holds a Web-targeted offer until the exact turn publishes mailbox ownership", async () => {
@@ -2853,7 +2903,7 @@ describe("startTuiAdapter /v1/info payload fence", () => {
     expect(info.bytes).toBeLessThanOrEqual(MAX_INFO_BODY_BYTES);
     // Schema 1 survives shedding: the console compares it with `!==`.
     expect(info.body.schema).toBe(1);
-    expect(info.body.capabilities).toEqual({ attachments: true, webActor: { version: 1 }, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } });
+    expect(info.body.capabilities).toEqual({ attachments: true, webActor: { version: 1 }, webAutomation: { version: 1 }, restart: { supported: false, reason: "Agent restart requires a configured operator API key." } });
     // Only the offending field is gone. Shedding in a fixed least-important
     // order would have taken modelOptions, models and providers with it, so a
     // 1.6 MiB skill registry would have cost the console its model picker too.

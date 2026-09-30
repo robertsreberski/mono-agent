@@ -1,5 +1,7 @@
 export { OPERATOR_WEB_ACTOR_VERSION, parseOperatorWebActor } from "./web-actor.js";
 export type { OperatorWebActor } from "./web-actor.js";
+export { OPERATOR_WEB_AUTOMATION_VERSION, parseOperatorWebAutomation } from "./web-automation.js";
+export type { OperatorWebAutomation } from "./web-automation.js";
 export { TuiAdapterError } from "./tui/index.js";
 export {
   CronOperatorError,

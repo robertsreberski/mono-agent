@@ -65,6 +65,7 @@ import {
 import express, { type NextFunction, type Request, type Response } from "express";
 
 import { OPERATOR_WEB_ACTOR_VERSION, parseOperatorWebActor, type OperatorWebActor } from "../web-actor.js";
+import { OPERATOR_WEB_AUTOMATION_VERSION, parseOperatorWebAutomation, type OperatorWebAutomation } from "../web-automation.js";
 
 const TARGET_WAITER_TIMEOUT_MS = 10 * 60 * 1_000;
 const MAX_TARGET_WAITERS_PER_OPERATION = 100;
@@ -449,7 +450,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
           capabilities: {
             attachments: true,
             ...(apiKey !== undefined || !boundNonLoopback
-              ? { webActor: { version: OPERATOR_WEB_ACTOR_VERSION } } : {}),
+              ? { webActor: { version: OPERATOR_WEB_ACTOR_VERSION }, webAutomation: { version: OPERATOR_WEB_AUTOMATION_VERSION } } : {}),
             ...(typeof options.responder.openReplyArtifact === "function"
               ? { replyAttachments: { version: 1, maxBytes: DEFAULT_AGENT_ATTACHMENT_MAX_BYTES } }
               : {}),
@@ -1482,7 +1483,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
 
   async function handleTurn(req: Request, res: Response): Promise<void> {
     const body = normalizeTurnBody(req.body, options.requestToolEnvironment);
-    if (body.webActor !== undefined && apiKey === undefined && boundNonLoopback) {
+    if ((body.webActor !== undefined || body.webAutomation !== undefined) && apiKey === undefined && boundNonLoopback) {
       throw new TuiAdapterError("invalid_request", "webActor requires a trusted operator boundary.");
     }
     const requestId = randomUUID();
@@ -1512,7 +1513,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       ...(body.webActor === undefined ? {} : { sender: body.webActor.sender }),
       // Provenance is stamped after authorization from server bind/key state,
       // never from the client-selected display label or request metadata.
-      captureSpeakerKind: apiKey !== undefined || !boundNonLoopback ? "human-turn" : "unknown",
+      captureSpeakerKind: body.webAutomation !== undefined ? "trigger" : apiKey !== undefined || !boundNonLoopback ? "human-turn" : "unknown",
       ...(target === undefined ? {} : {
         onLiveInputOwnership: (event) => {
           if (target?.state === "closed") return;
@@ -2047,6 +2048,7 @@ interface NormalizedTurnBody {
   readonly metadata: Record<string, unknown>;
   readonly client: "tui" | "web" | "acp";
   readonly webActor?: OperatorWebActor;
+  readonly webAutomation?: OperatorWebAutomation;
   readonly processJobWakeDeliveryKey?: string;
   readonly attachments?: readonly AgentAttachment[];
   readonly toolEnvironment?: AgentToolEnvironment;
@@ -2168,6 +2170,12 @@ function normalizeTurnBody(
       throw new TuiAdapterError("invalid_request", "webActor must be a valid v1 web actor with bounded sender strings.");
     }
   }
+  let webAutomation: OperatorWebAutomation | undefined;
+  if (record.webAutomation !== undefined) {
+    if (client !== "web") throw new TuiAdapterError("invalid_request", "webAutomation is only supported for web turns.");
+    try { webAutomation = parseOperatorWebAutomation(record.webAutomation); }
+    catch { throw new TuiAdapterError("invalid_request", "webAutomation must be a valid v1 automation marker."); }
+  }
   const processJobWakeDeliveryKey = normalizeOptionalString(
     typeof record.processJobWakeDeliveryKey === "string"
       ? record.processJobWakeDeliveryKey
@@ -2192,6 +2200,7 @@ function normalizeTurnBody(
     metadata,
     client,
     ...(webActor === undefined ? {} : { webActor }),
+    ...(webAutomation === undefined ? {} : { webAutomation }),
     ...(processJobWakeDeliveryKey === undefined ? {} : { processJobWakeDeliveryKey }),
     ...(attachments === undefined ? {} : { attachments }),
     ...(toolEnvironment === undefined ? {} : { toolEnvironment }),
@@ -2200,7 +2209,7 @@ function normalizeTurnBody(
 
 function requestMetadata(body: NormalizedTurnBody, requestId: string): Record<string, unknown> {
   // Strip authority on every client, even when no top-level actor was supplied.
-  const { webActor: _untrustedActor, ...clientMetadata } = body.metadata;
+  const { webActor: _untrustedActor, webAutomation: _untrustedAutomation, ...clientMetadata } = body.metadata;
   if (body.client === "tui") {
     return { ...clientMetadata, source: "tui", tuiRequestId: requestId };
   }

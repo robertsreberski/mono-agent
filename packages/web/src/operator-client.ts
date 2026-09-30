@@ -57,7 +57,9 @@ import { errorMessage, WebConsoleError } from "./errors.js";
 import { isTrustedOperatorBaseUrl } from "./discovery.js";
 import {
   OPERATOR_WEB_ACTOR_VERSION,
+  OPERATOR_WEB_AUTOMATION_VERSION,
   type OperatorWebActor,
+  type OperatorWebAutomation,
   fetchLongLivedHostWake,
   fetchLongLivedTurn,
   operatorResponseFromFinishFrame,
@@ -161,6 +163,7 @@ export interface OperatorInfo {
   readonly skills?: OperatorSkillRegistry;
   /** Absent for older or malformed attribution boundaries (fail closed). */
   readonly webActor?: { readonly version: typeof OPERATOR_WEB_ACTOR_VERSION };
+  readonly webAutomation?: { readonly version: typeof OPERATOR_WEB_AUTOMATION_VERSION };
   readonly supportsAttachments: boolean;
   readonly supportsHistoryAppend: boolean;
   readonly supportsManualCompaction?: true;
@@ -205,6 +208,7 @@ export interface OperatorLiveInputInput {
 
 export interface OperatorTurnInput {
   readonly webActor?: OperatorWebActor;
+  readonly webAutomation?: OperatorWebAutomation;
   readonly conversationId: string;
   readonly text: string;
   readonly attachments: readonly AgentAttachment[];
@@ -302,6 +306,8 @@ export class OperatorClient {
       ...(contextImport === undefined ? {} : { contextImport }),
       ...(record(capabilities?.webActor)?.version === OPERATOR_WEB_ACTOR_VERSION
         ? { webActor: { version: OPERATOR_WEB_ACTOR_VERSION } } : {}),
+      ...(record(capabilities?.webAutomation)?.version === OPERATOR_WEB_AUTOMATION_VERSION
+        ? { webAutomation: { version: OPERATOR_WEB_AUTOMATION_VERSION } } : {}),
       supportsAskUser: capabilities?.askUser === true,
       ...(capabilities?.askById === true ? { supportsAskById: true } : {}),
       supportsLiveInput: capabilities?.liveInput === true,
@@ -484,6 +490,7 @@ export class OperatorClient {
           client: input.client ?? "web",
           metadata: input.metadata,
           ...(input.webActor === undefined ? {} : { webActor: input.webActor }),
+          ...(input.webAutomation === undefined ? {} : { webAutomation: input.webAutomation }),
           ...(input.processJobWakeDeliveryKey === undefined
             ? {}
             : { processJobWakeDeliveryKey: input.processJobWakeDeliveryKey }),

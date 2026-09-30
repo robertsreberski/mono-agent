@@ -117,6 +117,7 @@ export class WebAuthStore {
       if (state.bootstrap_admin_id === null) throw new WebConsoleError("web_admin_required", "Run web users bootstrap before enabling multi-user mode.", 409);
       if (state.initialized_at !== null) return;
       this.database.prepare("UPDATE threads SET owner_user_id = ?, shared = 0 WHERE owner_user_id IS NULL").run(state.bootstrap_admin_id);
+      this.database.prepare("UPDATE wake_schedules SET editor_user_id = ? WHERE editor_user_id IS NULL").run(state.bootstrap_admin_id);
       this.database.prepare("UPDATE web_auth_state SET initialized_at = ? WHERE id = 1").run(this.clock().toISOString());
     });
   }

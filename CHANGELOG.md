@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep multi-user web automation non-human at the trusted operator boundary,
+  scope scheduled wakes to their current editor, and suspend inaccessible or
+  unsupported schedules instead of falling back to legacy owner authority.
+
 - Attribute human web turns and queued follow-ups to their authenticated sender,
   cancel queued input after access or role loss, and keep older agents read-only
   in multi-user mode while preserving legacy steering when the mode is off.
