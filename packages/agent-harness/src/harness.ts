@@ -61,6 +61,7 @@ import {
   continuationCapabilitiesRequiringOriginContext,
   finalizeContinuationOriginContexts,
 } from "./harness/mcp-context.js";
+import { isOwnerHumanTurn } from "./harness/request-routing.js";
 import { buildSuccessfulTurn, persistSuccessfulMemory } from "./harness/memory-persistence.js";
 import {
   createDefaultRunId,
@@ -1707,9 +1708,7 @@ export class MonoAgentHarness implements AgentHarness {
             webhookRequest: request.metadata?.webhook !== undefined,
             ...(runSource.source === undefined ? {} : { source: runSource.source }),
             captureSpeakerKind: request.captureSpeakerKind ?? "unknown",
-            ...(request.captureSpeakerKind === "human-turn" && (request.metadata?.source === "web"
-              || request.metadata?.source === "tui" || request.metadata?.source === "acp")
-              ? { ownerTurn: true as const } : {}),
+            ...(isOwnerHumanTurn(request) ? { ownerTurn: true as const } : {}),
             trustedUserText: completedTurn.userMemoryText,
             toolOutcomes: turnContinuityCollector.captureToolOutcomes(),
             ...(request.sender === undefined ? {} : { sender: request.sender }),

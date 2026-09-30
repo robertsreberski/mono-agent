@@ -64,6 +64,8 @@ import {
 } from "@mono-agent/agent-contracts";
 import express, { type NextFunction, type Request, type Response } from "express";
 
+import { OPERATOR_WEB_ACTOR_VERSION, parseOperatorWebActor, type OperatorWebActor } from "../web-actor.js";
+
 const TARGET_WAITER_TIMEOUT_MS = 10 * 60 * 1_000;
 const MAX_TARGET_WAITERS_PER_OPERATION = 100;
 const MAX_TARGET_WAITERS_GLOBAL = 1_000;
@@ -446,6 +448,8 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
           pid: process.pid,
           capabilities: {
             attachments: true,
+            ...(apiKey !== undefined || !boundNonLoopback
+              ? { webActor: { version: OPERATOR_WEB_ACTOR_VERSION } } : {}),
             ...(typeof options.responder.openReplyArtifact === "function"
               ? { replyAttachments: { version: 1, maxBytes: DEFAULT_AGENT_ATTACHMENT_MAX_BYTES } }
               : {}),
@@ -1478,6 +1482,9 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
 
   async function handleTurn(req: Request, res: Response): Promise<void> {
     const body = normalizeTurnBody(req.body, options.requestToolEnvironment);
+    if (body.webActor !== undefined && apiKey === undefined && boundNonLoopback) {
+      throw new TuiAdapterError("invalid_request", "webActor requires a trusted operator boundary.");
+    }
     const requestId = randomUUID();
     const web = isRecord(body.metadata.web) ? body.metadata.web : undefined;
     const webTurnId = body.client === "web" && typeof web?.turnId === "string" && web.turnId.length > 0
@@ -1502,6 +1509,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       text: body.text,
       abortSignal: controller.signal,
       metadata: requestMetadata(body, requestId),
+      ...(body.webActor === undefined ? {} : { sender: body.webActor.sender }),
       // Provenance is stamped after authorization from server bind/key state,
       // never from the client-selected display label or request metadata.
       captureSpeakerKind: apiKey !== undefined || !boundNonLoopback ? "human-turn" : "unknown",
@@ -2038,6 +2046,7 @@ interface NormalizedTurnBody {
   readonly text: string;
   readonly metadata: Record<string, unknown>;
   readonly client: "tui" | "web" | "acp";
+  readonly webActor?: OperatorWebActor;
   readonly processJobWakeDeliveryKey?: string;
   readonly attachments?: readonly AgentAttachment[];
   readonly toolEnvironment?: AgentToolEnvironment;
@@ -2148,6 +2157,17 @@ function normalizeTurnBody(
     : record.client === "web" || (record.client === undefined && metadata.source === "web")
       ? "web"
       : "tui";
+  let webActor: OperatorWebActor | undefined;
+  if (record.webActor !== undefined) {
+    if (client !== "web") {
+      throw new TuiAdapterError("invalid_request", "webActor is only supported for web turns.");
+    }
+    try {
+      webActor = parseOperatorWebActor(record.webActor);
+    } catch {
+      throw new TuiAdapterError("invalid_request", "webActor must be a valid v1 web actor with bounded sender strings.");
+    }
+  }
   const processJobWakeDeliveryKey = normalizeOptionalString(
     typeof record.processJobWakeDeliveryKey === "string"
       ? record.processJobWakeDeliveryKey
@@ -2171,6 +2191,7 @@ function normalizeTurnBody(
     text,
     metadata,
     client,
+    ...(webActor === undefined ? {} : { webActor }),
     ...(processJobWakeDeliveryKey === undefined ? {} : { processJobWakeDeliveryKey }),
     ...(attachments === undefined ? {} : { attachments }),
     ...(toolEnvironment === undefined ? {} : { toolEnvironment }),
@@ -2178,19 +2199,21 @@ function normalizeTurnBody(
 }
 
 function requestMetadata(body: NormalizedTurnBody, requestId: string): Record<string, unknown> {
+  // Strip authority on every client, even when no top-level actor was supplied.
+  const { webActor: _untrustedActor, ...clientMetadata } = body.metadata;
   if (body.client === "tui") {
-    return { ...body.metadata, source: "tui", tuiRequestId: requestId };
+    return { ...clientMetadata, source: "tui", tuiRequestId: requestId };
   }
   if (body.client === "acp") {
-    return { ...body.metadata, source: "acp", acpRequestId: requestId };
+    return { ...clientMetadata, source: "acp", acpRequestId: requestId };
   }
 
-  const incomingWeb = isRecord(body.metadata.web) ? body.metadata.web : undefined;
+  const incomingWeb = isRecord(clientMetadata.web) ? clientMetadata.web : undefined;
   const web = incomingWeb !== undefined && typeof incomingWeb.ownerText === "string"
     && incomingWeb.ownerText.length > body.text.length
     ? Object.fromEntries(Object.entries(incomingWeb).filter(([key]) => key !== "ownerText"))
     : incomingWeb;
-  const existingTui = isRecord(body.metadata.tui) ? body.metadata.tui : undefined;
+  const existingTui = isRecord(clientMetadata.tui) ? clientMetadata.tui : undefined;
   const overrideMirror = web === undefined
     ? undefined
     : {
@@ -2202,7 +2225,8 @@ function requestMetadata(body: NormalizedTurnBody, requestId: string): Record<st
     : { ...existingTui, ...overrideMirror };
 
   const metadata: Record<PropertyKey, unknown> = {
-    ...body.metadata,
+    ...clientMetadata,
+    ...(body.webActor === undefined ? {} : { webActor: { role: body.webActor.role } }),
     web: web ?? {},
     ...(tui === undefined ? {} : { tui }),
     source: "web",
