@@ -103,13 +103,17 @@ describe("parseCliArgs preset flags & alias normalization", () => {
 });
 
 describe("init provider setup gate", () => {
-  it("never starts ChatGPT OAuth implicitly for headless OpenAI init --auth", async () => {
+  it("never starts ChatGPT OAuth implicitly for headless OpenAI init --auth, and explains the next step", async () => {
     const execute = vi.fn(async () => []);
-    expect(await runProviderSetupBeforeInit({
-      modelRefs: ["openai:gpt-5.5"], cwd: "/fictional-agent", auth: true,
-      dryRun: false, forceAuthentication: true, execute,
-    })).toBe("skipped");
-    expect(execute).not.toHaveBeenCalled();
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      expect(await runProviderSetupBeforeInit({
+        modelRefs: ["openai:gpt-5.5"], cwd: "/fictional-agent", auth: true,
+        dryRun: false, forceAuthentication: true, execute,
+      })).toBe("skipped");
+      expect(execute).not.toHaveBeenCalled();
+      expect(stderr.mock.calls.map((call) => String(call[0])).join(" ")).toContain("mono-agent auth login openai --auth-method oauth|api-key");
+    } finally { stderr.mockRestore(); }
   });
   it("does not execute provider setup during dry-run even with --auth", async () => {
     const execute = vi.fn(async () => []);

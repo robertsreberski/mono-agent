@@ -810,6 +810,13 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
             });
             if (p.isCancel(method)) return 1;
             piAuthMethods = { ...piAuthMethods, openai: method };
+            if (method === "api-key") {
+              // Authentication recovery must review the destination again. An old
+              // environment choice cannot replace a stored credential and would
+              // otherwise repeat the same guard failure on every retry.
+              const { openai: _oldPersistence, ...otherPersistence } = piApiKeyPersistenceByProvider;
+              piApiKeyPersistenceByProvider = otherPersistence;
+            }
             if (method === "oauth") {
               const { ["pi-api-key:openai"]: _priorOpenAIKey, ...remainingSetupSecrets } = providerSetupSecrets;
               providerSetupSecrets = remainingSetupSecrets;
@@ -1810,6 +1817,11 @@ export async function runProviderSetupBeforeInit(
     ...(credentialStates === undefined ? {} : { credentialStates }),
     ...(options.forceAuthentication === undefined ? {} : { forceAuthentication: options.forceAuthentication }),
   });
+  if (options.auth && !options.dryRun && options.piAuthMethods?.openai === undefined
+    && options.modelRefs.some((ref) => ref.startsWith("openai:"))
+    && credentialStates?.openai !== "credential_detected") {
+    process.stderr.write(ui.hint("OpenAI authentication needs an explicit method: run mono-agent auth login openai --auth-method oauth|api-key before using this route."));
+  }
   if (plan.actions.length === 0) {
     return "skipped";
   }

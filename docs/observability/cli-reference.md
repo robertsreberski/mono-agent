@@ -238,7 +238,7 @@ mono-agent auth login opencode-go                # masked TTY prompt
 printf '%s\n' "$OPENCODE_API_KEY" | mono-agent auth login opencode-go --api-key-stdin
 ```
 
-Supported Pi login targets are `anthropic`, `github-copilot`, and `openai-codex` through their bundled OAuth flows, plus the `opencode-go` API-key flow. Other Pi runtime refs remain hand-authored configuration and are not implied interactive-login targets. Pi path precedence is:
+Supported Pi login targets are `anthropic`, `github-copilot`, and `openai-codex` through their bundled OAuth flows; `openai` supports both ChatGPT OAuth and API-key login (choose with `--auth-method`); and `opencode-go` supports API-key login. Other Pi runtime refs remain hand-authored configuration and are not implied interactive-login targets. Pi path precedence is:
 
 1. `--pi-auth-path`
 2. `providers.piAuthPath`

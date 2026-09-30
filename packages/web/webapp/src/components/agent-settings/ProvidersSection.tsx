@@ -52,7 +52,7 @@ function ProviderRow({ agent, provider, state, compact }: { readonly agent: Agen
 }
 
 function confirmAuthReplacement(provider: ProviderAuthProviderStatus, method: ProviderAuthMethod): boolean {
-  if (provider.providerId !== "openai" || provider.credentialType === undefined || provider.credentialType === method.authType || provider.state !== "present") return true;
+  if (provider.providerId !== "openai" || provider.credentialType === undefined || provider.credentialType === method.authType || provider.source !== "stored") return true;
   return window.confirm(`Replace the stored OpenAI ${provider.credentialType === "oauth" ? "ChatGPT sign-in" : "API key"} with ${method.authType === "oauth" ? "ChatGPT sign-in" : "an API key"}? The existing credential remains until authentication succeeds.`);
 }
 

@@ -911,7 +911,7 @@ describe("wizard production flow", () => {
     expect(promptMock.confirmCalls).toHaveLength(0);
   });
 
-  it("asks for OpenAI's method before the creation review and carries OAuth through repair", async () => {
+  it("asks for OpenAI's method when authentication is required in repair", async () => {
     promptMock.selectAnswers.push("oauth", "create");
     const result = await runSetupRepairWizard({
       cwd: "/tmp/fictional-wizard", answers: defaultAnswers({ name: "Fictional Agent", model: "openai:gpt-5.5" }),
@@ -925,6 +925,24 @@ describe("wizard production flow", () => {
     expect(promptMock.selectCalls[0]?.message).toMatch(/How should OpenAI authenticate/u);
     expect(promptMock.notes.some((note) => note.message.includes("Pi login for openai"))).toBe(true);
   });
+
+  for (const method of ["oauth", "api-key"] as const) {
+    it(`keeps detected OpenAI ${method} credentials without offering a misleading replacement`, async () => {
+      promptMock.selectAnswers.push("create");
+      const result = await runSetupRepairWizard({
+        cwd: "/tmp/fictional-wizard", answers: defaultAnswers({ name: "Fictional Agent", model: "openai:gpt-5.5" }),
+        runProviderSetup: false, providerSetupSecrets: {}, providerEnvironmentSecrets: {},
+        piApiKeyPersistenceByProvider: {}, piAuthMethods: { openai: method },
+        credentialStates: { openai: "credential_detected" }, moduleSecrets: {},
+      });
+      expect(result.status).toBe("answers");
+      if (result.status !== "answers") return;
+      expect(result.piAuthMethods).toEqual({ openai: method });
+      expect(result.runProviderSetup).toBe(false);
+      expect(promptMock.selectCalls.some((call) => String(call.message).includes("How should OpenAI authenticate"))).toBe(false);
+      expect(promptMock.notes.some((note) => note.message.includes("mono-agent auth login openai --auth-method oauth|api-key"))).toBe(true);
+    });
+  }
 
   it("returns Escape from seeded setup repair to recovery without changing state", async () => {
     promptMock.selectAnswers.push(ESCAPE);

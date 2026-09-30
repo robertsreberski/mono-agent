@@ -17,7 +17,7 @@ import {
 import { loginPiProviderAuth } from "@mono-agent/agent-runtime/ai";
 
 import { persistPiProviderCredential } from "./provider-setup.js";
-import { getOrCreatePiInstallationId } from "./pi-installation-id.js";
+import { getOrCreatePiInstallationId, PiInstallationIdError } from "./pi-installation-id.js";
 import {
   createProviderAuthCheckManager,
   type CreateProviderAuthCheckManagerOptions,
@@ -574,6 +574,9 @@ function normalizeInput(input: ProviderAuthSessionInput, prompt: PendingPrompt):
 }
 
 function safeError(error: unknown): ProviderAuthSessionSnapshot["error"] {
+  if (error instanceof PiInstallationIdError) {
+    return { code: error.code, message: error.message };
+  }
   const message = error instanceof Error ? error.message.toLowerCase() : "";
   if (message.includes("lock") && (message.includes("active") || message.includes("exists"))) {
     return { code: "auth_store_busy", message: "Another authentication process is using the Pi auth store." };
@@ -584,7 +587,8 @@ function safeError(error: unknown): ProviderAuthSessionSnapshot["error"] {
   if (message.includes("installation id") || message.includes("installation device id")) {
     return { code: "installation_id_invalid", message: "The ChatGPT installation ID could not be securely read or created. Inspect the agent host before retrying." };
   }
-  if (message.includes("oauth state mismatch") || message.includes("paste the full callback url")
+  if (message.includes("oauth state mismatch") || message.includes("missing oauth state")
+    || message.includes("did not contain an issued client id") || message.includes("paste the full callback url")
     || message.includes("pasted callback url must start with")) {
     return { code: "invalid_input", message: "The pasted ChatGPT redirect URL was invalid or stale. Restart sign-in and paste the complete final URL." };
   }

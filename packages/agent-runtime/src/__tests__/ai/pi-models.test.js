@@ -48,11 +48,9 @@ describe("Pi 0.99.1 native model integration", () => {
     });
   }
 
-  it("keeps shipped OpenAI API-key auth separate from Codex OAuth", () => {
-    // Pi 0.99 now advertises ChatGPT sign-in on `openai`, but its device-ID
-    // contract is not supported by this app. Do not offer a failing login.
+  it("offers ChatGPT OAuth and API-key auth on OpenAI while retaining Codex OAuth", () => {
     expect(describePiProviderAuth("openai")?.methods.map((method) => method.type))
-      .toEqual(["api_key"]);
+      .toEqual(["oauth", "api_key"]);
     expect(describePiProviderAuth("openai-codex")?.methods.map((method) => method.type))
       .toContain("oauth");
   });

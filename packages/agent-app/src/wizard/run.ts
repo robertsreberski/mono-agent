@@ -1359,9 +1359,10 @@ async function confirmSummary(
     && existingSetupModelRefs !== undefined
     && sameOrderedValues(setupModelRefs, existingSetupModelRefs);
   const usesOpenAI = setupModelRefs.some((model) => model.startsWith("openai:"));
-  const piAuthMethods: Record<string, "oauth" | "api-key"> = usesOpenAI
-    ? { openai: preserveProviderSetup && options !== undefined && options.existing.piAuthMethods?.openai !== undefined
-      ? options.existing.piAuthMethods?.openai
+  const needsOpenAIAuth = usesOpenAI && draft.credentialStates.openai !== "credential_detected";
+  const piAuthMethods: Record<string, "oauth" | "api-key"> = needsOpenAIAuth
+    ? { openai: preserveProviderSetup && options?.existing.piAuthMethods?.openai !== undefined
+      ? options.existing.piAuthMethods.openai
       : await select({
         message: "How should OpenAI authenticate? One credential per provider; a successful login replaces the previous method.",
         options: [
@@ -1369,9 +1370,9 @@ async function confirmSummary(
           { value: "api-key", label: "OpenAI API key" },
         ],
       }) }
-    : {};
+    : { ...options?.existing.piAuthMethods };
   const keepPreviousSetup = preserveProviderSetup
-    && (!usesOpenAI || options?.existing.piAuthMethods?.openai === piAuthMethods.openai);
+    && (!needsOpenAIAuth || options?.existing.piAuthMethods?.openai === piAuthMethods.openai);
   const preliminarySetupPlan = providerSetupPlan(plan, ctx, draft.credentialStates, {}, piAuthMethods);
   // Resolve destinations before the final review; collect masked values only
   // after the operator chooses Create.
@@ -1388,6 +1389,9 @@ async function confirmSummary(
     piApiKeyPersistenceByProvider,
     piAuthMethods,
   );
+  if (usesOpenAI && !needsOpenAIAuth) {
+    p.note("Existing OpenAI credential detected; it will be kept. To switch methods later, run mono-agent auth login openai --auth-method oauth|api-key.", "OpenAI authentication");
+  }
 
   if (setupModelRefs.some((model) => /^(?:ollama|lmstudio):/u.test(model))) {
     p.note(

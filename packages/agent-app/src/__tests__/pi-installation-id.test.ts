@@ -44,12 +44,20 @@ describe.skipIf(process.platform === "win32")("ChatGPT installation identity", (
     const auth = await store();
     const path = join(auth, "..", "mono-agent-installation-id.json");
     await writeFile(path, "not-json", { mode: 0o600 });
-    await expect(getOrCreatePiInstallationId(auth)).rejects.toThrow(/invalid/u);
+    await expect(getOrCreatePiInstallationId(auth)).rejects.toMatchObject({ code: "installation_id_invalid", message: expect.stringContaining("file is invalid") });
     await rm(path);
     const victim = join(auth, "..", "victim.json");
     await writeFile(victim, "not-json", { mode: 0o600 });
     await symlink(victim, path);
     await expect(getOrCreatePiInstallationId(auth)).rejects.toThrow();
     expect(await readFile(victim, "utf8")).toBe("not-json");
+  });
+
+  it("preserves the safe reason for refusing an identity inside a Git worktree", async () => {
+    const auth = await store();
+    await run("git", ["init", "-q", join(auth, "..")]);
+    await expect(getOrCreatePiInstallationId(auth)).rejects.toMatchObject({
+      code: "installation_id_invalid", message: expect.stringContaining("inside a Git worktree"),
+    });
   });
 });

@@ -8,26 +8,36 @@ const SCHEMA = "mono-agent.pi-installation-id.v1";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const MAX_BYTES = 256;
 
+/** Safe operator-facing failure; never includes the installation UUID or filesystem error text. */
+export class PiInstallationIdError extends Error {
+  readonly code = "installation_id_invalid";
+  constructor(message: string) {
+    super(message);
+    this.name = "PiInstallationIdError";
+  }
+}
+
 /** Installation identity is scoped to the owner-only Pi auth directory, not a staged login store. */
 export async function getOrCreatePiInstallationId(authPath: string): Promise<string> {
   try {
     return await getOrCreatePiInstallationIdFile(authPath);
-  } catch {
-    throw new Error("ChatGPT installation ID is invalid, unsafe or could not be created; inspect its owner-only auth directory before retrying.");
+  } catch (error) {
+    if (error instanceof PiInstallationIdError) throw error;
+    throw new PiInstallationIdError("ChatGPT installation ID could not be securely read or created; inspect its owner-only auth directory before retrying.");
   }
 }
 
 async function getOrCreatePiInstallationIdFile(authPath: string): Promise<string> {
   const uid = process.getuid?.();
   if (uid === undefined || process.platform === "win32") {
-    throw new Error("ChatGPT sign-in requires owner-only installation ID files on a supported POSIX host.");
+    throw new PiInstallationIdError("ChatGPT sign-in requires owner-only installation ID files on a supported POSIX host.");
   }
   const requestedParent = dirname(authPath);
   await mkdir(requestedParent, { recursive: true, mode: 0o700 });
   const parent = await realpath(requestedParent);
   const parentStat = await lstat(parent);
   if (!parentStat.isDirectory() || parentStat.uid !== uid || (parentStat.mode & 0o022) !== 0) {
-    throw new Error("ChatGPT installation ID directory must be owned by the current user and not group/world-writable.");
+    throw new PiInstallationIdError("ChatGPT installation ID directory must be owned by the current user and not group/world-writable.");
   }
   await assertOutsideGitWorktree(parent);
   const target = join(parent, "mono-agent-installation-id.json");
@@ -78,18 +88,18 @@ async function readInstallationId(path: string, uid: number): Promise<string> {
     if (!stat.isFile() || stat.uid !== uid || (stat.mode & 0o777) !== 0o600
       || stat.size > MAX_BYTES
       || stat.dev !== pathStat.dev || stat.ino !== pathStat.ino) {
-      throw new Error("ChatGPT installation ID file is unsafe; inspect it before signing in again.");
+      throw new PiInstallationIdError("ChatGPT installation ID file is unsafe; inspect it before signing in again.");
     }
     const value: unknown = JSON.parse(await handle.readFile("utf8"));
     if (!value || typeof value !== "object" || Array.isArray(value)
       || (value as { schema?: unknown }).schema !== SCHEMA
       || typeof (value as { id?: unknown }).id !== "string"
       || !UUID.test((value as { id: string }).id)) {
-      throw new Error("ChatGPT installation ID file is invalid; inspect it before signing in again.");
+      throw new PiInstallationIdError("ChatGPT installation ID file is invalid; inspect it before signing in again.");
     }
     return (value as { id: string }).id;
   } catch (error) {
-    if (error instanceof SyntaxError) throw new Error("ChatGPT installation ID file is invalid; inspect it before signing in again.");
+    if (error instanceof SyntaxError) throw new PiInstallationIdError("ChatGPT installation ID file is invalid; inspect it before signing in again.");
     throw error;
   } finally {
     await handle.close();
@@ -122,7 +132,7 @@ async function syncDirectory(parent: string): Promise<void> {
 async function assertOutsideGitWorktree(parent: string): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     execFile("git", ["-C", parent, "rev-parse", "--show-toplevel"], (error) => {
-      if (error === null) reject(new Error("Refusing to write a ChatGPT installation ID inside a Git worktree."));
+      if (error === null) reject(new PiInstallationIdError("Refusing to write a ChatGPT installation ID inside a Git worktree."));
       else resolve();
     });
   });
@@ -131,7 +141,7 @@ async function assertOutsideGitWorktree(parent: string): Promise<void> {
   for (;;) {
     try {
       await lstat(join(current, ".git"));
-      throw new Error("Refusing to write a ChatGPT installation ID inside a Git worktree.");
+      throw new PiInstallationIdError("Refusing to write a ChatGPT installation ID inside a Git worktree.");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }

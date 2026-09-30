@@ -569,6 +569,24 @@ describe("provider auth operator", () => {
     await Promise.all([first.stop(), contender.stop(), third.stop()]);
   });
 
+  it("reports a malformed installation ID distinctly from an unsafe auth store", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-agent-openai-invalid-id-"));
+    tempDirs.push(dir);
+    await writeFile(join(dir, "mono-agent-installation-id.json"), "not valid JSON", { mode: 0o600 });
+    const login = vi.fn();
+    const operator = createProviderAuthOperator({
+      config: { ...config("openai:gpt-5.5"), providers: { piAuthPath: join(dir, "auth.json") } } as MonoAgentConfig,
+      env: {}, drivers: [], input: { cwd: dir, configPath: join(dir, "config.json"), env: {} },
+      observations: createProviderAuthObservationTracker(), login,
+    });
+    const started = await operator.start({ providerId: "openai", authType: "oauth", strategy: "paste_back" });
+    await vi.waitFor(async () => expect(await operator.get(started.id)).toMatchObject({
+      state: "failed", error: { code: "installation_id_invalid", message: expect.stringContaining("invalid") },
+    }));
+    expect(login).not.toHaveBeenCalled();
+    await operator.stop();
+  });
+
   it("reuses OpenAI's installation ID and keeps invalid pasted URLs secret-free", async () => {
     const dir = await mkdtemp(join(tmpdir(), "mono-agent-openai-operator-"));
     tempDirs.push(dir);
@@ -582,7 +600,8 @@ describe("provider auth operator", () => {
         seen.push(options!.getDeviceId());
         interaction.notify({ type: "auth_url", url: "https://auth.example.invalid/authorize?ext_agent_host_id=urn%3Auuid%3Aplaceholder" });
         const pasted = await interaction.prompt({ type: "manual_code", message: "Paste the full callback URL" });
-        if (pasted !== "http://127.0.0.1:1455/auth/callback?code=fake&state=fake&client_id=fake") throw new Error("OAuth state mismatch");
+        if (!pasted.includes("state=")) throw new Error("Missing OAuth state");
+        if (!pasted.includes("client_id=")) throw new Error("OpenAI OAuth registration callback did not contain an issued client ID");
         return { type: "oauth", access: "fake-access", refresh: "fake-refresh", expires: 4_200_000_000_000, clientId: "fake-issued" };
       }) as never,
       persist: (async (input: { resolveCredential(): Promise<unknown> }) => { await input.resolveCredential(); }) as never,
@@ -596,13 +615,22 @@ describe("provider auth operator", () => {
     await vi.waitFor(async () => expect(await first.get(failed.id)).toMatchObject({ state: "failed", error: { code: "invalid_input" } }));
     expect(JSON.stringify(await first.get(failed.id))).not.toContain(bad);
     await first.stop();
+    const incomplete = make();
+    const missingId = await incomplete.start(start);
+    await vi.waitFor(async () => expect((await incomplete.get(missingId.id))?.prompt?.type).toBe("manual_code"));
+    const missingClientId = "http://127.0.0.1:1455/auth/callback?code=fake&state=fake";
+    await incomplete.submit(missingId.id, { promptId: (await incomplete.get(missingId.id))!.prompt!.id, value: missingClientId });
+    await vi.waitFor(async () => expect(await incomplete.get(missingId.id)).toMatchObject({ state: "failed", error: { code: "invalid_input" } }));
+    expect(JSON.stringify(await incomplete.get(missingId.id))).not.toContain(missingClientId);
+    await incomplete.stop();
     const second = make();
     const success = await second.start(start);
     await vi.waitFor(async () => expect((await second.get(success.id))?.prompt?.id).toBeDefined());
     await second.submit(success.id, { promptId: (await second.get(success.id))!.prompt!.id, value: "http://127.0.0.1:1455/auth/callback?code=fake&state=fake&client_id=fake" });
     await vi.waitFor(async () => expect((await second.get(success.id))?.state).toBe("succeeded"));
-    expect(seen).toHaveLength(2);
+    expect(seen).toHaveLength(3);
     expect(seen[0]).toBe(seen[1]);
+    expect(seen[1]).toBe(seen[2]);
     await second.stop();
   });
 });

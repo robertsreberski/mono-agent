@@ -1406,6 +1406,30 @@ describe("SettingsHarness", () => {
     expect(await screen.findByLabelText("Paste complete redirect URL")).toBeVisible();
   });
 
+  it("confirms replacing an expired stored OpenAI OAuth credential with an API key", async () => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true });
+    const oauth = { authType: "oauth", strategy: "paste_back", label: "Sign in with ChatGPT", recommended: false } as const;
+    const key = { authType: "api_key", strategy: "api_key_prompt", label: "OpenAI API key", recommended: false } as const;
+    apiMock.providerAuthStatus.mockResolvedValue({
+      schema: "mono-agent.provider-auth.v1", generatedAt: "2026-09-06T12:00:00.000Z",
+      providers: [{ providerId: "openai", label: "OpenAI", usages: [{ kind: "primary", model: "openai:gpt-5.5", label: "Primary model" }],
+        state: "expired", credentialType: "oauth", source: "stored", verification: "not_verified", methods: [oauth, key] }],
+    });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    apiMock.beginProviderAuth.mockResolvedValue({
+      schema: "mono-agent.provider-auth-session.v1", id: "session-openai-expired", providerId: "openai",
+      authType: "api_key", strategy: "api_key_prompt", state: "pending",
+      createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:01.000Z", expiresAt: "2026-09-06T12:20:00.000Z",
+    });
+    render(<SettingsHarness open onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Re-authenticate OpenAI" }));
+    fireEvent.click(screen.getByRole("button", { name: "OpenAI API key" }));
+    expect(apiMock.beginProviderAuth).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "OpenAI API key" }));
+    await vi.waitFor(() => expect(apiMock.beginProviderAuth).toHaveBeenCalledWith("alpha", "openai", key));
+    expect(confirm).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps an unsupported provider-auth capability terse", () => {
     render(<SettingsHarness open onClose={vi.fn()} />);
 

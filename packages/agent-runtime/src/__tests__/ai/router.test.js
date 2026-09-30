@@ -1128,6 +1128,22 @@ describe("createRouterRuntime — same-model retry", () => {
     expect(executeMock.mock.calls[1][1].model.model).toBe("claude-sonnet-4-6");
   });
 
+  it("fails over from an OpenAI ChatGPT subscription limit without retrying that route", async () => {
+    executeMock
+      .mockResolvedValueOnce({ text: null, error: "subscription_sharing_usage_limit_exceeded", failureKind: "provider_unavailable", events: [], cancelled: false })
+      .mockResolvedValueOnce({ text: "fallback worked", events: [], failureKind: null });
+    const router = createRouterRuntime({
+      chain: [{ model: modelRef("openai", "gpt-5.5"), attempts: 3 }, { model: modelRef("openai-codex", "gpt-5.6-sol") }],
+      retry: { backoffMs: 0, maxBackoffMs: 0 },
+    });
+    const result = await router.run("sys", { messages: [] });
+    expect(result.text).toBe("fallback worked");
+    expect(result.failoverHistory[0].retryableSubkind).toBe("subscription_limit");
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(executeMock.mock.calls[0][1].model.provider).toBe("openai");
+    expect(executeMock.mock.calls[1][1].model.provider).toBe("openai-codex");
+  });
+
   it("retries a terminated stream on the same model", async () => {
     executeMock
       .mockResolvedValueOnce({
