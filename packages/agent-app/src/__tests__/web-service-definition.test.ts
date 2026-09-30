@@ -9,6 +9,26 @@ const launchdPrefix = ["/usr/bin/env", "-i", "PATH=/usr/bin", "/managed/node", "
 const systemdPrefix = ["/usr/bin/env", "-i", "PATH=/usr/bin", "/managed/node", "--", "/managed/dist/cli.js"];
 
 describe("managed web definition decoding", () => {
+  it.each([true, false])("round-trips an explicit multi-user mode on macOS and Linux (enabled=%s)", (multiUser) => {
+    const argv = buildWebLaunchdProgramArguments({
+      label: WEB_LAUNCHD_LABEL, nodePath: "/managed/node", cliPath: "/managed/dist/cli.js",
+      cwd: "/tmp/web-state", host: "127.0.0.1", port: 5050, theme: "plum", name: "--multi-user",
+      multiUser, stdoutPath: "/tmp/web.out.log", stderrPath: "/tmp/web.err.log", environment: {},
+    });
+    expect(decodeManagedWebDefinition(argv)).toEqual({
+      host: "127.0.0.1", port: 5050, theme: "plum", name: "--multi-user", multiUser,
+    });
+    expect(decodeManagedWebDefinition([...systemdPrefix, "web", "run", "--host", "127.0.0.1",
+      "--port", "5050", multiUser ? "--multi-user" : "--no-multi-user", "--theme", "ocean"]))
+      .toEqual({ host: "127.0.0.1", port: 5050, theme: "ocean", multiUser });
+  });
+
+  it("rejects duplicate and conflicting multi-user flags", () => {
+    for (const flags of [["--multi-user", "--no-multi-user"], ["--multi-user", "--multi-user"]]) {
+      expect(decodeManagedWebDefinition([...launchdPrefix, "web", "run", "--port", "5050", ...flags])).toBeUndefined();
+    }
+  });
+
   it("decodes the generated macOS and Linux invocations", () => {
     expect(decodeManagedWebDefinition([...launchdPrefix, "web", "run", "--host", "0.0.0.0", "--port", "5050", "--theme", "plum"]))
       .toEqual({ host: "0.0.0.0", port: 5050, theme: "plum" });

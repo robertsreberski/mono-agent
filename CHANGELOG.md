@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add offline web administrator bootstrap and recovery with confirmed hidden
+  passwords under the web state lease, and preserve explicit multi-user mode
+  selections across managed restarts without permitting partially protected
+  startup.
+
 - Add versioned web actor attribution at the trusted operator boundary so agents
   can identify console senders and keep non-admin web preferences user-scoped;
   preserve legacy owner behavior when no actor is supplied.

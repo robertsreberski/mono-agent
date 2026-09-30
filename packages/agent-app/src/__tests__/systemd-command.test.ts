@@ -184,6 +184,26 @@ describe("Linux agent command composition", () => {
 });
 
 describe("Linux web command composition", () => {
+  it.each([undefined, true, false])("retains or overrides installed multi-user mode (override=%s)", async (multiUser) => {
+    mocks.read.mockResolvedValue({ argv: managedWebArgv("web", "run", "--host", "127.0.0.1", "--port", "5050", "--multi-user") });
+    mocks.health.mockResolvedValue(true);
+    const deps = output();
+    expect(await runSystemdWebCommand({ positionals: ["restart"], env: {},
+      ...(multiUser === undefined ? {} : { multiUser }) }, deps)).toBe(0);
+    const argv: string[] = mocks.start.mock.calls[0]![0].argv;
+    expect(argv).toContain(multiUser === false ? "--no-multi-user" : "--multi-user");
+    expect(argv).not.toContain(multiUser === false ? "--multi-user" : "--no-multi-user");
+  });
+
+  it("reports the installed multi-user mode in status without mutating it", async () => {
+    mocks.read.mockResolvedValue({ argv: managedWebArgv("web", "run", "--port", "5050", "--multi-user") });
+    mocks.health.mockResolvedValue(true);
+    const deps = output();
+    expect(await runSystemdWebCommand({ positionals: ["status"], env: {}, json: true }, deps)).toBe(0);
+    expect(JSON.parse(deps.stdout.write.mock.calls[0]![0]).authentication).toBe("multi-user");
+    expect(mocks.start).not.toHaveBeenCalled();
+  });
+
   it("keeps bare status read-only", async () => {
     mocks.health.mockResolvedValue(true);
     const deps = output();

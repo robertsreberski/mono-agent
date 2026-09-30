@@ -1,3 +1,4 @@
+import { WebAuthStore } from "./auth.js";
 import type { WebCancelOrigin } from "./contracts.js";
 import { CONSOLE_READ_TOOL_NAMES, executeConsoleTool, type ConsoleToolScope, type ConsoleToolOperation, type ConsoleToolCommit } from "./console-tools.js";
 import { createECDH, createHash, randomUUID, timingSafeEqual } from "node:crypto";
@@ -1048,6 +1049,7 @@ export class WebStore {
   private readonly usageMemo = new Map<string, MessageUsageRollup>();
   private readonly streamSnapshots = new Map<string, WebMessage>();
   readonly paths: WebStatePaths;
+  readonly auth: WebAuthStore;
   private readonly database: DatabaseSync;
   private readonly clock: () => Date;
   private closed = false;
@@ -1072,6 +1074,7 @@ export class WebStore {
     this.database = database;
     this.paths = paths;
     this.clock = clock;
+    this.auth = new WebAuthStore(database, clock, (operation) => this.transaction(operation));
   }
 
   static async open(options: OpenWebStoreOptions = {}): Promise<WebStore> {

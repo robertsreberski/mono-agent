@@ -358,6 +358,59 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
   { version: 41, name: "turn-reply-disposition", up: ({ database }) => {
     addColumn(database, "turns", "reply_disposition", "TEXT CHECK (reply_disposition IN ('silent', 'visible'))");
   } },
+  { version: 42, name: "web-multi-user-auth", up: ({ database }) => {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS web_users (
+        id TEXT PRIMARY KEY,
+        username TEXT NOT NULL UNIQUE,
+        display_name TEXT NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('admin', 'user')),
+        disabled INTEGER NOT NULL DEFAULT 0 CHECK (disabled IN (0, 1)),
+        version INTEGER NOT NULL DEFAULT 1,
+        password_record TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS web_user_agent_grants (
+        user_id TEXT NOT NULL REFERENCES web_users(id) ON DELETE CASCADE,
+        source_id TEXT NOT NULL,
+        PRIMARY KEY(user_id, source_id)
+      );
+      CREATE TABLE IF NOT EXISTS web_sessions (
+        token_hash TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES web_users(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS web_sessions_by_user ON web_sessions(user_id);
+      CREATE INDEX IF NOT EXISTS web_sessions_by_expiry ON web_sessions(expires_at);
+      CREATE TABLE IF NOT EXISTS web_auth_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        bootstrap_admin_id TEXT REFERENCES web_users(id),
+        initialized_at TEXT
+      );
+      INSERT OR IGNORE INTO web_auth_state(id) VALUES (1);
+    `);
+    addColumn(database, "threads", "owner_user_id", "TEXT REFERENCES web_users(id)");
+    addColumn(database, "threads", "shared", "INTEGER NOT NULL DEFAULT 0 CHECK (shared IN (0, 1))");
+    addColumn(database, "attachments", "owner_user_id", "TEXT REFERENCES web_users(id)");
+    addColumn(database, "wake_schedules", "editor_user_id", "TEXT REFERENCES web_users(id)");
+    for (const table of ["turns", "live_inputs", "web_submissions", "cron_reply_operations", "messages"]) {
+      addColumn(database, table, "web_actor_json", "TEXT");
+    }
+    // Cover all unattributed insertion paths, including single-user mode after
+    // initialization. An explicit creator overrides this fallback at insertion.
+    database.exec(`
+      CREATE INDEX IF NOT EXISTS threads_by_owner ON threads(owner_user_id, source_id, shared);
+      CREATE TRIGGER IF NOT EXISTS threads_default_web_owner AFTER INSERT ON threads
+      WHEN NEW.owner_user_id IS NULL AND
+        (SELECT initialized_at FROM web_auth_state WHERE id = 1) IS NOT NULL
+      BEGIN
+        UPDATE threads SET owner_user_id = (SELECT bootstrap_admin_id FROM web_auth_state WHERE id = 1)
+          WHERE id = NEW.id;
+      END;
+    `);
+  } },
 ] satisfies WebStorageMigration[]).map((step) => Object.freeze(step)));
 
 export const WEB_STORAGE_SCHEMA_VERSION = WEB_STORAGE_MIGRATIONS.at(-1)!.version;
@@ -404,7 +457,11 @@ export function validateWebStorageShape(database: DatabaseSync): void {
   try {
     const required: Readonly<Record<string, readonly string[]>> = {
       agents: ["cron_read", "cron_actions", "ask_by_id", "providers_json", "discovered", "supports_provider_auth"],
-      threads: ["trigger_kind", "run_model", "run_effort", "project_id", "read_revision"],
+      web_users: ["id", "username", "display_name", "role", "disabled", "version", "password_record", "created_at", "updated_at"],
+      web_user_agent_grants: ["user_id", "source_id"],
+      web_sessions: ["token_hash", "user_id", "created_at", "expires_at"],
+      web_auth_state: ["id", "bootstrap_admin_id", "initialized_at"],
+      threads: ["owner_user_id", "shared", "trigger_kind", "run_model", "run_effort", "project_id", "read_revision"],
       console_tool_operations: ["operation_id", "thread_id", "turn_id", "payload_sha256", "result_json"],
       pending_project_memberships: ["thread_id", "project_id", "turn_id"],
       external_conversations: [
@@ -416,27 +473,45 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       thread_tags: ["thread_id", "tag_id", "created_at"],
       projects: ["color", "source_id", "name", "context", "created_at", "updated_at", "archived_at", "revision"],
       cron_overviews: ["jobs_truncated"],
-      attachments: ["origin"],
+      attachments: ["owner_user_id", "origin"],
+      wake_schedules: ["editor_user_id"],
       monitor_wake_deliveries: ["projection_json", "thread_id", "payload_sha256"],
       notification_deliveries: ["message_id", "job_id", "run_id"],
       agent_run_overrides: ["source_id", "model", "effort", "updated_at"],
       restart_operations: ["id", "source_id", "generation", "operation_id", "requested_at", "deadline", "stage", "outcome", "reason", "uncertain", "approximate_running_turns"],
       restart_proposal_bindings: ["message_id", "part_id", "thread_id", "source_id", "generation", "operation_id"],
-      messages: ["seq", "cron_suppressed"],
+      messages: ["web_actor_json", "seq", "cron_suppressed"],
       message_search_writes: ["message_id"],
       process_job_cards: ["state", "completed_at"],
       parent_turn_interruptions: ["source_id", "turn_id", "thread_id", "message_id", "wake_key", "state", "associated_turn_id", "created_at", "deadline"],
-      turns: ["reply_disposition", "dispatch_generation", "web_recovery_generation_confirmed_at", "conversation_markers_json", "dispatch_started_at", "cancel_origin", "project_context_json", "requested_model", "requested_effort", "effective_effort", "routing_json"],
-      live_inputs: ["dispatch_started_at"],
+      turns: ["web_actor_json", "reply_disposition", "dispatch_generation", "web_recovery_generation_confirmed_at", "conversation_markers_json", "dispatch_started_at", "cancel_origin", "project_context_json", "requested_model", "requested_effort", "effective_effort", "routing_json"],
+      live_inputs: ["web_actor_json", "dispatch_started_at"],
       web_submissions: [
+        "web_actor_json",
         "thread_id", "submission_id", "payload_sha256", "outcome", "reason", "message_id", "turn_id", "input_id", "created_at",
       ],
       cron_reply_operations: [
+        "web_actor_json",
         "operation_id", "source_id", "job_id", "run_id", "thread_id", "conversation_id",
         "idempotency_key", "state", "snapshot_kind", "snapshot_text", "snapshot_sha256",
       ],
     };
     for (const [table, names] of Object.entries(required)) assertColumns(database, table, names);
+    assertIndex(database, "threads_by_owner", ["owner_user_id", "source_id", "shared"]);
+    assertIndex(database, "web_sessions_by_user", ["user_id"]);
+    assertIndex(database, "web_sessions_by_expiry", ["expires_at"]);
+    const authState = database.prepare("SELECT bootstrap_admin_id, initialized_at FROM web_auth_state WHERE id = 1")
+      .get() as { bootstrap_admin_id: string | null; initialized_at: string | null } | undefined;
+    if (authState === undefined || (authState.initialized_at !== null && authState.bootstrap_admin_id === null)) {
+      throw new Error("Invalid web authentication initialization state.");
+    }
+    const ownerTrigger = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'threads_default_web_owner'")
+      .get() as { sql: string } | undefined;
+    if (ownerTrigger === undefined || !/AFTER\s+INSERT\s+ON\s+threads/iu.test(ownerTrigger.sql)
+      || !ownerTrigger.sql.includes("NEW.owner_user_id IS NULL")
+      || !ownerTrigger.sql.includes("SET owner_user_id = (SELECT bootstrap_admin_id FROM web_auth_state WHERE id = 1)")) {
+      throw new Error("Invalid default conversation ownership trigger.");
+    }
     assertWakeScheduleShape(database);
     if (database.prepare("SELECT 1 FROM sqlite_master WHERE name IN ('model_transitions', 'project_transitions')").get() !== undefined) throw new Error("Legacy transition tables remain.");
     const readRevision = (database.prepare("PRAGMA table_info(threads)").all() as Array<{

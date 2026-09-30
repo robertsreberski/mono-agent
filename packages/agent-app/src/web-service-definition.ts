@@ -45,6 +45,7 @@ export interface ManagedWebDefinition {
   readonly port: number;
   readonly theme: WebTheme;
   readonly name?: string;
+  readonly multiUser?: boolean;
 }
 
 const MANAGED_WEB_OPTION_NAMES: readonly string[] = ["--host", "--port", "--theme", "--name"];
@@ -85,9 +86,14 @@ function readManagedOptionPairs(
   suffix: readonly string[],
 ): ReadonlyMap<string, string> | undefined {
   const values = new Map<string, string>();
-  for (let index = 0; index < suffix.length; index += 2) {
+  for (let index = 0; index < suffix.length; index += 1) {
     const flag = suffix[index];
-    const value = suffix[index + 1];
+    if (flag === "--multi-user" || flag === "--no-multi-user") {
+      if (values.has("multiUser")) return undefined;
+      values.set("multiUser", flag === "--multi-user" ? "true" : "false");
+      continue;
+    }
+    const value = suffix[++index];
     if (flag === undefined || value === undefined || !MANAGED_WEB_OPTION_NAMES.includes(flag)) return undefined;
     if (values.has(flag)) return undefined;
     values.set(flag, value);
@@ -150,5 +156,6 @@ export function decodeManagedWebDefinition(argv: readonly string[]): ManagedWebD
   if (!isValidManagedBindHost(host)) return undefined;
   const name = values.get("--name");
   if (name !== undefined && invalidWebConsoleName(name) !== undefined) return undefined;
-  return { host, port, theme, ...(name === undefined ? {} : { name }) };
+  return { host, port, theme, ...(name === undefined ? {} : { name }),
+    ...(values.has("multiUser") ? { multiUser: values.get("multiUser") === "true" } : {}) };
 }

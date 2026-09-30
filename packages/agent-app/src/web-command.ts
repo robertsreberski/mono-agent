@@ -123,6 +123,7 @@ interface StartWebServerOptions {
   readonly port?: number;
   readonly theme?: WebTheme;
   readonly name?: string;
+  readonly multiUser?: boolean;
   readonly registryDirs?: readonly string[];
   readonly stateDir?: string;
   readonly env?: Record<string, string | undefined>;
@@ -144,7 +145,9 @@ export interface RunWebCommandOptions {
   readonly host?: string;
   readonly port?: number;
   readonly theme?: string;
+  readonly username?: string;
   readonly name?: string;
+  readonly multiUser?: boolean;
   readonly loopback?: boolean;
   readonly shareTailnet?: boolean;
   readonly json?: boolean;
@@ -178,6 +181,8 @@ export interface RunWebCommandDeps {
   readonly launchctl?: LaunchctlRunner;
   readonly tailscale?: CommandRunner;
   readonly startServer?: (options: StartWebServerOptions) => Promise<WebServerHandle>;
+  readonly promptPassword?: () => Promise<string | undefined>;
+  readonly bootstrapUser?: typeof import("@mono-agent/web").bootstrapWebUser;
   readonly resetState?: (options: ResetWebStateOptions) => Promise<void>;
   readonly prepareState?: (options: PrepareWebStateOptions) => Promise<void>;
   readonly waitForShutdown?: () => Promise<void>;
@@ -212,6 +217,7 @@ interface WebServiceRecord {
   readonly theme?: WebTheme;
   /** Absent means the console labels itself with the machine hostname. */
   readonly name?: string;
+  readonly multiUser?: boolean;
   readonly updatedAt: string;
 }
 
@@ -316,6 +322,7 @@ export function renderWebHelp(): string {
     "  mono-agent web restart [--host <addr> | --loopback] [--port <n>] [--theme <name>] [--name <label>] [--share-tailnet]",
     "  mono-agent web stop | status [--json]",
     "  mono-agent web logs [--follow|-f] [--lines <n>]",
+    "  mono-agent web users bootstrap --username <name>",
     "  mono-agent web run [--host <addr> | --loopback] [--port <n>] [--theme <name>] [--name <label>]",
     "  mono-agent web reset --all --yes",
     "",
@@ -324,6 +331,8 @@ export function renderWebHelp(): string {
     "macOS start/restart publish an owned Tailscale Serve HTTPS route only with --share-tailnet;",
     "an existing mono-agent-owned route is re-verified on restart. Linux HTTPS routes are externally managed.",
     `Themes: ${WEB_THEMES.join(", ")} (default: ${DEFAULT_WEB_THEME}).`,
+    "--multi-user enables account login; --no-multi-user explicitly disables it. Managed restarts retain the mode.",
+    "Stop the service before bootstrap/recovery; passwords are prompted twice and never passed in argv.",
     "--name sets the installed PWA label, browser tab title, and rail brand; --name - restores the hostname default.",
     "",
   ].join("\n");
@@ -337,6 +346,7 @@ export async function runWebCommand(
   const stdout = deps.stdout ?? process.stdout;
   const stderr = deps.stderr ?? process.stderr;
   const action = options.positionals[0];
+  if (action === "users") return await runWebUsersBootstrap(options, deps);
   if (options.positionals.length > 1 || (action !== undefined && !WEB_ACTIONS.has(action))) {
     stderr.write(ui.errorLine(`Unknown mono-agent web action \`${options.positionals.join(" ")}\`.`));
     stdout.write(renderWebHelp());
@@ -415,9 +425,42 @@ export async function runWebCommand(
   return 2;
 }
 
+async function runWebUsersBootstrap(options: RunWebCommandOptions, deps: RunWebCommandDeps): Promise<number> {
+  const stdout = deps.stdout ?? process.stdout;
+  const stderr = deps.stderr ?? process.stderr;
+  const { username, ...remaining } = options;
+  const invalidFlags = validateWebFlags("users", remaining);
+  if (options.positionals.length !== 2 || options.positionals[1] !== "bootstrap" || username === undefined || invalidFlags !== undefined) {
+    stderr.write(ui.errorLine(invalidFlags ?? "Usage: mono-agent web users bootstrap --username <name>"));
+    return 2;
+  }
+  try {
+    let count = 0;
+    const prompt = deps.promptPassword ?? (async () => {
+      if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("Bootstrap requires an interactive terminal; passwords cannot be passed in argv or redirected input.");
+      const p = await import("@clack/prompts");
+      const value = await p.password({ message: count++ === 0 ? "Password (12–1024 UTF-8 bytes)" : "Confirm password", clearOnError: true });
+      return p.isCancel(value) ? undefined : value;
+    });
+    const password = await prompt();
+    if (password === undefined) return 1;
+    const confirmation = await prompt();
+    if (confirmation === undefined) return 1;
+    if (password !== confirmation) throw new Error("Passwords do not match; nothing was changed.");
+    const bootstrapUser = deps.bootstrapUser ?? (await import("@mono-agent/web")).bootstrapWebUser;
+    await bootstrapUser({ stateDir: webPaths(deps.homeDir).stateDir, username, password });
+    stdout.write("Web administrator bootstrapped. Existing conversation ownership is preserved.\n");
+    return 0;
+  } catch (error) {
+    stderr.write(ui.errorLine(`Web bootstrap failed: ${errorMessage(error)}`));
+    return 1;
+  }
+}
+
 const WEB_ACTIONS: ReadonlySet<string> = new Set(["start", "stop", "restart", "status", "logs", "run", "reset"]);
 
 function validateWebFlags(action: string | undefined, options: RunWebCommandOptions): string | undefined {
+  if (options.username !== undefined) return "--username is only supported for web users bootstrap.";
   if (options.loopback === true && options.host !== undefined) {
     return "Choose either --loopback or --host, not both.";
   }
@@ -438,9 +481,9 @@ function validateWebFlags(action: string | undefined, options: RunWebCommandOpti
     if (nameError !== undefined) return nameError;
   }
   if ((options.host !== undefined || options.port !== undefined || options.theme !== undefined
-    || options.name !== undefined || options.loopback === true)
+    || options.name !== undefined || options.multiUser !== undefined || options.loopback === true)
     && action !== "start" && action !== "restart" && action !== "run") {
-    return "--host, --port, --theme, --name, and --loopback are only supported for web start, restart, or run.";
+    return "--host, --port, --theme, --name, --multi-user/--no-multi-user, and --loopback are only supported for web start, restart, or run.";
   }
   if ((options.follow === true || options.lines !== undefined) && action !== "logs") {
     return "--follow and --lines are only supported for mono-agent web logs.";
@@ -473,6 +516,7 @@ async function runWebForeground(options: RunWebCommandOptions, deps: RunWebComma
       port,
       theme,
       ...(consoleName === undefined ? {} : { name: consoleName }),
+      ...(options.multiUser === undefined ? {} : { multiUser: options.multiUser }),
       registryDirs: [registryDir],
       stateDir: paths.stateDir,
       env: options.env,
@@ -488,7 +532,7 @@ async function runWebForeground(options: RunWebCommandOptions, deps: RunWebComma
     return 1;
   }
   printWebUrls(stdout, handle.url, handle.port ?? port, host, deps.discoverNetworkAddresses);
-  stdout.write("No app authentication is enabled; network reachability is the access boundary. Press Ctrl-C to stop.\n");
+  stdout.write(options.multiUser === true ? "Multi-user authentication is enabled. Press Ctrl-C to stop.\n" : "No app authentication is enabled; network reachability is the access boundary. Press Ctrl-C to stop.\n");
   const monitor = options.env[MANAGED_WEB_WORKER_ENV] === "1"
     ? (deps.startManagedLogMonitor ?? startManagedWebLogMonitor)(paths.launchd, {
         runner: deps.launchctl ?? makeLaunchctlRunner(),
@@ -596,6 +640,10 @@ async function startWebBackground(
           "mono-agent web is already managed by launchd; use `mono-agent web restart --share-tailnet` to publish its owned Tailscale route.",
         ));
         return 1;
+      }
+      if (options.multiUser !== undefined) {
+        stderr.write(ui.errorLine("The web service is already managed; use web restart to change multi-user mode."));
+        return 2;
       }
       if (options.theme !== undefined) {
         stderr.write(ui.errorLine(
@@ -798,6 +846,7 @@ async function startWebBackground(
     const port = options.port ?? prior?.port ?? DEFAULT_WEB_PORT;
     const theme = selectedWebTheme(options.theme, prior?.theme);
     const consoleName = selectedWebConsoleName(options.name, prior?.name);
+    const multiUser = options.multiUser ?? prior?.multiUser;
     if (existingPlist !== undefined) {
       try {
         pendingMaintenanceIntent = await maintainStoppedWebLogsBeforePublication(
@@ -844,6 +893,7 @@ async function startWebBackground(
       host,
       port,
       theme,
+      ...(multiUser === undefined ? {} : { multiUser }),
       ...(consoleName === undefined ? {} : { name: consoleName }),
       updatedAt: new Date((deps.now ?? Date.now)()).toISOString(),
     };
@@ -855,6 +905,7 @@ async function startWebBackground(
       host,
       port,
       theme,
+      ...(multiUser === undefined ? {} : { multiUser }),
       ...(consoleName === undefined ? {} : { name: consoleName }),
       stdoutPath: paths.launchd.stdoutPath,
       stderrPath: paths.launchd.stderrPath,
@@ -944,7 +995,9 @@ async function startWebBackground(
 
     stdout.write(`${ui.badge("ok")}${ui.style.bold(restart ? "Restarted mono-agent web" : "Started mono-agent web")}\n`);
     printWebUrls(stdout, `http://${urlHost(host)}:${String(port)}/`, port, host, deps.discoverNetworkAddresses);
-    stdout.write("No app authentication is enabled; anyone who can reach this port can operate discovered agents.\n");
+    stdout.write(multiUser === true
+      ? "Multi-user authentication is enabled.\n"
+      : "No app authentication is enabled; anyone who can reach this port can operate discovered agents.\n");
 
     if (tailscale.kind === "active") {
       stdout.write(`mono-agent-owned Tailscale route: ${tailscale.ownership.url}${tailscale.reused ? " (existing owned handler)" : ""}\n`);
@@ -1280,7 +1333,7 @@ async function statusWeb(
         state: paths.stateDir,
       },
       service: { state: serviceState, pid: service.pid ?? null, healthy },
-      authentication: "none",
+      authentication: configured?.multiUser === true ? "multi-user" : "none",
       ownedTailscaleRoute: ownedRoute,
       maintenance: { summary: maintenanceSummary, problems: uniqueProblems },
       recordError: recordRead.kind === "invalid" ? recordRead.detail : null,
@@ -1302,7 +1355,9 @@ async function statusWeb(
     ["state", paths.stateDir],
     ["pid", service.pid === undefined ? "—" : String(service.pid)],
     ["log maintenance", maintenanceSummary],
-    ["authentication", "none (no application login; network reachability is the access boundary)"],
+    ["authentication", configured?.multiUser === true
+      ? "multi-user (application login required)"
+      : "none (no application login; network reachability is the access boundary)"],
   ]));
   if (recordRead.kind === "invalid") stdout.write(ui.errorLine(recordRead.detail));
   else if (definitionUnknown) {
@@ -2488,6 +2543,7 @@ async function readServiceRecord(path: string): Promise<WebServiceRecordRead> {
   }
   if (!isRecord(value) || value.schema !== WEB_SERVICE_SCHEMA || typeof value.host !== "string"
     || !Number.isSafeInteger(value.port) || (value.port as number) < 1 || (value.port as number) > 65_535
+    || (value.multiUser !== undefined && typeof value.multiUser !== "boolean")
     || (value.theme !== undefined && !isWebTheme(value.theme))
     || (value.name !== undefined
       && (typeof value.name !== "string" || invalidWebConsoleName(value.name) !== undefined))

@@ -238,6 +238,14 @@ who can reach port 5050 can inspect conversations and operate discovered agents;
 use host firewall/LAN policy and Tailscale ACLs as the access boundary. The
 server emits no CORS permission and rejects cross-origin mutations.
 
+Prepare or recover an administrator offline with
+`mono-agent web users bootstrap --username <name>` while the server is stopped.
+The command prompts for a hidden, confirmed password and takes the same exclusive
+state lease as the server; recovery preserves existing conversation ownership.
+Managed `web start`/`restart` retain an explicit `--multi-user` or
+`--no-multi-user` selection. Enabled startup remains fail-closed until the complete
+server-side access policy is available; it never exposes partially protected APIs.
+
 The service uses the operating-system hostname as its machine identity and as
 the default display name. An operator-selected `name` replaces that default in
 the desktop/mobile header, browser title, and installed PWA name while the
@@ -1021,6 +1029,7 @@ AcpBridgeDiscovery
 AcpBridgeSourceDescriptor
 AcpBridgeSourceHealth
 BeginWebExternalTurnInput
+BootstrapWebUserOptions
 ConsoleToolName
 ConsoleToolOperation
 ConsoleToolScope
@@ -1029,6 +1038,7 @@ CreateWebProjectInput
 CreateWebTagInput
 CreateWebThreadInput
 CreateWebUploadInput
+CreateWebUserInput
 DEFAULT_WEB_HOST
 DEFAULT_WEB_PORT
 DEFAULT_WEB_THEME
@@ -1051,6 +1061,7 @@ PatchWebAgentInput
 PatchWebProjectInput
 PatchWebTagInput
 PatchWebThreadInput
+PatchWebUserInput
 ProjectContextSource
 PutWebAgentRunSettingsInput
 SearchWebThreadsInput
@@ -1110,6 +1121,7 @@ WebMessagePart
 WebMessageStatus
 WebModelOption
 WebNotificationTriggerKind
+WebPrincipal
 WebProject
 WebProjectChangedPayload
 WebProjectColor
@@ -1150,9 +1162,12 @@ WebThreadTrigger
 WebThreadUsage
 WebUsageSlice
 WebUsageTokens
+WebUser
+WebUserRole
 WebWakeSchedule
 WebWakeScheduleDefinition
 beginWebExternalTurn
+bootstrapWebUser
 createWebConsoleToolClient
 defaultTraceRegistryDir
 defaultWebStateDir

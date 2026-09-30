@@ -181,3 +181,6 @@ export {
 export { WebConsoleError } from "./errors.js";
 
 export type { ConsoleToolScope, ConsoleToolOperation, ConsoleToolName, ExternalConsoleToolScope, WebConsoleToolScope } from "./console-tools.js";
+
+export { bootstrapWebUser } from "./auth.js";
+export type { BootstrapWebUserOptions, WebUser, WebUserRole, WebPrincipal, CreateWebUserInput, PatchWebUserInput } from "./auth.js";

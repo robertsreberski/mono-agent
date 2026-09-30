@@ -498,6 +498,7 @@ export interface WebServiceLogger {
 }
 
 export interface CreateWebServiceOptions extends WebStatePathOptions, DiscoverOperatorAgentsOptions {
+  readonly multiUser?: boolean;
   readonly fetchImpl?: typeof fetch;
   readonly logger?: WebServiceLogger;
   readonly clock?: () => Date;
@@ -753,6 +754,9 @@ export class WebService {
   }
 
   static async create(options: CreateWebServiceOptions = {}): Promise<WebService> {
+    // Storage/enablement checkpoint: do not permit a partially protected server.
+    // Remove this guard only with comprehensive principal-aware enforcement.
+    if (options.multiUser === true) throw new WebConsoleError("multi_user_unavailable", "Multi-user enforcement is not available in this build.", 503);
     const paths = await prepareWebStatePaths(options);
     let lease: WebStateLease;
     try {

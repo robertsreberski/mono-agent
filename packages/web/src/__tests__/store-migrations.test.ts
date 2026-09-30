@@ -45,7 +45,7 @@ async function seeded(version: number, sequenced17 = false): Promise<string> {
 }
 
 function schema(database: DatabaseSync): unknown {
-  const tables = ["external_conversations", "external_tool_operations", "tags", "thread_tags", "pending_project_memberships", "console_tool_operations", "agents", "threads", "projects", "turns", "messages", "live_inputs", "web_submissions", "cron_reply_operations", "attachments", "notification_deliveries", "monitor_wake_deliveries", "agent_run_overrides"];
+  const tables = ["web_users", "web_user_agent_grants", "web_sessions", "web_auth_state", "external_conversations", "external_tool_operations", "tags", "thread_tags", "pending_project_memberships", "console_tool_operations", "agents", "threads", "projects", "turns", "messages", "live_inputs", "web_submissions", "cron_reply_operations", "attachments", "notification_deliveries", "monitor_wake_deliveries", "agent_run_overrides"];
   return tables.map((table) => ({
     table,
     // ALTER appends columns, so physical column ordinal is not a shape claim.
@@ -59,6 +59,43 @@ const historical = [...Array.from({ length: 21 }, (_, version) => ({ version, se
   { version: 17, sequenced17: true }];
 
 describe("web storage migration history", () => {
+  it("upgrades schema 41 with private, unowned retained threads and empty auth tables", async () => {
+    const stateDir = await seeded(18);
+    (await WebStore.open({ stateDir })).close();
+    const legacy = new DatabaseSync(join(stateDir, "state.sqlite"));
+    const retained = legacy.prepare("SELECT id, source_id, title FROM threads ORDER BY id").all();
+    legacy.exec(`DROP TRIGGER threads_default_web_owner; DROP INDEX threads_by_owner;
+      ALTER TABLE threads DROP COLUMN owner_user_id;
+      ALTER TABLE threads DROP COLUMN shared;
+      ALTER TABLE attachments DROP COLUMN owner_user_id;
+      ALTER TABLE wake_schedules DROP COLUMN editor_user_id;
+      ALTER TABLE turns DROP COLUMN web_actor_json;
+      ALTER TABLE live_inputs DROP COLUMN web_actor_json;
+      ALTER TABLE web_submissions DROP COLUMN web_actor_json;
+      ALTER TABLE cron_reply_operations DROP COLUMN web_actor_json;
+      ALTER TABLE messages DROP COLUMN web_actor_json;
+      DROP TABLE web_sessions; DROP TABLE web_user_agent_grants;
+      DROP TABLE web_auth_state; DROP TABLE web_users;
+      PRAGMA user_version = 41;`);
+    legacy.close();
+    const migrated = await WebStore.open({ stateDir });
+    try {
+      expect(migrated.auth.listUsers()).toEqual([]);
+      expect(migrated.auth.hasActiveAdmin()).toBe(false);
+      expect(migrated.auth.bootstrapAdminId()).toBeUndefined();
+    } finally { migrated.close(); }
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    try {
+      expect(database.prepare("PRAGMA user_version").get()).toEqual({ user_version: WEB_STORAGE_SCHEMA_VERSION });
+      expect(database.prepare("SELECT id, source_id, title FROM threads ORDER BY id").all()).toEqual(retained);
+      expect(database.prepare("SELECT DISTINCT owner_user_id, shared FROM threads").all())
+        .toEqual([{ owner_user_id: null, shared: 0 }]);
+      expect(database.prepare("SELECT * FROM web_auth_state").all())
+        .toEqual([{ id: 1, bootstrap_admin_id: null, initialized_at: null }]);
+      expect(() => validateWebStorageShape(database)).not.toThrow();
+    } finally { database.close(); }
+  });
+
   it.each(["valid", "invalid-state", "missing-message", "thread-mismatch", "non-array-parts", "no-job-part",
     "duplicate-job-parts", "job-id-mismatch"] as const)("backfills legacy cards transactionally (shape=%s)", async (shape) => {
     const stateDir = await seeded(18);
@@ -579,7 +616,7 @@ describe("external conversation projects migration", () => {
     } finally { reopened.close(); }
     const database = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
     try {
-      expect(database.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 41 });
+      expect(database.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
       expect(database.prepare("SELECT COUNT(*) AS count FROM external_conversations").get()).toEqual({ count: 0 });
     } finally { database.close(); }
   });
@@ -598,8 +635,8 @@ describe("external conversation projects migration", () => {
 
 describe("named migration registry", () => {
   const step = (version: number, name: string): WebStorageMigration => ({ version, name, up: vi.fn() });
-  it("is immutable and derives schema 41 from its last step", () => {
-    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(41);
+  it("is immutable and derives schema 42 from its last step", () => {
+    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(42);
     expect(WEB_STORAGE_SCHEMA_VERSION).toBe(WEB_STORAGE_MIGRATIONS.at(-1)?.version);
     expect(Object.isFrozen(WEB_STORAGE_MIGRATIONS)).toBe(true);
     expect(WEB_STORAGE_MIGRATIONS.every(Object.isFrozen)).toBe(true);
@@ -776,7 +813,7 @@ describe("web recovery observation migration", () => {
     try {
       const db = new DatabaseSync(join(stateDir, "state.sqlite"));
       try {
-        expect(db.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 41 });
+        expect(db.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
         expect(db.prepare(`SELECT dispatch_generation, web_recovery_generation_confirmed_at
           FROM turns WHERE id = ?`).get(turnId)).toMatchObject({
           dispatch_generation: "generation-old", web_recovery_generation_confirmed_at: null,
