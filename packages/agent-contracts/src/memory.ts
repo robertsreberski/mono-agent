@@ -36,9 +36,8 @@ export interface MemoryCompletedTurn {
    * Omission means unknown (including legacy/direct callers). A channel may set
    * human-turn only after verifying its own sender; operator turns count when
    * authorized by an owner key or bound loopback-only. Automation using that
-   * operator interface is consequently attributed as human. Owner authority is
-   * separate host evidence; human provenance alone does not grant it. This is
-   * not proof of assertions in the turn or of any third-party quoted content.
+   * owner interface is consequently attributed as the owner. This is not a
+   * proof of assertions in the turn or of any third-party quoted content.
    */
   readonly captureSpeakerKind?: MemoryCaptureSpeakerKind;
   readonly captureEvidence?: MemoryCaptureEvidence;

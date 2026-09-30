@@ -1,5 +1,3 @@
-export { OPERATOR_WEB_ACTOR_VERSION, parseOperatorWebActor } from "./web-actor.js";
-export type { OperatorWebActor } from "./web-actor.js";
 export { TuiAdapterError } from "./tui/index.js";
 export {
   CronOperatorError,

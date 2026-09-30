@@ -56,8 +56,6 @@ import type {
 import { errorMessage, WebConsoleError } from "./errors.js";
 import { isTrustedOperatorBaseUrl } from "./discovery.js";
 import {
-  OPERATOR_WEB_ACTOR_VERSION,
-  type OperatorWebActor,
   fetchLongLivedHostWake,
   fetchLongLivedTurn,
   operatorResponseFromFinishFrame,
@@ -159,8 +157,6 @@ export interface OperatorInfo {
   readonly providers?: readonly WebAgentProvider[];
   /** Live registry snapshot. Absent when the producer predates skill discovery. */
   readonly skills?: OperatorSkillRegistry;
-  /** Absent for older or malformed attribution boundaries (fail closed). */
-  readonly webActor?: { readonly version: typeof OPERATOR_WEB_ACTOR_VERSION };
   readonly supportsAttachments: boolean;
   readonly supportsHistoryAppend: boolean;
   readonly supportsManualCompaction?: true;
@@ -204,7 +200,6 @@ export interface OperatorLiveInputInput {
 }
 
 export interface OperatorTurnInput {
-  readonly webActor?: OperatorWebActor;
   readonly conversationId: string;
   readonly text: string;
   readonly attachments: readonly AgentAttachment[];
@@ -300,8 +295,6 @@ export class OperatorClient {
       supportsHistoryAppend: capabilities?.historyAppend === true,
       ...(record(capabilities?.manualCompaction)?.version === 1 ? { supportsManualCompaction: true } : {}),
       ...(contextImport === undefined ? {} : { contextImport }),
-      ...(record(capabilities?.webActor)?.version === OPERATOR_WEB_ACTOR_VERSION
-        ? { webActor: { version: OPERATOR_WEB_ACTOR_VERSION } } : {}),
       supportsAskUser: capabilities?.askUser === true,
       ...(capabilities?.askById === true ? { supportsAskById: true } : {}),
       supportsLiveInput: capabilities?.liveInput === true,
@@ -483,7 +476,6 @@ export class OperatorClient {
           text: input.text,
           client: input.client ?? "web",
           metadata: input.metadata,
-          ...(input.webActor === undefined ? {} : { webActor: input.webActor }),
           ...(input.processJobWakeDeliveryKey === undefined
             ? {}
             : { processJobWakeDeliveryKey: input.processJobWakeDeliveryKey }),
