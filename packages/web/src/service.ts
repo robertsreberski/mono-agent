@@ -758,9 +758,6 @@ export class WebService {
   }
 
   static async create(options: CreateWebServiceOptions = {}): Promise<WebService> {
-    // Storage/enablement checkpoint: do not permit a partially protected server.
-    // Remove this guard only with comprehensive principal-aware enforcement.
-    if (options.multiUser === true) throw new WebConsoleError("multi_user_unavailable", "Multi-user enforcement is not available in this build.", 503);
     const paths = await prepareWebStatePaths(options);
     let lease: WebStateLease;
     try {
@@ -777,6 +774,7 @@ export class WebService {
     }
     let service: WebService | undefined;
     try {
+      if (options.multiUser === true) store.auth.initializeOwnership();
       const pushIdentity = store.ensureWebPushIdentity(generateWebPushIdentity);
       const replyAccessKey = Buffer.from(
         store.ensureReplyAccessKey(() => randomBytes(32).toString("base64url")),
@@ -2336,6 +2334,7 @@ export class WebService {
       || job.origin.conversationId.split("#", 1)[0] !== `web:${threadId}`) {
       throw new WebConsoleError("process_job_not_found", "Process job was not found for this conversation.", 404);
     }
+    this.recheckThreadAccess(thread.id);
     return job;
   }
 
@@ -2362,6 +2361,7 @@ export class WebService {
         this.conversationIdForThread(threadId),
         model === undefined ? undefined : { model },
       );
+      this.recheckThreadAccess(threadId);
       // A thread deleted meanwhile keeps the agent's outcome but records nothing.
       if (this.store.getThread(threadId) !== undefined) {
         const messageId = this.store.recordManualCompaction(threadId, result);
@@ -2371,6 +2371,7 @@ export class WebService {
       }
       return result;
     })().catch((error: unknown) => {
+      this.recheckThreadAccess(threadId);
       // Only an explicit agent failure is known to have failed. A lost or
       // malformed response can race an already committed provider revision.
       if (this.store.getThread(threadId) !== undefined) {
@@ -2710,6 +2711,7 @@ export class WebService {
   }
 
   completeUpload(id: string, sizeBytes: number): WebAttachment {
+    this.recheckBrowserAccess();
     const web = toWebAttachment(this.store.markUploadComplete(id, sizeBytes));
     this.emit("attachment.changed", undefined, { attachment: web });
     return web;

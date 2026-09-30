@@ -234,10 +234,26 @@ describe("web authentication storage", () => {
     await expect(WebStore.open({ stateDir: directory })).rejects.toMatchObject({ code: "storage_corrupt", status: 500 });
   });
 
-  it("keeps the enablement checkpoint fail-closed until route enforcement is installed", async () => {
+  it("fails enabled startup without an active designated administrator and releases the state lease", async () => {
     const directory = await stateDir();
     await expect(WebService.create({ stateDir: directory, multiUser: true })).rejects.toMatchObject({
-      code: "multi_user_unavailable", status: 503,
+      code: "web_admin_required", status: 409,
     });
+    const admin = await bootstrapWebUser({ stateDir: directory, username: "morgan", password: PASSWORD });
+    const service = await WebService.create({ stateDir: directory, multiUser: true, discoverImpl: async () => [], discoveryIntervalMs: 0, purgeIntervalMs: 0 });
+    try { expect(service.store.auth.bootstrapAdminId()).toBe(admin.id); }
+    finally { await service.stop(); }
+  });
+
+  it("requires recovery of a disabled designated administrator even when another admin is active", async () => {
+    const directory = await stateDir(); const store = await openStore({ stateDir: directory });
+    const designated = await store.auth.bootstrap("morgan", PASSWORD);
+    await store.auth.createUser({ username: "avery", password: PASSWORD, role: "admin" });
+    store.auth.initializeOwnership(); store.auth.patchUser(designated.id, { disabled: true }); store.close();
+    await expect(WebService.create({ stateDir: directory, multiUser: true })).rejects.toMatchObject({ code: "web_admin_required" });
+    await bootstrapWebUser({ stateDir: directory, username: "morgan", password: PASSWORD });
+    const service = await WebService.create({ stateDir: directory, multiUser: true, discoverImpl: async () => [], discoveryIntervalMs: 0, purgeIntervalMs: 0 });
+    try { expect(service.store.auth.getUser(designated.id).disabled).toBe(false); }
+    finally { await service.stop(); }
   });
 });

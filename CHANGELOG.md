@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Enable opt-in multi-user web accounts with creator-private conversations,
+  explicit sharing, per-agent grants and authenticated operator attribution;
+  require an active designated administrator before exposing protected APIs.
+
 - Bind exact `AskUser` lookups to their canonical conversation and recheck
   asynchronous question, reply-resource, and provider-auth responses after
   account or access changes.

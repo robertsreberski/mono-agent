@@ -2174,7 +2174,7 @@ describe("AgentHarness", () => {
     ]);
   });
 
-  it("captures a bound applied web follow-up without its project envelope", async () => {
+  it.each(["admin", "user", undefined] as const)("captures a bound %s web follow-up without its project envelope or authority upgrade", async (role) => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     await writeFile(identityPath, "You are Mono.", "utf8");
@@ -2195,7 +2195,8 @@ describe("AgentHarness", () => {
           source: "test", bytesWritten: 1, admissionStatus: "admitted" as const };
       } } });
     const running = harness.run({ conversationId: "web:maple", userMessage: "Start", captureSpeakerKind: "human-turn",
-      metadata: { source: "web", web: { ownerText: "Start" } }, abortSignal: new AbortController().signal });
+      metadata: { source: "web", web: { ownerText: "Start" }, ...(role === undefined ? {} : { webActor: { role } }) },
+      ...(role === undefined ? {} : { sender: { id: "fictional-private-speaker", displayName: "Morgan" } }), abortSignal: new AbortController().signal });
     await runningRuntime;
     const offer = harness.offerLiveInput?.({ conversationId: "web:maple", id: "follow-up",
       text: '<conversation_tags>"planning"</conversation_tags>\n\nCheck Maple.', ownerText: "Check Maple.",
@@ -2204,6 +2205,8 @@ describe("AgentHarness", () => {
     await running;
     expect(admitted[0]?.captureEvidence?.userText).toContain("Live follow-up 1:\nCheck Maple.");
     expect(admitted[0]?.captureEvidence?.userText).not.toContain("conversation_tags");
+    expect(admitted[0]?.captureEvidence?.ownerTurn).toBe(role === "user" ? undefined : true);
+    if (role !== undefined) expect(admitted[0]?.captureEvidence?.senderToken).toBeTruthy();
   });
 
   it("keeps attachment-only web turns recallable with their original-query text", async () => {

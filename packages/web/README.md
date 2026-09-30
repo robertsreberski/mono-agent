@@ -233,18 +233,36 @@ console.log(server.url);
 await server.stop();
 ```
 
-The interface is deliberately single-user and has no application login. Anyone
-who can reach port 5050 can inspect conversations and operate discovered agents;
-use host firewall/LAN policy and Tailscale ACLs as the access boundary. The
-server emits no CORS permission and rejects cross-origin mutations.
+The interface defaults to legacy single-user mode with no application login.
+Anyone who can reach port 5050 can inspect conversations and operate discovered
+agents in that mode; use host firewall/LAN policy and Tailscale ACLs as the access
+boundary. The server emits no CORS permission and rejects cross-origin mutations.
+
+Opt in with `--multi-user` (or embedded `multiUser: true`) for scrypt-backed
+accounts, expiring/revocable HttpOnly SameSite sessions and per-agent grants.
+Conversations are creator-private, including from administrators. Only the
+creator may share/unshare/delete; sharing while idle exposes the entire retained
+history to granted participants. Shared human follow-ups queue; private steering
+requires the same initiating account and role. Older agents without authenticated
+actor support are read-only. Projects/tags and cron definitions are shared within
+an allowed agent, but membership, counts and cron results follow conversation
+visibility. Console tools and event streams use the same privacy predicate.
+Scheduled wakes recheck their editor and use non-human operator provenance;
+unsupported/inaccessible schedules pause. Push production/delivery is disabled
+in multi-user mode, including retained subscriptions and outbox work (follow-up
+#1160). This server-side boundary does not sandbox the agent's arbitrary tools or
+global memory. Browser login/sharing/cache UX is a separate webapp follow-up.
 
 Prepare or recover an administrator offline with
 `mono-agent web users bootstrap --username <name>` while the server is stopped.
 The command prompts for a hidden, confirmed password and takes the same exclusive
 state lease as the server; recovery preserves existing conversation ownership.
 Managed `web start`/`restart` retain an explicit `--multi-user` or
-`--no-multi-user` selection. Enabled startup remains fail-closed until the complete
-server-side access policy is available; it never exposes partially protected APIs.
+`--no-multi-user` selection. Enabled startup requires an active designated
+bootstrap administrator and fails closed otherwise. First enablement assigns
+existing unowned conversations and unknown schedule editors to that admin;
+recovery/re-enable never reassigns established ownership. Recover the designated
+account with the same offline bootstrap command if it was disabled or demoted.
 
 For HTTPS termination, set `MONO_AGENT_WEB_PUBLIC_ORIGIN` to the exact external
 origin (for example, `https://console.example.test`) when starting or restarting

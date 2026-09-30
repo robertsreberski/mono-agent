@@ -115,6 +115,10 @@ export class WebAuthStore {
       if (!this.hasActiveAdmin()) throw new WebConsoleError("web_admin_required", "Bootstrap an active web administrator before enabling multi-user mode.", 409);
       const state = this.database.prepare("SELECT * FROM web_auth_state WHERE id = 1").get() as { bootstrap_admin_id: string | null; initialized_at: string | null };
       if (state.bootstrap_admin_id === null) throw new WebConsoleError("web_admin_required", "Run web users bootstrap before enabling multi-user mode.", 409);
+      const designated = this.getUser(state.bootstrap_admin_id);
+      if (designated.disabled || designated.role !== "admin") {
+        throw new WebConsoleError("web_admin_required", "Recover the designated bootstrap administrator before enabling multi-user mode.", 409);
+      }
       if (state.initialized_at !== null) return;
       this.database.prepare("UPDATE threads SET owner_user_id = ?, shared = 0 WHERE owner_user_id IS NULL").run(state.bootstrap_admin_id);
       this.database.prepare("UPDATE wake_schedules SET editor_user_id = ? WHERE editor_user_id IS NULL").run(state.bootstrap_admin_id);
