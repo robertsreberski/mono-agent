@@ -490,6 +490,10 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
       }
       await inner.refreshSession(providerSessionId);
     },
+    async salvageDurableSession(providerSessionId, sessionsRoot) {
+      if (typeof inner.salvageDurableSession !== "function") throw new Error("Durable session salvage unavailable");
+      return inner.salvageDurableSession(providerSessionId, sessionsRoot);
+    },
     async retireDurableSession(providerSessionId, sessionsRoot) {
       if (typeof inner.retireDurableSession !== "function") {
         throw new Error("A routed runtime cannot retire durable provider-session state");

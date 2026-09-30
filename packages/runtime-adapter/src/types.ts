@@ -587,6 +587,15 @@ export interface RuntimeRunOptions {
   readonly [key: string]: unknown;
 }
 
+export interface DurableSessionSalvage {
+  readonly completed: readonly { readonly name: string; readonly result: string }[];
+  readonly outcomeUnknown: readonly { readonly name: string }[];
+  readonly omittedCompleted: number;
+  readonly omittedUnknown: number;
+  readonly draftText?: string;
+  readonly additionalOutcomesUnknown: boolean;
+}
+
 export interface MonoRuntimeLike {
   run(systemPrompt: string, options: RuntimeRunOptions): Promise<RuntimeResult>;
   configureTools?(next?: RuntimeToolOptions): void;
@@ -603,6 +612,7 @@ export interface MonoRuntimeLike {
    * Permanently remove every provider transcript with this exact id from the
    * supplied durable sessions root. Absence is success; uncertainty rejects.
    */
+  salvageDurableSession?(providerSessionId: string, sessionsRoot: string): Promise<DurableSessionSalvage>;
   retireDurableSession?(providerSessionId: string, sessionsRoot: string): Promise<void>;
   disposeSession?(providerSessionId: string): Promise<boolean>;
   /** Permanently discard live and durable provider transcript state. */

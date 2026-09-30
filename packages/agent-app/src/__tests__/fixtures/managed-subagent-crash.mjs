@@ -3,7 +3,9 @@
 import assert from "node:assert/strict";
 import { fork } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { salvageDurableNativeSession } from "../../../../agent-runtime/src/ai/providers/pi-native/session-salvage.js";
 import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadMonoAgentConfig } from "@mono-agent/config";
@@ -40,21 +42,25 @@ async function open(root, options = {}) {
   const stateDir = resolve(root, "jobs");
   const registration = await registerProcessJobsRoot({ agentRoot: root, workspace: root, stateDir, coordinator: ownership.coordinator });
   let wakes = 0;
+  const wakePrompts = [];
   const store = await openProcessJobStore(root, stateDir);
   const service = await openProcessJobsService({ cwd: root, workspace: root, registration, store,
     settings: { ...PROCESS_JOBS_DEFAULTS, configured: true, enabled: true, stateDir, maxConcurrent: 1, maxQueued: 0, maxRuntimeMs: 300_000,
       ...(options.expiredRetention ? { retention: { ...PROCESS_JOBS_DEFAULTS.retention, maxAgeMs: 1 } } : {}) },
     ...(options.expiredRetention ? { now: () => new Date(Date.now() + 60_000) } : {}),
-    wake: async () => { wakes++; return { delivered: true }; },
+    wake: async (input) => { wakes++; wakePrompts.push(input.prompt); return { delivered: true }; },
   });
   await options.beforeBind?.(store);
   let certificate;
   const registryRoot = resolve(root, "children");
   const registry = createSubagentInstanceRegistry({ root: registryRoot, retireSession: async () => {},
+    ...(options.allowInspection ? { authorizeRecovery: async () => true } : {}),
+    salvageSession: options.readerFailure ? async () => { throw new Error("reader unavailable"); } : salvageDurableNativeSession,
     ownerForReservation: (jobId) => ({ jobId, storeRoot: stateDir }), resolveOwner: (identity) => service.resolveSubagentOwner(identity),
     checkOwnerIndex: (conversationId, known) => service.checkSubagentOwnerIndex(conversationId, known),
   });
   service.bindManagedSubagents({ root: registryRoot,
+    salvage: async (identity) => (await registry.open(identity.conversationId, { existingOnly: true })).salvageReleased(identity),
     verify: async (identity) => (await registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
     publish: async (phase, publication) => {
       const instances = await registry.open(publication.identity.conversationId, { existingOnly: true });
@@ -75,12 +81,25 @@ async function open(root, options = {}) {
   });
   await service.activateWakes();
   const instances = await registry.open(origin.conversationId, mode === "recover" ? { existingOnly: true } : {});
-  return { service, instances, store, certificate: () => certificate, wakes: () => wakes, close: async () => { await service.stop(); ownership.release(); } };
+  return { service, instances, store, certificate: () => certificate, wakes: () => wakes, wakePrompts, close: async () => { await service.stop(); ownership.release(); } };
 }
+async function sessionFile(instances) {
+  const instance = await instances.get("proof");
+  const directories = await readdir(instance.sessionsRoot, { withFileTypes: true });
+  const paths = [];
+  for (const directory of directories) if (directory.isDirectory()) {
+    const parent = resolve(instance.sessionsRoot, directory.name);
+    for (const file of await readdir(parent)) if (file.endsWith(`_${instance.sessionId}.jsonl`)) paths.push(resolve(parent, file));
+  }
+  assert.equal(paths.length, 1);
+  return { path: paths[0], instance };
+}
+const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 async function owner(root, scenario) {
   setInterval(() => {}, 1000); // Scoped to this deliberately SIGKILLed fixture owner.
   const certificateScenario = scenario.startsWith("certificate-");
-  const f = await open(root, certificateScenario ? { certificateBoundary: scenario } : {});
+  const midOperation = scenario === "mid-operation" || scenario === "reader-failure";
+  const f = await open(root, certificateScenario ? { certificateBoundary: scenario } : { allowInspection: midOperation });
   let releaseProvider;
   const providerGate = new Promise((done) => { releaseProvider = done; });
   const phase = { preparing: "preparing", attested: "attested", "release-fence": "running" }[scenario];
@@ -123,7 +142,12 @@ async function owner(root, scenario) {
   }
   const marker = resolve(root, "executions.txt");
   const script = `require('node:fs').appendFileSync(${JSON.stringify(marker)}, 'start\\n'); ${shortCommand ? "process.stdout.write('done')" : "setInterval(() => {}, 1000)"}`;
-  faux.setResponses([fauxAssistantMessage([fauxToolCall("Exec", { executable: process.execPath, args: ["-e", script], workdir: root, timeout_ms: shortCommand ? 4000 : 290_000 })]), fauxAssistantMessage([fauxText("Verification returned.")])]);
+  const command = (body) => fauxToolCall("Exec", { executable: process.execPath, args: ["-e", body], workdir: root, timeout_ms: shortCommand ? 4000 : 290_000 });
+  faux.setResponses(midOperation
+    ? [fauxAssistantMessage([command(`require('node:fs').appendFileSync(${JSON.stringify(marker)}, 'first\\n'); process.stdout.write('placed')`)]),
+      fauxAssistantMessage([command(`require('node:fs').appendFileSync(${JSON.stringify(marker)}, 'second\\n'); setInterval(() => {}, 1000)`)]),
+      fauxAssistantMessage([fauxText("Verification returned.")])]
+    : [fauxAssistantMessage([command(script)]), fauxAssistantMessage([fauxText("Verification returned.")])]);
   const receipt = await createAgentTool(subagents, { model: config.runtime.model, cwd: root }).execute("crash", { name: "verifier", persist: true, background: true, id: "proof", prompt: "Execute the supplied verification once." });
   const record = await until(async () => {
     const record = await f.store.get(receipt.details.jobId);
@@ -131,6 +155,13 @@ async function owner(root, scenario) {
     if (!record?.subagentOwnership?.command) return;
     if (phase) { if (record.subagentOwnership.command.state === phase) { assert.equal(started, ""); return record; } return; }
     if (!started) return;
+    if (midOperation) {
+      if (started !== "first\nsecond\n" || record.subagentOwnership.command.state !== "running") return;
+      const { instance } = await sessionFile(f.instances);
+      const snapshot = await salvageDurableNativeSession(instance.sessionId, instance.sessionsRoot);
+      if (snapshot.completed.length !== 1 || snapshot.outcomeUnknown.length !== 1) return;
+      return record;
+    }
     if (certificateScenario) {
       if (record.state === "timed_out" && record.wake.state === "delivered") releaseProvider();
       if (f.certificate() && record.subagentOwnership.publication.receiptPending === true) return record;
@@ -152,7 +183,8 @@ async function owner(root, scenario) {
       scenario === "certificate-after-copy" || scenario === "certificate-after-ack");
     assert.equal(record.wake.state, "delivered"); assert.equal(f.wakes(), 1);
   }
-  const evidence = { jobId: record.jobId, command: record.subagentOwnership.command, targetStarted: !phase, wakes: f.wakes(), certificateScenario, scenario };
+  const sessionHash = midOperation ? digest(await readFile((await sessionFile(f.instances)).path)) : undefined;
+  const evidence = { jobId: record.jobId, command: record.subagentOwnership.command, targetStarted: !phase, wakes: f.wakes(), certificateScenario, scenario, sessionHash };
   await writeFile(resolve(root, "proof.json"), JSON.stringify(evidence));
   process.send({ ready: true });
   // Kept alive only until the foreground proof parent sends physical SIGKILL.
@@ -171,7 +203,7 @@ async function recover(root, expectedWakes, attempt) {
         assert.equal(retained.subagentOwnership.publication.receiptPending, true);
         assert.equal(retained.wake.state, "delivered");
       } else assert.equal(retained, undefined); // Prior durable certificate/ack permitted actual retention.
-    } } : {});
+    } } : { readerFailure: proof.scenario === "reader-failure", allowInspection: ["mid-operation", "reader-failure"].includes(proof.scenario) });
     if (proof.certificateScenario) {
       if (attempt === 0) {
         const record = await until(async () => { const value = await f.store.get(proof.jobId); return value?.subagentOwnership.publication.receiptPending === false && value; });
@@ -206,10 +238,12 @@ async function recover(root, expectedWakes, attempt) {
     const record = await until(async () => { const record = await f.store.get(proof.jobId); return record?.subagentOwnership?.publication.state === "confirmed" && record.subagentOwnership.publication.receiptPending === false && record.wake.state === "delivered" && record; });
     assert.equal(record.subagentOwnership.owner.settlement, "dead");
     assert.equal(record.subagentOwnership.command.state, "released");
-    assert.equal(record.subagentCommandReceipts.commands.length, 1);
-    assert.equal(record.subagentCommandReceipts.commands[0].cleanup, "confirmed");
-    assert.equal(record.subagentCommandReceipts.commands[0].completion, proof.wakes ? "observed" : "unobserved");
-    assert.equal(record.subagentCommandReceipts.commands[0].exitCode, proof.wakes ? 0 : null);
+    assert.equal(record.subagentCommandReceipts.commands.length, ["mid-operation", "reader-failure"].includes(proof.scenario) ? 2 : 1);
+    if (!["mid-operation", "reader-failure"].includes(proof.scenario)) {
+      assert.equal(record.subagentCommandReceipts.commands[0].cleanup, "confirmed");
+      assert.equal(record.subagentCommandReceipts.commands[0].completion, proof.wakes ? "observed" : "unobserved");
+      assert.equal(record.subagentCommandReceipts.commands[0].exitCode, proof.wakes ? 0 : null);
+    }
     assert.equal((await f.service.get(proof.jobId)).subagentCommandReceipts, undefined);
     assert.equal(record.state, proof.wakes ? "timed_out" : "interrupted");
     assert.equal(f.wakes(), expectedWakes);
@@ -218,7 +252,31 @@ async function recover(root, expectedWakes, attempt) {
     assert.equal(instance.activeTurn, undefined); assert.equal(instance.recovery.continuity, "unknown");
     await assert.rejects(f.instances.begin("proof"), { code: "subagent_recovery_required" });
     const executions = await readFile(resolve(root, "executions.txt"), "utf8").catch((error) => { if (error.code === "ENOENT") return ""; throw error; });
-    assert.equal(executions.trim(), proof.targetStarted ? "start" : "");
+    assert.equal(executions.trim(), ["mid-operation", "reader-failure"].includes(proof.scenario) ? "first\nsecond" : proof.targetStarted ? "start" : "");
+    if (["mid-operation", "reader-failure"].includes(proof.scenario)) {
+      const { path } = await sessionFile(f.instances);
+      assert.equal(digest(await readFile(path)), proof.sessionHash);
+      const wake = f.wakePrompts[0] ?? "";
+      if (attempt === 0 && proof.scenario === "reader-failure") {
+        assert.match(wake, /"salvage":"unavailable"/);
+        assert.equal((await f.instances.inspect("proof", {})).salvage, undefined);
+      } else if (attempt === 0) {
+        assert.match(wake, /"completed":\[/);
+        assert.match(wake, /"outcomeUnknown":\[/);
+        assert.match(wake, /do not assume done/);
+        assert.equal((await f.instances.inspect("proof", {})).resumable, undefined);
+        const inspected = await f.instances.inspect("proof", {});
+        assert.equal(inspected.salvage?.completed.length, 1);
+        assert.equal(inspected.salvage?.outcomeUnknown.length, 1);
+        let unauthorizedReads = 0;
+        const denied = await createSubagentInstanceRegistry({ root: resolve(root, "children"), retireSession: async () => {},
+          authorizeRecovery: async () => false,
+          salvageSession: async () => { unauthorizedReads++; throw new Error("must not read"); },
+        }).open(origin.conversationId, { existingOnly: true });
+        assert.equal((await denied.inspect("proof", {})).salvage, undefined);
+        assert.equal(unauthorizedReads, 0);
+      } else assert.equal(wake, "");
+    }
     console.log(JSON.stringify({ kind: "managed-crash-reopen", state: record.state, wakes: f.wakes(), result: "passed" }));
   } finally { try { await f?.close(); } finally { clearInterval(keepAlive); } }
 }
@@ -233,7 +291,7 @@ function child(args) {
 if (mode === "owner") await owner(resolve(process.argv[3]), process.argv[4]);
 else if (mode === "recover") await recover(resolve(process.argv[3]), Number(process.argv[4]), Number(process.argv[5]));
 else {
-  assert(["running", "terminal", "preparing", "attested", "release-fence", "certificate-before-write", "certificate-lost-ack", "certificate-after-copy", "certificate-after-ack"].includes(mode));
+  assert(["running", "mid-operation", "reader-failure", "terminal", "preparing", "attested", "release-fence", "certificate-before-write", "certificate-lost-ack", "certificate-after-copy", "certificate-after-ack"].includes(mode));
   const keepScratch = keepVerificationScratch();
   await mkdir(verification, { recursive: true });
   await pruneVerificationScratch(verification, "managed-crash-", "managed-crash", { keep: keepScratch });
@@ -250,6 +308,11 @@ else {
     if (mode === "running") process.kill(-proof.command.pgid, 0); // Survives the owner, really needs recovery.
     if (!["certificate-lost-ack", "certificate-after-ack"].includes(mode)) {
       const unavailable = await createSubagentInstanceRegistry({ root: resolve(root, "children"), retireSession: async () => {} }).open(origin.conversationId, { existingOnly: true });
+      if (["mid-operation", "reader-failure"].includes(mode)) {
+        const held = await unavailable.inspect("proof", {});
+        assert.equal(held.status, "held");
+        assert.equal(held.salvage, undefined);
+      }
       await assert.rejects(unavailable.begin("proof"), { code: "subagent_owner_unavailable" });
       await assert.rejects(unavailable.create({ ...spec, id: "bypass" }), { code: "subagent_owner_unavailable" });
     } // Acknowledged registry receipts are positive certificates; do not mutate them via an unrelated host.

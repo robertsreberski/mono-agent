@@ -208,6 +208,7 @@ DiscoverLocalProviderModelsOptions
 DiscoverLocalProvidersInput
 DiscoveredLocalModel
 DiscoveredProvider
+DurableSessionSalvage
 LocalProviderCapabilities
 LocalProviderDefinition
 LocalProviderModelDefinition

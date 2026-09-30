@@ -2,6 +2,9 @@ import { isSubagentVerificationTarget, type SubagentVerificationTarget, type Sub
 import type { SubagentCommandReceipts } from "./subagent-command-receipts.js";
 import { newSubagentRecoveryBinding, isSubagentRecoveryBinding, issueRecoveryAcknowledgement, checkRecoveryAcknowledgement, consumeRecoveryAcknowledgement, rebindConsumedAcknowledgement, recoveryToken, type SubagentRecoveryBinding, type SubagentRecoveryAcknowledgement } from "./subagent-recovery-binding.js";
 import type { SubagentRegistryPublication } from "./subagent-managed-turn.js";
+import type { SubagentSalvage } from "./subagent-salvage.js";
+import { boundSubagentSalvage } from "./subagent-salvage.js";
+import type { DurableSessionSalvage } from "@mono-agent/runtime-adapter";
 import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 
@@ -81,6 +84,8 @@ export interface SubagentRecoveryInspection {
   readonly recovery?: SubagentRecoveryFence;
   readonly status: "not_required" | "held" | "ready" | "structured_job_recovery_unavailable" | "observation_policy_unavailable" | "observation_policy_denied" | "observation_unavailable" | "observation_inconsistent" | "observation_truncated";
   readonly facts?: SubagentRecoveryFacts;
+  /** Derived authorized evidence only; never persisted or proof of continuity. */
+  readonly salvage?: SubagentSalvage;
   readonly parentVerificationRequired: boolean;
   readonly resumable?: true;
   readonly ack?: string;
@@ -92,6 +97,7 @@ export interface InstanceOutcome { status: string; certifiedTimeout?: true; cont
 export interface InstanceRegistryHandle {
   verifyOwner(identity: SubagentOwnerIdentity): Promise<{ retained: boolean; verification?: SubagentVerificationTarget }>;
   inspect(id: string, access?: unknown): Promise<SubagentRecoveryInspection>;
+  salvageReleased(identity: SubagentOwnerIdentity): Promise<SubagentSalvage | undefined>;
   checkAcknowledgement(id: string, acknowledgement: SubagentRecoveryAcknowledgement, access?: unknown): Promise<void>;
   publishOwned(phase: "intent" | "confirm" | "finalize" | "acknowledge", publication: SubagentRegistryPublication): Promise<void>;
   list(): Promise<SubagentInstance[]>;
@@ -278,6 +284,7 @@ export function createSubagentInstanceRegistry(options: {
   refreshOwner?: (identity: SubagentOwnerIdentity) => Promise<void>;
   authorizeClosure?: (subject: SubagentRecoverySubject) => Promise<boolean>;
   retireSession: (sessionId: string, sessionsRoot: string) => Promise<unknown>;
+  salvageSession?: (sessionId: string, sessionsRoot: string) => Promise<DurableSessionSalvage>;
 }): { open(conversationId: string, access?: { existingOnly?: boolean }): Promise<InstanceRegistryHandle> } {
   const now = options.now ?? Date.now;
   return {
@@ -482,7 +489,21 @@ export function createSubagentInstanceRegistry(options: {
         if (!record || !isLiveSubagentInstance(record)) throw new Error(`Unknown, closed or expired subagent instance "${id}". Live ids: ${records.filter(isLiveSubagentInstance).map((entry) => entry.id).join(", ") || "none"}.`);
         return record;
       };
+      const salvageRecord = async (record: StoredSubagentInstance, identity: SubagentOwnerIdentity): Promise<SubagentSalvage | undefined> => {
+        const receipt = record.ownerReceipt;
+        if (!options.salvageSession || record.activeTurn || receiptHeld(record)
+          || !receipt?.acknowledged || !record.incarnation || !record.recovery
+          || record.recovery.continuity !== "unknown" || record.recovery.turnToken !== identity.turnToken
+          || !sameSubagentOwner(identity, { jobId: receipt.jobId, storeRoot: receipt.storeRoot,
+            conversationId, instanceId: record.id, instanceIncarnation: record.incarnation, turnToken: receipt.turnToken })) return undefined;
+        try { return boundSubagentSalvage(await options.salvageSession(record.sessionId, sessionsRoot)); }
+        catch { return undefined; }
+      };
       const handle: InstanceRegistryHandle = {
+        salvageReleased: (identity) => transaction(async (records) => {
+          const record = records.find((entry) => entry.id === identity.instanceId);
+          return record ? await salvageRecord(record, identity) : undefined;
+        }),
         checkAcknowledgement: (id, acknowledgement, access) => transaction(async (records) => {
           const record = records.find((entry) => entry.id === id);
           if (!record) throw new SubagentRecoveryError("subagent_recovery_ack_stale");
@@ -514,7 +535,8 @@ export function createSubagentInstanceRegistry(options: {
           }
           const ack = record.recovery?.continuity === "retained" && record.incarnation
             ? issueRecoveryAcknowledgement(record.recoveryBinding ??= newSubagentRecoveryBinding(), record.incarnation, record.recovery, profileOf(record)) : undefined;
-          return { ...base, ...(facts ? { facts } : {}), status: !subject.owner ? "structured_job_recovery_unavailable" : record.recovery ? "ready" : "not_required", ...(ack ? { ack } : {}) };
+          const salvage = subject.owner ? await salvageRecord(record, subject.owner) : undefined;
+          return { ...base, ...(facts ? { facts } : {}), ...(salvage ? { salvage } : {}), status: !subject.owner ? "structured_job_recovery_unavailable" : record.recovery ? "ready" : "not_required", ...(ack ? { ack } : {}) };
         }),
         verifyOwner: (identity) => transaction(async (records) => {
           const record = records.find((entry) => entry.id === identity.instanceId);

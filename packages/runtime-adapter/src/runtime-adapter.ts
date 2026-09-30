@@ -353,6 +353,10 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
       }
       await runtime.refreshSession(providerSessionId);
     },
+    async salvageDurableSession(providerSessionId: string, sessionsRoot: string) {
+      if (!runtime.salvageDurableSession) throw new RuntimeAdapterError("runtime_backend_unavailable", "Durable session salvage unavailable.");
+      return runtime.salvageDurableSession(providerSessionId, sessionsRoot);
+    },
     async retireDurableSession(providerSessionId: string, sessionsRoot: string): Promise<void> {
       if (typeof runtime.retireDurableSession !== "function") {
         throw new RuntimeAdapterError(

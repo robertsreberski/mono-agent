@@ -74,6 +74,12 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   exact registered-owner proof; retained-root index failure blocks replacement
   creation. Terminal child ownership/publication obligations pin process-job
   retention, admission and fallback snapshots independently of delivery status.
+  An interrupted running detached child may contribute bounded read-only Pi v4
+  salvage in its delimited parent wake and authorized `AgentManage inspect`: only
+  branch-placed matching tool results count as completed; other calls remain
+  outcome-unknown. Short redacted excerpts and draft text are best-effort evidence,
+  not proof of session continuity or complete side effects. The old child is not
+  resumable: start a fresh child and verify effects before repeating calls.
   Detached managed turns use an awaited, one-command gated controller on the
   original job slot; registry admission identity, actual provider settlement and
   terminal publication are distinct fences. Failed command ownership never

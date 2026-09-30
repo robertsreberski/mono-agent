@@ -37,6 +37,7 @@ import {
 import { createToolContext, updateToolContext } from "./agent/tools/shared/tool-context.js";
 import { resolveRuntimeBrand } from "./runtime-brand.js";
 import { recoverDurableNativeSession, retireDurableNativeSession } from "./ai/providers/pi-native/session-lifecycle.js";
+import { salvageDurableNativeSession } from "./ai/providers/pi-native/session-salvage.js";
 import { instrumentLiveInputAppliedEvents } from "./ai/runtime/live-input-events.js";
 import { createToolLifecycleEventGate } from "./ai/tool-lifecycle.js";
 import { createWebSearchRunState } from "./agent/tools/web-search-state.js";
@@ -284,6 +285,9 @@ export function createRuntime(host = {}) {
     },
     async refreshSession(providerSessionId) {
       return refreshProviderSession(providerSessionId);
+    },
+    async salvageDurableSession(providerSessionId, sessionsRoot) {
+      return salvageDurableNativeSession(providerSessionId, sessionsRoot);
     },
     async retireDurableSession(providerSessionId, sessionsRoot) {
       return retireDurableNativeSession(providerSessionId, sessionsRoot);

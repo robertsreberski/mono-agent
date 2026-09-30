@@ -1,3 +1,4 @@
+import type { SubagentSalvage } from "./subagent-salvage.js";
 import type { SubagentVerificationTarget } from "./subagent-verification-observer.js";
 import type { LiveInputMailbox } from "@mono-agent/agent-harness";
 import type { OwnedForegroundProcesses } from "@mono-agent/runtime-adapter";
@@ -38,6 +39,7 @@ export interface SubagentRegistryPublication {
 }
 export interface ManagedSubagentRegistry {
   readonly root: string;
+  salvage?(identity: SubagentOwnerIdentity): Promise<SubagentSalvage | undefined>;
   verify(identity: SubagentOwnerIdentity): Promise<void | { readonly retained: boolean; readonly verification?: SubagentVerificationTarget }>;
   publish(phase: "intent" | "confirm" | "finalize" | "acknowledge", publication: SubagentRegistryPublication): Promise<void>;
 }

@@ -132,6 +132,7 @@ export type {
   MonoRuntimeCompactionRecord,
   MonoRuntimeHostOptions,
   MonoRuntimeLike,
+  DurableSessionSalvage,
   MonoRuntimeParsedPricingModel,
   MonoRuntimePricing,
   MonoRuntimeSandboxEngine,
