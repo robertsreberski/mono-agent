@@ -201,7 +201,8 @@ describe("root README Quickstart boundary", () => {
     expect(releaseStatus).toContain("fresh foreground and managed consoles default to `127.0.0.1:5050`");
     expect(releaseStatus).toContain("creates a mono-agent-owned route only with `--share-tailnet`");
     expect(releaseStatus).toContain("`mono-agent web status --json` reports the listener and owned route separately");
-    expect(releaseStatus).toContain("Neither the 0.22.0 console nor the current source console has application login");
+    expect(releaseStatus).toContain("The 0.22.0 console has no application login. Current source still defaults to no login");
+    expect(releaseStatus).toContain("Without that mode, anyone who can reach it can operate discovered agents");
     expect(releaseStatus).not.toContain("claims a Tailscale Serve HTTPS route automatically");
     expect(releaseStatus).not.toContain("A source build is required for the new flags.");
   });
