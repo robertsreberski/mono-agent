@@ -125,13 +125,14 @@ export class WebAuthStore {
     const insert = this.database.prepare("INSERT INTO web_user_agent_grants(user_id, source_id) VALUES (?, ?)");
     for (const sourceId of assigned) insert.run(id, sourceId);
   }
-  async createUser(input: CreateWebUserInput): Promise<WebUser> {
+  async createUser(input: CreateWebUserInput, authorizeWrite?: () => void): Promise<WebUser> {
     const username = normalizeWebUsername(input.username);
     const name = displayName(input.displayName ?? username);
     const assigned = grants(input.grants ?? []);
     const userRole = role(input.role);
     const password = await hashWebPassword(input.password);
     return this.transaction(() => {
+      authorizeWrite?.();
       if (this.database.prepare("SELECT 1 FROM web_users WHERE username = ?").get(username) !== undefined) throw new WebConsoleError("username_conflict", "Username is already in use.", 409);
       const id = randomUUID(); const now = this.clock().toISOString();
       this.database.prepare("INSERT INTO web_users(id, username, display_name, role, password_record, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, username, name, userRole, password, now, now);
@@ -171,15 +172,16 @@ export class WebAuthStore {
       return this.getUser(id);
     });
   }
-  async resetPassword(id: string, password: string): Promise<void> {
+  async resetPassword(id: string, password: string, authorizeWrite?: () => void): Promise<void> {
     const record = await hashWebPassword(password);
-    this.transaction(() => { this.row(id); this.writePassword(id, record); });
+    this.transaction(() => { authorizeWrite?.(); this.row(id); this.writePassword(id, record); });
   }
-  async changePassword(id: string, current: string, password: string): Promise<void> {
+  async changePassword(id: string, current: string, password: string, authorizeWrite?: () => void): Promise<void> {
     const before = this.row(id);
     if (!await verifyWebPassword(current, before.password_record)) throw new WebConsoleError("invalid_password", "Current password is incorrect.", 403);
     const record = await hashWebPassword(password);
     this.transaction(() => {
+      authorizeWrite?.();
       const latest = this.row(id);
       if (latest.version !== before.version || latest.disabled === 1) throw new WebConsoleError("auth_changed", "Account changed; authenticate again.", 401);
       this.writePassword(id, record);

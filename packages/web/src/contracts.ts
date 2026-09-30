@@ -405,6 +405,10 @@ export interface WebWakeSchedule {
 }
 
 export interface WebThread {
+  /** Present only on authenticated multi-user projections. */
+  readonly ownerUserId?: string | null;
+  readonly creatorDisplayName?: string | null;
+  readonly shared?: boolean;
   /** Transient service-owned operation; not part of the stored thread or revision. */
   readonly compaction?: { readonly status: "running"; readonly trigger: "manual"; readonly startedAt: string };
   readonly wakeSchedule?: Pick<WebWakeSchedule, "state" | "revision" | "nextFireAt"> & { readonly kind: WebWakeScheduleDefinition["kind"] };

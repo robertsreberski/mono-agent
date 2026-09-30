@@ -799,6 +799,10 @@ export class WebService {
   }
 
   async bootstrap(scope: WebBootstrapScope = {}): Promise<Omit<WebBootstrap, "console">> {
+    if (this.store.access.current() !== undefined && scope.sourceId !== undefined
+      && this.store.getAgent(scope.sourceId) === undefined) {
+      throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    }
     const currentThreadId = this.store.currentThreadId();
     const currentThread = currentThreadId === undefined ? undefined : this.store.getThread(currentThreadId);
     const discoveredCurrentThreadId = currentThread !== undefined

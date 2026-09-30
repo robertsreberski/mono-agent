@@ -1,3 +1,4 @@
+import { installWebAuthentication, validateWebPublicOrigin } from "./auth-http.js";
 import { isProviderUsageId } from "@mono-agent/agent-contracts";
 import type { CreateWebTagInput, PatchWebTagInput } from "./contracts.js";
 import { parseTagColor, parseTagName } from "./tag-color.js";
@@ -128,6 +129,8 @@ export interface StartWebServerOptions extends CreateWebServiceOptions {
   readonly staticDir?: string;
   /** Exact additional DNS hostnames accepted at the browser boundary (for example this node's Tailscale DNSName). */
   readonly allowedHosts?: readonly string[];
+  /** Exact externally served origin when HTTPS terminates at a trusted proxy. */
+  readonly publicOrigin?: string;
 }
 
 export interface WebServerHandle {
@@ -156,6 +159,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   // Validate all synchronous startup inputs before acquiring the persistent
   // service lease so an embedding typo cannot strand SQLite ownership.
   const allowedHosts = resolveAllowedHosts(options.allowedHosts, options.env ?? process.env);
+  const publicOrigin = validateWebPublicOrigin(options.publicOrigin ?? (options.env ?? process.env).MONO_AGENT_WEB_PUBLIC_ORIGIN);
   const service = await WebService.create(options);
   const app = express();
   const server = createServer(app);
@@ -198,6 +202,8 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     res.setHeader("Cache-Control", "private, no-store, max-age=0");
     next();
   });
+  installWebAuthentication(app, service.store, { enabled: options.multiUser === true,
+    ...(publicOrigin === undefined ? {} : { publicOrigin }) });
   app.use("/api/v1", express.json({ limit: "256kb", strict: true }));
 
   app.get("/healthz", (_req, res) => {

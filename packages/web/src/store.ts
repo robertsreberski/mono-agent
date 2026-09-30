@@ -1,3 +1,4 @@
+import { WebAccessContext } from "./access.js";
 import { WebAuthStore } from "./auth.js";
 import type { WebCancelOrigin } from "./contracts.js";
 import { CONSOLE_READ_TOOL_NAMES, executeConsoleTool, type ConsoleToolScope, type ConsoleToolOperation, type ConsoleToolCommit } from "./console-tools.js";
@@ -198,6 +199,9 @@ export interface PatchStoredProjectInput {
 }
 
 interface ThreadRow {
+  owner_user_id: string | null;
+  creator_display_name: string | null;
+  shared: number;
   read_revision: number;
   id: string;
   source_id: string;
@@ -1050,6 +1054,7 @@ export class WebStore {
   private readonly streamSnapshots = new Map<string, WebMessage>();
   readonly paths: WebStatePaths;
   readonly auth: WebAuthStore;
+  readonly access = new WebAccessContext();
   private readonly database: DatabaseSync;
   private readonly clock: () => Date;
   private closed = false;
@@ -1075,6 +1080,13 @@ export class WebStore {
     this.paths = paths;
     this.clock = clock;
     this.auth = new WebAuthStore(database, clock, (operation) => this.transaction(operation));
+    // Context-sensitive, deliberately NOT deterministic: cached statements must
+    // evaluate the current recipient, never the principal that compiled them.
+    database.function("web_agent_allowed", (sourceId) =>
+      typeof sourceId === "string" && this.access.agentAllowed(sourceId) ? 1 : 0);
+    database.function("web_thread_visible", (sourceId, ownerId, shared) =>
+      typeof sourceId === "string" && this.access.threadVisible({ sourceId,
+        ownerUserId: typeof ownerId === "string" ? ownerId : null, shared: shared === 1 }) ? 1 : 0);
   }
 
   static async open(options: OpenWebStoreOptions = {}): Promise<WebStore> {
@@ -1264,14 +1276,14 @@ export class WebStore {
 
   listAgents(): WebAgentSummary[] {
     const rows = this.database.prepare(agentSelectSql(
-      "WHERE a.discovered = 1 ORDER BY pinned DESC, a.label COLLATE NOCASE, a.source_id",
+      `WHERE a.discovered = 1 ${this.access.agentSql("a")} ORDER BY pinned DESC, a.label COLLATE NOCASE, a.source_id`,
     )).all() as unknown as AgentRow[];
     return rows.map((row) => this.withGeneration(mapAgent(row)));
   }
 
   getAgent(sourceId: string): WebAgentSummary | undefined {
     const row = this.database.prepare(agentSelectSql(
-      "WHERE a.source_id = ? AND a.discovered = 1",
+      `WHERE a.source_id = ? AND a.discovered = 1 ${this.access.agentSql("a")}`,
     )).get(sourceId) as unknown as AgentRow | undefined;
     return row === undefined ? undefined : this.withGeneration(mapAgent(row));
   }
@@ -2838,9 +2850,9 @@ export class WebStore {
       this.database.prepare(`
         INSERT INTO threads (
           id, source_id, project_id, conversation_id, title, title_manual, archived_at,
-          created_at, updated_at, run_model, run_effort, revision
-        ) VALUES (?, ?, ?, ?, 'New conversation', 0, NULL, ?, ?, ?, ?, 1)
-      `).run(id, sourceId, projectId, `web:${id}`, now, now, model, effort);
+          created_at, updated_at, run_model, run_effort, revision, owner_user_id
+        ) VALUES (?, ?, ?, ?, 'New conversation', 0, NULL, ?, ?, ?, ?, 1, ?)
+      `).run(id, sourceId, projectId, `web:${id}`, now, now, model, effort, this.access.current()?.id ?? null);
       this.database.prepare("INSERT INTO revisions (entity_kind, entity_id, revision, event, created_at) VALUES ('thread', ?, 1, 'created', ?)")
         .run(id, now);
       if (projectId !== null) this.applyProjectMembership(id, null, projectId);
@@ -2881,7 +2893,7 @@ export class WebStore {
     if (cursor !== undefined) values.push(cursor.updatedAt, cursor.updatedAt, cursor.id);
     values.push(limit + 1);
     const rows = this.database.prepare(threadSelectSql(`
-      WHERE t.source_id = ? AND ${archivedSql} ${scopeSql} ${projectSql} ${tagSql} ${beforeSql}
+      WHERE t.source_id = ? AND ${archivedSql} ${scopeSql} ${projectSql} ${tagSql} ${beforeSql} ${this.access.threadSql("t")}
       ORDER BY t.updated_at DESC, t.id DESC LIMIT ?
     `)).all(...values) as unknown as ThreadRow[];
     const hasMore = rows.length > limit;
@@ -2934,7 +2946,7 @@ export class WebStore {
         FROM message_search
         JOIN messages m ON m.rowid = message_search.rowid
         JOIN threads t ON t.id = m.thread_id
-       WHERE message_search MATCH ? AND t.source_id = ? AND ${visibleMessageSql("m")} ${scopeSql}
+       WHERE message_search MATCH ? AND t.source_id = ? AND ${visibleMessageSql("m")} ${scopeSql} ${this.access.threadSql("t")}
        ORDER BY rank
        LIMIT ?
     `).all(
@@ -2967,7 +2979,7 @@ export class WebStore {
     // because a title is short enough to scan and short enough to type part of.
     const titleRows = this.database.prepare(`
       SELECT t.id AS id FROM threads t
-       WHERE t.source_id = ? AND t.title LIKE '%' || ? || '%' ESCAPE '\\' ${scopeSql}
+       WHERE t.source_id = ? AND t.title LIKE '%' || ? || '%' ESCAPE '\\' ${scopeSql} ${this.access.threadSql("t")}
        ORDER BY t.updated_at DESC, t.id DESC
        LIMIT ?
     `).all(input.sourceId, escapeLikeTerm(query), limit + 1) as unknown as Array<{ id: string }>;
@@ -3052,13 +3064,14 @@ export class WebStore {
         FROM active a
         JOIN threads t ON t.id = a.thread_id
         JOIN agents ag ON ag.source_id = t.source_id AND ag.discovered = 1
+       WHERE 1 = 1 ${this.access.threadSql("t")}
        ORDER BY t.updated_at DESC, t.id DESC
     `).all() as unknown as Array<{ id: string; source_id: string }>;
     // Seeded with a zero for every discovered agent: a key that is simply
     // missing cannot be told apart from an agent the listing forgot, and the
     // badge a console draws from it would go blank rather than read nought.
     const runningCounts: Record<string, number> = Object.fromEntries(
-      (this.database.prepare("SELECT source_id FROM agents WHERE discovered = 1")
+      (this.database.prepare(`SELECT source_id FROM agents a WHERE discovered = 1 ${this.access.agentSql("a")}`)
         .all() as unknown as Array<{ source_id: string }>).map((row) => [row.source_id, 0]),
     );
     for (const row of rows) runningCounts[row.source_id] = (runningCounts[row.source_id] ?? 0) + 1;
@@ -3099,7 +3112,7 @@ export class WebStore {
 
   getThread(id: string): WebThread | undefined {
     const resolved = this.resolveThreadId(id);
-    const row = this.database.prepare(threadSelectSql("WHERE t.id = ?")).get(resolved) as unknown as ThreadRow | undefined;
+    const row = this.database.prepare(threadSelectSql(`WHERE t.id = ? ${this.access.threadSql("t")}`)).get(resolved) as unknown as ThreadRow | undefined;
     return row === undefined ? undefined : this.mapThread(row);
   }
 
@@ -3181,7 +3194,8 @@ export class WebStore {
   }
 
   getMessage(id: string): WebMessage | undefined {
-    const row = this.database.prepare(`SELECT * FROM messages WHERE id = ? AND ${visibleMessageSql("messages")}`)
+    const row = this.database.prepare(`SELECT * FROM messages WHERE id = ? AND ${visibleMessageSql("messages")}
+      ${this.access.current() === undefined ? "" : `AND EXISTS (SELECT 1 FROM threads t WHERE t.id = messages.thread_id ${this.access.threadSql("t")})`}`)
       .get(id) as unknown as MessageRow | undefined;
     return row === undefined ? undefined : this.mapMessage(row);
   }
@@ -3404,7 +3418,7 @@ export class WebStore {
   getTag(id: string): WebTag | undefined {
     const row = this.database.prepare(`SELECT id, source_id AS sourceId, name, color, created_at AS createdAt,
       updated_at AS updatedAt, revision FROM tags WHERE id = ?`).get(id) as unknown as WebTag | undefined;
-    return row === undefined ? undefined : { ...row };
+    return row === undefined || !this.access.agentAllowed(row.sourceId) ? undefined : { ...row };
   }
 
   private requireTagForAgent(id: string, sourceId?: string): WebTag {
@@ -4140,7 +4154,8 @@ export class WebStore {
   }
 
   private getProjectRow(id: string): ProjectRow | undefined {
-    return this.database.prepare("SELECT * FROM projects WHERE id = ?").get(id) as unknown as ProjectRow | undefined;
+    const row = this.database.prepare("SELECT * FROM projects WHERE id = ?").get(id) as unknown as ProjectRow | undefined;
+    return row === undefined || !this.access.agentAllowed(row.source_id) ? undefined : row;
   }
 
   private requireProject(id: string): ProjectRow {
@@ -4166,7 +4181,7 @@ export class WebStore {
 
   private mapProject(row: ProjectRow): WebProject {
     const memberIds = (this.database.prepare(`
-      SELECT id FROM threads WHERE project_id = ? AND archived_at IS NULL
+      SELECT t.id FROM threads t WHERE t.project_id = ? AND t.archived_at IS NULL ${this.access.threadSql("t")}
     `).all(row.id) as Array<{ id: string }>).map((member) => member.id);
     const runningCount = memberIds.length === 0
       ? 0
@@ -4190,7 +4205,7 @@ export class WebStore {
       conversationCount: memberIds.length,
       runningCount,
       ...(monthUsd === undefined ? {} : { monthUsd }),
-      ...(external === undefined ? {} : { external: this.mapExternal(external) }),
+      ...(external === undefined || this.access.current() !== undefined ? {} : { external: this.mapExternal(external) }),
     };
   }
 
@@ -6872,6 +6887,8 @@ export class WebStore {
       return {
         id: row.id,
         sourceId: row.source_id,
+        ...(this.access.current() === undefined ? {} : { ownerUserId: row.owner_user_id,
+          creatorDisplayName: row.creator_display_name, shared: row.shared === 1 }),
         ...(wakes.has(row.id) ? { wakeSchedule: wakes.get(row.id)! } : {}),
         tagIds: tagsByThread.get(row.id) ?? [],
         projectId: row.project_id,
@@ -7749,7 +7766,8 @@ function priorOutcomeCandidateSql(): string {
 
 function threadSelectSql(suffix: string): string {
   return `
-    SELECT t.id, t.source_id, t.project_id, p.name AS project_name,
+    SELECT t.id, t.source_id, t.owner_user_id, t.shared, u.display_name AS creator_display_name,
+           t.project_id, p.name AS project_name,
            t.title, t.title_manual, t.trigger_kind, t.archived_at, t.created_at, t.updated_at, t.revision, t.read_revision,
            t.run_model, t.run_effort,
            cc.job_id AS cron_job_id, cc.configured AS cron_configured,
@@ -7759,6 +7777,7 @@ function threadSelectSql(suffix: string): string {
                 WHEN (a.status = 'online' OR a.status = 'degraded') AND a.supports_attachments = 1 THEN 1 ELSE 0 END AS can_upload,
            (SELECT COUNT(*) FROM messages m WHERE m.thread_id = t.id AND ${visibleMessageSql("m")}) AS message_count
     FROM threads t JOIN agents a ON a.source_id = t.source_id
+    LEFT JOIN web_users u ON u.id = t.owner_user_id
     LEFT JOIN cron_channels cc ON cc.thread_id = t.id
     -- The member's own row carries its project's name, so a listing that
     -- crosses agents can label the row without a second read per project.

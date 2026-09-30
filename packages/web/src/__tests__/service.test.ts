@@ -573,6 +573,30 @@ describe("operator probe failure tolerance", () => {
 });
 
 describe("WebService", () => {
+  it("projects a principal-scoped bootstrap and rejects denied or missing requested sources", async () => {
+    const service = await createService();
+    try {
+      const admin = await service.store.auth.bootstrap("Morgan", "fictional-bootstrap-password");
+      const user = await service.store.auth.createUser({ username: "Avery", role: "user",
+        password: "fictional-bootstrap-password", grants: ["agent-one"] });
+      service.store.auth.initializeOwnership();
+      const privateAdmin = service.store.access.run(admin, () => service.createThread("agent-one"));
+      const privateUser = service.store.access.run(user, () => service.createThread("agent-one"));
+      const own = await service.store.access.run(user, () => service.bootstrap());
+      expect(own.threads.map((thread) => thread.id)).toEqual([privateUser.id]);
+      expect(own.currentThreadId).toBe(privateUser.id);
+      const administration = await service.store.access.run(admin, () => service.bootstrap());
+      expect(administration.threads.map((thread) => thread.id)).toEqual([privateAdmin.id]);
+      expect(administration.currentThreadId).toBeUndefined();
+      await expect(service.store.access.run(user, () => service.bootstrap({ sourceId: "denied" })))
+        .rejects.toMatchObject({ status: 404 });
+      await expect(service.store.access.run(admin, () => service.bootstrap({ sourceId: "missing" })))
+        .rejects.toMatchObject({ status: 404 });
+      // Legacy unknown-source fallback remains unchanged outside authenticated scope.
+      expect((await service.bootstrap({ sourceId: "missing" })).threadsSourceId).toBe("agent-one");
+    } finally { await service.stop(); }
+  });
+
   it("only compacts an owned idle thread and rejects concurrent actions", async () => {
     let release!: () => void;
     let started!: () => void;
