@@ -744,7 +744,7 @@ async function startWebBackground(
       );
     }
     const prior = priorRecord ?? priorDefinition;
-    const publicOrigin = selectedWebPublicOrigin(options.env.MONO_AGENT_WEB_PUBLIC_ORIGIN ?? prior?.publicOrigin);
+    let publicOrigin = selectedWebPublicOrigin(options.env.MONO_AGENT_WEB_PUBLIC_ORIGIN ?? prior?.publicOrigin);
     if (pendingMaintenanceIntent !== undefined) {
       let currentMainIdentity: string;
       try {
@@ -884,6 +884,17 @@ async function startWebBackground(
     const tailscaleDnsName = inspectTailscale
       ? await readTailscaleDnsName(tailscaleRunner, deps.sleep) ?? recordedTailscaleDnsName
       : undefined;
+    if (multiUser === true && inspectTailscale && publicOrigin === undefined) {
+      let httpsPort = priorTailscaleOwnership.kind === "valid" ? priorTailscaleOwnership.ownership.httpsPort : undefined;
+      if (httpsPort === undefined && options.shareTailnet === true && priorTailscaleOwnership.kind === "absent") {
+        const status = await readTailscaleServeStatus(tailscaleRunner);
+        if (status.kind === "ok") httpsPort = chooseTailscaleHttpsPort(status.status);
+      }
+      if (tailscaleDnsName === undefined || httpsPort === undefined) {
+        return await fail("Multi-user tailnet sharing requires a proven HTTPS origin; set MONO_AGENT_WEB_PUBLIC_ORIGIN or restore the owned Tailscale route before retrying");
+      }
+      publicOrigin = selectedWebPublicOrigin(`https://${tailscaleDnsName}:${String(httpsPort)}`);
+    }
     const allowedHosts = mergeWebAllowedHosts(options.env.MONO_AGENT_WEB_ALLOWED_HOSTS, tailscaleDnsName);
     const environment = {
       ...selectBackgroundOperationalEnvironment(options.env),

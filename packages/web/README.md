@@ -253,6 +253,16 @@ in multi-user mode, including retained subscriptions and outbox work (follow-up
 #1160). This server-side boundary does not sandbox the agent's arbitrary tools or
 global memory. Browser login/sharing/cache UX is a separate webapp follow-up.
 
+Privacy against administrators is an application policy, not cryptographic
+isolation: an administrator can reset another account's password through the
+web API and could then authenticate as that account. Offline bootstrap remains
+the recovery path. Any visible participant in a shared conversation may answer
+an `AskUser` raised by another participant's run. A shared project change may be
+temporarily unavailable because of retained work, including private membership;
+its neutral error does not identify that membership. This availability signal is
+a known limit. Staged upload quotas and in-flight reservations are per account;
+physical disk exhaustion remains a host resource limit.
+
 Prepare or recover an administrator offline with
 `mono-agent web users bootstrap --username <name>` while the server is stopped.
 The command prompts for a hidden, confirmed password and takes the same exclusive
@@ -267,7 +277,11 @@ account with the same offline bootstrap command if it was disabled or demoted.
 For HTTPS termination, set `MONO_AGENT_WEB_PUBLIC_ORIGIN` to the exact external
 origin (for example, `https://console.example.test`) when starting or restarting
 the managed worker. launchd and systemd retain that validated origin across
-restarts; an explicit new value replaces it. Embedded hosts may instead pass
+restarts; an explicit new value replaces it. Multi-user managed Tailscale sharing
+also derives and persists the exact HTTPS origin of the command's owned route
+when no deployment origin is set; if it cannot prove one it refuses that
+combination. Linux routes remain externally managed and require an explicit
+origin. Embedded hosts may instead pass
 `publicOrigin` to `startWebServer`. No path, query, fragment or credentials are
 allowed. Keep the hostname in the existing allowed-host policy and preserve the
 external Host header at the proxy. HTTPS origins issue Secure cookies; plain HTTP

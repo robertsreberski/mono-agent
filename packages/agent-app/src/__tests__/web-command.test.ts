@@ -1437,7 +1437,21 @@ describe("runWebCommand", () => {
     expect(launchctl).not.toHaveBeenCalledWith(expect.arrayContaining(["bootstrap"]));
   });
 
-  it("pins the node's exact Tailscale DNS hostname into the worker before claiming Serve", async () => {
+  it("refuses authenticated tailnet sharing without a derivable deployment origin", async () => {
+    const home = await testHome(); const paths = webPaths(home); let errors = "";
+    await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
+    const code = await runWebCommand({ positionals: ["start"], multiUser: true, shareTailnet: true, env: {} }, {
+      platform: "darwin", homeDir: home, getuid: () => 501, prepareState,
+      acquireLifecycleLock: async () => async () => undefined,
+      launchctl: async () => ({ code: 1, stdout: "", stderr: "not loaded" }), tailscale: unavailableTailscaleRunner(),
+      ensureManagedRuntime: async () => ({ cliPath: "/managed/dist/cli.js", nodePath: "/managed/node", launchProof: "cHJvb2Y" }),
+      healthcheck: async () => false, stdout: { write: () => undefined }, stderr: { write: (text) => { errors += text; } },
+    });
+    expect(code).toBe(1); expect(errors).toContain("requires a proven HTTPS origin");
+    await expect(stat(paths.recordPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each([false, true])("pins owned tailnet hostname and derives authenticated HTTPS origin (multiUser=%s)", async (multiUser) => {
     const home = await testHome();
     const paths = webPaths(home);
     await mkdir(join(home, "Library"), { recursive: true, mode: 0o700 });
@@ -1453,7 +1467,11 @@ describe("runWebCommand", () => {
 
     const claimRunner = scriptedClaimRunner();
     let dnsReads = 0;
+    let preflight = false;
     const tailscale: CommandRunner = async (args) => {
+      if (multiUser && args[0] === "serve" && args[1] === "status" && !preflight) {
+        preflight = true; return { code: 0, stdout: JSON.stringify({ TCP: {}, Web: {} }), stderr: "" };
+      }
       if (args[0] === "status" && dnsReads++ === 0) {
         return { code: 1, stdout: "", stderr: "transient LocalAPI failure" };
       }
@@ -1464,6 +1482,7 @@ describe("runWebCommand", () => {
       {
         positionals: ["start"],
         theme: "terracotta",
+        multiUser,
         shareTailnet: true,
         env: {
           MONO_AGENT_WEB_ALLOWED_HOSTS: "console.home.arpa",
@@ -1492,6 +1511,10 @@ describe("runWebCommand", () => {
     expect(dnsReads).toBeGreaterThanOrEqual(2);
     const plist = await readFile(paths.launchd.plistPath, "utf8");
     expect(plist).toContain("<string>MONO_AGENT_WEB_ALLOWED_HOSTS=console.home.arpa,host.example.ts.net</string>");
+    if (multiUser) {
+      expect(plist).toContain("MONO_AGENT_WEB_PUBLIC_ORIGIN=https://host.example.ts.net");
+      expect(JSON.parse(await readFile(paths.recordPath, "utf8")).publicOrigin).toBe("https://host.example.ts.net");
+    }
     expect(plist).toContain("<string>MONO_AGENT_WEB_PUSH_SUBJECT=mailto:owner@example.test</string>");
     expect(plist).toContain("<string>--theme</string>");
     expect(plist).toContain("<string>terracotta</string>");
