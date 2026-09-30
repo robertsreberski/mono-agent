@@ -191,6 +191,7 @@ export interface PersistPiProviderCredentialOptions extends PiAuthPromotionHooks
 const DEFAULT_PI_AUTH_PATH = join(homedir(), ".pi", "agent", "auth.json");
 const PI_API_KEY_PROVIDERS: Readonly<Record<string, string>> = {
   "opencode-go": "OPENCODE_API_KEY",
+  openai: "OPENAI_API_KEY",
 };
 const DEFAULT_PROVIDER_PREFLIGHT_TIMEOUT_MS = 5_000;
 const PROVIDER_AUTH_TERM_GRACE_MS = 1_000;
@@ -209,8 +210,8 @@ export function resolvePiCliPath(): string {
   return fileURLToPath(new URL("./pi-oauth-login-main.js", import.meta.url));
 }
 
-export function piLoginCommand(provider: string, piCliPath = resolvePiCliPath()): readonly [string, ...string[]] {
-  return [process.execPath, piCliPath, provider];
+export function piLoginCommand(provider: string, piCliPath = resolvePiCliPath(), durableAuthPath?: string): readonly [string, ...string[]] {
+  return [process.execPath, piCliPath, provider, ...(provider === "openai" && durableAuthPath !== undefined ? [durableAuthPath] : [])];
 }
 
 export function piAuthRecoveryCommand(provider: string, piAuthPath?: string): string {
@@ -473,7 +474,7 @@ export function planProviderSetup(options: PlanProviderSetupOptions): ProviderSe
     const supportsOAuth = piOAuthProviders.has(ref.provider);
     const supportsApiKeyLogin = typeof provider?.auth.apiKey?.login === "function";
     const selectedMethod = options.piAuthMethods?.[ref.provider]
-      ?? (supportsOAuth ? "oauth" : supportsApiKeyLogin ? "api-key" : undefined);
+      ?? (ref.provider === "openai" ? undefined : supportsOAuth ? "oauth" : supportsApiKeyLogin ? "api-key" : undefined);
 
     if (selectedMethod === "api-key" && supportsApiKeyLogin) {
       const envVar = PI_API_KEY_PROVIDERS[ref.provider];
@@ -510,7 +511,7 @@ export function planProviderSetup(options: PlanProviderSetupOptions): ProviderSe
       kind: "auth",
       label: `Pi login for ${ref.provider}`,
       modelRefs: [refKey],
-      command: piLoginCommand(ref.provider, options.piCliPath),
+      command: piLoginCommand(ref.provider, options.piCliPath, piAuthPathForSetup(piAuthPath, options.cwd)),
       piAuthPath: piAuthPathForSetup(piAuthPath, options.cwd),
       cwd: piAuthWorkingDirectory(piAuthPath, options.cwd),
       detail: `Runs bundled Pi auth for provider \`${ref.provider}\` and securely replaces providers.piAuthPath.`,
@@ -692,12 +693,17 @@ function isBoundedCredentialString(value: unknown): value is string {
     && !value.includes("\0");
 }
 
-function isUsableStoredPiCredential(_provider: string, value: unknown): boolean {
+export function hasUsablePiOAuthClientId(provider: string, value: { readonly clientId?: unknown }): boolean {
+  return provider !== "openai" || isBoundedCredentialString(value.clientId);
+}
+
+export function isUsableStoredPiCredential(provider: string, value: unknown): boolean {
   if (!isRecord(value)) return false;
   if (!isBoundedCredentialValue(value)) return false;
   if (value.type === "oauth") {
     return (isBoundedCredentialString(value.access) || isBoundedCredentialString(value.refresh))
-      && (value.expires === undefined || (typeof value.expires === "number" && Number.isFinite(value.expires)));
+      && (value.expires === undefined || (typeof value.expires === "number" && Number.isFinite(value.expires)))
+      && hasUsablePiOAuthClientId(provider, value);
   }
   if (value.type !== "api_key") return false;
   if (Object.keys(value).some((key) => key !== "type" && key !== "key" && key !== "env")) return false;
@@ -1870,7 +1876,8 @@ function assertOAuthCredential(value: unknown, provider: string): void {
   const credential = value as Record<string, unknown>;
   const access = typeof credential.access === "string" ? credential.access.trim() : "";
   const refresh = typeof credential.refresh === "string" ? credential.refresh.trim() : "";
-  if (credential.type !== "oauth" || (access.length === 0 && refresh.length === 0)) {
+  if (credential.type !== "oauth" || (access.length === 0 && refresh.length === 0)
+    || !isUsableStoredPiCredential(provider, credential)) {
     throw new Error(`Bundled Pi login produced invalid OAuth credentials for ${provider}; the configured store was not changed.`);
   }
 }

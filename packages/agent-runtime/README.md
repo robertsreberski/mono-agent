@@ -780,7 +780,7 @@ context and a pricing tier above 272,000 input tokens. Anthropic OAuth
 requests use Pi's Claude Code identity.
 `resolvePiOAuthApiKey(providerId, credentials)` refreshes a caller-owned
 credential snapshot and returns `{ apiKey, newCredentials }` or `null`, while
-`loginPiOAuth(providerId, callbacks)` runs the selected supported login flow.
+`loginPiOAuth(providerId, callbacks, { getDeviceId })` runs the selected supported login flow. `openai` ChatGPT sign-in requires an app-owned callback returning a stable installation UUID; `loginPiProviderAuth()` accepts the same optional fourth argument. Its credential includes a dynamically issued `clientId` required for refresh. API-key login needs no device ID; `openai-codex` is unchanged.
 Login callers must implement Pi's four required interaction callbacks:
 `onAuth`, `onDeviceCode`, `onPrompt`, and `onSelect`; optional progress,
 manual-code, and abort callbacks pass through unchanged.

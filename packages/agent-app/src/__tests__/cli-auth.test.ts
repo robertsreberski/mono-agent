@@ -9,11 +9,15 @@ const mocks = vi.hoisted(() => ({
   cancelValue: Symbol("cancel"),
   executeProviderSetupPlan: vi.fn(),
   password: vi.fn(),
+  select: vi.fn(),
+  confirm: vi.fn(),
 }));
 
 vi.mock("@clack/prompts", () => ({
   isCancel: (value: unknown) => value === mocks.cancelValue,
   password: mocks.password,
+  select: mocks.select,
+  confirm: mocks.confirm,
 }));
 
 vi.mock("../provider-setup.js", async (importOriginal) => {
@@ -43,6 +47,10 @@ beforeEach(async () => {
     plan.actions.map((action: object) => ({ action, status: "ok", detail: "saved securely" })),
   );
   mocks.password.mockReset();
+  mocks.select.mockReset();
+  mocks.select.mockResolvedValue("oauth");
+  mocks.confirm.mockReset();
+  mocks.confirm.mockResolvedValue(true);
   Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
   Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
   vi.spyOn(process.stdout, "write").mockImplementation((() => true) as typeof process.stdout.write);
@@ -75,6 +83,33 @@ describe("standalone Pi API-key login", () => {
     expect(() => parseCliArgs(["init", "--api-key-stdin"])).toThrow(
       "--api-key-stdin is only supported for `mono-agent auth login <provider>`.",
     );
+  });
+
+  it("requires an explicit OpenAI method headlessly, and passes a stable-path OAuth action when selected", async () => {
+    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: false });
+    Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: false });
+    await expect(runCli(["auth", "login", "openai"])).resolves.toBe(2);
+    expect(mocks.executeProviderSetupPlan).not.toHaveBeenCalled();
+    await expect(runCli(["auth", "login", "openai", "--auth-method", "oauth", "--pi-auth-path", join(process.cwd(), "pi", "auth.json")])).resolves.toBe(0);
+    expect(mocks.executeProviderSetupPlan.mock.calls[0]?.[0].actions).toMatchObject([{
+      id: "pi-login:openai", command: [process.execPath, expect.any(String), "openai", join(process.cwd(), "pi", "auth.json")],
+    }]);
+    expect(parseCliArgs(["auth", "login", "openai", "--auth-method", "oauth"]).authMethod).toBe("oauth");
+    expect(() => parseCliArgs(["init", "--auth-method", "oauth"])).toThrow(/only supported/u);
+  });
+
+  it("lets --api-key-stdin imply OpenAI API-key login, but rejects an OAuth conflict", async () => {
+    Object.defineProperty(process, "stdin", { configurable: true, value: Readable.from(["fictional-key\n"]) });
+    await expect(runCli(["auth", "login", "openai", "--api-key-stdin", "--auth-method", "oauth"])).resolves.toBe(2);
+    await expect(runCli(["auth", "login", "openai", "--api-key-stdin"])).resolves.toBe(0);
+    expect(mocks.executeProviderSetupPlan.mock.calls[0]?.[0].actions).toMatchObject([{ id: "pi-api-key:openai" }]);
+  });
+
+  it("prompts for OpenAI's method on a TTY before authentication", async () => {
+    mocks.select.mockResolvedValue("oauth");
+    await expect(runCli(["auth", "login", "openai"])).resolves.toBe(0);
+    expect(mocks.select).toHaveBeenCalledOnce();
+    expect(mocks.executeProviderSetupPlan.mock.calls[0]?.[0].actions).toMatchObject([{ id: "pi-login:openai" }]);
   });
 
   it("collects OpenCode-Go credentials through a masked TTY prompt and ignores ambient keys", async () => {

@@ -60,9 +60,7 @@ describe("provider auth status", () => {
     ]);
   });
 
-  it("does not offer OpenAI ChatGPT OAuth in provider settings before device IDs exist", async () => {
-    // Pi 0.99 adds this OAuth method, but the runtime facade must suppress
-    // unusable login while retaining OpenAI API keys and Codex OAuth.
+  it("offers both OpenAI methods in provider settings while retaining Codex OAuth", async () => {
     const config = { ...configWith("/missing"), runtime: {
       model: parseMonoRuntimeModelReference("openai:gpt-5.5"),
       fallbacks: [{ model: parseMonoRuntimeModelReference("openai-codex:gpt-5.5") }],
@@ -72,9 +70,22 @@ describe("provider auth status", () => {
       observations: createProviderAuthObservationTracker(),
     });
     expect(snapshot.providers.find((provider) => provider.providerId === "openai")?.methods.map((method) => method.authType))
-      .toEqual(["api_key"]);
+      .toEqual(["oauth", "api_key"]);
     expect(snapshot.providers.find((provider) => provider.providerId === "openai-codex")?.methods.map((method) => method.authType))
       .toContain("oauth");
+  });
+
+  it("marks a stored OpenAI OAuth credential without clientId unusable", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-agent-openai-status-"));
+    tempDirs.push(dir);
+    const authPath = join(dir, "auth.json");
+    await writeFile(authPath, JSON.stringify({ openai: { type: "oauth", access: "fake", refresh: "fake", expires: 4_200_000_000_000 } }), { mode: 0o600 });
+    const snapshot = await providerAuthStatusSnapshot({
+      config: { ...configWith(authPath), runtime: { model: parseMonoRuntimeModelReference("openai:gpt-5.5") } } as unknown as MonoAgentConfig,
+      env: {}, drivers: [], input: { cwd: dir, configPath: join(dir, "config.json"), env: {} },
+      observations: createProviderAuthObservationTracker(),
+    });
+    expect(snapshot.providers[0]).toMatchObject({ state: "missing", credentialType: "oauth", unavailableReason: expect.stringContaining("client ID") });
   });
 
   it("tracks classifier credentials as a separate memory usage", async () => {

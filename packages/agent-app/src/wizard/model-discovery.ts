@@ -9,7 +9,7 @@ import {
   inspectPiAuthStore as inspectDefaultPiAuthStore,
   type PiAuthStoreInspection,
 } from "../pi-auth-store-inspection.js";
-import { runBoundedProviderCommand } from "../provider-setup.js";
+import { hasUsablePiOAuthClientId, runBoundedProviderCommand } from "../provider-setup.js";
 
 export type WizardModelSource = "pi" | "ollama" | "lmstudio" | "custom";
 export type WizardModelAvailability = "catalog_available";
@@ -20,6 +20,7 @@ export const GUIDED_PI_PROVIDER_IDS = [
   "anthropic",
   "github-copilot",
   "openai-codex",
+  "openai",
   "opencode-go",
 ] as const;
 
@@ -27,6 +28,7 @@ const GUIDED_PI_PROVIDERS = new Set<string>(GUIDED_PI_PROVIDER_IDS);
 const GUIDED_LOCAL_PI_PROVIDERS = new Set(["ollama", "lmstudio"]);
 const PI_API_KEY_ENV_BY_PROVIDER: Readonly<Record<string, string>> = {
   "opencode-go": "OPENCODE_API_KEY",
+  openai: "OPENAI_API_KEY",
 };
 
 /** Whether a selected Pi route has an API key in the destination agent environment. */
@@ -48,7 +50,7 @@ export function guidedPiProviderProblem(provider: string): string | undefined {
   }
   return builtinModels().getProvider(provider) === undefined
     ? "Custom Pi providers require a hand-authored providers.local[] entry. Guided init supports discovered Ollama and LM Studio routes."
-    : "Guided init supports Pi Anthropic, GitHub Copilot, OpenAI Codex, OpenCode-Go, Ollama, and LM Studio. Configure other Pi providers manually.";
+    : "Guided init supports Pi Anthropic, GitHub Copilot, OpenAI, OpenAI Codex, OpenCode-Go, Ollama, and LM Studio. Configure other Pi providers manually.";
 }
 
 export interface WizardModelCandidate {
@@ -209,7 +211,7 @@ async function discoverPiModels(
     } else {
       const providers = readPiAuthProviderMap(inspection.auth);
       credentialProviders = new Set(Object.entries(providers)
-        .filter(([provider, credential]) => GUIDED_PI_PROVIDERS.has(provider) && hasUsablePiCredential(credential))
+        .filter(([provider, credential]) => GUIDED_PI_PROVIDERS.has(provider) && hasUsablePiCredential(credential, provider))
         .map(([provider]) => provider));
       status = credentialProviders.size > 0
         ? {
@@ -300,10 +302,11 @@ function readPiAuthProviderMap(auth: Readonly<Record<string, unknown>>): Record<
   return { ...nestedProviders, ...topLevelProviders };
 }
 
-function hasUsablePiCredential(value: unknown): boolean {
+function hasUsablePiCredential(value: unknown, provider: string): boolean {
   if (!isRecord(value)) return false;
   if (value.type === "oauth") {
-    return isCredentialString(value.access) || isCredentialString(value.refresh);
+    return (isCredentialString(value.access) || isCredentialString(value.refresh))
+      && hasUsablePiOAuthClientId(provider, value);
   }
   return value.type === "api_key" && isCredentialString(value.key);
 }

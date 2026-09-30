@@ -58,6 +58,10 @@ export function createPiOAuthApiKeyResolver(options = {}) {
         return undefined;
       }
 
+      if (provider === "openai" && credential.type === "oauth"
+        && (typeof result.newCredentials.clientId !== "string" || result.newCredentials.clientId.trim().length === 0)) {
+        throw new Error("OpenAI OAuth refresh did not preserve its issued client ID; reconnect ChatGPT");
+      }
       auth[provider] = {
         type: "oauth",
         ...result.newCredentials,

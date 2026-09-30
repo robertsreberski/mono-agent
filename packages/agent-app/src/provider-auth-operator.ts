@@ -17,6 +17,7 @@ import {
 import { loginPiProviderAuth } from "@mono-agent/agent-runtime/ai";
 
 import { persistPiProviderCredential } from "./provider-setup.js";
+import { getOrCreatePiInstallationId, PiInstallationIdError } from "./pi-installation-id.js";
 import {
   createProviderAuthCheckManager,
   type CreateProviderAuthCheckManagerOptions,
@@ -146,7 +147,10 @@ export function createProviderAuthOperator(options: CreateProviderAuthOperatorOp
         ...(options.platform === undefined ? {} : { platform: options.platform }),
         abortSignal: session.abort.signal,
         onCredentialStoreMutation: observePersistence,
-        resolveCredential: async () => await login(input.providerId, input.authType, {
+        resolveCredential: async () => {
+          const deviceId = input.providerId === "openai" && input.authType === "oauth"
+            ? await getOrCreatePiInstallationId(options.config.providers!.piAuthPath!) : undefined;
+          return await login(input.providerId, input.authType, {
           signal: session.abort.signal,
           prompt: async (prompt) => {
             if (session.abort.signal.aborted || !isCurrent(session)) {
@@ -226,7 +230,8 @@ export function createProviderAuthOperator(options: CreateProviderAuthOperatorOp
               session.timeout.unref?.();
             }
           },
-        }),
+        }, deviceId === undefined ? undefined : { getDeviceId: () => deviceId });
+        },
       })).then(() => {
         // Persistence can enter its deliberately non-cancellable atomic promote
         // or cleanup phase before a session is replaced/cancelled. Its eventual
@@ -530,6 +535,7 @@ function instructionsFor(session: ProviderAuthSessionSnapshot, upstream: unknown
   if (session.providerId === "openai-codex" && session.strategy === "device_code") return "Open the OpenAI device page in any browser, enter the code, and keep this dialog open while the headless agent polls.";
   if (session.providerId === "openai-codex") return "Open the URL. If the final localhost page cannot reach the agent host, copy the complete final URL from the browser address bar and paste it here.";
   if (session.providerId === "anthropic") return "Open the URL. If the redirect to localhost:53692 does not load, copy the complete final URL from the address bar and paste it here; the full URL is preferred.";
+  if (session.providerId === "openai") return "Sign in with ChatGPT. If the browser is remote or localhost:1455 cannot reach the agent (including a busy callback port), copy the complete final redirect URL from the address bar and paste it here. A code alone will not work; a bad paste ends this attempt, so restart sign-in.";
   return `${typeof upstream === "string" ? bounded(upstream) : "Complete the provider sign-in in this browser."} The agent host is headless; keep this dialog open.`;
 }
 
@@ -568,12 +574,23 @@ function normalizeInput(input: ProviderAuthSessionInput, prompt: PendingPrompt):
 }
 
 function safeError(error: unknown): ProviderAuthSessionSnapshot["error"] {
+  if (error instanceof PiInstallationIdError) {
+    return { code: error.code, message: error.message };
+  }
   const message = error instanceof Error ? error.message.toLowerCase() : "";
   if (message.includes("lock") && (message.includes("active") || message.includes("exists"))) {
     return { code: "auth_store_busy", message: "Another authentication process is using the Pi auth store." };
   }
   if (message.includes("unsafe") || message.includes("refusing") || message.includes("owned")) {
     return { code: "auth_store_unsafe", message: "The Pi auth store did not pass owner-only safety checks." };
+  }
+  if (message.includes("installation id") || message.includes("installation device id")) {
+    return { code: "installation_id_invalid", message: "The ChatGPT installation ID could not be securely read or created. Inspect the agent host before retrying." };
+  }
+  if (message.includes("oauth state mismatch") || message.includes("missing oauth state")
+    || message.includes("did not contain an issued client id") || message.includes("paste the full callback url")
+    || message.includes("pasted callback url must start with")) {
+    return { code: "invalid_input", message: "The pasted ChatGPT redirect URL was invalid or stale. Restart sign-in and paste the complete final URL." };
   }
   if (message.includes("cleanup")) return { code: "cleanup_failed", message: "Credential cleanup could not be confirmed; inspect the agent host before retrying." };
   if (message.includes("promotion")) return { code: "promotion_failed", message: "Credential promotion failed and the prior Pi auth store was preserved." };

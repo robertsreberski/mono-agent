@@ -267,16 +267,21 @@ discovery. The live Codex provider default leads when available; offline setup
 falls back to curated `openai-codex:gpt-5.6-terra` without guessing effort metadata, so
 only **Provider default** is offered until live `model/list` succeeds. GPT-6
 Astra is selectable as `openai-codex:gpt-6-astra` for Codex subscriptions;
-`openai:gpt-6-astra` is also runtime-compatible for OpenAI API keys through the
-existing hand-authored provider path, without adding direct OpenAI to guided
-setup. GPT-5.6 Sol remains selectable as `openai-codex:gpt-5.6-sol`.
+`openai:gpt-6-astra` is available in guided setup with an explicit choice
+between ChatGPT sign-in and an OpenAI API key; credentials are stored under the
+same provider id, one at a time. Neither method changes default routes. GPT-5.6 Sol remains selectable as `openai-codex:gpt-5.6-sol`.
 OpenCode-Go Pi refs can save `OPENCODE_API_KEY` into
 the Pi auth store or remain environment-provided, and any number of fallback
 models are selected from the same discovered choices one at a time. Each route
 offers only its advertised effort values plus **Provider default**. Standalone
 `mono-agent auth login anthropic` keeps its localhost callback active while
 also reading a pasted final redirect URL through Pi's code/state-validating
-OAuth implementation. `mono-agent auth login opencode-go` uses a masked TTY prompt; headless callers
+OAuth implementation. `mono-agent auth login openai` prompts for the method;
+headless callers select `--auth-method oauth|api-key` (or use `--api-key-stdin`
+for an explicitly redirected key). ChatGPT's fixed localhost:1455 callback
+can be replaced by pasting the full final redirect URL when the browser is
+remote or the port is busy. Its owner-only installation ID is scoped to the
+durable Pi auth directory, not the temporary login store. `mono-agent auth login opencode-go` uses a masked TTY prompt; headless callers
 must opt in to one-line redirected input with `--api-key-stdin`. Any flag (or a piped/non-TTY
 invocation) takes the silent default/preset scaffold path instead; add `--auth`
 to run supported provider setup in that non-interactive path. Required selected

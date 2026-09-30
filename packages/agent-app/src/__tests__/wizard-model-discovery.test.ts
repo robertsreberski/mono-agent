@@ -114,7 +114,7 @@ describe("supported wizard model catalog", () => {
     expect(pi.some((candidate) => candidate.value.startsWith("opencode-go:"))).toBe(true);
     expect(pi.some((candidate) => candidate.value.startsWith("amazon-bedrock:"))).toBe(false);
     expect(pi.some((candidate) => candidate.value.startsWith("cloudflare-"))).toBe(false);
-    expect(pi.some((candidate) => candidate.value.startsWith("openai:"))).toBe(false);
+    expect(pi.some((candidate) => candidate.value.startsWith("openai:"))).toBe(true);
     expect(pi.every((candidate) => candidate.availability === "catalog_available")).toBe(true);
     expect(pi.some((candidate) => candidate.supportedEfforts?.includes("minimal"))).toBe(true);
     expect(pi.find((candidate) => candidate.value === "github-copilot:gemini-3.7-flash")).toMatchObject({

@@ -643,6 +643,29 @@ describe("guided init state transitions", () => {
     await expect(access(join(process.cwd(), "mono-agent.config.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("reselects OpenAI API-key persistence during authentication recovery instead of repeating an environment/store conflict", async () => {
+    const authPath = join(process.cwd(), "auth.json");
+    await writeFile(join(process.cwd(), ".env"), `MONO_AGENT_PI_AUTH_PATH=${authPath}\n`, { mode: 0o600 });
+    await writeFile(authPath, JSON.stringify({ openai: { type: "api_key", key: "existing-fake" } }), { mode: 0o600 });
+    mocks.runInitWizard.mockResolvedValue({
+      status: "answers", answers: defaultAnswers({ model: "openai:gpt-5.5" }),
+      moduleSecrets: {}, providerSetupSecrets: {}, providerEnvironmentSecrets: {},
+      piAuthMethods: { openai: "api-key" }, piApiKeyPersistenceByProvider: { openai: "environment" },
+      runProviderSetup: false,
+    });
+    mocks.runAllRouteReadinessProbe.mockResolvedValue({ ok: false, kind: "provider_failed", message: "Authentication failed." });
+    mocks.selectAnswers.push("auth", "api-key", "secure-store", "cancel");
+    mocks.passwordAnswers.push("replacement-fake");
+    mocks.executeProviderSetupPlan.mockImplementation(async (plan: { actions: readonly Record<string, unknown>[] }) =>
+      plan.actions.map((action) => ({ action, status: "failed", detail: "fixture failure" })));
+
+    await expect(runCli(["init"])).resolves.toBe(1);
+    expect(mocks.selectCalls.map((call) => call.message)).toContainEqual(expect.stringContaining("OPENAI_API_KEY"));
+    expect(mocks.executeProviderSetupPlan).toHaveBeenCalledOnce();
+    expect((mocks.executeProviderSetupPlan.mock.calls[0]?.[0] as { actions: Array<{ persistence?: string }> }).actions[0]?.persistence).toBe("secure-store");
+    expect(JSON.parse(await readFile(authPath, "utf8"))).toEqual({ openai: { type: "api_key", key: "existing-fake" } });
+  });
+
   it("retries provider setup instead of the live probe while the credential is still missing", async () => {
     mocks.runInitWizard.mockResolvedValue({
       status: "answers",

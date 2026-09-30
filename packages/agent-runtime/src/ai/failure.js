@@ -161,6 +161,9 @@ export function retryableProviderFailureInfo({
   failureKind = null,
 } = {}) {
   const haystack = `${errorText || ""}\n${stderrTail || ""}`.trim();
+  if (haystack.includes("subscription_sharing_usage_limit_exceeded")) {
+    return { retryable: true, subkind: "subscription_limit", requestId: requestIdFromText(haystack) };
+  }
   if (failureKind === "context_limit") {
     return {
       retryable: true,

@@ -134,6 +134,7 @@ describe("provider check", () => {
     ["prompt is too long: RAW_PROVIDER_SECRET_SENTINEL", "inconclusive"],
     ["401 Unauthorized RAW_PROVIDER_SECRET_SENTINEL", "auth_failed"],
     ["429 rate limit RAW_PROVIDER_SECRET_SENTINEL", "quota_limited"],
+    ["subscription_sharing_usage_limit_exceeded RAW_PROVIDER_SECRET_SENTINEL", "quota_limited"],
     ["unsupported model RAW_PROVIDER_SECRET_SENTINEL", "model_not_entitled"],
     ["ECONNREFUSED RAW_PROVIDER_SECRET_SENTINEL", "network_failed"],
     // The ordinary runtime labels unrecognized provider errors unavailable.

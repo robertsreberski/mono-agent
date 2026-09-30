@@ -452,8 +452,12 @@ advertising the additive checks capability also show one section-level **Run
 check** button; it checks only the displayed providers, reports partial fixed
 outcomes inline, and never runs on settings reads or polling. GitHub Copilot and
 OpenAI Codex expose Pi device-code flows;
-Anthropic accepts the final redirect URL/code; API-key providers use masked
-provider-owned prompts. Re-authentication remains available during an active
+Anthropic accepts the final redirect URL/code; `openai` offers explicit ChatGPT
+sign-in (full redirect URL paste-back for a remote browser or busy localhost:1455)
+or a masked API-key prompt. Switching from one stored OpenAI credential method
+to the other requires a browser-side confirmation and replaces it only after
+successful authentication. The web service stores neither the installation ID
+nor provider credentials; API-key providers use masked provider-owned prompts. Re-authentication remains available during an active
 login: a valid choice replaces it, while the compact flow stays visible until
 the fresh session arrives. Stale start, poll, input, and cancel responses cannot
 restore the old session. Polling continues through identical active snapshots;

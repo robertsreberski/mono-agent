@@ -75,11 +75,14 @@ Four surfaces share names with the deleted runtime bridges and are unaffected by
 
 `<provider>:<model>` resolves through the Pi SDK provider gateway, which fronts 15+ providers including `openai`, `openai-codex`, `anthropic`, `github-copilot`, `opencode-go`, `openrouter`, `ollama`, and `lmstudio`. Subscription/account-backed providers are reachable here, including OpenAI-Codex, Anthropic, GitHub Copilot, and OpenCode-Go.
 
-Pi 0.87.0 includes GPT-6 Astra under both first-party OpenAI providers:
-`openai:gpt-6-astra` uses an OpenAI API key, while
-`openai-codex:gpt-6-astra` uses a Codex subscription. The Codex route is part of
-guided setup; the direct OpenAI route remains compatible through hand-authored
-provider configuration.
+Pi includes GPT models under both first-party OpenAI providers:
+`openai:gpt-6-astra` uses either ChatGPT sign-in or an OpenAI API key, while
+`openai-codex:gpt-6-astra` retains its separate legacy Codex subscription sign-in.
+Both providers are available in guided setup; choosing a credential does not
+change the provider's model catalog or default route. For example, Pi's
+`gpt-6.1-sol` effort choices start at `low` on `openai`, while
+`openai-codex` also offers `minimal`. Confirm the exact model in your selected
+provider's catalog before editing a route.
 
 ```json
 {
@@ -94,7 +97,7 @@ Self-hosted and local providers used via `<provider>:<model>` are declared in th
 
 ## Provider credentials
 
-Pi credentials are resolved from the auth store at `providers.piAuthPath` (default `~/.pi/agent/auth.json`). OAuth/account-backed providers (Anthropic, GitHub Copilot, OpenAI Codex) are authenticated through `mono-agent auth login <provider>`. API-key providers (OpenCode-Go) use `OPENCODE_API_KEY` or a stored key. Local providers may declare `apiKeyEnv` for their own credentials. See [Providers](/runtime/providers/) for the full credential reference.
+Pi credentials are resolved from the auth store at `providers.piAuthPath` (default `~/.pi/agent/auth.json`). OAuth/account-backed providers (Anthropic, GitHub Copilot, OpenAI Codex, and ChatGPT on `openai`) are authenticated through `mono-agent auth login <provider>`. `openai` also accepts a stored API key or `OPENAI_API_KEY`; OpenCode-Go uses `OPENCODE_API_KEY` or a stored key. Local providers may declare `apiKeyEnv` for their own credentials. See [Providers](/runtime/providers/) for the full credential reference.
 
 ## How routing works
 

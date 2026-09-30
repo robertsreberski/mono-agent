@@ -93,7 +93,7 @@ export function classifyProviderCheckFailure(text, failureKind) {
     return { state: "auth_failed", code: "credential_rejected", message: "Provider rejected the configured credential." };
   }
   if (failureKind === "usage_limit"
-    || /(rate limit|too many requests|insufficient[_ ]quota|quota exceeded|billing limit|\b429\b)/i.test(value)) {
+    || /(subscription_sharing_usage_limit_exceeded|rate limit|too many requests|insufficient[_ ]quota|quota exceeded|billing limit|\b429\b)/i.test(value)) {
     return { state: "quota_limited", code: "quota_limited", message: "Provider quota or rate limit prevented the check." };
   }
   if (/(model[_ -]?not[_ -]?found|unsupported model|no access to (?:the )?model|model entitlement|model[^\n]{0,120}(?:does not exist|not found|unavailable))/i.test(value)) {

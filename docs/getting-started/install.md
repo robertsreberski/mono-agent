@@ -23,7 +23,7 @@ The npm packages publish in lockstep, and the latest published release does not 
 | --- | --- | --- |
 | Node.js | `>=24.15.0` | Runtime for the CLI, host, and consoles. This matches the minimum required by the bundled Pi runtime. |
 | pnpm | `>=10.16.0` | Only needed to build the workspace from source (the published packages install with plain `npm`/`npm exec`). |
-| Provider sign-in | Provider account, or a local model server | Anthropic, GitHub Copilot, and OpenAI Codex sign in through the Pi runtime's bundled OAuth flow (`mono-agent auth login <provider>`); OpenCode-Go uses `OPENCODE_API_KEY`; Ollama and LM Studio need no account. No external CLI install is required. |
+| Provider sign-in | Provider account, or a local model server | Anthropic, GitHub Copilot, OpenAI Codex, and `openai` with ChatGPT sign in through the Pi runtime's bundled OAuth flow (`mono-agent auth login <provider>`); OpenCode-Go uses `OPENCODE_API_KEY`; Ollama and LM Studio need no account. No external CLI install is required. |
 
 The default `openai-codex:gpt-5.6-terra` runtime signs in through the bundled Pi OAuth flow rather than a separate Codex CLI. `mono-agent auth login openai-codex` prints an auth URL to open in a browser, waits for the localhost callback, and accepts a pasted redirect URL / authorization code on remote or headless machines:
 

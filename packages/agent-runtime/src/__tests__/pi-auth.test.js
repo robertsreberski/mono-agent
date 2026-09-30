@@ -63,6 +63,26 @@ describe("createPiOAuthApiKeyResolver", () => {
     expect(await readFile(authPath, "utf8")).toBe(before);
   });
 
+  it("preserves OpenAI's issued clientId and provider fields through refresh and a fresh resolver", async () => {
+    const authPath = await writeAuth({ openai: {
+      type: "oauth", access: "old", refresh: "refresh-old", expires: 1,
+      clientId: "issued-client", scopes: ["resource.invoke"],
+    } });
+    resolveOAuthApiKeyMock.mockImplementation(async (_provider, credentials) => ({
+      apiKey: "new", newCredentials: { ...credentials.openai, access: "new", refresh: "refresh-new", expires: 4_200_000_000_000 },
+    }));
+    expect(await createPiOAuthApiKeyResolver({ path: authPath })("openai")).toBe("new");
+    expect(await createPiOAuthApiKeyResolver({ path: authPath }).readCredential("openai")).toMatchObject({
+      clientId: "issued-client", access: "new", scopes: ["resource.invoke"],
+    });
+    const before = await readFile(authPath, "utf8");
+    resolveOAuthApiKeyMock.mockResolvedValue({ apiKey: "invalid", newCredentials: {
+      access: "invalid", refresh: "invalid", expires: 1,
+    } });
+    await expect(createPiOAuthApiKeyResolver({ path: authPath })("openai")).rejects.toThrow(/client ID/u);
+    expect(await readFile(authPath, "utf8")).toBe(before);
+  });
+
   it("returns undefined when the auth file is missing", async () => {
     const dir = await tempDir();
     const resolver = createPiOAuthApiKeyResolver({ path: join(dir, "auth.json") });
