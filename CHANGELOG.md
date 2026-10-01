@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix orphaned background subagent reservations blocking new `Agent` calls after
+  restart; retire failed first admissions and require close/recreate when session
+  continuity cannot be proven.
+
 - Fix background `Agent` and `AgentManage` admission after live completion
   steering, and release proven never-admitted reservations without masking the
   allowlisted start failure.

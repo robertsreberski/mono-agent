@@ -72,8 +72,12 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
 - Keep persistent child incarnation/turn intents and minimal recovery fences in
   the owner-private registry. Abandoned linked turns cannot unblock without
   exact registered-owner proof; retained-root index failure blocks replacement
-  creation. Terminal child ownership/publication obligations pin process-job
-  retention, admission and fallback snapshots independently of delivery status.
+  creation. An operational root owner may reconcile an abandoned reservation when
+  no durable job or live admission remains. Missing jobs never prove the child
+  did not start: failed first admissions are retired, while existing instances
+  retain unknown-continuity recovery and require inspect/close/create, not resume.
+  Terminal child ownership/publication obligations pin process-job retention,
+  admission and fallback snapshots independently of delivery status.
   An interrupted running detached child may contribute bounded read-only Pi v4
   salvage in its delimited parent wake and authorized `AgentManage inspect`: only
   branch-placed matching tool results count as completed; other calls remain

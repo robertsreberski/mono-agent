@@ -15,7 +15,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { writeJsonAtomic } from "../continuation-store-fs.js";
+import { acquireContinuationStoreLock, writeJsonAtomic } from "../continuation-store-fs.js";
 import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
 import { openProcessJobsService, type ProcessJobsServiceHandle, type ProcessJobWakeInput } from "../process-jobs-service.js";
 import { PROCESS_JOBS_DEFAULTS } from "../process-jobs-config.js";
@@ -480,6 +480,185 @@ describe("parent steer", () => {
   }, 20_000);
 });
 
+describe("orphaned managed reservations", () => {
+  function registryFor(f: Awaited<ReturnType<typeof fixture>>, service: ProcessJobsServiceHandle, retireSession = async (_id: string, _root: string) => {}) {
+    const root = resolve(f.root, "children");
+    const registry = createSubagentInstanceRegistry({ root, retireSession,
+      ...createSubagentRecoveryAccess({ service, privateRoots: async () => [service.settings.stateDir, root],
+        hostAccess: () => ({ workspace: f.root, readableRoots: [], sandboxPolicy: createSandboxPolicy({ root: f.root }) }) }),
+      ownerForReservation: (jobId) => ({ jobId, storeRoot: service.settings.stateDir }),
+      resolveOwner: (identity) => service.resolveSubagentOwner!(identity),
+      checkOwnerIndex: (conversationId, known) => service.checkSubagentOwnerIndex!(conversationId, known),
+    });
+    service.bindManagedSubagents!({ root,
+      verify: async (identity) => (await registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
+      publish: async (phase, publication) => (await registry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication),
+    });
+    return registry;
+  }
+
+  async function persistOrphans(f: Awaited<ReturnType<typeof fixture>>, ids: readonly string[]) {
+    const directory = subagentConversationRoot(resolve(f.root, "children"), origin.conversationId);
+    const file = resolve(directory, "instances.json");
+    const records = JSON.parse(await readFile(file, "utf8"));
+    for (const record of records) {
+      if (!ids.includes(record.id)) continue;
+      const jobId = randomUUID();
+      record.status = "queued";
+      record.activeTurn = { token: jobId, kind: "detached", settlementPending: true };
+      record.reservation = { token: jobId };
+      record.ownerLink = { jobId, storeRoot: f.service.settings.stateDir };
+      if (record.turns === 0) record.createdForAdmission = true;
+      // A stopped writer leaves SQLite lock files, but no in-process turn map.
+      const lock = await acquireContinuationStoreLock(resolve(directory, "turn-locks", record.id));
+      await lock.release();
+    }
+    await writeJsonAtomic(file, records, true);
+    return records;
+  }
+
+  it("reconciles the persisted queued shape across restart without wedging unrelated Agent starts", async () => {
+    const retireSession = vi.fn(async (_id: string, _root: string) => {});
+    const f = await managedFixture(retireSession, {}, true);
+    const before = tools(f, async () => ({ text: "done" }));
+    for (const id of ["existing-one", "existing-two"]) {
+      const first = await before.agent.execute(`first-${id}`, { id, persist: true, background: true, prompt: "work" });
+      await done(f.service, first.details.jobId);
+      const next = await before.send.execute(`next-${id}`, { id, background: true, message: "continue" });
+      await done(f.service, next.details.jobId);
+      await f.instances.get(id); // Certify the older receipt before pruning it.
+    }
+    await f.instances.create({ ...spec, id: "fresh-orphan" });
+    await f.service.stop();
+    await f.store.applyRetention({ ...f.service.settings, retention: { ...f.service.settings.retention, maxAgeMs: 1 } }, new Date(Date.now() + 10_000));
+    expect(await f.store.list()).toEqual([]);
+    const persisted = await persistOrphans(f, ["existing-one", "existing-two", "fresh-orphan"]);
+    for (const record of persisted.filter((record: any) => record.turns > 0)) {
+      expect(record).toMatchObject({ turns: 2, lastStatus: "ok", ownerReceipt: { acknowledged: true } });
+      expect(record.ownerReceipt.jobId).not.toBe(record.activeTurn.token);
+    }
+    // Fresh store and service objects over the same roots, with the real lease.
+    const store = await openProcessJobStore(f.root, f.store.stateDir);
+    const service = await openProcessJobsService({ ...f.options, store }); services.push(service);
+    await service.activateWakes();
+    expect(await service.checkSubagentOwnerIndex!(origin.conversationId, [])).toBe("clear");
+    const registry = registryFor(f, service, retireSession);
+    const instances = await registry.open(origin.conversationId);
+    const recovered = { ...f, service, registry, instances, store };
+    const run = vi.fn(async () => ({ text: "new work" }));
+    const { agent, send } = tools(recovered, run);
+    // This succeeds before either existing orphan is explicitly closed.
+    const started = await agent.execute("unrelated", { id: "unrelated", persist: true, background: true, prompt: "work" });
+    await done(service, started.details.jobId);
+    expect(run).toHaveBeenCalledOnce();
+    for (const orphan of persisted) {
+      const record = await instances.get(orphan.id);
+      expect(record).toMatchObject({ status: orphan.createdForAdmission ? "closed" : "idle", lastStatus: "interrupted",
+        recovery: { turnToken: orphan.activeTurn.token, reason: "settlement_unknown", continuity: "unknown" } });
+      expect(record).not.toHaveProperty("activeTurn"); expect(record).not.toHaveProperty("reservation");
+      expect(record?.recovery).not.toHaveProperty("certifiedTimeout");
+      if (orphan.createdForAdmission) {
+        expect(retireSession).toHaveBeenCalledWith(orphan.sessionId, orphan.sessionsRoot);
+        continue;
+      }
+      const inspected = await send.execute(`inspect-${orphan.id}`, { id: orphan.id, inspect: true });
+      expect(inspected.details.recovery).toMatchObject({ status: "structured_job_recovery_unavailable",
+        recovery: { turnToken: orphan.activeTurn.token, continuity: "unknown" } });
+      expect(inspected.details.recovery).not.toHaveProperty("ack");
+      await expect(instances.reserve(orphan.id, randomUUID())).rejects.toMatchObject({ code: "subagent_recovery_required" });
+      await expect(send.execute(`resume-${orphan.id}`, { id: orphan.id, message: "continue", background: true }))
+        .rejects.toMatchObject({ code: "subagent_recovery_required" });
+      await expect(send.execute(`foreground-${orphan.id}`, { id: orphan.id, message: "continue" }))
+        .rejects.toMatchObject({ code: "subagent_recovery_required" });
+      const reopened = await registryFor(recovered, service, retireSession).open(origin.conversationId);
+      expect((await reopened.get(orphan.id))?.recovery).toEqual(record?.recovery);
+      await send.execute(`close-${orphan.id}`, { id: orphan.id, close: true });
+      expect(await instances.get(orphan.id)).toMatchObject({ status: "closed" });
+    }
+    const replacement = await agent.execute("replace-retired", { id: "fresh-orphan", persist: true, background: true, prompt: "work" });
+    await done(service, replacement.details.jobId);
+    expect((await instances.get("fresh-orphan"))?.incarnation).not.toBe(persisted.find((record: any) => record.id === "fresh-orphan").incarnation);
+    expect(run).toHaveBeenCalledTimes(2);
+    // Six real durable jobs plus restart/inspection need room for full-suite I/O
+    // contention; individual delivery and all product deadlines stay bounded.
+  }, 120_000);
+
+  it("protects an in-flight pre-persist admission even when its registry writer has no local turn lock", async () => {
+    const f = await managedFixture(undefined, {}, true);
+    const created = await f.instances.create(spec);
+    const [orphan] = await persistOrphans(f, [created.id]);
+    const registry = registryFor(f, f.service);
+    const entered = deferred<void>(); const release = deferred<void>(); const run = vi.fn();
+    f.service.bindManagedSubagents!({ root: resolve(f.root, "children"),
+      verify: async () => { entered.resolve(); await release.promise; throw new Error("verification refused"); },
+      publish: async (phase, publication) => (await registry.open(origin.conversationId)).publishOwned(phase, publication),
+    });
+    const identity = { ...orphan.ownerLink, conversationId: origin.conversationId, instanceId: created.id,
+      instanceIncarnation: created.incarnation!, turnToken: orphan.activeTurn.token };
+    const cleanup = vi.fn(async () => { await (await registry.open(origin.conversationId)).releaseReservation(created.id, identity.jobId); });
+    const admission = f.service.internalController(origin, 0).startInternal({ kind: "internal", tool: "Agent", jobId: identity.jobId,
+      instanceId: created.id, managed: { instanceIncarnation: created.incarnation!, turnToken: identity.jobId }, run, cleanup });
+    const refused = expect(admission).rejects.toMatchObject({ code: "process_job_store_error" });
+    try {
+      await entered.promise;
+      expect(await f.store.get(identity.jobId)).toBeUndefined();
+      expect(await f.service.resolveSubagentOwner!(identity)).toEqual({ state: "held" });
+      const handle = await registry.open(origin.conversationId);
+      expect(await handle.get(created.id)).toMatchObject({ status: "queued", activeTurn: orphan.activeTurn });
+      expect(await handle.inspect(created.id)).toMatchObject({ status: "held" });
+      await expect(handle.close(created.id)).rejects.toMatchObject({ code: "subagent_owner_unavailable" });
+      await expect(handle.reserve(created.id, randomUUID())).rejects.toMatchObject({ code: "subagent_owner_unavailable" });
+    } finally { release.resolve(); await refused; }
+    expect(cleanup).toHaveBeenCalledOnce(); expect(run).not.toHaveBeenCalled();
+    expect(await f.store.list()).toEqual([]);
+    expect(await (await registry.open(origin.conversationId)).get(created.id)).toMatchObject({ status: "closed" });
+  });
+
+  it.each(["pending", "active", "startingExecutions", "internalExecutionFlights", "managedExecutionFlights", "managedPublications"])(
+    "keeps absent jobs held through the %s hand-off gap", async (key) => {
+      const f = await managedFixture(); const jobId = randomUUID();
+      const identity = { storeRoot: f.store.stateDir, jobId, conversationId: origin.conversationId,
+        instanceId: "child", instanceIncarnation: randomUUID(), turnToken: jobId };
+      // Exercise each memory-only ownership guard independently of durable bytes.
+      const owners = (f.service as unknown as Record<string, Map<string, unknown> | Set<string>>)[key]!;
+      if (owners instanceof Map) owners.set(jobId, undefined); else owners.add(jobId);
+      try { expect(await f.service.resolveSubagentOwner!(identity)).toEqual({ state: "held" }); }
+      finally { owners.delete(jobId); }
+      expect(await f.service.resolveSubagentOwner!(identity)).toEqual({ state: "orphaned", identity });
+      expect(await f.service.resolveSubagentOwner!({ ...identity, storeRoot: resolve(f.root, "unowned-jobs") })).toEqual({ state: "unavailable" });
+      await f.service.stop();
+      expect(await f.service.resolveSubagentOwner!(identity)).toEqual({ state: "unavailable" });
+    });
+
+  it("never issues an orphan verdict when absence cannot be read from an operational store", async () => {
+    const f = await managedFixture(); const jobId = randomUUID();
+    const identity = { storeRoot: f.store.stateDir, jobId, conversationId: origin.conversationId,
+      instanceId: "child", instanceIncarnation: randomUUID(), turnToken: jobId };
+    const read = vi.spyOn(f.store, "get").mockRejectedValueOnce(new Error("injected store read failure"));
+    expect(await f.service.resolveSubagentOwner!(identity)).toEqual({ state: "unavailable" });
+    read.mockRestore();
+    // A later missing record cannot erase the sticky owner/store health failure.
+    expect(await f.store.get(jobId)).toBeUndefined();
+    expect(await f.service.resolveSubagentOwner!(identity)).toEqual({ state: "unavailable" });
+  });
+
+  it("does not treat a locally locked pre-admission reservation as abandoned", async () => {
+    const f = await managedFixture(); const created = await f.instances.create(spec); const jobId = randomUUID();
+    await f.instances.reserve(created.id, jobId);
+    const identity = { storeRoot: f.store.stateDir, jobId, conversationId: origin.conversationId,
+      instanceId: created.id, instanceIncarnation: created.incarnation!, turnToken: jobId };
+    expect(await f.service.resolveSubagentOwner!(identity)).toEqual({ state: "orphaned", identity });
+    await expect(f.instances.releaseReservation(created.id, jobId)).rejects.toMatchObject({ code: "subagent_owner_unavailable" });
+    expect(await f.instances.get(created.id)).toMatchObject({ status: "queued", activeTurn: { token: jobId } });
+    // Normal positive rollback still releases this exact lock.
+    await expect(f.service.internalController(origin, 0).startInternal({ kind: "internal", tool: "Agent", jobId, instanceId: created.id,
+      managed: { instanceIncarnation: created.incarnation!, turnToken: jobId }, timeoutMs: 0,
+      run: async () => ({ status: "ok", output: "must not run" }), cleanup: () => f.instances.releaseReservation(created.id, jobId) }))
+      .rejects.toMatchObject({ code: "process_job_invalid" });
+    expect(await f.instances.get(created.id)).toMatchObject({ status: "idle" });
+  });
+});
+
 describe("managed background admission", () => {
   it("releases healthy pre-persistence refusals and surfaces the allowlisted cause", async () => {
     const f = await managedFixture(); const run = vi.fn(async () => ({ text: "done" }));
@@ -496,6 +675,10 @@ describe("managed background admission", () => {
     await expect(agent.execute("refused-create", { id: "fresh", persist: true, background: true, prompt: "work" }))
       .rejects.toMatchObject({ code: "process_job_chain_depth_exceeded" });
     expect(await f.instances.get("fresh")).toMatchObject({ status: "closed", turns: 0 });
+    const rejected = JSON.parse(await readFile(resolve(subagentConversationRoot(resolve(f.root, "children"), origin.conversationId), "instances.json"), "utf8"));
+    for (const record of rejected) {
+      for (const key of ["activeTurn", "reservation", "ownerLink", "createdForAdmission", "recovery"]) expect(record).not.toHaveProperty(key);
+    }
     expect(await f.store.list()).toEqual([]); expect(run).not.toHaveBeenCalled();
     depth = 0;
     const resumed = await send.execute("retry-continuation", { id: "helper", message: "Small", background: true });
@@ -521,7 +704,7 @@ describe("managed background admission", () => {
       run: async () => ({ status: "ok", output: "must not run" }), cleanup })).rejects.toMatchObject({ code: "process_job_invalid" });
     expect(cleanup).toHaveBeenCalledOnce();
     expect(await f.instances.get(created.id)).toMatchObject({ status: "idle", turns: 0 });
-    expect(await f.service.resolveSubagentOwner!(identity)).toEqual({ state: "unavailable" });
+    expect(await f.service.resolveSubagentOwner!(identity)).toEqual({ state: "orphaned", identity });
     expect(await f.store.list()).toEqual([]);
   });
 
@@ -927,7 +1110,10 @@ describe("managed detached production execution", () => {
       expect(run).toHaveBeenCalledOnce(); expect(f.wake).not.toHaveBeenCalled();
       return;
     }
-    expect(await reopened.resolveSubagentOwner!(identity!)).toEqual({ state: "unavailable" });
+    // A missing job is an orphan verdict, never a release/publication receipt.
+    // This already-confirmed but unacknowledged registry certificate stays held.
+    expect(await reopened.resolveSubagentOwner!(identity!)).toEqual(mode === "missing-job"
+      ? { state: "orphaned", identity } : { state: "unavailable" });
     const instances = await registry.open(origin.conversationId, { existingOnly: true });
     const denied = vi.fn(); const next = tools({ ...f, instances, service: reopened }, denied);
     await expect(instances.begin("helper")).rejects.toThrow("subagent_owner_unavailable");

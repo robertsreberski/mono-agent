@@ -25,6 +25,8 @@ export interface SubagentOwnerIdentity extends SubagentOwnerLink {
 }
 export type SubagentOwnerResolution =
   | { readonly state: "held" | "unavailable" }
+  /** Owned, operational store has no retained job or live admission; not proof it never ran. */
+  | { readonly state: "orphaned"; readonly identity: SubagentOwnerIdentity }
   | { readonly state: "released" | "not_admitted"; readonly identity: SubagentOwnerIdentity; readonly sequence: number; readonly resumeAfterStop?: true; readonly receiptPending?: boolean; readonly receiptRecorded?: boolean; readonly neverStarted?: true; readonly reason?: SubagentFailureReason; readonly continuity: SubagentContinuity; readonly certifiedTimeout?: true };
 
 export class SubagentRecoveryError extends Error {
