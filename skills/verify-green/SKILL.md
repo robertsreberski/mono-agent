@@ -114,6 +114,7 @@ change does not exercise package resolution and needs no dist baseline. See
 
 - Diagnose the first stable failure; do not rerun an unchanged failing broad gate.
 - When a failure may pre-exist, compare against the exact base SHA in a detached worktree.
+- A failure that passes on rerun at the same SHA is a flake: route it with `flaky-tests` (fix in scope, issue otherwise) instead of only rerunning.
 - If hosted CI fails immediately for an account or billing condition, stop polling and report that external blocker.
 - Never replace a failed stated check with a different check without naming the substitution.
 

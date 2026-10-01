@@ -30,6 +30,7 @@ when the request explicitly crosses that boundary. In particular:
 - `live-smoke` runs one scenario matching the changed surface, not every scenario.
 - `docs-sync` checks only documentation surfaces affected by the diff.
 - `repo-hygiene-gc` is an explicit bulk-maintenance workflow; normal PR cleanup stays in `worktree-feature`.
+- `flaky-tests` fixes a flake inside the current PR only when it is in that PR's scope; anything else becomes a GitHub issue.
 
 `verify-green` is the shared lane selector. A docs/skills/process diff does not
 build the monorepo. Ordinary code gets focused checks plus one broad CI gate.
@@ -51,3 +52,4 @@ Only high-risk runtime changes add a local full gate and one live smoke.
 | `dead-code-audit` | Prove-or-remove sweeps: dead exports, orphaned wiring, deprecation removability |
 | `repo-hygiene-gc` | Explicit bulk branch/worktree GC with API-bound deletion proof |
 | `ops-log-hygiene` | Targeted post-restart log checks or an explicitly requested full audit |
+| `flaky-tests` | Confirm a flaky test; fix it in the PR when in scope, otherwise file an issue |
