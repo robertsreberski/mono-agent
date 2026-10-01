@@ -40,6 +40,8 @@ export type ModelSelectorEffortOption = {
 };
 
 export type ModelSelectorOption = {
+  readonly supportsContext1M?: true;
+  readonly context1M?: boolean;
   readonly id: string;
   readonly name: string;
   readonly description?: string;
@@ -230,8 +232,15 @@ export const buildSelectorModels = ({
     return { provider, label: provider };
   };
 
+  const contextMetadata = (reference: string) => {
+    const advertisement = agent.modelOptions?.[reference] ?? findCatalogModel(catalogByProvider, reference);
+    return advertisement?.supportsContext1M === true
+      ? { supportsContext1M: true as const, ...(typeof advertisement.context1M === "boolean" ? { context1M: advertisement.context1M } : {}) }
+      : {};
+  };
   const rows: ModelSelectorOption[] = [
     {
+      ...contextMetadata(agent.defaultModel ?? ""),
       id: AUTOMATIC_MODEL_ID,
       name: `Default · ${displayNameForReference(agent.defaultModel) ?? "agent"}`,
       description: agent.defaultModel
@@ -250,6 +259,7 @@ export const buildSelectorModels = ({
   for (const reference of modelOptions) {
     const { provider, label } = providerOf(reference);
     rows.push({
+      ...contextMetadata(reference),
       id: reference,
       name: displayNameForReference(reference) ?? reference,
       description: reference,
@@ -271,7 +281,8 @@ export const buildSelectorModels = ({
       if (reference === AUTOMATIC_MODEL_ID || shortlistIds.has(reference)) continue;
       const provider = catalogModel.provider || providerOfModel(reference);
       rows.push({
-        id: reference,
+        ...contextMetadata(reference),
+      id: reference,
         name: catalogModel.name,
         description: reference,
         efforts: buildEffortOptions(

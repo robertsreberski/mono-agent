@@ -291,7 +291,7 @@ function buildRuntimeSection(input: BuildMonoAgentConfigViewInput): ConfigViewSe
       toField({
         id: "runtime.model",
         label: "Model",
-        value: formatModelReference(runtime.model),
+        value: `${formatModelReference(runtime.model)}${runtime.context1MModels?.[`${runtime.model.provider}:${runtime.model.model}`] === true ? " · 1M context" : ""}`,
         jsonPresent: json.runtime?.model !== undefined,
       }),
       toField({

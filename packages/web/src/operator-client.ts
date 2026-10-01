@@ -578,7 +578,7 @@ export class OperatorClient {
     throw new WebConsoleError("invalid_operator_live_input", "The agent returned an invalid live-input settlement.", 502);
   }
 
-  async compactConversation(conversationId: string, options?: { readonly model?: string }): Promise<AgentManualCompactionResult> {
+  async compactConversation(conversationId: string, options?: { readonly model?: string; readonly context1M?: boolean }): Promise<AgentManualCompactionResult> {
     let response: Response;
     try {
       response = await this.request(
@@ -587,7 +587,7 @@ export class OperatorClient {
           method: "POST",
           headers: this.headers(true),
           // The same model selection the next turn would declare; {} means the agent default.
-          body: JSON.stringify(options?.model === undefined ? {} : { model: options.model }),
+          body: JSON.stringify(options ?? {}),
           signal: AbortSignal.timeout(MANUAL_COMPACTION_TIMEOUT_MS),
         },
         PRESERVED_COMPACTION_ERRORS,
@@ -1193,6 +1193,7 @@ function parseCatalogModel(value: unknown): WebModelPage["models"][number] {
     provider: model.provider,
     providerLabel: model.providerLabel,
     ...(model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow }),
+    ...(model.supportsContext1M === true ? { supportsContext1M: true as const, ...(typeof model.context1M === "boolean" ? { context1M: model.context1M } : {}) } : {}),
     ...(model.reasoning === undefined ? {} : { reasoning: model.reasoning }),
     ...(effortLevels === undefined ? {} : { effortLevels }),
     ...(model.reasoningMode === undefined ? {} : { reasoningMode: model.reasoningMode }),
@@ -1415,6 +1416,7 @@ function parseModelOptions(value: unknown): Record<string, WebModelOption> | und
       ...(typeof option.reasoning === "boolean" ? { reasoning: option.reasoning } : {}),
       ...(typeof option.reasoningMode === "string" ? { reasoningMode: option.reasoningMode } : {}),
       ...(typeof option.label === "string" ? { label: option.label } : {}),
+      ...(option.supportsContext1M === true ? { supportsContext1M: true as const, ...(typeof option.context1M === "boolean" ? { context1M: option.context1M } : {}) } : {}),
       ...(Number.isSafeInteger(option.contextWindow) && Number(option.contextWindow) > 0
         ? { contextWindow: option.contextWindow as number }
         : {}),

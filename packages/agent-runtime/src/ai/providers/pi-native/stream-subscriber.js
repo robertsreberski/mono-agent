@@ -1,3 +1,5 @@
+import { supportsPiContext1M } from "../../context-1m.js";
+import { effectiveContextWindow } from "./compaction-driver.js";
 // @ts-check
 // Harness event → runtime-event normalization for the pi-native bridge.
 //
@@ -147,7 +149,10 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
       const contextUsage = contextUsageFromAssistantMessage(event.message);
       if (contextUsage) {
         const { costUsd, ...contextTokens } = contextUsage;
-        const contextWindow = Number(harness?.getModel?.()?.contextWindow) || 0;
+        const context1M = options.context1MModels?.[model] === true && !options.customProvider && supportsPiContext1M(model);
+        const contextWindow = context1M
+          ? effectiveContextWindow(harness, { model: harness?.getModel?.() }, { reference: model }, options.compaction?.contextWindowOverride)
+          : Number(harness?.getModel?.()?.contextWindow) || 0;
         const measurementId = typeof event.message?.id === "string" && event.message.id.trim().length > 0
           ? event.message.id
           : undefined;
@@ -159,6 +164,7 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
           timestamp: Date.now(),
           ...(measurementId === undefined ? {} : { measurementId }),
           ...(contextWindow > 0 ? { contextWindow } : {}),
+          ...(context1M ? { context1M: true } : {}),
           tokens: contextTokens,
           costUsd,
           providerCostUsd: typeof event.message.usage?.cost?.total === "number" && Number.isFinite(event.message.usage.cost.total) && event.message.usage.cost.total >= 0 ? event.message.usage.cost.total : null,

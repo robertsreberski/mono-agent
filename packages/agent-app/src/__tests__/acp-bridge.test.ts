@@ -328,13 +328,16 @@ describe("ACP bridge", () => {
       name: "forwards only the request tool environment when advertised",
       advertisesToolEnvironment: true,
       requireToolEnvironment: true,
+      contextWindow: undefined,
     },
     {
       name: "omits the request tool environment for an older operator",
       advertisesToolEnvironment: false,
       requireToolEnvironment: false,
+      contextWindow: undefined,
     },
-  ])("$name", async ({ advertisesToolEnvironment, requireToolEnvironment }) => {
+    { name: "prefers the live corrected ON window for ACP accounting", advertisesToolEnvironment: true, requireToolEnvironment: true, contextWindow: 500_000 },
+  ])("$name", async ({ advertisesToolEnvironment, requireToolEnvironment, contextWindow }) => {
     let turnBody: Record<string, unknown> | undefined;
     const server = createServer(async (request, response) => {
       if (request.method === "GET" && request.url === "/gui/v1/info") {
@@ -353,6 +356,7 @@ describe("ACP bridge", () => {
         response.setHeader("content-type", "application/x-ndjson");
         response.end([
           JSON.stringify({ kind: "status", text: "Thinking about the imported task" }),
+          ...(contextWindow === undefined ? [] : [JSON.stringify({ kind: "event", event: { type: "runtime_telemetry", kind: "context_usage", data: { context1M: true, contextWindow } } })]),
           JSON.stringify({
             kind: "event",
             event: {
@@ -592,7 +596,7 @@ describe("ACP bridge", () => {
         update: {
           sessionUpdate: "usage_update",
           used: 16,
-          size: 16,
+          size: contextWindow ?? 16,
           cost: { amount: 0.01, currency: "USD" },
         },
       },

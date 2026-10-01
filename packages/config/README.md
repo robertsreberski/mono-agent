@@ -281,6 +281,28 @@ chain turns within five minutes pay slightly more with long retention and can
 set `"short"` instead.
 
 
+A model declaration can opt into 1M context:
+
+```json
+{
+  "runtime": {
+    "model": { "model": "openai-codex:gpt-6.1-sol", "context1M": true },
+    "effort": "low",
+    "fallbacks": [{ "model": "openai:gpt-6-sol", "context1M": false }]
+  }
+}
+```
+
+`runtime.model` and `subagents.definitions[].model` accept either the existing
+string or `{ model, context1M? }`; effort stays outside that object. Existing
+`runtime.fallbacks[]` and `subagents.models[]` object entries accept a sibling
+`context1M` boolean. Models with no explicit declaration are off; explicit true/false declarations for
+the same model must agree. Validation rejects flags on unknown/ineligible models
+and custom providers shadowing built-ins. Eligibility is inferred from the pinned
+Pi catalog: `openai` or `openai-codex` GPT chat models with a 272,000-token window
+and a matching long-input pricing tier. It is not a subscription guarantee.
+The normalized runtime map is an internal resolved form, not a JSON config field.
+
 ## Architecture
 
 ### Data flow
@@ -368,6 +390,7 @@ MonoAgentMemoryConsolidationJson
 MonoAgentMemoryEmbeddingsCircuitBreakerJson
 MonoAgentMemoryEmbeddingsJson
 MonoAgentMemoryLlmJson
+MonoAgentModelSelectionJson
 MonoAgentProviderJson
 MonoAgentProvidersJson
 MonoAgentRuntimeFallbackJson
@@ -393,6 +416,7 @@ buildMonoAgentConfigView
 findJsonSecretConfigWarnings
 findRemovedConfigWarnings
 loadMonoAgentConfig
+modelReferenceFromConfigJson
 readMonoAgentConfigJson
 redactMonoAgentConfig
 renamedToolMessage

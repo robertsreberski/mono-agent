@@ -32,6 +32,7 @@ import {
   WEB_MAX_TURN_ATTACHMENT_BYTES,
   type WebAgentProvider,
   type WebAgentRunSettings,
+  type WebModelOption,
   type WebAgentSummary,
   type WebAgentRestartOperation,
   type WebAgentRestartStage,
@@ -106,6 +107,7 @@ interface ThreadPatch {
   readonly archived?: boolean;
   readonly model?: string | null;
   readonly effort?: string | null;
+  readonly context1M?: boolean | null;
   /** Present (even as `null`) moves or detaches the conversation's project membership. */
   readonly tagIds?: readonly string[];
   readonly projectId?: string | null;
@@ -131,12 +133,14 @@ interface AgentRow {
   ask_by_id: number;
   override_model: string | null;
   override_effort: string | null;
+  override_context_1m: number | null;
   updated_at: string;
 }
 
 export interface CreateStoredThreadInput {
   readonly model?: string | null;
   readonly effort?: string | null;
+  readonly context1M?: boolean | null;
   readonly projectId?: string;
 }
 
@@ -216,6 +220,7 @@ interface ThreadRow {
   message_count: number;
   run_model: string | null;
   run_effort: string | null;
+  run_context_1m: number | null;
 }
 
 interface WebSubmissionRow {
@@ -303,6 +308,7 @@ interface CronReplyOperationRow {
   title: string | null;
   run_model: string | null;
   run_effort: string | null;
+  run_context_1m: number | null;
   canonical_status: "appended" | "duplicate" | null;
   failure_reason: string | null;
   created_at: string;
@@ -423,6 +429,7 @@ interface TurnRow {
   error_code: string | null;
   error_message: string | null;
   cancel_origin: WebCancelOrigin | null;
+  context_1m: number | null;
 }
 
 interface LiveInputRow {
@@ -437,6 +444,7 @@ interface LiveInputRow {
   dispatch_started_at: string | null;
   created_at: string;
   updated_at: string;
+  context_1m: number | null;
 }
 
 export interface StoredAttachment {
@@ -724,6 +732,7 @@ export interface BeginStoredTurnInput {
   readonly quote?: WebQuote;
   readonly model?: string;
   readonly effort?: string;
+  readonly context1M?: boolean;
   readonly requestedModel?: string;
   readonly requestedEffort?: string;
 }
@@ -1312,12 +1321,12 @@ export class WebStore {
 
   setAgentRunOverride(
     sourceId: string,
-    override: { readonly model: string | null; readonly effort: string | null },
+    override: { readonly model: string | null; readonly effort: string | null; readonly context1M?: boolean | null },
   ): WebAgentSummary {
     if (this.getAgent(sourceId) === undefined) {
       throw new WebConsoleError("agent_not_found", "The selected agent is no longer available.", 404);
     }
-    if (override.model === null && override.effort === null) {
+    if (override.model === null && override.effort === null && override.context1M == null) {
       throw new WebConsoleError(
         "invalid_request",
         "Choose a model or effort override, or use Revert to config.",
@@ -1325,13 +1334,14 @@ export class WebStore {
       );
     }
     this.database.prepare(`
-      INSERT INTO agent_run_overrides (source_id, model, effort, updated_at)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO agent_run_overrides (source_id, model, effort, context_1m, updated_at)
+      VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(source_id) DO UPDATE SET
         model = excluded.model,
         effort = excluded.effort,
+        context_1m = excluded.context_1m,
         updated_at = excluded.updated_at
-    `).run(sourceId, override.model, override.effort, this.now());
+    `).run(sourceId, override.model, override.effort, nullableBooleanSql(override.context1M), this.now());
     return this.getAgent(sourceId)!;
   }
 
@@ -1991,14 +2001,14 @@ export class WebStore {
       const snapshotText = formatCronReplyContext(candidate);
       const snapshotSha256 = createHash("sha256").update(snapshotText).digest("hex");
       const title = normalizeTitle(`Reply to ${candidate.jobId} · Run ${String(candidate.run.sequence)}`);
-      const override = this.database.prepare("SELECT model, effort FROM agent_run_overrides WHERE source_id = ?")
-        .get(candidate.sourceId) as unknown as { model: string | null; effort: string | null } | undefined;
+      const override = this.database.prepare("SELECT model, effort, context_1m FROM agent_run_overrides WHERE source_id = ?")
+        .get(candidate.sourceId) as unknown as { model: string | null; effort: string | null; context_1m: number | null } | undefined;
       this.database.prepare(`
         INSERT INTO cron_reply_operations (
           operation_id, source_id, job_id, run_id, thread_id, conversation_id,
           provenance_message_id, result_message_id, idempotency_key, state, snapshot_kind,
-          snapshot_text, snapshot_sha256, title, run_model, run_effort, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
+          snapshot_text, snapshot_sha256, title, run_model, run_effort, run_context_1m, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         operationId,
         candidate.sourceId,
@@ -2015,6 +2025,7 @@ export class WebStore {
         title,
         override?.model ?? null,
         override?.effort ?? null,
+        override?.context_1m ?? null,
         candidate.capturedAt,
       );
       const row = this.requireCronReplyOperationRow(operationId);
@@ -2038,8 +2049,8 @@ export class WebStore {
       this.database.prepare(`
         INSERT INTO threads (
           id, source_id, conversation_id, title, title_manual, archived_at,
-          created_at, updated_at, run_model, run_effort, revision
-        ) VALUES (?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, 1)
+          created_at, updated_at, run_model, run_effort, run_context_1m, revision
+        ) VALUES (?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, 1)
       `).run(
         row.thread_id,
         row.source_id,
@@ -2049,6 +2060,7 @@ export class WebStore {
         now,
         row.run_model,
         row.run_effort,
+        row.run_context_1m,
       );
       this.database.prepare(`
         INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
@@ -2091,7 +2103,7 @@ export class WebStore {
       this.database.prepare(`
         UPDATE cron_reply_operations SET state = 'failed', provenance_message_id = NULL,
           result_message_id = NULL, snapshot_text = NULL, snapshot_sha256 = NULL,
-          title = NULL, run_model = NULL, run_effort = NULL,
+          title = NULL, run_model = NULL, run_effort = NULL, run_context_1m = NULL,
           failure_reason = ?, failed_at = ?
         WHERE operation_id = ? AND state = 'pending'
       `).run(reason.slice(0, 128), now, operationId);
@@ -2841,16 +2853,17 @@ export class WebStore {
         ? null
         : this.requireProjectForThread(explicit.projectId, sourceId).id;
       const override = this.database.prepare(`
-        SELECT model, effort FROM agent_run_overrides WHERE source_id = ?
-      `).get(sourceId) as unknown as { model: string | null; effort: string | null } | undefined;
+        SELECT model, effort, context_1m FROM agent_run_overrides WHERE source_id = ?
+      `).get(sourceId) as unknown as { model: string | null; effort: string | null; context_1m: number | null } | undefined;
       const model = explicit.model === undefined ? override?.model ?? null : explicit.model;
       const effort = explicit.effort === undefined ? override?.effort ?? null : explicit.effort;
+      const context1M = explicit.context1M === undefined ? override?.context_1m ?? null : nullableBooleanSql(explicit.context1M);
       this.database.prepare(`
         INSERT INTO threads (
           id, source_id, project_id, conversation_id, title, title_manual, archived_at,
-          created_at, updated_at, run_model, run_effort, revision
-        ) VALUES (?, ?, ?, ?, 'New conversation', 0, NULL, ?, ?, ?, ?, 1)
-      `).run(id, sourceId, projectId, `web:${id}`, now, now, model, effort);
+          created_at, updated_at, run_model, run_effort, run_context_1m, revision
+        ) VALUES (?, ?, ?, ?, 'New conversation', 0, NULL, ?, ?, ?, ?, ?, 1)
+      `).run(id, sourceId, projectId, `web:${id}`, now, now, model, effort, context1M);
       this.database.prepare("INSERT INTO revisions (entity_kind, entity_id, revision, event, created_at) VALUES ('thread', ?, 1, 'created', ?)")
         .run(id, now);
       if (projectId !== null) this.applyProjectMembership(id, null, projectId);
@@ -3308,7 +3321,7 @@ export class WebStore {
     return this.transaction(() => {
       const resolved = this.resolveThreadId(id);
       const current = this.requireThread(resolved);
-      if (current.runModel !== null || current.runEffort !== null) {
+      if (current.runModel !== null || current.runEffort !== null || current.runContext1M != null) {
         return { applied: false, thread: { ...current, sourceId: current.sourceId } };
       }
       return { applied: true, thread: this.writeThreadPatch(resolved, patch) };
@@ -3323,14 +3336,14 @@ export class WebStore {
     const tagsChanged = tagIds !== undefined
       && (tagIds.length !== current.tagIds.length || tagIds.some((tagId) => !current.tagIds.includes(tagId)));
     if (tagIds !== undefined && !tagsChanged && patch.projectId === undefined && patch.title === undefined
-      && patch.archived === undefined && patch.model === undefined && patch.effort === undefined) return current;
+      && patch.archived === undefined && patch.model === undefined && patch.effort === undefined && patch.context1M === undefined) return current;
     const now = this.now();
     const title = patch.title === undefined ? undefined : normalizeTitle(patch.title);
     const archivedAt = patch.archived === undefined ? undefined : patch.archived ? now : null;
     const runModel = patch.model === undefined ? undefined : patch.model;
     const runEffort = patch.effort === undefined ? undefined : patch.effort;
     if (patch.projectId !== undefined && patch.title === undefined && patch.archived === undefined
-      && patch.model === undefined && patch.effort === undefined && patch.tagIds === undefined) {
+      && patch.model === undefined && patch.effort === undefined && patch.context1M === undefined && patch.tagIds === undefined) {
       const pending = this.pendingProjectDto(id).pendingProject;
       if ((pending === undefined && patch.projectId === current.projectId) || (pending !== undefined && patch.projectId === pending.projectId)) return current;
     }
@@ -3341,7 +3354,7 @@ export class WebStore {
         : patch.projectId === current.projectId ? current.projectId : this.requireProjectForThread(patch.projectId, current.sourceId).id;
     {
       const sets: string[] = [];
-      const values: Array<string | null> = [];
+      const values: Array<string | number | null> = [];
       if (title !== undefined) {
         sets.push("title = ?", "title_manual = 1");
         values.push(title);
@@ -3353,6 +3366,10 @@ export class WebStore {
       if (runModel !== undefined) {
         sets.push("run_model = ?");
         values.push(runModel);
+      }
+      if (patch.context1M !== undefined) {
+        sets.push("run_context_1m = ?");
+        values.push(nullableBooleanSql(patch.context1M));
       }
       if (runEffort !== undefined) {
         sets.push("run_effort = ?");
@@ -3507,7 +3524,7 @@ export class WebStore {
     this.requireProject(id);
     const now = this.now();
     const sets: string[] = [];
-    const values: Array<string | null> = [];
+    const values: Array<string | number | null> = [];
     if (patch.color !== undefined) {
       sets.push("color = ?");
       values.push(parseProjectColor(patch.color));
@@ -4307,7 +4324,7 @@ export class WebStore {
       this.database.prepare(`
         UPDATE cron_reply_operations SET state = 'tombstoned', provenance_message_id = NULL,
           result_message_id = NULL, snapshot_text = NULL, snapshot_sha256 = NULL,
-          title = NULL, run_model = NULL, run_effort = NULL, completed_at = NULL,
+          title = NULL, run_model = NULL, run_effort = NULL, run_context_1m = NULL, completed_at = NULL,
           failure_reason = 'thread_deleted', tombstoned_at = ?
         WHERE thread_id = ? AND state = 'completed'
       `).run(now, id);
@@ -4556,15 +4573,16 @@ export class WebStore {
       now = this.projectTurnAdmissionTime(threadId);
       this.database.prepare(`
         INSERT INTO turns (
-          id, thread_id, status, text, model, effort, requested_model, requested_effort, assistant_message_id,
+          id, thread_id, status, text, model, effort, context_1m, requested_model, requested_effort, assistant_message_id,
           started_at, finished_at, error_code, error_message
-        ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+        ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
       `).run(
         turnId,
         threadId,
         input.text,
         input.model ?? null,
         input.effort ?? null,
+        nullableBooleanSql(input.context1M),
         input.requestedModel ?? null,
         input.requestedEffort ?? null,
         assistantMessageId,
@@ -4815,6 +4833,7 @@ export class WebStore {
     readonly storedPrompt?: string;
     readonly model?: string;
     readonly effort?: string;
+  readonly context1M?: boolean;
     readonly requestedModel?: string;
     readonly requestedEffort?: string;
     readonly processJobWake?: {
@@ -4866,15 +4885,16 @@ export class WebStore {
       now = this.projectTurnAdmissionTime(threadId);
       this.database.prepare(`
         INSERT INTO turns (
-          id, thread_id, status, text, model, effort, requested_model, requested_effort, assistant_message_id,
+          id, thread_id, status, text, model, effort, context_1m, requested_model, requested_effort, assistant_message_id,
           started_at, finished_at, error_code, error_message
-        ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+        ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
       `).run(
         turnId,
         threadId,
         input.storedPrompt ?? input.prompt,
         input.model ?? null,
         input.effort ?? null,
+        nullableBooleanSql(input.context1M),
         input.requestedModel ?? null,
         input.requestedEffort ?? null,
         assistantMessageId,
@@ -4946,8 +4966,8 @@ export class WebStore {
       throw new WebConsoleError("live_input_queue_full", "Too many follow-up messages are waiting.", 429);
     }
     const active = this.database.prepare(
-      "SELECT id, model, effort FROM turns WHERE thread_id = ? AND status = 'running'",
-    ).get(threadId) as unknown as Pick<TurnRow, "id" | "model" | "effort"> | undefined;
+      "SELECT id, model, effort, context_1m FROM turns WHERE thread_id = ? AND status = 'running'",
+    ).get(threadId) as unknown as Pick<TurnRow, "id" | "model" | "effort" | "context_1m"> | undefined;
     const id = randomUUID();
     const messageId = randomUUID();
     const now = this.now();
@@ -4959,6 +4979,7 @@ export class WebStore {
     // nulls to the thread override.
     const model = active === undefined ? thread.runModel : active.model;
     const effort = active === undefined ? thread.runEffort : active.effort;
+    const context1M = active === undefined ? nullableBooleanSql(thread.runContext1M) : active.context_1m;
     const parts: WebMessagePart[] = [
       liveInputTelemetry(status === "offered" ? "pending" : "queued", id),
       ...(quote === undefined
@@ -4973,8 +4994,8 @@ export class WebStore {
       `).run(messageId, threadId, active?.id ?? null, serializeParts(parts), now, now);
       this.database.prepare(`
         INSERT INTO live_inputs (
-          id, thread_id, message_id, active_turn_id, text, model, effort, status, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          id, thread_id, message_id, active_turn_id, text, model, effort, context_1m, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         id,
         threadId,
@@ -4983,6 +5004,7 @@ export class WebStore {
         operatorText,
         model,
         effort,
+        context1M,
         status,
         now,
         now,
@@ -5166,10 +5188,10 @@ export class WebStore {
       now = this.projectTurnAdmissionTime(threadId);
       this.database.prepare(`
         INSERT INTO turns (
-          id, thread_id, status, text, model, effort, requested_model, requested_effort, assistant_message_id,
+          id, thread_id, status, text, model, effort, context_1m, requested_model, requested_effort, assistant_message_id,
           started_at, finished_at, error_code, error_message
-        ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
-      `).run(turnId, threadId, row.text, row.model, row.effort, row.model, row.effort, assistantMessageId, now);
+        ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+      `).run(turnId, threadId, row.text, row.model, row.effort, row.context_1m, row.model, row.effort, assistantMessageId, now);
       this.writeMessageParts(
         row.message_id,
         withoutLiveInputTelemetry(userMessage),
@@ -5906,7 +5928,8 @@ export class WebStore {
         model TEXT,
         effort TEXT,
         updated_at TEXT NOT NULL,
-        CHECK (model IS NOT NULL OR effort IS NOT NULL)
+        context_1m INTEGER CHECK (context_1m IS NULL OR context_1m IN (0,1)),
+        CHECK (model IS NOT NULL OR effort IS NOT NULL OR context_1m IS NOT NULL)
       );
       CREATE TABLE IF NOT EXISTS projects (
         color TEXT NOT NULL DEFAULT 'default' CHECK (color IN ('default','blue','purple','amber','rose')),
@@ -6914,6 +6937,7 @@ export class WebStore {
         canUpload: row.can_upload === 1,
         runModel: row.run_model,
         runEffort: row.run_effort,
+        ...(row.run_context_1m === null ? {} : { runContext1M: row.run_context_1m === 1 }),
       };
     });
   }
@@ -6950,7 +6974,7 @@ export class WebStore {
     columns: MessagePartsColumns = {},
   ): { readonly baseSeq: number; readonly seq: number } {
     const assignments: string[] = [];
-    const values: Array<string | null> = [];
+    const values: Array<string | number | null> = [];
     if (columns.threadId !== undefined) {
       assignments.push("thread_id = ?");
       values.push(columns.threadId);
@@ -7154,6 +7178,7 @@ export class WebStore {
           : { error: { ...(row.error_code === null ? {} : { code: row.error_code }), message: row.error_message } }),
         ...(row.model === null ? {} : { model: row.model }),
         ...(row.effort === null ? {} : { effort: row.effort }),
+        ...(row.context_1m == null ? {} : { context1M: row.context_1m === 1 }),
         ...(attribution === undefined ? {} : { attribution }),
         ...(status === "running"
           ? { activity: activities.get(row.assistant_message_id) ?? runActivityFromParts([]) }
@@ -7761,7 +7786,7 @@ function threadSelectSql(suffix: string): string {
   return `
     SELECT t.id, t.source_id, t.project_id, p.name AS project_name,
            t.title, t.title_manual, t.trigger_kind, t.archived_at, t.created_at, t.updated_at, t.revision, t.read_revision,
-           t.run_model, t.run_effort,
+           t.run_model, t.run_effort, t.run_context_1m,
            cc.job_id AS cron_job_id, cc.configured AS cron_configured,
            CASE WHEN t.trigger_kind = 'cron' THEN 0
                 WHEN a.status = 'online' OR a.status = 'degraded' THEN 1 ELSE 0 END AS can_send,
@@ -7782,6 +7807,7 @@ function agentSelectSql(suffix: string): string {
     SELECT a.*,
            o.model AS override_model,
            o.effort AS override_effort,
+           o.context_1m AS override_context_1m,
            CASE WHEN EXISTS (
              SELECT 1 FROM settings s
              WHERE s.key = 'agent_pin:' || a.source_id AND s.value = '1'
@@ -8261,15 +8287,22 @@ function mapAgent(row: AgentRow): WebAgentSummary {
 function agentRunSettings(row: AgentRow): WebAgentRunSettings {
   const effectiveModel = row.override_model ?? row.default_model;
   const effectiveEffort = row.override_effort ?? row.default_effort;
+  const options = parseRecord(row.model_options_json) as Record<string, WebModelOption> | undefined;
+  const configuredContext1M = row.default_model === null ? undefined : options?.[row.default_model]?.context1M;
+  const supportsContext1M = effectiveModel !== null && options?.[effectiveModel]?.supportsContext1M === true;
+  const context1M = row.override_context_1m !== null ? row.override_context_1m === 1
+    : supportsContext1M ? options?.[effectiveModel!]?.context1M : undefined;
   const config = {
     ...(row.default_model === null ? {} : { model: row.default_model }),
     ...(row.default_effort === null ? {} : { effort: row.default_effort }),
+    ...(configuredContext1M === undefined ? {} : { context1M: configuredContext1M }),
   };
-  const override = row.override_model === null && row.override_effort === null
+  const override = row.override_model === null && row.override_effort === null && row.override_context_1m === null
     ? null
     : {
         ...(row.override_model === null ? {} : { model: row.override_model }),
         ...(row.override_effort === null ? {} : { effort: row.override_effort }),
+        ...(row.override_context_1m === null ? {} : { context1M: row.override_context_1m === 1 }),
       };
   return {
     config,
@@ -8279,6 +8312,7 @@ function agentRunSettings(row: AgentRow): WebAgentRunSettings {
       modelSource: row.override_model === null ? "config" : "override",
       ...(effectiveEffort === null ? {} : { effort: effectiveEffort }),
       effortSource: row.override_effort === null ? "config" : "override",
+      ...(context1M === undefined ? {} : { context1M, context1MSource: row.override_context_1m === null ? "config" as const : "override" as const }),
     },
   };
 }
@@ -10195,3 +10229,5 @@ function runtimeMetadata(
 function ignoreMissing(error: unknown): void {
   if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 }
+
+function nullableBooleanSql(value: boolean | null | undefined): number | null { return value == null ? null : value ? 1 : 0; }

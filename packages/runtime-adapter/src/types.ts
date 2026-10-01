@@ -537,6 +537,8 @@ export interface RuntimeRunOptions {
   /** Exact `server:tool` names whose host-owned lifecycle has no total deadline. */
   readonly mcpCallNoTotalTimeoutTools?: readonly string[];
   /** Typed compaction policy. */
+  /** Per-reference opt-in to the runtime-owned eligible GPT 1M window. */
+  readonly context1MModels?: Readonly<Record<string, boolean>>;
   readonly compaction?: RuntimeCompactionPolicy;
   /** Per-run prompt-fragment overrides. */
   readonly prompts?: RuntimePromptOverrides;

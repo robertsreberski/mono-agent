@@ -267,6 +267,7 @@ export interface MonoAgentConfig {
     readonly model: RuntimeModelReference;
     /** Canonical fallback routes. Omitted per-route effort uses the provider default. */
     readonly fallbacks?: readonly RuntimeFallbackConfig[];
+    readonly context1MModels?: Readonly<Record<string, boolean>>;
     /**
      * Same-model retry policy. `loadMonoAgentConfig` always materializes it, so
      * loaded configs always carry it. It stays optional because MonoAgentConfig

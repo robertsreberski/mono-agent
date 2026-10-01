@@ -39,6 +39,7 @@ export interface ReadinessWorkerData {
   readonly cwd: string;
   readonly runtime: {
     readonly model: RuntimeModelReference;
+    readonly context1MModels?: Readonly<Record<string, boolean>>;
     readonly effort?: string;
     readonly workspace: string;
     readonly artifactDir: string;
@@ -115,6 +116,7 @@ export function readWorkerData(value: unknown): ReadinessWorkerData | undefined 
   const runtime = record.runtime;
   if (
     !isRuntimeModelReference(runtime.model)
+    || (runtime.context1MModels !== undefined && (!isRecord(runtime.context1MModels) || !Object.values(runtime.context1MModels).every((value) => typeof value === "boolean")))
     || (runtime.effort !== undefined && typeof runtime.effort !== "string")
     || typeof runtime.workspace !== "string"
     || typeof runtime.artifactDir !== "string"
@@ -127,6 +129,7 @@ export function readWorkerData(value: unknown): ReadinessWorkerData | undefined 
     cwd: record.cwd,
     runtime: {
       model: runtime.model,
+      ...(runtime.context1MModels === undefined ? {} : { context1MModels: { ...runtime.context1MModels as Record<string, boolean> } }),
       ...(runtime.effort === undefined ? {} : { effort: runtime.effort }),
       workspace: runtime.workspace,
       artifactDir: runtime.artifactDir,
@@ -294,6 +297,7 @@ export async function runReadinessProbeWorker(input: {
     let firstToolAction: string | undefined;
     const runOptions: RuntimeRunOptions = {
       model: data.runtime.model,
+      ...(data.runtime.context1MModels === undefined ? {} : { context1MModels: data.runtime.context1MModels }),
       ...(data.runtime.effort === undefined ? {} : { effort: data.runtime.effort }),
       messages: [{ role: "user", content: "Reply with a short readiness acknowledgement." }],
       abortSignal: controller.signal,

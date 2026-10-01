@@ -718,3 +718,40 @@ it("matches harness session-model declaration precedence", async () => {
     expect(logger.warn).toHaveBeenCalled();
   } finally { await harness.dispose?.(); await rm(dir, { recursive: true, force: true }); }
 });
+
+describe("per-request 1M context", () => {
+  const primary = parseMonoRuntimeModelReference("openai-codex:gpt-6.1-sol");
+  const backup = "openai:gpt-6-sol";
+  const extension = (logger?: { warn: ReturnType<typeof vi.fn> }) => createRequestModelOverrideRuntimeExtension({
+    baseModel: primary, context1MModels: { [backup]: true }, ...(logger ? { logger } : {}),
+  });
+  it.each(["webhook", "cron", "web", "tui", "telegram", "slack"])("accepts flag-only true and explicit false from %s", async (source) => {
+    for (const context1M of [true, false]) {
+      const result = await extension()({ request: { metadata: { [source]: { context1M } } } });
+      expect(result.runtimeOptions).toEqual({ context1MModels: { [primary.reference]: context1M, [backup]: true } });
+    }
+  });
+  it("uses exactly the selected metadata block, without model-only leakage", async () => {
+    expect((await extension()({ request: { metadata: { webhook: { model: backup }, web: { context1M: true } } } })).runtimeOptions.context1MModels).toBeUndefined();
+    expect((await extension()({ request: { metadata: { web: { model: backup } } } })).runtimeOptions.context1MModels).toBeUndefined();
+  });
+  it("validates against the accepted model, not a rejected raw model", async () => {
+    const result = await extension()({ request: { metadata: { web: { model: "not-a-reference", context1M: true } } } });
+    expect(result.runtimeOptions.context1MModels).toEqual({ [primary.reference]: true, [backup]: true });
+  });
+  it.each(["true", 1, {}, [], "x".repeat(10000)])("warns and ignores invalid flag without echoing it", async (context1M) => {
+    const warn = vi.fn();
+    const result = await extension({ warn })({ request: { metadata: { web: { context1M } } } });
+    expect(result.runtimeOptions.context1MModels).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith("Ignoring invalid or unsupported per-request 1M context override.");
+  });
+  it("does not admit an ineligible selection, including false", async () => {
+    const warn = vi.fn();
+    const result = await extension({ warn })({ request: { metadata: { web: { model: "openai-codex:gpt-5.3-codex-spark", context1M: false } } } });
+    expect(result.runtimeOptions.context1MModels).toBeUndefined();
+    expect(warn).toHaveBeenCalledOnce();
+  });
+  it("null inherits without a runtime overlay", async () => {
+    expect((await extension()({ request: { metadata: { web: { context1M: null } } } })).runtimeOptions.context1MModels).toBeUndefined();
+  });
+});

@@ -108,6 +108,12 @@ describe("startTuiAdapter", () => {
     expect((await fetch(path, { method: "POST", headers, body: '{"model":42}' })).status).toBe(400);
     expect((await fetch(path, { method: "POST", headers, body: '{"model":"a:b","extra":1}' })).status).toBe(400);
     expect(JSON.stringify(await (await fetch(path, { method: "POST", headers, body: "{}" })).json())).not.toContain("PRIVATE SUMMARY");
+    for (const context1M of [true, false]) {
+      const selected = await fetch(path, { method: "POST", headers, body: JSON.stringify({ context1M }) });
+      expect(selected.status).toBe(200);
+      expect(compactConversation).toHaveBeenLastCalledWith("web:one", { context1M }, expect.any(AbortSignal));
+    }
+
   });
 
   it("aborts the responder when the compaction HTTP client disconnects", async () => {

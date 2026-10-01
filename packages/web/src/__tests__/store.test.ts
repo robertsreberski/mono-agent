@@ -7333,3 +7333,45 @@ describe("web startup versus agent process loss", () => {
     } finally { reopened.close(); }
   });
 });
+
+describe("nullable 1M context selection", () => {
+  it("persists false, copies defaults only into future threads and fences adoption", async () => {
+    const base = await temporaryRoot(); cleanup.push(base);
+    const stateDir = join(base, "state");
+    let store = await WebStore.open({ stateDir });
+    const ref = "openai-codex:gpt-6.1-sol";
+    store.replaceAgents([{ ...agent(), defaultModel: ref, models: [ref], modelOptions: { [ref]: { supportsContext1M: true, context1M: false } } }]);
+    const old = store.createThread("agent-one");
+    store.setAgentRunOverride("agent-one", { model: null, effort: null, context1M: true });
+    const future = store.createThread("agent-one");
+    expect(future.runContext1M).toBe(true);
+    expect(store.getThread(old.id)?.runContext1M).toBeUndefined();
+    store.setAgentRunOverride("agent-one", { model: null, effort: null, context1M: false });
+    const off = store.createThread("agent-one");
+    expect(off.runContext1M).toBe(false);
+    expect(store.patchThreadIfRunConfigUnset(off.id, { context1M: true }).applied).toBe(false);
+    expect(store.patchThreadIfRunConfigUnset(old.id, { context1M: false }).applied).toBe(true);
+    store.close(); store = await WebStore.open({ stateDir });
+    expect(store.getThread(future.id)?.runContext1M).toBe(true);
+    expect(store.getThread(off.id)?.runContext1M).toBe(false);
+    expect(store.getAgent("agent-one")?.runSettings.effective).toMatchObject({ context1M: false, context1MSource: "override" });
+    store.patchThread(off.id, { context1M: null });
+    expect(store.getThread(off.id)?.runContext1M).toBeUndefined();
+    store.clearAgentRunOverride("agent-one");
+    expect(store.getAgent("agent-one")?.runSettings.override).toBeNull();
+    expect(store.getAgent("agent-one")?.runSettings.effective).toMatchObject({ context1M: false, context1MSource: "config" });
+    store.close();
+  });
+  it("retains explicit false in the active and queued turn selection", async () => {
+    const base = await temporaryRoot(); cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") }); store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "synthetic question", attachmentIds: [], context1M: false });
+    expect(turn.thread.runState.context1M).toBe(false);
+    store.patchThread(thread.id, { context1M: true });
+    store.reserveLiveInput(thread.id, "synthetic follow-up");
+    const db = (store as unknown as { database: DatabaseSync }).database;
+    expect(db.prepare("SELECT context_1m FROM live_inputs WHERE thread_id = ?").get(thread.id)).toMatchObject({ context_1m: 0 });
+    store.close();
+  });
+});

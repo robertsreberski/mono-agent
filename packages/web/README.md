@@ -864,6 +864,16 @@ secret-key-redacted. Exact declared resource reads remain read-only, while
 cross-resource requests fail. See
 [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/).
 
+The shared model selector offers an accessible **1M context** checkbox only
+when the agent advertises eligibility, including automatic and lazy catalog rows.
+Conversation and **New conversations** selections persist nullable booleans:
+true/false are explicit; reset inherits agent config. Changing to an unsupported
+model clears the flag atomically; eligible switches retain it. New defaults affect
+only future conversations. Active conversation turns disable the selector.
+SQLite migration 42 preserves old rows as inherited selections, including retained
+context imports and queued turns. Old producers without the capability expose no
+checkbox. Measured context usage remains authoritative after a toggle.
+
 ## Architecture
 
 Agent settings uses the compact project/tag sheet layout and shows core subscription meters beneath matching Claude, Codex, OpenCode Go and GitHub Copilot auth rows. Only providers activated by this agent’s effective model references appear; credentials alone do not activate providers. When Provider authentication is supported, unmatched usage rows are not rendered, even while auth status is loading. Operators advertising usage without authentication render their scoped snapshot as meter-only cards, without auth badges or controls. Paid Copilot shows Credits; free shows Chat/Completions. Pin/close controls match the dashboard’s 36×36px/10px-radius geometry on desktop and coarse touch; provider text actions remain 10px/28px. The live-only `supportsProviderUsage` capability enables an independent no-store `/api/v1/agents/:id/provider-usage` proxy, with connection-generation fencing. The web host never reads the Pi store; the agent shares its five-minute cache with the read-only `ProviderUsage` tool. An additive live `supportsProviderUsageRefresh` capability exposes the compact **Refresh usage** text button next to **Check access**. Its exact-origin, no-store `POST /api/v1/agents/:id/provider-usage/refresh` awaits fresh account-usage data, bypassing successful cache freshness but not backoff. Pending/failure feedback retains usable meters and actual fetch timestamps; late responses are fenced to the sheet owner. Refresh usage supplies passive **Credential OK** evidence only for agent-owned Pi credentials, never inference proof; Copilot local fallback tokens add no auth evidence. Check access probes configured authentication providers. Older agents retain cached reads without the manual control.

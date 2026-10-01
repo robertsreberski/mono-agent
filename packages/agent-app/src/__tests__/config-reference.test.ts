@@ -23,7 +23,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> = {
   "agent.name": "string",
-  "runtime.model": "string",
+  "runtime.model": "string | object",
   "runtime.fallbacks": "array",
   subagents: "object",
   "runtime.retry.primaryAttempts": "integer",
@@ -645,6 +645,7 @@ function schemaNode(schema: SchemaNode, ...path: readonly string[]): SchemaNode 
 }
 
 function jsonSchemaTypeFor(type: ConfigReferenceType): string | string[] {
+  if (type === "string | object") return ["string", "object"];
   if (type === "string | string[]") return ["string", "array"];
   return type === "string[]" ? "array" : type;
 }

@@ -7835,3 +7835,36 @@ describe("adaptive stream persistence pacing", () => {
     } finally { clock.mockRestore(); vi.useRealTimers(); }
   });
 });
+
+
+describe("1M web selection", () => {
+  it("validates explicit selections, forwards false and clears unsupported switches atomically", async () => {
+    const ref = "openai-codex:gpt-6.1-sol";
+    const other = "openai:gpt-6-sol";
+    const spark = "openai-codex:gpt-5.3-codex-spark";
+    const seen: Record<string, unknown>[] = [];
+    const upstream = operatorFetch({ turns: (body) => { seen.push(body); return `${JSON.stringify({ type: "finish", text: "synthetic answer" })}\n`; } });
+    const service = await createService({ fetchImpl: async (input, init) => {
+      const response = await upstream(input, init);
+      if (!String(input).endsWith("/v1/info")) return response;
+      const info = await response.json() as Record<string, unknown>;
+      return new Response(JSON.stringify({ ...info, model: ref, models: [ref, other, spark], modelOptions: {
+        [ref]: { supportsContext1M: true, context1M: false }, [other]: { supportsContext1M: true, context1M: false }, [spark]: {},
+      } }), { headers: { "content-type": "application/json" } });
+    } });
+    await service.bootstrap();
+    try {
+      expect(() => service.createThread("agent-one", { model: spark, context1M: false })).toThrow(/1M context/u);
+      service.setAgentRunDefaults("agent-one", { model: null, effort: null, context1M: true });
+      const thread = service.createThread("agent-one");
+      expect(thread.runContext1M).toBe(true);
+      const onOther = service.patchThread(thread.id, { model: other }); expect(onOther.runContext1M).toBe(true);
+      const onSpark = service.patchThread(thread.id, { model: spark }); expect(onSpark.runContext1M).toBeUndefined();
+      expect(() => service.patchThread(thread.id, { context1M: true })).toThrow(/1M context/u);
+      service.patchThread(thread.id, { model: ref, context1M: false });
+      await service.startTurn(thread.id, { text: "synthetic question" });
+      await waitFor(() => seen.length > 0);
+      expect((seen[0]?.metadata as { web?: { context1M?: boolean } }).web?.context1M).toBe(false);
+    } finally { await service.stop(); }
+  });
+});

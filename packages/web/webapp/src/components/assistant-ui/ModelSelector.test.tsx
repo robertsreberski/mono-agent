@@ -408,3 +408,18 @@ describe("ModelSelector provider grouping", () => {
     expect(within(popup).getByText("No models found.")).toBeVisible();
   });
 });
+
+
+describe("1M checkbox", () => {
+  it("fails closed for old/unsupported metadata and emits explicit false", async () => {
+    const onContext1MChange = vi.fn();
+    const props = { models: [{ id: "synthetic:gpt", name: "Synthetic GPT", efforts: [], supportsContext1M: true as const }],
+      value: "synthetic:gpt", effort: "", onValueChange: vi.fn(), onEffortChange: vi.fn(), context1M: true, onContext1MChange, open: true };
+    const view = render(<ModelSelector {...props} />);
+    const checkbox = await screen.findByRole("checkbox", { name: "1M context" });
+    expect(checkbox).toBeChecked(); fireEvent.click(checkbox);
+    expect(onContext1MChange).toHaveBeenCalledWith(false);
+    view.rerender(<ModelSelector {...props} models={[{ id: "synthetic:gpt", name: "Old producer", efforts: [] }]} />);
+    expect(screen.queryByRole("checkbox", { name: "1M context" })).toBeNull();
+  });
+});

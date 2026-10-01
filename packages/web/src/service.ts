@@ -940,7 +940,8 @@ export class WebService {
       effort,
       input.model === undefined && inherited?.model !== undefined,
     );
-    const thread = this.store.createThread(sourceId, input);
+    this.validateContext1M(sourceId, agent, model, input.context1M);
+    const thread = this.store.createThread(sourceId, this.supportsContext1M(sourceId, agent, model) ? input : { ...input, context1M: null });
     this.emitThread("threads.changed", { thread });
     this.refreshMemberProject(thread);
     return this.projectThread(thread);
@@ -1442,6 +1443,13 @@ export class WebService {
   }
 
   patchThread(id: string, patch: PatchWebThreadInput): WebThread {
+    const current = this.store.getThread(id);
+    const agent = current === undefined ? undefined : this.store.getAgent(current.sourceId);
+    if (agent !== undefined && current !== undefined) {
+      const model = patch.model === undefined ? current.runModel ?? undefined : patch.model ?? undefined;
+      this.validateContext1M(current.sourceId, agent, model, patch.context1M);
+      if (patch.model !== undefined && !this.supportsContext1M(current.sourceId, agent, model)) patch = { ...patch, context1M: null };
+    }
     if ((patch.projectId !== undefined || patch.tagIds !== undefined) && patch.ifRunConfigUnset === true) {
       throw new WebConsoleError("invalid_request", "projectId and tagIds cannot be combined with ifRunConfigUnset.", 400);
     }
@@ -1717,7 +1725,8 @@ export class WebService {
       input.effort ?? undefined,
       true,
     );
-    const updated = this.store.setAgentRunOverride(sourceId, input);
+    this.validateContext1M(sourceId, agent, input.model ?? undefined, input.context1M);
+    const updated = this.store.setAgentRunOverride(sourceId, this.supportsContext1M(sourceId, agent, input.model ?? undefined) ? input : { ...input, context1M: null });
     this.emit("agents.changed");
     return this.decorateProjectedCapabilities(updated);
   }
@@ -2205,11 +2214,11 @@ export class WebService {
       throw new WebConsoleError("compaction_busy", "Wait for the current turn or compaction to finish.", 409);
     }
     // The model the next turn on this thread would declare (see launchTurn metadata).
-    const { model } = this.resolveTurnSelection(threadId);
+    const { model, context1M } = this.resolveTurnSelection(threadId);
     const operation = (async () => {
       const result = await connection.client.compactConversation(
         this.conversationIdForThread(threadId),
-        model === undefined ? undefined : { model },
+        { ...(model === undefined ? {} : { model }), ...(context1M === undefined ? {} : { context1M }) },
       );
       // A thread deleted meanwhile keeps the agent's outcome but records nothing.
       if (this.store.getThread(threadId) !== undefined) {
@@ -2254,8 +2263,8 @@ export class WebService {
     const operatorText = this.withProjectPrefix(threadId, quotedText);
     assertTurnTextWithinLimit(operatorText);
     const attachmentIds = input.attachmentIds ?? [];
-    const selection = this.resolveTurnSelection(threadId, input.model, input.effort);
-    const { thread, model, effort, requestedModel, requestedEffort } = selection;
+    const selection = this.resolveTurnSelection(threadId, input.model, input.effort, input.context1M);
+    const { thread, model, effort, context1M, requestedModel, requestedEffort } = selection;
     threadId = thread.id;
     const connection = this.connections.get(thread.sourceId);
     if (this.activeCompactions.has(threadId)) throw new WebConsoleError("compaction_busy", "Wait for compaction to finish.", 409);
@@ -2270,6 +2279,7 @@ export class WebService {
       ...(input.quote === undefined ? {} : { quote: input.quote }),
       ...(model === undefined ? {} : { model }),
       ...(effort === undefined ? {} : { effort }),
+      ...(context1M === undefined ? {} : { context1M }),
       ...(requestedModel === undefined ? {} : { requestedModel }),
       ...(requestedEffort === undefined ? {} : { requestedEffort }),
     });
@@ -2306,6 +2316,7 @@ export class WebService {
       attachmentIds,
       model: input.model ?? null,
       effort: input.effort ?? null,
+      ...(input.context1M == null ? {} : { context1M: input.context1M }),
     })).digest("hex");
     const existing = this.store.webSubmission(threadId, input.submissionId);
     if (existing !== undefined) {
@@ -2355,10 +2366,11 @@ export class WebService {
             turnId: activeTurnId,
           };
         }
-        const { model, effort, requestedModel, requestedEffort } = this.resolveTurnSelection(
+        const { model, effort, context1M, requestedModel, requestedEffort } = this.resolveTurnSelection(
           threadId,
           input.model,
           input.effort,
+          input.context1M,
         );
         started = this.store.beginTurn({
           threadId,
@@ -2367,6 +2379,7 @@ export class WebService {
           ...(input.quote === undefined ? {} : { quote: input.quote }),
           ...(model === undefined ? {} : { model }),
           ...(effort === undefined ? {} : { effort }),
+          ...(context1M === undefined ? {} : { context1M }),
           ...(requestedModel === undefined ? {} : { requestedModel }),
           ...(requestedEffort === undefined ? {} : { requestedEffort }),
         });
@@ -2667,6 +2680,7 @@ export class WebService {
       const modelMetadata = {
         ...(started.thread.runState.model === undefined ? {} : { model: started.thread.runState.model }),
         ...(started.thread.runState.effort === undefined ? {} : { effort: started.thread.runState.effort }),
+        ...(started.thread.runState.context1M === undefined ? {} : { context1M: started.thread.runState.context1M }),
       };
       // A host wake (process-job completion) runs an ordinary live turn
       // on an ordinary conversation, so it carries the same turn-bound console
@@ -3089,6 +3103,7 @@ export class WebService {
           threadId: input.threadId, prompt, storedPrompt: "[Parent turn interrupted]",
           ...(selection.model === undefined ? {} : { model: selection.model }),
           ...(selection.effort === undefined ? {} : { effort: selection.effort }),
+          ...(selection.context1M === undefined ? {} : { context1M: selection.context1M }),
         });
       } catch {
         // Pre-dispatch refusal retains the bounded pending obligation.
@@ -3291,6 +3306,7 @@ export class WebService {
           },
           ...(selection.model === undefined ? {} : { model: selection.model }),
           ...(selection.effort === undefined ? {} : { effort: selection.effort }),
+          ...(selection.context1M === undefined ? {} : { context1M: selection.context1M }),
           ...(selection.requestedModel === undefined ? {} : { requestedModel: selection.requestedModel }),
           ...(selection.requestedEffort === undefined ? {} : { requestedEffort: selection.requestedEffort }),
         });
@@ -4602,11 +4618,13 @@ export class WebService {
     threadId: string,
     explicitModel?: string,
     explicitEffort?: string,
+    explicitContext1M?: boolean | null,
   ): {
     readonly thread: WebThread;
     readonly agent: WebAgentSummary;
     readonly model?: string;
     readonly effort?: string;
+    readonly context1M?: boolean;
     readonly requestedModel?: string;
     readonly requestedEffort?: string;
   } {
@@ -4619,6 +4637,10 @@ export class WebService {
     const model = explicitModel ?? thread.runModel ?? undefined;
     const effort = explicitEffort ?? thread.runEffort ?? undefined;
     this.validateModelAndEffort(thread.sourceId, agent, model, effort);
+    this.validateContext1M(thread.sourceId, agent, model, explicitContext1M);
+    const context1M = this.supportsContext1M(thread.sourceId, agent, model)
+      ? (explicitContext1M === undefined ? thread.runContext1M ?? undefined : explicitContext1M ?? undefined)
+      : undefined;
     const requestedModel = effectiveModelForAgent(agent, model);
     const cached = requestedModel === undefined
       ? undefined
@@ -4634,9 +4656,23 @@ export class WebService {
       agent,
       ...(model === undefined ? {} : { model }),
       ...(effort === undefined ? {} : { effort }),
+      ...(context1M === undefined ? {} : { context1M }),
       ...(requestedModel === undefined ? {} : { requestedModel }),
       ...(requestedEffort === undefined ? {} : { requestedEffort }),
     };
+  }
+
+  private supportsContext1M(sourceId: string, agent: WebAgentSummary, model?: string): boolean {
+    const selected = effectiveModelForAgent(agent, model);
+    if (selected === undefined) return false;
+    return (this.modelCatalogCache.get(sourceId)?.models.get(selected)?.advertisement ?? agent.modelOptions?.[selected])?.supportsContext1M === true;
+  }
+
+  private validateContext1M(sourceId: string, agent: WebAgentSummary, model: string | undefined, value: unknown): void {
+    if (value == null) return;
+    if (typeof value !== "boolean" || !this.supportsContext1M(sourceId, agent, model)) {
+      throw new WebConsoleError("invalid_context_1m", "The selected model does not support a 1M context selection.", 400);
+    }
   }
 
   private validateModelAndEffort(

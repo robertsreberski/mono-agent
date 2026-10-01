@@ -33,11 +33,40 @@
       "additionalProperties": false,
       "properties": {
         "model": {
-          "description": "Configures model for the runtime section.",
-          "examples": [
-            "openai-codex:gpt-5.6-terra"
+          "type": [
+            "string",
+            "object"
           ],
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "context1M": {
+                  "type": "boolean",
+                  "description": "Opt in to 1,000,000 tokens for eligible built-in GPT models; absent is off."
+                }
+              }
+            }
+          ],
+          "description": "Canonical provider:model string, or {model, context1M?}. The optional boolean declares a 1,000,000-token window for eligible built-in openai/openai-codex GPT chat models inferred from Pi’s 272,000-token catalog window and long-input pricing tier; not an entitlement guarantee. Absent is off. Effort stays in runtime.effort.",
+          "examples": [
+            {
+              "model": "openai-codex:gpt-6.1-sol",
+              "context1M": true
+            }
+          ]
         },
         "fallbacks": {
           "description": "Canonical ordered fallback routes. Omitted per-route effort means that provider's default.",
@@ -63,6 +92,9 @@
               "model": {
                 "type": "string",
                 "minLength": 1
+              },
+              "context1M": {
+                "type": "boolean"
               },
               "effort": {
                 "type": "string",
@@ -395,6 +427,9 @@
                   "model": {
                     "type": "string",
                     "minLength": 1
+                  },
+                  "context1M": {
+                    "type": "boolean"
                   }
                 }
               }
@@ -428,8 +463,33 @@
                 "minLength": 1
               },
               "model": {
-                "type": "string",
-                "minLength": 1
+                "type": [
+                  "string",
+                  "object"
+                ],
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "model"
+                    ],
+                    "properties": {
+                      "model": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "context1M": {
+                        "type": "boolean",
+                        "description": "Opt in to 1,000,000 tokens for eligible built-in GPT models; absent is off."
+                      }
+                    }
+                  }
+                ]
               },
               "effort": {
                 "type": "string",

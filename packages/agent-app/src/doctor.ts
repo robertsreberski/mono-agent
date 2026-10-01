@@ -623,6 +623,9 @@ function runtimeSection(config: MonoAgentConfig): ValidationSection {
   const routes = configuredRuntimeRouteChecks(config);
   for (const route of routes) {
     try {
+      if (config.runtime.context1MModels?.[`${route.model.provider}:${route.model.model}`] === true) {
+        details.push(`${route.label} ${displayReferenceOf(route.model)}: 1M context enabled (catalog-inferred eligibility, not a subscription guarantee).`);
+      }
       const support = describeMonoRuntimeSupport(route.model);
       const resolutionIssue = piModelResolutionIssue(config, route.model);
       const effortWarning = runtimeRouteEffortWarning(config, route);

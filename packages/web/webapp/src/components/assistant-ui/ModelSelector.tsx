@@ -20,6 +20,8 @@ export type ModelSelectorProps = {
   readonly models: readonly ModelSelectorOption[];
   readonly value: string;
   readonly effort: string;
+  readonly context1M?: boolean | null;
+  readonly onContext1MChange?: (enabled: boolean) => void;
   readonly onValueChange: (value: string) => void;
   readonly onEffortChange: (effort: string) => void;
   readonly disabled?: boolean;
@@ -78,6 +80,8 @@ export function ModelSelector({
   onProviderRequest,
   providerStatus,
   agentProviders,
+  context1M,
+  onContext1MChange,
   showModelChangeHint = false,
 }: ModelSelectorProps) {
   const [internalOpen, setInternalOpen] = useState(false);
@@ -397,6 +401,13 @@ export function ModelSelector({
                 )}
               </Command.List>
 
+              {selectedModel?.supportsContext1M === true && onContext1MChange && (
+                <label className="model-selector__context" onKeyDown={(event) => event.stopPropagation()}>
+                  <input type="checkbox" checked={context1M ?? selectedModel.context1M ?? false}
+                    disabled={disabled} onChange={(event) => onContext1MChange(event.target.checked)} />
+                  <span>1M context</span>
+                </label>
+              )}
               {(selectedModel?.efforts.length ?? 0) > 0 && (
                 <div
                   data-slot="model-selector-effort"

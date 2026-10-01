@@ -2556,3 +2556,6 @@ textarea.wake-text { min-height: calc(3lh + 24px); max-height: calc(12lh + 24px)
   .settings-savebar-text { flex-basis: 100%; }
   .settings-savebar { justify-content: flex-end; }
 }
+
+.model-selector__context { display: flex; align-items: center; gap: 8px; padding: 10px 14px; font-size: 13px; cursor: pointer; }
+.model-selector__context input { width: 16px; height: 16px; accent-color: var(--accent); }

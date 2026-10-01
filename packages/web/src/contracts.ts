@@ -123,6 +123,8 @@ export interface WebModelOption {
   readonly reasoningMode?: string;
   readonly label?: string;
   readonly contextWindow?: number;
+  readonly supportsContext1M?: true;
+  readonly context1M?: boolean;
 }
 
 export type WebRunSettingSource = "config" | "override";
@@ -132,16 +134,20 @@ export interface WebAgentRunSettings {
   readonly config: {
     readonly model?: string;
     readonly effort?: string;
+    readonly context1M?: boolean;
   };
   readonly override: {
     readonly model?: string;
     readonly effort?: string;
+    readonly context1M?: boolean;
   } | null;
   readonly effective: {
     readonly model?: string;
     readonly modelSource: WebRunSettingSource;
     readonly effort?: string;
+    readonly context1M?: boolean;
     readonly effortSource: WebRunSettingSource;
+    readonly context1MSource?: WebRunSettingSource;
   };
 }
 
@@ -355,6 +361,7 @@ export interface WebRunActivity {
 export type WebCancelOrigin = "user-stop" | "client-disconnect" | "client-reconnect" | "service-shutdown" | "api";
 
 export interface WebRunState {
+  readonly context1M?: boolean;
   readonly cancelOrigin?: WebCancelOrigin;
   readonly id?: string;
   readonly status: WebRunStatus;
@@ -440,6 +447,7 @@ export interface WebThread {
   readonly runModel: string | null;
   /** Per-conversation effort override, or null when the agent default applies. */
   readonly runEffort: string | null;
+  readonly runContext1M?: boolean | null;
 }
 
 export type WebMessageStatus = "running" | "complete" | "failed" | "cancelled" | "interrupted";
@@ -1036,6 +1044,8 @@ export interface WebCatalogModel {
   readonly provider: string;
   readonly providerLabel: string;
   readonly contextWindow?: number;
+  readonly supportsContext1M?: true;
+  readonly context1M?: boolean;
   readonly reasoning?: boolean;
   readonly effortLevels?: readonly string[];
   readonly reasoningMode?: string;
@@ -1291,11 +1301,13 @@ export interface CreateWebThreadInput {
   readonly effort?: string | null;
   /** Optional project the new conversation joins; same agent, not archived. */
   readonly projectId?: string;
+  readonly context1M?: boolean | null;
 }
 
 export interface PutWebAgentRunSettingsInput {
   readonly model: string | null;
   readonly effort: string | null;
+  readonly context1M?: boolean | null;
 }
 
 export interface PatchWebAgentInput {
@@ -1324,6 +1336,7 @@ export interface PatchWebThreadInput {
    * back untouched, which is exactly what the caller must adopt.
    */
   readonly ifRunConfigUnset?: boolean;
+  readonly context1M?: boolean | null;
 }
 
 export interface StartWebTurnInput {
@@ -1332,6 +1345,7 @@ export interface StartWebTurnInput {
   readonly attachmentIds?: readonly string[];
   readonly model?: string;
   readonly effort?: string;
+  readonly context1M?: boolean | null;
 }
 
 export interface StartWebLiveInputInput {

@@ -330,8 +330,8 @@ export class MonoAgentHarness implements AgentHarness {
       // prompt in the session JSONL, the summary request uses Pi's own
       // summarization instructions, and manual mode never generates a reply.
       // A later turn supplies its real prompt as usual.
-      const endpoint = modelKey === sessionModelKey(this.options.model)
-        ? undefined : await this.options.runtimeOptionsForManualCompaction?.(modelKey);
+      const endpoint = modelKey === sessionModelKey(this.options.model) && compactionOptions?.context1M === undefined
+        ? undefined : await this.options.runtimeOptionsForManualCompaction?.(modelKey, compactionOptions?.context1M);
       if (controller.signal.aborted) throw new AgentHarnessError("compaction_failed", "Context compaction was cancelled.");
       const run = runtime.run(MANUAL_COMPACTION_SYSTEM_PROMPT, {
         ...mergeRuntimeOptions(this.options.runtimeOptions, endpoint),

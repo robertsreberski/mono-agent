@@ -70,6 +70,8 @@ export function useRunControls() {
   const {
     model,
     effort,
+    context1M,
+    setContext1M,
     modelOptions,
     effortOptions,
     setModel,
@@ -196,6 +198,8 @@ export function useRunControls() {
     selectorModels,
     model,
     effort,
+    context1M,
+    setContext1M,
     effectiveModel,
     effectiveEffort,
     setModel,

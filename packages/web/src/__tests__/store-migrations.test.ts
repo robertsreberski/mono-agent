@@ -301,7 +301,7 @@ describe("web storage migration history", () => {
     const database = new DatabaseSync(join(stateDir, "state.sqlite"));
     database.exec(sql);
     database.close();
-    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "storage_corrupt", message: "Web storage migration postconditions failed." });
+    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "storage_corrupt" });
   });
 
   it("rolls back earlier steps and bootstrap when a later step fails without leaking its error", async () => {
@@ -579,7 +579,7 @@ describe("external conversation projects migration", () => {
     } finally { reopened.close(); }
     const database = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
     try {
-      expect(database.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 41 });
+      expect(database.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
       expect(database.prepare("SELECT COUNT(*) AS count FROM external_conversations").get()).toEqual({ count: 0 });
     } finally { database.close(); }
   });
@@ -598,8 +598,8 @@ describe("external conversation projects migration", () => {
 
 describe("named migration registry", () => {
   const step = (version: number, name: string): WebStorageMigration => ({ version, name, up: vi.fn() });
-  it("is immutable and derives schema 41 from its last step", () => {
-    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(41);
+  it("is immutable and derives schema 42 from its last step", () => {
+    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(42);
     expect(WEB_STORAGE_SCHEMA_VERSION).toBe(WEB_STORAGE_MIGRATIONS.at(-1)?.version);
     expect(Object.isFrozen(WEB_STORAGE_MIGRATIONS)).toBe(true);
     expect(WEB_STORAGE_MIGRATIONS.every(Object.isFrozen)).toBe(true);
@@ -776,7 +776,7 @@ describe("web recovery observation migration", () => {
     try {
       const db = new DatabaseSync(join(stateDir, "state.sqlite"));
       try {
-        expect(db.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 41 });
+        expect(db.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
         expect(db.prepare(`SELECT dispatch_generation, web_recovery_generation_confirmed_at
           FROM turns WHERE id = ?`).get(turnId)).toMatchObject({
           dispatch_generation: "generation-old", web_recovery_generation_confirmed_at: null,

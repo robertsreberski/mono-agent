@@ -61,7 +61,7 @@ function liveModelContextWindow(harness, runtime) {
   return win > 0 ? win : 0;
 }
 
-function effectiveContextWindow(harness, runtime, resolved, contextWindowOverride) {
+export function effectiveContextWindow(harness, runtime, resolved, contextWindowOverride) {
   const override = Number(contextWindowOverride);
   const declared = Number.isFinite(override) && override > 0
     ? override

@@ -443,7 +443,7 @@ export interface ConfigReferenceField {
   readonly nullable?: boolean;
 }
 
-export type ConfigReferenceType = "string" | "number" | "integer" | "boolean" | "string[]" | "string | string[]" | "integer | unlimited" | "object" | "array";
+export type ConfigReferenceType = "string" | "number" | "integer" | "boolean" | "string[]" | "string | string[]" | "string | object" | "integer | unlimited" | "object" | "array";
 
 interface JsonSchema {
   readonly [key: string]: unknown;
@@ -1104,7 +1104,17 @@ function isSchemaObject(value: unknown): value is JsonSchema & { properties: Rec
   return isPlainObject(value) && isPlainObject(value.properties);
 }
 
+function modelSelectionSchema(): JsonSchema {
+  return { type: ["string", "object"], anyOf: [
+    { type: "string", minLength: 1 },
+    { type: "object", additionalProperties: false, required: ["model"], properties: {
+      model: { type: "string", minLength: 1 }, context1M: { type: "boolean", description: "Opt in to 1,000,000 tokens for eligible built-in GPT models; absent is off." },
+    } },
+  ] };
+}
+
 export function schemaForField(field: ConfigReferenceField): JsonSchema {
+  if (field.jsonPath === "runtime.model") return { ...modelSelectionSchema(), description: field.description, examples: [field.example] };
   if (field.jsonPath === "artifacts.replyFiles.maxStorageBytes") return {
     description: field.description,
     examples: [field.example],
@@ -1164,6 +1174,7 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
               { type: "object", additionalProperties: false, required: ["model"], properties: {
                 name: { type: "string", pattern: "^[a-z0-9][a-z0-9-]{0,39}$" },
                 model: { type: "string", minLength: 1 },
+                context1M: { type: "boolean" },
               } },
             ] },
           },
@@ -1178,7 +1189,7 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
                 description: { type: "string", minLength: 1 },
                 prompt: { type: "string", minLength: 1 },
                 promptPath: { type: "string", minLength: 1 },
-                model: { type: "string", minLength: 1 },
+                model: modelSelectionSchema(),
                 effort: { type: "string", enum: EFFORT_LEVELS },
                 allowedTools: { type: "array", items: { type: "string", minLength: 1 } },
                 disallowedTools: { type: "array", items: { type: "string", minLength: 1 } },
@@ -1303,6 +1314,7 @@ function arrayItemSchemaForField(field: ConfigReferenceField): JsonSchema {
       required: ["model"],
       properties: {
         model: { type: "string", minLength: 1 },
+        context1M: { type: "boolean" },
         effort: { type: "string", enum: EFFORT_LEVELS },
         attempts: { type: "integer", minimum: 1, maximum: 10 },
       },
@@ -1367,6 +1379,7 @@ function typeFromKind(kind: JsonEnvFieldSpec["kind"], id: string): ConfigReferen
 }
 
 function inferType(id: string): ConfigReferenceType {
+  if (id === "runtime.model") return "string | object";
   if (id === "artifacts.replyFiles.maxStorageBytes") return "integer | unlimited";
   if (id === "tools.web.search.backend" || id === "tools.web.fetch.provider") return "string | string[]";
   if (id === "runtime.fallbacks") {
@@ -1554,7 +1567,7 @@ function exampleFor(id: string): SettingsJsonValue {
     "artifacts.replyFiles.maxStorageBytes": "unlimited",
     "providers.piNative.cacheRetention": "long",
     "agent.name": "Research Partner",
-    "runtime.model": "openai-codex:gpt-5.6-terra",
+    "runtime.model": { model: "openai-codex:gpt-6.1-sol", context1M: true },
     "runtime.fallbacks": [
       { model: "openai-codex:gpt-5.6-sol" },
       { model: "anthropic:claude-sonnet-4-6", effort: "high" },
@@ -1657,6 +1670,7 @@ function descriptionFor(id: string): string {
   if (id === "artifacts.replyFiles.maxStorageBytes") return "Aggregate reply-file and MCP App content budget in bytes (default 2 GiB), or 'unlimited' to disable quota rejection. MCP App audit keeps a separate 1 MiB reserve when enabled; retention still applies.";
   if (id === "artifacts.replyFiles.maxFileBytes") return "Maximum bytes per published reply file (default and maximum 20 MiB); larger values cannot be delivered safely by all channels.";
   if (id === "providers.piNative.promptCacheDiagnostics") return "Emit metadata-only prompt-cache request fingerprints into run artifacts; never prompt text, tool arguments, cache keys, endpoints or credentials.";
+  if (id === "runtime.model") return "Canonical provider:model string, or {model, context1M?}. The optional boolean declares a 1,000,000-token window for eligible built-in openai/openai-codex GPT chat models inferred from Pi’s 272,000-token catalog window and long-input pricing tier; not an entitlement guarantee. Absent is off. Effort stays in runtime.effort.";
   const section = id.split(".")[0] ?? "config";
   const name = id.split(".").slice(1).join(".");
   if (id === "providers") {

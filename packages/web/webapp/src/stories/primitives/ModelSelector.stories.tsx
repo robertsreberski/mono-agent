@@ -7,3 +7,5 @@ const models = [{ id: "atlas/standard", name: "Atlas Standard", provider: "atlas
 export const Selected: Story = { args: { models, value: "atlas/standard", effort: "medium", onValueChange: () => {}, onEffortChange: () => {} } };
 export const Open: Story = { args: { ...Selected.args!, open: true, onOpenChange: () => {} }, play: async ({ canvasElement }) => { await waitForOverlay(canvasElement, '[data-slot="model-selector-content"]'); } };
 export const Disabled: Story = { args: { ...Selected.args!, disabled: true } };
+
+export const Context1M: Story = { args: { ...Selected.args!, models: [{ id: "synthetic:gpt", name: "Synthetic eligible GPT", efforts: [], supportsContext1M: true }], value: "synthetic:gpt", context1M: true, onContext1MChange: () => {}, open: true }, play: Open.play };

@@ -1,3 +1,4 @@
+import { modelReferenceFromConfigJson } from "@mono-agent/config";
 import {
   MAX_AGENT_NAME_LENGTH,
   type MonoAgentConfigJson,
@@ -103,7 +104,7 @@ export function referencedSetupModelRefs(plan: WizardPlan): readonly string[] {
     }
   };
 
-  add(plan.configJson.runtime?.model);
+  add(modelReferenceFromConfigJson(plan.configJson.runtime?.model));
   for (const fallback of plan.configJson.runtime?.fallbacks ?? []) {
     add(fallback.model);
   }

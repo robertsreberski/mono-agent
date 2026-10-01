@@ -844,6 +844,34 @@ describe("ConsoleStoreProvider integration", () => {
     expect(store.current.creatingThread).toBe(false);
   });
 
+  it("persists an explicit false 1M draft, reloads it and clears it only on an ineligible model switch", async () => {
+    const ref = "openai-codex:gpt-6.1-sol";
+    const alternate = "openai:gpt-6-sol";
+    const ineligible = "openai-codex:gpt-5.3-codex-spark";
+    const selected = agent("alpha", { defaultModel: ref, models: [ref, alternate, ineligible], modelOptions: {
+      [ref]: { supportsContext1M: true, context1M: true }, [alternate]: { supportsContext1M: true, context1M: false }, [ineligible]: {},
+    }, runSettings: { config: { model: ref, context1M: true }, override: null,
+      effective: { model: ref, modelSource: "config", effortSource: "config", context1M: true, context1MSource: "config" } } });
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([selected], []));
+    let store = await renderStore();
+    act(() => { store.current.setContext1M(false); });
+    expect(store.current.context1M).toBe(false);
+    await waitFor(() => expect(JSON.parse(localStorage.getItem(RUN_PREFERENCES_STORAGE_KEY)!)[preferenceKeyForThread("alpha", null)].context1M).toBe(false));
+    cleanupDom(); store = await renderStore();
+    expect(store.current.context1M).toBe(false);
+    act(() => { store.current.setModel(alternate); });
+    expect(store.current.context1M).toBe(false);
+    act(() => { store.current.setModel(ineligible); });
+    expect(store.current.context1M).toBeUndefined();
+    act(() => { store.current.setModel(ref); });
+    expect(store.current.context1M).toBe(true);
+    act(() => { store.current.setContext1M(false); });
+    vi.mocked(api.createThread).mockResolvedValue(thread("created-1m", "alpha", { runModel: ref, runContext1M: false }));
+    await act(async () => { await store.current.createThread(); });
+    expect(api.createThread).toHaveBeenLastCalledWith("alpha", { model: ref, context1M: false, effort: null }, expect.any(AbortSignal), undefined);
+  });
+
   it("sends authored draft run choices atomically with thread creation", async () => {
     localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
     vi.mocked(api.createThread).mockResolvedValue(thread("created", "alpha", {

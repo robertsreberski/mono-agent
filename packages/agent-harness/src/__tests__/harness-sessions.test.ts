@@ -201,6 +201,7 @@ async function manualFixture(options: {
   readonly failNextCommit?: { armed: boolean };
   readonly seedHistory?: boolean;
   readonly defaultPrivateEndpoint?: boolean;
+  readonly withContext1M?: boolean;
 } = {}) {
   const identityPath = await identityFixture();
   const root = await mkdtemp(join(tmpdir(), "agent-manual-compact-"));
@@ -230,6 +231,10 @@ async function manualFixture(options: {
   };
   const makeHarness = () => createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore,
     session, piSessionsRoot: join(root, "pi"), runtimeOptionsForRequest,
+    ...(options.withContext1M ? {
+      runtimeOptions: { context1MModels: { [`${model.provider}:${model.model}`]: true } },
+      runtimeOptionsForManualCompaction: async (modelKey: string, context1M?: boolean) => ({ context1MModels: { [modelKey]: context1M ?? true } }),
+    } : {}),
     ...(options.defaultPrivateEndpoint ? {
       runtimeOptions: { isPrivateProvider: true },
       runtimeOptionsForManualCompaction: async () => ({ isPrivateProvider: null }),
@@ -239,6 +244,12 @@ async function manualFixture(options: {
 }
 
 describe("AgentHarness manual compaction", () => {
+  it("passes explicit false through the manual policy hook even on the configured primary", async () => {
+    const { fake, makeHarness } = await manualFixture({ withContext1M: true });
+    await expect(makeHarness().compactConversation!("manual", { context1M: false })).resolves.toMatchObject({ status: "succeeded" });
+    expect(fake.calls[0]?.options.context1MModels).toEqual({ [`${model.provider}:${model.model}`]: false });
+  });
+
   it("compacts a warm session without replaying history, a real prompt, or a refresh", async () => {
     const { fake, makeHarness, revision } = await manualFixture();
     const harness = makeHarness();

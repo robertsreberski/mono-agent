@@ -576,3 +576,15 @@ describe("provider-model-catalog", () => {
       .toEqual({ models: [], truncated: false });
   });
 });
+
+describe("1M context catalog advertisements", () => {
+  it("projects one inferred capability and configured window consistently in shortlist and lazy rows", () => {
+    const ref = parseMonoRuntimeModelReference("openai-codex:gpt-6.1-sol");
+    const catalog = buildProviderModelCatalog({ configuredRoutes: [ref], context1MModels: { [ref.reference]: true } });
+    expect(catalog.describe([ref])[ref.reference]).toMatchObject({ supportsContext1M: true, context1M: true, contextWindow: 1_000_000 });
+    expect(catalog.listModels("openai-codex").models.find((row) => row.id === ref.model)).toMatchObject({ supportsContext1M: true, context1M: true, contextWindow: 1_000_000 });
+    expect(catalog.listModels("openai-codex").models.find((row) => row.id === "gpt-5.3-codex-spark")?.supportsContext1M).toBeUndefined();
+    const off = buildProviderModelCatalog({ configuredRoutes: [ref], context1MModels: { [ref.reference]: false } });
+    expect(off.describe([ref])[ref.reference]).toMatchObject({ context1M: false, contextWindow: 272_000 });
+  });
+});

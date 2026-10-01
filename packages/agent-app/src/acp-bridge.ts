@@ -261,6 +261,7 @@ async function runPrompt(
   let publishedText = "";
   let interactionStopReason: "refusal" | "cancelled" | undefined;
   const toolNames = new Map<string, string>();
+  const liveContext: { window?: number | undefined } = {};
   const messageId = `mono-agent:${String(context.requestId)}`;
   const cancelOperator = (): void => {
     if (isAcpRequestCancellation(context.signal.reason)) {
@@ -328,7 +329,7 @@ async function runPrompt(
           return;
         }
         if (frame.kind === "event") {
-          await publishEvent(context, params.sessionId, frame.event, target.info, toolNames);
+          await publishEvent(context, params.sessionId, frame.event, target.info, toolNames, liveContext);
           if (
             frame.event.type === "tool_call_started"
             && frame.event.name.toLowerCase() === "askuser"
@@ -614,7 +615,12 @@ async function publishEvent(
   event: AgentStreamEvent,
   info: OperatorInfo,
   toolNames: Map<string, string>,
+  liveContext: { window?: number | undefined },
 ): Promise<void> {
+  if (event.type === "runtime_telemetry" && event.kind === "context_usage") {
+    liveContext.window = event.data?.context1M === true && typeof event.data.contextWindow === "number" && event.data.contextWindow > 0
+      ? event.data.contextWindow : undefined;
+  }
   if (event.type === "assistant_thought") {
     await notifyUpdate(context, sessionId, {
       sessionUpdate: "agent_thought_chunk",
@@ -673,7 +679,7 @@ async function publishEvent(
   await notifyUpdate(context, sessionId, {
     sessionUpdate: "usage_update",
     used: totalTokens,
-    size: Math.max(totalTokens, contextWindow ?? 1),
+    size: Math.max(totalTokens, liveContext.window ?? contextWindow ?? 1),
     ...(event.cumulativeUsd === undefined
       ? {}
       : { cost: { amount: event.cumulativeUsd, currency: "USD" } }),

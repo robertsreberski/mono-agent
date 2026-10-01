@@ -75,6 +75,22 @@ async function runProbeForTest(
 describe("readiness probe", () => {
   const plan = composeWizardPlan(defaultAnswers(), { dirBasename: "agent", skillsRootExists: false });
 
+  it("preserves object policy and reruns after the selected context flag changes", async () => {
+    const ref = "openai-codex:gpt-6.1-sol";
+    const selected = { ...plan, configJson: { ...plan.configJson, runtime: { model: { model: ref, context1M: true } } } };
+    const run = vi.fn(async ({ config, options }: Parameters<NonNullable<Parameters<typeof runAllRouteReadinessProbe>[0]["run"]>>[0]) => {
+      expect(options.context1MModels).toEqual(config.runtime.context1MModels);
+      return { text: "synthetic ready" };
+    });
+    const on = await runAllRouteReadinessProbe({ plan: selected, run });
+    expect(on.ok).toBe(true);
+    if (!on.ok || on.routes === undefined || on.planFingerprint === undefined) throw new Error("route summary missing");
+    const off = await runAllRouteReadinessProbe({ plan: { ...selected, configJson: { ...selected.configJson, runtime: { model: { model: ref, context1M: false } } } }, run, resume: { planFingerprint: on.planFingerprint, successfulRouteKeys: on.routes.map((route) => route.key) } });
+    expect(off.ok).toBe(true); expect(run).toHaveBeenCalledTimes(2);
+    expect(run.mock.calls[0]?.[0].config.runtime.context1MModels).toEqual({ [ref]: true });
+    expect(run.mock.calls[1]?.[0].config.runtime.context1MModels).toEqual({ [ref]: false });
+    expect(selected.configJson.runtime.model).toEqual({ model: ref, context1M: true });
+  });
   it("runs against the selected model with a no-tool disposable config", async () => {
     let seen: { model: unknown; allowedTools: readonly string[]; workspace: string; identityPath: string } | undefined;
     const result = await runProbeForTest({

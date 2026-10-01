@@ -239,7 +239,7 @@ function ConversationTitle() {
 
 export function ModelControls() {
   const {
-    usage, providerUsage, compactThreadId, compactBlocked, manualCompacting, threadId, detail, running, contextLoading, selectorModels, model, effort, setModel, setEffort,
+    usage, providerUsage, compactThreadId, compactBlocked, manualCompacting, threadId, detail, running, contextLoading, selectorModels, model, effort, context1M, setContext1M, setModel, setEffort,
     agentDefaultModel, hasRunOverride, resetRunOverride, disabled, hasSettings,
     catalogStatusByProvider, openCatalog, requestProvider, agentProviders,
     showModelChangeHint,
@@ -290,6 +290,8 @@ export function ModelControls() {
           effort={effort}
           onValueChange={setModel}
           onEffortChange={setEffort}
+          context1M={context1M}
+          onContext1MChange={setContext1M}
           open={settingsOpen}
           onOpenChange={(next) => {
             setSettingsOpen(next);

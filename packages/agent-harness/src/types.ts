@@ -481,12 +481,13 @@ export interface AgentHarnessOptions {
   readonly runtimeOptionsForRequest?: (
     input: AgentHarnessRuntimeOptionsInput,
   ) => AgentHarnessRuntimeOptionsExtension | Promise<AgentHarnessRuntimeOptionsExtension>;
-  /** Model-only endpoint selection for promptless manual compaction. Must not allocate turn tools. */
+  /** Model/context policy selection for promptless manual compaction. Must not allocate turn tools. */
   readonly runtimeOptionsForManualCompaction?: (
     model: string,
+    context1M?: boolean,
   ) => Partial<Pick<NonNullable<AgentHarnessRuntimeOptionsExtension["runtimeOptions"]>,
-    "customProvider" | "customModel" | "modelCapabilities" | "isPrivateProvider">> | Promise<Partial<Pick<NonNullable<AgentHarnessRuntimeOptionsExtension["runtimeOptions"]>,
-    "customProvider" | "customModel" | "modelCapabilities" | "isPrivateProvider">>>;
+    "customProvider" | "customModel" | "modelCapabilities" | "isPrivateProvider" | "context1MModels">> | Promise<Partial<Pick<NonNullable<AgentHarnessRuntimeOptionsExtension["runtimeOptions"]>,
+    "customProvider" | "customModel" | "modelCapabilities" | "isPrivateProvider" | "context1MModels">>>;
   readonly mcpRequestContext?: AgentHarnessMcpRequestContextOptions;
   readonly continuationContext?: AgentHarnessContinuationContextOptions;
   /**

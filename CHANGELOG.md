@@ -10,6 +10,11 @@
   restart; retire failed first admissions and require close/recreate when session
   continuity cannot be proven.
 
+- Let eligible GPT models opt into a 1,000,000-token context window through
+  model declarations and the web console’s **1M context** checkbox. Keep it off
+  by default, persist conversation and new-conversation choices, and retain
+  configured compaction corrections, learned overflow limits, and pricing tiers.
+
 - Fix background `Agent` and `AgentManage` admission after live completion
   steering, and release proven never-admitted reservations without masking the
   allowlisted start failure.

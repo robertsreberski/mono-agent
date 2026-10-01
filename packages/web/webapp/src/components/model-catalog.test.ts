@@ -515,3 +515,17 @@ describe("the shared effort module", () => {
     expect(effectiveModelForAgent({}, "")).toBeUndefined();
   });
 });
+
+describe("1M selector metadata", () => {
+  it("keeps capabilities on automatic, shortlist and lazy rows while old producers fail closed", () => {
+    const primary = "openai-codex:gpt-6.1-sol";
+    const lazy = "openai:gpt-6-sol";
+    const selected = agent("synthetic", { defaultModel: primary, models: [primary], modelOptions: { [primary]: { supportsContext1M: true, context1M: false } } });
+    const rows = buildSelectorModels({ agent: selected, modelOptions: [primary], defaultEffort: "", catalogByProvider: { openai: [{ id: "gpt-6-sol", provider: "openai", name: "GPT-6 Sol", providerLabel: "OpenAI", supportsContext1M: true, context1M: true }] } });
+    expect(rows.find((row) => row.id === "")).toMatchObject({ supportsContext1M: true, context1M: false });
+    expect(rows.find((row) => row.id === primary)).toMatchObject({ supportsContext1M: true, context1M: false });
+    expect(rows.find((row) => row.id === lazy)).toMatchObject({ supportsContext1M: true, context1M: true });
+    const old = buildSelectorModels({ agent: agent("old"), modelOptions: [], defaultEffort: "" });
+    expect(old.every((row) => row.supportsContext1M === undefined)).toBe(true);
+  });
+});

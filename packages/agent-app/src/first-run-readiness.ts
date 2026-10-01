@@ -1,3 +1,4 @@
+import { modelReferenceFromConfigJson } from "@mono-agent/config";
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { lstat, mkdir, mkdtemp, open, opendir, realpath, rm, stat, writeFile } from "node:fs/promises";
@@ -697,7 +698,8 @@ export function evaluateFirstRunReadiness(options: {
 function selectedPersistentRuntimeModelRefs(plan: WizardPlan): readonly string[] {
   const runtime = (plan.configJson.runtime ?? {}) as Record<string, unknown>;
   const refs: string[] = [];
-  if (typeof runtime.model === "string" && runtime.model.length > 0) refs.push(runtime.model);
+  const primary = modelReferenceFromConfigJson(plan.configJson.runtime?.model);
+  if (primary !== undefined && primary.length > 0) refs.push(primary);
   if (Array.isArray(runtime.fallbacks)) {
     for (const raw of runtime.fallbacks) {
       if (typeof raw !== "object" || raw === null || Array.isArray(raw)) continue;

@@ -419,6 +419,7 @@ export function createTuiChannelDriver(
           ? {}
           : { localProviders: [...(localProviders ?? []), ...discoveredLocalProviders] }),
         configuredRoutes: configuredRefs,
+        ...(input.coreConfig.runtime.context1MModels === undefined ? {} : { context1MModels: input.coreConfig.runtime.context1MModels }),
         discoveredModels,
       });
 

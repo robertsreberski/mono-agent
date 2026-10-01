@@ -34,6 +34,7 @@ import { subagentInvocationCount, subagentUsageForRun } from "../../agent/tools/
 import { closePiMcpClients } from "../../agent/tools/pi-bridge.js";
 import { createApprovalManager } from "../../agent/approval.js";
 import { buildCapabilitiesUsed, toolCompactionAppliedFromWarnings } from "../runtime/capabilities-used.js";
+import { withContext1M, withContext1MModels } from "../context-1m.js";
 import { reasoningLevelsForPiModel, resolvePiRuntimeModel } from "./pi-models.js";
 import {
   textFromContent,
@@ -222,7 +223,7 @@ function buildRunModels(runtime, options, runtimeWarnings, providerAttributionSe
     }
   }
   return withProviderCheckOutputCap(
-    withOpenCodeSessionHeaders(models, providerAttributionSessionId),
+    withOpenCodeSessionHeaders(withContext1MModels(models, options.customProvider ? undefined : options.context1MModels), providerAttributionSessionId),
     options.providerCheckMaxTokens,
   );
 }
@@ -527,7 +528,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // callers leave it undefined and resolve through pi-ai's registry.
     let runtime = options.piResolvedModel
       ? {
-        model: options.piResolvedModel,
+        model: withContext1M(options.piResolvedModel, options.customProvider ? undefined : options.context1MModels),
         capabilities: options.piResolvedCapabilities || {
           tool_use: true,
           reasoning: !!options.piResolvedModel.reasoning,

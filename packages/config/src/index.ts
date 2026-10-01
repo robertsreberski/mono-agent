@@ -58,6 +58,7 @@ export type {
   MonoAgentMemoryLlmJson,
   MonoAgentProvidersJson,
   MonoAgentRuntimeFallbackJson,
+  MonoAgentModelSelectionJson,
   MonoAgentConfigJson,
   ReadMonoAgentConfigJsonResult,
 } from "./json-source.js";
@@ -85,3 +86,5 @@ export type {
   RemovedConfigWarningsInput,
 } from "./config-view.js";
 export type { ProviderDefinition } from "@mono-agent/runtime-adapter";
+
+export { modelReferenceFromConfigJson } from "./json-source.js";
