@@ -71,7 +71,7 @@ describe("verifySupervisedRestart", () => {
       const fresh = authority.verifyFresh!();
       await vi.advanceTimersByTimeAsync(5_000);
       const verdict = await fresh;
-      expect(verdict).toMatchObject({ supported: false, reason: expect.stringContaining("mono-agent restart") });
+      expect(verdict).toMatchObject({ supported: false, reason: expect.stringContaining("timed out") });
       expect(authority.accept(verdict).kind).toBe("refused");
       expect(latch.exitCode).toBe(0);
     } finally { vi.useRealTimers(); }

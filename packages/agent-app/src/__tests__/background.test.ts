@@ -1600,6 +1600,31 @@ describe("LaunchAgent private filesystem boundary", () => {
 });
 
 describe("maintainLaunchdController", () => {
+  it("treats a console-approved effective snapshot as healthy despite unchanged loaded argv", async () => {
+    const target = makeTarget();
+    const anchor = makeSnapshot(target, "original");
+    const { runner, calls } = makeRunner({ loaded: true, initialPid: 4321,
+      maintenanceLoaded: true, maintenancePid: process.pid,
+      mainPrintOutput: managedLaunchctlPrint(target, { snapshot: anchor }),
+    });
+    const harness = makeHarness({ runner, currentPid: () => process.pid,
+      list: listReturning(() => [makeSource(target, { pid: 4321 })]),
+      acquireLifecycleLock: async (_target, options) => options?.purpose === "shared-launchd-logs" ? undefined : async () => undefined,
+    });
+    const resolveApprovedSnapshot = vi.fn((binding) => {
+      expect(binding.encodedSnapshot).toBe(encodeBackgroundSnapshot(anchor));
+      return target.expectedSnapshot!;
+    });
+    const invalidateApprovedSnapshots = vi.fn(async () => undefined);
+    const preflight = vi.fn(async () => 0);
+    expect(await maintainLaunchdController(target, { ...harness.deps, resolveApprovedSnapshot, invalidateApprovedSnapshots }, {
+      sourceAvailable: true, recoveryPreflight: preflight,
+    })).toBe(0);
+    expect(resolveApprovedSnapshot).toHaveBeenCalledTimes(1);
+    expect(invalidateApprovedSnapshots).not.toHaveBeenCalled(); expect(preflight).not.toHaveBeenCalled();
+    expect(calls.some((call) => call[0] === "bootout" || call[0] === "bootstrap")).toBe(false);
+  });
+
   it("defers at the per-agent nonblocking lock before any expensive helper work", async () => {
     const target = makeTarget();
     const { runner } = makeRunner({
@@ -3718,4 +3743,18 @@ it("acknowledges a deferred log episode only after successful rotation/restorati
   } finally { release(); }
   expect(await attempt).toBe(0);
   expect(gate.status()?.pending).toBeUndefined(); expect(gate.complete).toHaveBeenCalledOnce();
+});
+
+describe("terminal approval invalidation", () => {
+  it.each(["start", "restart", "stop"])("invalidates label approvals under lifecycle ownership for %s", async (command) => {
+    const target = makeTarget(); const { runner } = makeRunner({ loaded: false });
+    let locked = false;
+    const harness = makeHarness({ runner, list: listReturning(() => []),
+      acquireLifecycleLock: async () => { locked = true; return async () => { locked = false; }; },
+    });
+    const invalidateApprovedSnapshots = vi.fn(async () => { expect(locked).toBe(true); });
+    const deps = { ...harness.deps, invalidateApprovedSnapshots };
+    await (command === "start" ? startBackground : command === "restart" ? restartBackground : stopBackground)(target, deps, POLL);
+    expect(invalidateApprovedSnapshots).toHaveBeenCalled(); expect(locked).toBe(false);
+  });
 });

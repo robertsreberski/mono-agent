@@ -1,3 +1,4 @@
+import { resolveApprovedBackgroundSnapshot, invalidateApprovedBackgroundSnapshots, type ApprovedBackgroundSnapshotBinding } from "./approved-background-snapshot.js";
 import {
   clearMaintenanceDeferral, allowUnattendedMaintenanceStop, describeMaintenanceActivity,
   readLaunchdMaintenanceActivityStatus, MaintenanceDeferred, logPermissionRepairNeeded,
@@ -357,6 +358,8 @@ export interface BackgroundDeps {
   ) => Promise<(() => Promise<void>) | undefined>;
   /** Hold KeepAlive respawns until the replacement runtime and plist are committed. */
   readonly acquireRuntimePublicationBarrier?: (target: BackgroundLifecycleTarget) => Promise<OwnerPrivateLock | undefined>;
+  readonly resolveApprovedSnapshot?: (binding: ApprovedBackgroundSnapshotBinding) => BackgroundSnapshot;
+  readonly invalidateApprovedSnapshots?: (target: BackgroundLifecycleTarget) => Promise<void>;
   readonly captureSnapshot?: (target: InstanceTarget) => Promise<BackgroundSnapshot>;
   readonly stdout: (text: string) => void;
   readonly stderr: (text: string) => void;
@@ -415,6 +418,8 @@ export function defaultBackgroundDeps(): BackgroundDeps {
       env: target.configurationEnvironment,
     }),
     acquireLifecycleLock: acquireFilesystemLifecycleLock,
+    resolveApprovedSnapshot: resolveApprovedBackgroundSnapshot,
+    invalidateApprovedSnapshots: (target) => invalidateApprovedBackgroundSnapshots({ label: target.label, managedRoot: dirname(target.paths.logDir) }),
     acquireRuntimePublicationBarrier: (target) => acquireManagedRuntimePublicationBarrier({
       label: target.label,
       managedRoot: dirname(target.paths.logDir),
@@ -542,7 +547,7 @@ async function maintainLaunchdControllerWithLifecycleLease(
       && snapshotMetadataMatches(source, target.expectedSnapshot) && durableSnapshotStillMatches;
     const workerHealthy = workerReady && snapshotMatches;
     const definitionMatches = worker.definition !== undefined
-      && managedWorkerDefinitionMatchesTarget(worker.definition, target);
+      && managedWorkerDefinitionMatchesTarget(worker.definition, target, deps);
     const runtimeMatches = loadedIdentity !== undefined
       && sameManagedRuntimeIdentity(loadedIdentity, desiredIdentity);
     const recoveryReasons: MaintenanceReason[] = [
@@ -597,7 +602,16 @@ async function maintainLaunchdControllerWithLifecycleLease(
 function managedWorkerDefinitionMatchesTarget(
   definition: LaunchdManagedWorkerDefinition,
   target: InstanceTarget,
+  deps: BackgroundDeps,
 ): boolean {
+  let effective: string;
+  try {
+    effective = deps.resolveApprovedSnapshot === undefined ? definition.expectedBackgroundSnapshot
+      : encodeBackgroundSnapshot(deps.resolveApprovedSnapshot({
+        label: target.label, managedRoot: dirname(target.paths.logDir), configPath: definition.configPath,
+        encodedSnapshot: definition.expectedBackgroundSnapshot, launchProof: definition.expectedManagedRuntimeLaunch,
+      }));
+  } catch { return false; }
   return target.expectedSnapshot !== undefined
     && definition.plistPath === target.paths.plistPath
     && definition.nodePath === target.nodePath
@@ -606,7 +620,7 @@ function managedWorkerDefinitionMatchesTarget(
     && definition.envFile === target.envFile
     && definition.stdoutPath === target.paths.stdoutPath
     && definition.stderrPath === target.paths.stderrPath
-    && definition.expectedBackgroundSnapshot === encodeBackgroundSnapshot(target.expectedSnapshot)
+    && effective === encodeBackgroundSnapshot(target.expectedSnapshot)
     && sameStringRecord(definition.environment, target.environment);
 }
 
@@ -648,6 +662,7 @@ export async function forceRestartBackground(
     return 1;
   }
   try {
+    await deps.invalidateApprovedSnapshots?.(target);
     const controlPoll = poll ?? DEFAULT_CONTROL_POLL;
     const stopCode = await stopBackgroundUnlocked(target, deps, controlPoll);
     if (stopCode !== 0) return stopCode;
@@ -704,6 +719,7 @@ export async function ensureBackgroundReady(
     return { ok: false, action: "start", reason: "ownership" };
   }
   try {
+    await deps.invalidateApprovedSnapshots?.(target);
     return await ensureBackgroundReadyUnlocked(
       target,
       deps,
@@ -951,6 +967,7 @@ async function ensureBackgroundReadyAfterPublicationBarrier(
       // Once journal recovery finishes under the stopped-writer proof, cancel
       // its old restore authority before replacing either plist.
       await deps.clearLaunchdLogMaintenanceIntent(launchTarget.paths, interruptedMaintenance);
+      await deps.invalidateApprovedSnapshots?.(launchTarget);
       await writePlists(launchTarget, deps);
       sinceMs = deps.now();
       prepared = true;
@@ -1431,6 +1448,7 @@ export async function stopBackground(
     return 1;
   }
   try {
+    await deps.invalidateApprovedSnapshots?.(target);
     return await stopBackgroundUnlocked(target, deps, poll);
   } finally {
     await release().catch((error: unknown) => {

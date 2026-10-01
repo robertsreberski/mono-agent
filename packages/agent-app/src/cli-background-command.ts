@@ -9,6 +9,10 @@ import { fileURLToPath } from "node:url";
 import { listRecordedRuns } from "@mono-agent/observability";
 import type { TuiRestartAuthority } from "@mono-agent/operator-adapter";
 import { createSupervisedRestartLatch, type SupervisedRestartLatch } from "./supervised-restart-latch.js";
+import type { PreparedSupervisedRestartInputs } from "./supervised-restart.js";
+import { acquireFilesystemLifecycleLock } from "./launchd-lifecycle-lock.js";
+import { resolveConfiguredManagedRuntimePackages } from "./managed-runtime-packages.js";
+import { resolveApprovedBackgroundSnapshot, stageApprovedBackgroundSnapshot, type ApprovedBackgroundSnapshotBinding } from "./approved-background-snapshot.js";
 import { createSupervisedRestartAuthority } from "./supervised-restart-authority.js";
 import {
   sandboxEffectiveStateWarning,
@@ -40,6 +44,7 @@ import {
 import type { LaunchdMaintenanceLifecycleLease } from "./launchd-maintenance-gate.js";
 import {
   captureBackgroundSnapshot,
+  captureDurableBackgroundInputs,
   decodeBackgroundSnapshot,
   loadDurableBackgroundEnvironment,
   materializeBackgroundRuntimeInputs,
@@ -55,7 +60,7 @@ import type {
 } from "./background-log-maintenance.js";
 import { writeLaunchdLogMonitorStatus } from "./launchd-log-monitor-status.js";
 import { clearLaunchdSnapshotRefusal, writeLaunchdSnapshotRefusal } from "./launchd-snapshot-refusal.js";
-import { selectSystemdBackgroundOperationalEnvironment } from "./background-environment.js";
+import { selectBackgroundOperationalEnvironment, selectSystemdBackgroundOperationalEnvironment } from "./background-environment.js";
 import { formatChannelFactValue } from "./channel-fact-format.js";
 import { formatHumanChannelSections } from "./channel-status-display.js";
 import type { ChannelStatus } from "./channels.js";
@@ -70,7 +75,7 @@ import type {
 import { readCliConfigSnapshot } from "./first-run-readiness.js";
 import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
 import { purgeConversationState, type PurgeConversationStateResult } from "./sessions.js";
-import { deriveLaunchdLabel, launchdPathsFor, makeLaunchctlRunner } from "./launchd.js";
+import { deriveLaunchdLabel, launchdManagedWorkerInfo, launchdPathsFor, makeLaunchctlRunner } from "./launchd.js";
 import { waitForManagedRuntimePublication } from "./managed-runtime-publication.js";
 import * as ui from "./ui.js";
 
@@ -210,9 +215,47 @@ export async function recordManagedSnapshotRefusal(
   });
 }
 
-const RESTART_INPUT_REFUSAL = "The old agent is still running. Run `mono-agent validate` then `mono-agent restart` from its folder.";
+const INPUT_VALIDATION_REFUSAL = "Startup config is invalid or unreadable. Run `mono-agent validate` from its folder; the old worker is still serving.";
+const CLOSURE_REFUSAL = "Config requires packages unavailable in the pinned runtime. Run `mono-agent restart` from a terminal; the old worker is still serving.";
 
-/** Freshly prove that the supervisor can relaunch on the current inputs before stopping the host. */
+function preflightRestartReason(result: PreflightFailure): string {
+  if (result.kind === "missing-config") return "Startup config is missing. The old worker is still serving.";
+  // Only fixed validator section ids enter the public reason, never file contents/errors.
+  const section = result.report.sections.find((item) => item.status === "error")?.id;
+  const known: Record<string, string> = {
+    core: "config", config: "config", context: "IDENTITY or SOUL", tools: "tools or MCP config",
+    runtime: "runtime", credentials: "provider credentials", channels: "channels", sandbox: "sandbox",
+    memory: "memory", "web-tools": "web tools", continuations: "continuations", "process-jobs": "process jobs",
+  };
+  return `Startup ${known[section ?? ""] ?? "input"} validation failed. Run \`mono-agent validate\`; the old worker is still serving.`;
+}
+
+function captureRestartReason(error: unknown): string {
+  // Classify internal errors without forwarding paths, values or arbitrary exception prose.
+  const message = error instanceof Error ? error.message : "";
+  if (/changed during|changed\./u.test(message)) return "Startup inputs changed during validation. Retry; the old worker is still serving.";
+  if (/dotenv|\.env/u.test(message)) return "Startup .env is invalid or unreadable. The old worker is still serving.";
+  if (/identity/iu.test(message)) return "Startup IDENTITY is missing or unreadable. The old worker is still serving.";
+  if (/soul/iu.test(message)) return "Startup SOUL is missing or unreadable. The old worker is still serving.";
+  if (/MCP/u.test(message)) return "Startup MCP config is missing or unreadable. The old worker is still serving.";
+  return INPUT_VALIDATION_REFUSAL;
+}
+
+export function workerApprovalBinding(input: {
+  readonly args: Pick<ParsedCliArgs, "expectedBackgroundSnapshot" | "expectedManagedRuntimeLaunch">;
+  readonly configPath: string;
+  readonly managedRoot?: string;
+}): ApprovedBackgroundSnapshotBinding {
+  const label = deriveLaunchdLabel(input.configPath);
+  if (input.args.expectedBackgroundSnapshot === undefined || input.args.expectedManagedRuntimeLaunch === undefined) {
+    throw new Error("Managed worker is missing its startup approval binding.");
+  }
+  return { label, configPath: input.configPath,
+    managedRoot: input.managedRoot ?? dirname(launchdPathsFor(label).logDir),
+    encodedSnapshot: input.args.expectedBackgroundSnapshot, launchProof: input.args.expectedManagedRuntimeLaunch };
+}
+
+/** Linux keeps structural validation, with freshly reconstructed durable environment. */
 export async function verifySupervisedRestartInputs(input: {
   readonly args: ParsedCliArgs;
   readonly cwd: string;
@@ -223,28 +266,105 @@ export async function verifySupervisedRestartInputs(input: {
   try {
     const approved = decodeAndVerifyWorkerSnapshot(input.args, input.cwd, input.configPath);
     if (input.platform === "darwin") {
-      const fresh = await captureBackgroundSnapshot({
-        cwd: input.cwd, configPath: input.configPath,
-        ...(input.args.envFile === undefined ? {} : { envFile: input.args.envFile }),
-        env: input.env,
-      });
-      if (!sameBackgroundSnapshot(approved, fresh)) return { supported: false, reason: RESTART_INPUT_REFUSAL };
+      // This read-only legacy check grants no approval. Managed POST uses preparation below.
+      const fresh = await captureBackgroundSnapshot({ cwd: input.cwd, configPath: input.configPath,
+        ...(input.args.envFile === undefined ? {} : { envFile: input.args.envFile }), env: input.env });
+      if (!sameBackgroundSnapshot(approved, fresh)) return { supported: false, reason: "Startup inputs changed. Run `mono-agent restart` from a terminal." };
     } else {
-      // Linux's foreground worker structurally validates, but does not freeze
-      // keyed file fingerprints. Match its effective environment, including
-      // newly edited dotenv values, rather than imposing a new startup policy.
-      const effective = await loadDurableBackgroundEnvironment({
-        cwd: input.cwd,
+      let effective: Record<string, string>;
+      try { effective = await loadDurableBackgroundEnvironment({ cwd: input.cwd,
         ...(input.args.envFile === undefined ? {} : { envFile: input.args.envFile }),
-        operationalEnvironment: selectSystemdBackgroundOperationalEnvironment(input.env),
-      });
+        operationalEnvironment: selectSystemdBackgroundOperationalEnvironment(input.env) }); }
+      catch { return { supported: false, reason: "Startup .env is invalid or unreadable. The old worker is still serving." }; }
       const preflight = await ensureStartable(input.args, effective, { cwd: input.cwd, configPath: input.configPath });
-      if (!preflight.ok) return { supported: false, reason: RESTART_INPUT_REFUSAL };
+      if (!preflight.ok) return { supported: false, reason: preflightRestartReason(preflight) };
     }
     return { supported: true };
-  } catch {
-    return { supported: false, reason: RESTART_INPUT_REFUSAL };
-  }
+  } catch (error) { return { supported: false, reason: captureRestartReason(error) }; }
+}
+
+/** Authenticated POST only. No supervisor mutation or runtime provisioning is performed here. */
+export async function prepareSupervisedRestartInputs(input: {
+  readonly args: ParsedCliArgs;
+  readonly cwd: string;
+  readonly configPath: string;
+  readonly env: Readonly<Record<string, string | undefined>>;
+  readonly runtime: ManagedRuntimeLaunchVerification;
+  readonly signal: AbortSignal;
+  readonly runner: ReturnType<typeof makeLaunchctlRunner>;
+  readonly pid?: number;
+  readonly uid?: number;
+  readonly managedRoot?: string;
+  readonly retainLifecycle: (release: () => Promise<void>) => void;
+}): Promise<PreparedSupervisedRestartInputs> {
+  let release: (() => Promise<void>) | undefined;
+  let staged: Awaited<ReturnType<typeof stageApprovedBackgroundSnapshot>> | undefined;
+  let published = false;
+  const dispose = async (): Promise<void> => {
+    try { await staged?.dispose(); } finally {
+      if (!published) { const held = release; release = undefined; await held?.(); }
+    }
+  };
+  const refuse = async (reason: string): Promise<PreparedSupervisedRestartInputs> => {
+    await dispose();
+    return { supported: false, reason, dispose: async () => undefined };
+  };
+  try {
+    decodeAndVerifyWorkerSnapshot(input.args, input.cwd, input.configPath);
+    const binding = workerApprovalBinding(input);
+    const paths = launchdPathsFor(binding.label);
+    const lockPaths = input.managedRoot === undefined ? paths : { ...paths, logDir: resolve(input.managedRoot, "logs") };
+    try { release = await acquireFilesystemLifecycleLock({ label: binding.label, paths: lockPaths }, { waitTimeoutMs: 0 }); }
+    catch { return await refuse("Startup approval lifecycle lock is unavailable. The old worker is still serving."); }
+    if (release === undefined) return await refuse("Another lifecycle command is active. Retry after it finishes; the old worker is still serving.");
+    let worker: Awaited<ReturnType<typeof launchdManagedWorkerInfo>>;
+    try { worker = await launchdManagedWorkerInfo(input.runner, binding.label, input.uid ?? process.getuid!()); }
+    catch { return await refuse("Loaded supervisor verification failed. The old worker is still serving."); }
+    const definition = worker.definition;
+    if (!worker.loaded || worker.pid !== (input.pid ?? process.pid) || worker.relaunchOnFailure !== true
+      || definition === undefined || definition.configPath !== input.configPath || definition.cwd !== input.cwd
+      || definition.envFile !== input.args.envFile
+      || definition.expectedBackgroundSnapshot !== binding.encodedSnapshot
+      || definition.expectedManagedRuntimeLaunch !== binding.launchProof
+      || JSON.stringify(selectBackgroundOperationalEnvironment(definition.environment))
+        !== JSON.stringify(selectBackgroundOperationalEnvironment(input.env))) {
+      return await refuse("Loaded supervisor inputs do not match this worker. The old worker is still serving.");
+    }
+    let verified: ManagedRuntimeLaunchVerification;
+    try { verified = await verifyManagedRuntimeLaunch({ currentCliPath: definition.cliPath, launchProof: binding.launchProof }); }
+    catch { return await refuse("Pinned managed runtime verification failed. The old worker is still serving."); }
+    if (verified.installRoot !== input.runtime.installRoot) return await refuse("Loaded runtime does not match this worker. The old worker is still serving.");
+    try {
+      await loadDurableBackgroundEnvironment({ cwd: input.cwd,
+        ...(input.args.envFile === undefined ? {} : { envFile: input.args.envFile }), operationalEnvironment: definition.environment });
+    } catch { return await refuse("Startup .env is invalid or unreadable. The old worker is still serving."); }
+    const candidate = await captureDurableBackgroundInputs({ cwd: input.cwd, configPath: input.configPath,
+      ...(input.args.envFile === undefined ? {} : { envFile: input.args.envFile }), operationalEnvironment: definition.environment });
+    let packages: Awaited<ReturnType<typeof resolveConfiguredManagedRuntimePackages>>;
+    try { packages = await resolveConfiguredManagedRuntimePackages({ cwd: input.cwd, configPath: input.configPath, env: candidate.environment }); }
+    catch { return await refuse(CLOSURE_REFUSAL); }
+    if (packages.some((pkg) => !pkg.packageSource.startsWith(`${verified.installRoot}/`))) return await refuse(CLOSURE_REFUSAL);
+    const materialized = await materializeBackgroundRuntimeInputs({ snapshot: candidate.snapshot, cwd: input.cwd,
+      env: candidate.environment, ...(input.managedRoot === undefined ? {} : { runtimeRoot: resolve(input.managedRoot, "runtime-inputs") }) });
+    try {
+      const preflight = await ensureStartable(input.args, materialized.environment, { cwd: input.cwd,
+        configPath: materialized.configPath, preferAppPluginInstall: true, verifiedRuntimeProvenanceDetail: verified.provenanceDetail });
+      if (!preflight.ok) return await refuse(preflightRestartReason(preflight));
+    } finally { await materialized.dispose(); }
+    const final = await captureDurableBackgroundInputs({ cwd: input.cwd, configPath: input.configPath,
+      ...(input.args.envFile === undefined ? {} : { envFile: input.args.envFile }), operationalEnvironment: definition.environment });
+    if (!sameBackgroundSnapshot(candidate.snapshot, final.snapshot)) return await refuse("Startup inputs changed during validation. Retry; the old worker is still serving.");
+    if (input.signal.aborted) return await refuse("Startup input validation timed out. The old worker is still serving.");
+    try { staged = await stageApprovedBackgroundSnapshot(binding, candidate.snapshot); }
+    catch { return await refuse("Startup approval staging failed. The old worker is still serving."); }
+    if (input.signal.aborted) return await refuse("Startup input validation timed out. The old worker is still serving.");
+    return { supported: true, dispose, publish: () => {
+      if (input.signal.aborted || release === undefined) throw new Error("Startup approval preparation expired. The old worker is still serving.");
+      staged!.publish();
+      published = true;
+      input.retainLifecycle(release);
+    } };
+  } catch (error) { return await refuse(captureRestartReason(error)); }
 }
 
 /**
@@ -334,22 +454,29 @@ async function runForeground(
   let activityPublisher: Awaited<ReturnType<typeof publishWorkerActivity>> | undefined;
   let shutdownWaitStarted = false;
   const restartLatch = managedBackgroundWorker || systemdBackgroundWorker ? createSupervisedRestartLatch() : undefined;
+  let restartLifecycleRelease: (() => Promise<void>) | undefined;
   const restartAuthority: TuiRestartAuthority | undefined = restartLatch === undefined ? undefined
     : createSupervisedRestartAuthority({
         configPath,
         startedAt: new Date().toISOString(),
         ...(managedBackgroundWorker ? { launchdRunner: makeLaunchctlRunner(2_000) } : {}),
-        verifyStartupInputs: () => verifySupervisedRestartInputs({
+        ...(managedBackgroundWorker && managedRuntime !== undefined ? {
+          prepareStartupInputs: (signal: AbortSignal) => prepareSupervisedRestartInputs({
+            args, cwd, configPath, env: startupEnvironment, runtime: managedRuntime!, signal,
+            runner: makeLaunchctlRunner(2_000), retainLifecycle: (release) => { restartLifecycleRelease = release; },
+          }),
+        } : { verifyStartupInputs: () => verifySupervisedRestartInputs({
           args, cwd, configPath, env: startupEnvironment,
-          platform: managedBackgroundWorker ? "darwin" : "linux",
-        }),
+          platform: "linux",
+        }) }),
         logger: consoleLogger(),
       }, restartLatch);
   try {
     let backgroundSnapshot = systemdBackgroundSnapshot;
     if (managedBackgroundWorker) {
       try {
-        backgroundSnapshot = decodeAndVerifyWorkerSnapshot(args, cwd, configPath);
+        decodeAndVerifyWorkerSnapshot(args, cwd, configPath);
+        backgroundSnapshot = resolveApprovedBackgroundSnapshot(workerApprovalBinding({ args, configPath }));
         runtimeInputs = await materializeBackgroundRuntimeInputs({
           snapshot: backgroundSnapshot,
           cwd,
@@ -442,6 +569,7 @@ async function runForeground(
     if (!shutdownWaitStarted) await app?.stop().catch(() => undefined);
     await activityPublisher?.stop().catch(() => undefined);
     await runtimeInputs?.dispose().catch(() => undefined);
+    await restartLifecycleRelease?.().catch(() => undefined);
     await lease.release().catch((error) => {
       process.stderr.write(ui.style.yellow(
         `⚠ Could not cleanly release worker singleton lease ${lease.path}: ${error instanceof Error ? error.message : String(error)}`,

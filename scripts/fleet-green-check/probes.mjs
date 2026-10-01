@@ -699,7 +699,8 @@ export function runManagedRuntimeAttestation(entry, repo, runtime, probeEnvironm
   if (entry.managed !== true
     || runtime?.ran !== true
     || typeof entry.configPath !== "string"
-    || typeof entry.expectedBackgroundSnapshot !== "string") {
+    || typeof entry.expectedBackgroundSnapshot !== "string"
+    || typeof entry.expectedManagedRuntimeLaunch !== "string") {
     return { status: "unsafe" };
   }
   const result = runCommand(trustedNodePath, [
@@ -711,6 +712,7 @@ export function runManagedRuntimeAttestation(entry, repo, runtime, probeEnvironm
     entry.envFile ?? "",
     entry.expectedBackgroundSnapshot,
     runtime.abi,
+    entry.expectedManagedRuntimeLaunch,
   ], {
     cwd: repo,
     timeout: COMMAND_TIMEOUT_MS.attestation,

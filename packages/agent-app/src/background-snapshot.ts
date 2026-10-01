@@ -509,7 +509,9 @@ async function readRegularFileProof(
     if (["ELOOP", "EMLINK"].includes((error as NodeJS.ErrnoException).code ?? "")) {
       throw new Error(`Refusing to read ${label} path ${path} because it is a symbolic link.`);
     }
-    throw error;
+    throw Object.assign(new Error(`Could not read ${label} startup input.`), {
+      code: (error as NodeJS.ErrnoException).code, inputLabel: label,
+    });
   }
   try {
     const before = await handle.stat({ bigint: true });

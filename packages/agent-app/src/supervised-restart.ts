@@ -28,6 +28,11 @@ export interface SupervisedRestartVerification {
   readonly reason?: string;
 }
 
+export interface PreparedSupervisedRestartInputs extends SupervisedRestartVerification {
+  readonly publish?: () => void;
+  dispose(): Promise<void>;
+}
+
 export interface SupervisedRestartDeps {
   /** Canonical worker config identity (the same path the supervisor installed). */
   readonly configPath: string;
@@ -39,6 +44,7 @@ export interface SupervisedRestartDeps {
   readonly launchdRunner?: LaunchctlRunner;
   readonly systemdRun?: typeof runSystemdTool;
   /** Fresh input check for POST only; advisory capability checks stay cheap. */
+  readonly prepareStartupInputs?: (signal: AbortSignal) => Promise<PreparedSupervisedRestartInputs>;
   readonly verifyStartupInputs?: () => Promise<SupervisedRestartVerification>;
   readonly logger?: {
     warn(message: string, metadata?: Record<string, unknown>): void;
