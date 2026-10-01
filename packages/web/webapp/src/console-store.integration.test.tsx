@@ -1238,6 +1238,43 @@ describe("ConsoleStoreProvider integration", () => {
     expect(store.current.skillRegistry.items[0]?.name).toBe("beta-skill");
   });
 
+  it("keeps the selected agent and conversation across stopped and restarted bootstrap snapshots", async () => {
+    const alphaThread = thread("alpha-thread", "alpha");
+    const betaThread = thread("beta-thread", "beta");
+    const onlineAlpha = agent("alpha", { generation: "generation-one" });
+    const onlineBeta = agent("beta");
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([onlineAlpha, onlineBeta], [alphaThread]));
+    vi.mocked(api.thread).mockImplementation(async (id) => detail(id === alphaThread.id ? alphaThread : betaThread));
+    vi.mocked(api.threads).mockImplementation(async (sourceId) => ({ threads: [sourceId === "alpha" ? alphaThread : betaThread] }));
+    const store = await renderStore();
+    act(() => store.current.selectThread(alphaThread.id));
+    await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+
+    for (const nextAlpha of [
+      agent("alpha", { generation: "generation-one", status: "offline", health: "stopped", restart: { supported: false, reason: "Agent is offline." } }),
+      agent("alpha", { generation: "generation-two" }),
+    ]) {
+      // A different default bucket must not override a still-present selection.
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([onlineBeta, nextAlpha], [betaThread]));
+      const reads = vi.mocked(api.bootstrap).mock.calls.length;
+      act(() => FakeEventSource.latest?.emit("agents.changed", {
+        id: `event-${nextAlpha.status}`,
+        version: 1,
+        type: "agents.changed",
+        at: "2026-08-13T08:00:00.000Z",
+      }));
+      await waitFor(() => expect(vi.mocked(api.bootstrap).mock.calls.length).toBeGreaterThan(reads));
+      await waitFor(() => expect(store.current.selectedAgent).toMatchObject({
+        sourceId: "alpha", status: nextAlpha.status, generation: nextAlpha.generation,
+      }));
+      expect(store.current.selectedAgentId).toBe("alpha");
+      expect(store.current.selectedThreadId).toBe(alphaThread.id);
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+      expect(store.current.visibleAgents.map((item) => item.sourceId)).toContain("alpha");
+      expect(localStorage.getItem(SELECTED_AGENT_STORAGE_KEY)).toBe("alpha");
+    }
+  });
+
   it("refreshes on agents.changed and marks the last good snapshot stale on disconnect", async () => {
     vi.mocked(api.agentSkills)
       .mockResolvedValueOnce({

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { startWebNotificationIngress } from "../notification-ingress.js";
 import { createWebConsoleToolClient } from "../notification-client.js";
 import { createHash } from "node:crypto";
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -531,10 +531,151 @@ describe("operator probe failure tolerance", () => {
     }
   });
 
+  it("retains a stopped registry source and its pin, then reconnects its new generation in place", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const registry = join(base, "registry");
+    await mkdir(registry);
+    const manifestPath = join(registry, "agent-one.json");
+    const manifest = {
+      schema: "agent-runtime.trace-source.v1",
+      sourceId: "agent-one",
+      label: "Agent One",
+      artifactDir: join(base, "artifacts"),
+      pid: process.pid,
+      status: "running",
+      startedAt: "2026-07-17T09:00:00.000Z",
+      updatedAt: new Date().toISOString(),
+      metadata: { channels: { tui: { kind: "running", baseUrl: "http://127.0.0.1:45123/gui" } } },
+    };
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    const fetchImpl = vi.fn(operatorFetch());
+    const service = await WebService.create({
+      stateDir: join(base, "state"),
+      discoveryIntervalMs: 0,
+      purgeIntervalMs: 0,
+      registryDirs: [registry],
+      env: {},
+      fetchImpl,
+    });
+    const events: string[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event.type); });
+    try {
+      service.patchAgent("agent-one", { pinned: true });
+      const thread = service.createThread("agent-one");
+      const generation = (await service.bootstrap({ sourceId: "agent-one" })).agents[0]?.generation;
+      expect(service.store.getAgent("agent-one")).toMatchObject({ status: "online", pinned: true });
+      fetchImpl.mockClear();
+      events.length = 0;
+      await writeFile(manifestPath, JSON.stringify({ ...manifest, status: "stopped" }));
+      await service.refreshAgents();
+      const stopped = await service.bootstrap({ sourceId: "agent-one" });
+      expect(stopped.agents).toMatchObject([{
+        sourceId: "agent-one", status: "offline", health: "stopped", pinned: true, generation,
+        restart: { supported: false, reason: "Agent is offline." },
+      }]);
+      expect(stopped.threadsSourceId).toBe("agent-one");
+      expect(stopped.threads.map((item) => item.id)).toContain(thread.id);
+      expect(service.store.getAgent("agent-one")).toMatchObject({ status: "offline", pinned: true });
+      await expect(service.startTurn(thread.id, { text: "hello" })).rejects.toMatchObject({ code: "agent_offline" });
+      await expect(service.providerAuthStatus("agent-one")).rejects.toMatchObject({ code: "agent_offline" });
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(events.filter((type) => type === "agents.changed")).toHaveLength(1);
+
+      await writeFile(manifestPath, JSON.stringify({ ...manifest, startedAt: "2026-07-17T09:01:00.000Z" }));
+      await service.refreshAgents();
+      const restarted = await service.bootstrap({ sourceId: "agent-one" });
+      expect(restarted.agents).toMatchObject([{ sourceId: "agent-one", status: "online", pinned: true }]);
+      expect(restarted.agents[0]?.generation).not.toBe(generation);
+      expect(restarted.threads.map((item) => item.id)).toContain(thread.id);
+      expect(fetchImpl).toHaveBeenCalled();
+      expect(events.filter((type) => type === "agents.changed")).toHaveLength(2);
+
+      // Registry presence is the bound: deleting a manifest is not a stop.
+      await unlink(manifestPath);
+      await service.refreshAgents();
+      expect((await service.bootstrap()).agents).toEqual([]);
+      expect(service.store.getThread(thread.id)).toBeDefined();
+      await writeFile(manifestPath, JSON.stringify({ ...manifest, status: "stopped" }));
+      await service.refreshAgents();
+      expect((await service.bootstrap({ sourceId: "agent-one" })).agents).toMatchObject([
+        { sourceId: "agent-one", status: "offline", pinned: true },
+      ]);
+    } finally {
+      unsubscribe();
+      await service.stop();
+    }
+  });
+
+  it("retains only console-associated stopped sources without changing failed or stale discovery", async () => {
+    const sourceIds = ["conversation", "archived", "pinned", "restarting", "completed", "unused", "failed", "stale"];
+    const discoveredAgent = (sourceId: string) => fakeDiscoveredAgent({
+      source: { ...fakeDiscoveredAgent().source, sourceId, label: sourceId },
+    });
+    let discovered = sourceIds.map(discoveredAgent);
+    const service = await createService({
+      discoverImpl: async () => discovered,
+      clock: () => new Date("2026-07-17T09:00:00.000Z"),
+    });
+    try {
+      service.createThread("conversation");
+      const archived = service.createThread("archived");
+      service.store.patchThread(archived.id, { archived: true });
+      service.patchAgent("pinned", { pinned: true });
+      const restart = (sourceId: string) => service.store.createRestartOperation({
+        sourceId, generation: service.store.getAgent(sourceId)!.generation!,
+        requestedAt: "2026-07-17T09:00:00.000Z", deadline: "2026-07-17T09:02:00.000Z",
+        approximateRunningTurns: 0,
+      }).operation;
+      const pending = restart("restarting");
+      service.store.updateRestartOperation(restart("completed").id, { outcome: "failure" });
+      discovered = [...discovered, discoveredAgent("never-seen")].map((agent) => ({
+        ...agent,
+        source: {
+          ...agent.source,
+          status: agent.source.sourceId === "stale" ? "running" as const
+            : agent.source.sourceId === "failed" ? "failed" as const : "stopped" as const,
+          health: agent.source.sourceId === "stale" ? "stale" as const
+            : agent.source.sourceId === "failed" ? "failed" as const : "stopped" as const,
+        },
+      }));
+      await service.refreshAgents();
+      const agents = (await service.bootstrap()).agents;
+      expect(agents.map((agent) => agent.sourceId).sort()).toEqual([
+        "archived", "conversation", "failed", "pinned", "restarting", "stale",
+      ]);
+      for (const sourceId of ["archived", "conversation", "pinned", "restarting"]) {
+        expect(agents.find((agent) => agent.sourceId === sourceId)).toMatchObject({
+          status: "offline", restart: { supported: false, reason: "Agent is offline." },
+        });
+      }
+      expect(service.store.getAgent("pinned")?.pinned).toBe(true);
+      expect(service.store.getAgent("failed")?.status).toBe("offline");
+      expect(service.store.getAgent("stale")?.status).toBe("degraded");
+      expect(service.store.activeRestartOperation("restarting")?.id).toBe(pending.id);
+      const inspected = new DatabaseSync(service.store.paths.database, { readOnly: true });
+      try {
+        expect(inspected.prepare("SELECT source_id FROM agents WHERE discovered = 0 ORDER BY source_id").all())
+          .toEqual([{ source_id: "completed" }, { source_id: "unused" }]);
+        expect(inspected.prepare("SELECT source_id FROM agents WHERE source_id = 'never-seen'").get()).toBeUndefined();
+      } finally { inspected.close(); }
+
+      // Losing the only reason removes the stopped source on the next refresh.
+      service.patchAgent("pinned", { pinned: false });
+      service.store.updateRestartOperation(pending.id, { outcome: "not_confirmed" });
+      await service.refreshAgents();
+      expect(service.store.getAgent("pinned")).toBeUndefined();
+      expect(service.store.getAgent("restarting")).toBeUndefined();
+    } finally {
+      await service.stop();
+    }
+  });
+
   it("treats a stopped manifest as immediately authoritative", async () => {
     let discovered = fakeDiscoveredAgent();
     const service = await createService({ discoverImpl: async () => [discovered] });
     try {
+      service.createThread("agent-one");
       discovered = {
         ...discovered,
         source: { ...discovered.source, status: "stopped", health: "stopped" },

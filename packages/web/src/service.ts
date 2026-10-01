@@ -3652,6 +3652,7 @@ export class WebService {
     let discovered: readonly DiscoveredOperatorAgent[];
     try {
       discovered = await discover({
+        includeStopped: true,
         ...(this.options.registryDirs === undefined ? {} : { registryDirs: this.options.registryDirs }),
         ...(this.options.staleAfterMs === undefined ? {} : { staleAfterMs: this.options.staleAfterMs }),
         ...(this.options.env === undefined ? {} : { env: this.options.env }),
@@ -3687,6 +3688,13 @@ export class WebService {
       return;
     }
     this.discoveryFailures = 0;
+    // Registries also retain ephemeral stopped runs. Keep only identities with
+    // console-owned state, without probing them or creating new agent rows.
+    if (discovered.some((agent) => agent.source.health === "stopped")) {
+      const retained = this.store.retainedStoppedAgentSourceIds();
+      discovered = discovered.filter((agent) => agent.source.health !== "stopped"
+        || retained.has(agent.source.sourceId));
+    }
 
     const nextConnections = new Map<string, AgentConnection>();
     // Summary/catalog identity belongs to the process, not the endpoint string:

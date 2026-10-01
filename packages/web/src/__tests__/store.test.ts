@@ -612,6 +612,38 @@ describe("WebStore", () => {
     store.close();
   });
 
+  it("collects stopped-source retention reasons in one statement, including archived conversations", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    try {
+      store.replaceAgents(["pinned", "conversation", "archived", "restarting", "completed", "unused"]
+        .map((sourceId) => agent(sourceId)));
+      store.setAgentPinned("pinned", true);
+      store.createThread("conversation");
+      for (let index = 0; index < 50; index += 1) {
+        const thread = store.createThread("archived");
+        store.patchThread(thread.id, { archived: true });
+      }
+      const restart = (sourceId: string) => store.createRestartOperation({
+        sourceId, generation: "generation-one", requestedAt: "2026-07-17T09:00:00.000Z",
+        deadline: "2026-07-17T09:02:00.000Z", approximateRunningTurns: 0,
+      }).operation;
+      const pending = restart("restarting");
+      store.updateRestartOperation(restart("completed").id, { outcome: "failure" });
+      const result = measureStatements(store, () => store.retainedStoppedAgentSourceIds());
+      expect(result.statements).toBe(1);
+      expect([...result.value].sort()).toEqual(["archived", "conversation", "pinned", "restarting"]);
+      store.setAgentPinned("pinned", false);
+      store.updateRestartOperation(pending.id, { outcome: "not_confirmed" });
+      // Reasons survive loss of discovery presence, but settled operations do not.
+      store.replaceAgents([]);
+      expect([...store.retainedStoppedAgentSourceIds()].sort()).toEqual(["archived", "conversation"]);
+    } finally {
+      store.close();
+    }
+  });
+
   it("hides departed agents while preserving their pins and conversations for restoration", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
