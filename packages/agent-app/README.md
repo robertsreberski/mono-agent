@@ -130,7 +130,7 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   never rewrite config, environment, or Markdown job sources.
 - Register the host as a traceability source. Config edits are made directly in
   `mono-agent.config.json` or `IDENTITY.md` and take effect after validation and
-  `mono-agent restart`.
+  `mono-agent restart` or a confirmed, authenticated console restart.
 - Check managed launchd logs with bounded metadata reads every five minutes,
   reconcile installed macOS LaunchAgents at login and hourly, and make `status`
   require agreement between the cached trace and launchd's live PID.
@@ -232,6 +232,39 @@ mono-agent start
 For a one-off setup without a global install, use
 `npm create mono-agent@latest init`; the `create-mono-agent` alias delegates to this
 same CLI.
+
+### Console restart approvals
+
+A confirmed console restart requires the configured operator API key. The host
+validates current config, `.env`, IDENTITY, SOUL and MCP inputs before stopping.
+On managed macOS workers it stages a secret-free owner-private approval below
+`~/.mono-agent/approved-startup/<label>/<generation>.json`, bound to the original
+cached snapshot, config identity and pinned runtime proof. Synchronous publication
+precedes restart acceptance; launchd's unchanged cached arguments resolve that
+approval on every launch. The effective snapshot also supplies trace metadata and
+maintenance/attestation comparisons. Linux retains structural validation rather
+than fingerprint enforcement.
+
+A `202` means accepted, not replacement readiness. Invalid inputs, validation
+timeouts, lifecycle contention, approval failures or packages unavailable in the
+pinned runtime leave the old worker serving with a cause-specific `409`. Run
+`mono-agent restart` from a terminal for runtime package changes. Terminal
+start/restart/stop and maintenance definition replacement clear approvals only
+at successful stop/replacement commit points, even when runtime and input
+identities are reused. Failed early lifecycle checks preserve active approvals.
+A lifecycle owner repairs or quarantines insecure approval state without
+following links, so terminal restart and maintenance can recover. Edits after
+acceptance or malformed approval state fail closed with the existing `snapshot-refused` status; terminal
+restart is recovery. If publication restoration also fails, the refusal explicitly
+notes that a fully validated approval may remain active, without stopping the
+worker. An abandoned preparation may hold the lifecycle lock until its bounded
+validation/materialization/runtime-verification steps finish; timeout prevents
+publication but does not interrupt those steps.
+
+These readers must already be installed in the worker's pinned runtime; changing
+a checkout does not upgrade an installed runtime. Authentication and owner-private
+files do not protect against hostile same-UID processes; use OS privilege
+separation for that threat model.
 
 ### Guided initialization and readiness
 

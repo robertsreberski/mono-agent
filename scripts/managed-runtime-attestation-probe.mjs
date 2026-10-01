@@ -10,7 +10,7 @@ function absoluteSafe(value) {
 }
 
 export function parseManagedRuntimeAttestationProbeArgs(argv) {
-  const [repo, runtimeCliPath, cwd, configPath, envFile, expectedSnapshot, nodeAbi, ...extra] = argv;
+  const [repo, runtimeCliPath, cwd, configPath, envFile, expectedSnapshot, nodeAbi, launchProof, ...extra] = argv;
   if (extra.length > 0
     || !absoluteSafe(repo)
     || !absoluteSafe(runtimeCliPath)
@@ -20,10 +20,11 @@ export function parseManagedRuntimeAttestationProbeArgs(argv) {
     || typeof expectedSnapshot !== "string"
     || !/^[A-Za-z0-9_-]+$/u.test(expectedSnapshot)
     || typeof nodeAbi !== "string"
-    || !/^\d+$/u.test(nodeAbi)) {
+    || !/^\d+$/u.test(nodeAbi)
+    || typeof launchProof !== "string" || launchProof.length === 0 || launchProof.length > 65_536) {
     return null;
   }
-  return { repo, runtimeCliPath, cwd, configPath, envFile, expectedSnapshot, nodeAbi };
+  return { repo, runtimeCliPath, cwd, configPath, envFile, expectedSnapshot, nodeAbi, launchProof };
 }
 
 /**
@@ -40,15 +41,17 @@ export async function runManagedRuntimeAttestationProbe(
     stdout.write(UNSAFE);
     return 1;
   }
-  const { repo, runtimeCliPath, cwd, configPath, envFile, expectedSnapshot, nodeAbi } = parsed;
+  const { repo, runtimeCliPath, cwd, configPath, envFile, expectedSnapshot, nodeAbi, launchProof } = parsed;
 
   try {
     const dist = join(repo, "packages", "agent-app", "dist");
-    const [runtimeModule, snapshotModule, snapshotKeyModule, packagesModule] = await Promise.all([
+    const [runtimeModule, snapshotModule, snapshotKeyModule, packagesModule, approvalModule, launchdModule] = await Promise.all([
       import(pathToFileURL(join(dist, "background-runtime.js")).href),
       import(pathToFileURL(join(dist, "background-snapshot.js")).href),
       import(pathToFileURL(join(dist, "background-snapshot-key.js")).href),
       import(pathToFileURL(join(dist, "managed-runtime-packages.js")).href),
+      import(pathToFileURL(join(dist, "approved-background-snapshot.js")).href),
+      import(pathToFileURL(join(dist, "launchd.js")).href),
     ]);
     const proofKey = await snapshotKeyModule.loadBackgroundSnapshotKey(configPath);
     const durableInputs = await snapshotModule.captureDurableBackgroundInputs({
@@ -58,7 +61,11 @@ export async function runManagedRuntimeAttestationProbe(
       operationalEnvironment: environment,
       proofKey,
     });
-    const expected = snapshotModule.decodeBackgroundSnapshot(expectedSnapshot);
+    const label = launchdModule.deriveLaunchdLabel(configPath);
+    const expected = approvalModule.resolveApprovedBackgroundSnapshot({
+      label, configPath, encodedSnapshot: expectedSnapshot, launchProof,
+      managedRoot: join(launchdModule.launchdPathsFor(label).logDir, ".."),
+    });
     if (JSON.stringify(durableInputs.snapshot) !== JSON.stringify(expected)) {
       stdout.write(UNSAFE);
       return 1;

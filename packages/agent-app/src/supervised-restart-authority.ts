@@ -1,11 +1,11 @@
 import type { TuiRestartAuthority, TuiRestartSupport } from "@mono-agent/operator-adapter";
 import { createSupervisedRestartLatch, type SupervisedRestartLatch } from "./supervised-restart-latch.js";
-import { verifySupervisedRestart, type SupervisedRestartDeps } from "./supervised-restart.js";
+import { verifySupervisedRestart, type PreparedSupervisedRestartInputs, type SupervisedRestartDeps } from "./supervised-restart.js";
 
 const INSPECTION_TIMEOUT_MS = 1_000;
 const CAPABILITY_TTL_MS = 30_000;
 const INPUT_TIMEOUT_MS = 5_000;
-const INPUT_REFUSAL = "The old agent is still running. Run `mono-agent validate` then `mono-agent restart` from its folder.";
+const INPUT_REFUSAL = "Startup input validation failed. Run `mono-agent validate` from its folder.";
 const TIMED_OUT: TuiRestartSupport = { supported: false, reason: "Supervisor verification timed out." };
 const PENDING: TuiRestartSupport = { supported: false, reason: "Supervisor verification is pending." };
 
@@ -17,7 +17,8 @@ export function createSupervisedRestartAuthority(
   let cached: { readonly verdict: TuiRestartSupport; readonly expiresAt: number } | undefined;
   let background: Promise<void> | undefined;
   let revision = 0;
-  const freshTokens = new WeakMap<TuiRestartSupport, number>();
+  const freshTokens = new WeakMap<TuiRestartSupport, { expiresAt: number; prepared?: PreparedSupervisedRestartInputs; timer: ReturnType<typeof setTimeout> }>();
+  let fresh: Promise<TuiRestartSupport> | undefined;
 
   const inspect = async (): Promise<TuiRestartSupport> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -53,28 +54,54 @@ export function createSupervisedRestartAuthority(
       if (cached === undefined || cached.expiresAt <= Date.now()) refresh();
       return cached?.verdict ?? PENDING;
     },
-    async verifyFresh() {
-      const ticket = ++revision;
-      let verdict = { ...await inspect() };
-      if (verdict.supported && deps.verifyStartupInputs !== undefined) {
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        try {
-          verdict = { ...await Promise.race([
-            deps.verifyStartupInputs().catch(() => ({ supported: false, reason: INPUT_REFUSAL })),
-            new Promise<TuiRestartSupport>((resolve) => {
-              timer = setTimeout(() => resolve({ supported: false, reason: INPUT_REFUSAL }), INPUT_TIMEOUT_MS);
-              timer.unref();
-            }),
-          ]) };
-        } finally {
-          if (timer !== undefined) clearTimeout(timer);
+    verifyFresh() {
+      if (fresh !== undefined) return fresh;
+      let deadline = Date.now() + INSPECTION_TIMEOUT_MS + INPUT_TIMEOUT_MS;
+      fresh = (async () => {
+        const ticket = ++revision;
+        let verdict = { ...await inspect() };
+        let prepared: PreparedSupervisedRestartInputs | undefined;
+        if (verdict.supported && (deps.prepareStartupInputs !== undefined || deps.verifyStartupInputs !== undefined)) {
+          deadline = Math.min(deadline, Date.now() + INPUT_TIMEOUT_MS);
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const controller = new AbortController();
+          const preparation = (async () => {
+            const result = deps.prepareStartupInputs === undefined
+              ? { ...await deps.verifyStartupInputs!(), dispose: async () => undefined }
+              : await deps.prepareStartupInputs(controller.signal);
+            if (controller.signal.aborted || Date.now() >= deadline) {
+              controller.abort();
+              await result.dispose().catch(() => undefined);
+              return { supported: false, reason: "Startup input validation timed out." };
+            }
+            prepared = result;
+            return { supported: result.supported, ...(result.reason === undefined ? {} : { reason: result.reason }) };
+          })().catch(() => ({ supported: false, reason: INPUT_REFUSAL }));
+          try {
+            verdict = { ...await Promise.race([
+              preparation,
+              new Promise<TuiRestartSupport>((resolve) => {
+                timer = setTimeout(() => {
+                  controller.abort();
+                  resolve({ supported: false, reason: "Startup input validation timed out. The old worker is still serving." });
+                }, INPUT_TIMEOUT_MS);
+                timer.unref();
+              }),
+            ]) };
+          } finally { if (timer !== undefined) clearTimeout(timer); }
         }
-      }
-      // Cache a copy: the returned object is the single-use acceptance token,
-      // and cached verify() results must never carry it.
-      if (ticket === revision) cached = { verdict: { ...verdict }, expiresAt: Date.now() + CAPABILITY_TTL_MS };
-      freshTokens.set(verdict, Date.now() + INSPECTION_TIMEOUT_MS);
-      return verdict;
+        if (ticket === revision) cached = { verdict: { ...verdict }, expiresAt: Date.now() + CAPABILITY_TTL_MS };
+        const expiresAt = Math.min(deadline, Date.now() + INSPECTION_TIMEOUT_MS);
+        const timer = setTimeout(() => {
+          freshTokens.delete(verdict);
+          void prepared?.dispose().catch(() => undefined);
+        }, Math.max(0, expiresAt - Date.now()));
+        timer.unref();
+        freshTokens.set(verdict, { expiresAt, timer,
+          ...(prepared === undefined ? {} : { prepared }) });
+        return verdict;
+      })().finally(() => { fresh = undefined; });
+      return fresh;
     },
     accept(verified) {
       // A committed operation always wins, even when another independent POST
@@ -84,12 +111,15 @@ export function createSupervisedRestartAuthority(
       if (verified.supported !== true) {
         return { kind: "refused", reason: verified.reason ?? "Supervisor verification failed." };
       }
-      const expiresAt = freshTokens.get(verified);
-      if (expiresAt === undefined || expiresAt < Date.now()) {
+      const token = freshTokens.get(verified);
+      if (token === undefined || token.expiresAt <= Date.now()) {
         return { kind: "refused", reason: "Supervisor verification is no longer current." };
       }
       freshTokens.delete(verified);
-      return latch.accept(verified);
+      clearTimeout(token.timer);
+      const result = latch.accept(verified, token.prepared?.publish);
+      void token.prepared?.dispose().catch(() => undefined);
+      return result;
     },
     processIdentity: () => ({ pid: deps.pid ?? process.pid, startedAt: deps.startedAt }),
     beginStop: (operationId) => latch.beginStop(operationId),

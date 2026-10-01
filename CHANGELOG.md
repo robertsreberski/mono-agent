@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Let authenticated console restarts validate and apply edited startup inputs
+  on supervised workers, keeping the old worker online on invalid inputs or
+  approval failures; require terminal restart for unavailable runtime packages.
+
 - Keep pinned, conversation-owning, and mid-restart agents in the web console
   as offline without switching the selected agent or conversation during a stop
   or restart.

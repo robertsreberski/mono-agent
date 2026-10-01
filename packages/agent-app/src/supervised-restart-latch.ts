@@ -3,7 +3,7 @@ import type { TuiRestartAcceptance, TuiRestartSupport } from "@mono-agent/operat
 
 /** A single host-owned lifecycle disposition; no promise or response callback participates in acceptance. */
 export interface SupervisedRestartLatch {
-  accept(verified: TuiRestartSupport): TuiRestartAcceptance;
+  accept(verified: TuiRestartSupport, publish?: () => void): TuiRestartAcceptance;
   signal(): void;
   beginStop(operationId: string): void;
   onStop(callback: () => void): void;
@@ -39,13 +39,17 @@ export function createSupervisedRestartLatch(): SupervisedRestartLatch {
     stopCallback();
   };
   return {
-    accept(verified) {
+    accept(verified, publish) {
       if (operationId !== undefined) return { kind: "conflict", operationId };
       if (phase !== "available") return { kind: "refused", reason: "The agent is already stopping." };
       if (verified.supported !== true) return { kind: "refused", reason: verified.reason ?? "Supervisor verification failed." };
       // Atomic host-owned acceptance: both immutable identity and nonzero exit
       // disposition commit before the adapter may send 202.
-      operationId = randomUUID();
+      const id = randomUUID();
+      try { publish?.(); } catch (error) {
+        return { kind: "refused", reason: error instanceof Error ? error.message : "Startup approval publication failed." };
+      }
+      operationId = id;
       disposition = AGENT_RESTART_EXIT_CODE;
       phase = "accepted";
       return { kind: "accepted", operationId };
