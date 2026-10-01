@@ -330,9 +330,11 @@ is simply out of reach. Only a cron channel has an address of its own, so only a
 URL naming one opens on the conversation.
 Offline agents that remain in the current discovery result are hidden behind a
 subtle count by default; pinned agents and the currently selected agent remain
-visible even while offline. Cleanly stopped agents remain discovered as offline,
-so stopping or restarting the selected agent keeps its conversation or settings
-open; it returns online in place when the same source id starts again. A source
+visible even while offline. Cleanly stopped agents you have pinned or talked to,
+or that are mid-restart, remain discovered as offline. Stopped sources without
+pins, conversations (including archived ones), or a pending restart are omitted.
+Retaining an agent keeps its conversation or settings open through a stop or
+restart; it returns online in place when the same source id starts again. A source
 whose manifest is removed is omitted by a successful discovery refresh and
 is removed from the strip and from that count regardless of its prior pin or
 selection. Its rows, conversations, and pin stay retained in SQLite and return

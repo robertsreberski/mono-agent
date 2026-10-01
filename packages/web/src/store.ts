@@ -1259,6 +1259,19 @@ export class WebStore {
     return true;
   }
 
+  /** Console-owned reasons to retain a stopped source, collected once per refresh. */
+  retainedStoppedAgentSourceIds(): ReadonlySet<string> {
+    const rows = this.database.prepare(`
+      SELECT substr(key, length('agent_pin:') + 1) AS source_id
+      FROM settings WHERE key GLOB 'agent_pin:*' AND value = '1'
+      UNION
+      SELECT source_id FROM threads
+      UNION
+      SELECT source_id FROM restart_operations WHERE outcome IS NULL
+    `).all() as unknown as { source_id: string }[];
+    return new Set(rows.map((row) => row.source_id));
+  }
+
   listAgents(): WebAgentSummary[] {
     const rows = this.database.prepare(agentSelectSql(
       "WHERE a.discovered = 1 ORDER BY pinned DESC, a.label COLLATE NOCASE, a.source_id",
