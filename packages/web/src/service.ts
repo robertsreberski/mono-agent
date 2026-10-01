@@ -2677,10 +2677,14 @@ export class WebService {
       const attachmentBytes = started.attachments.reduce((total, attachment) => total + attachment.sizeBytes, 0);
       releaseAttachmentBudget = await this.attachmentTurnBudget.acquire(attachmentBytes, controller.signal);
       const attachments = await Promise.all(started.attachments.map(async (attachment) => this.toAgentAttachment(attachment)));
+      const agent = this.store.getAgent(started.thread.sourceId);
+      // Queued selections retain intent, but capability can disappear while waiting.
+      const context1M = agent !== undefined && this.supportsContext1M(started.thread.sourceId, agent, started.thread.runState.model)
+        ? started.thread.runState.context1M : undefined;
       const modelMetadata = {
         ...(started.thread.runState.model === undefined ? {} : { model: started.thread.runState.model }),
         ...(started.thread.runState.effort === undefined ? {} : { effort: started.thread.runState.effort }),
-        ...(started.thread.runState.context1M === undefined ? {} : { context1M: started.thread.runState.context1M }),
+        ...(context1M === undefined ? {} : { context1M }),
       };
       // A host wake (process-job completion) runs an ordinary live turn
       // on an ordinary conversation, so it carries the same turn-bound console
@@ -4665,7 +4669,7 @@ export class WebService {
   private supportsContext1M(sourceId: string, agent: WebAgentSummary, model?: string): boolean {
     const selected = effectiveModelForAgent(agent, model);
     if (selected === undefined) return false;
-    return (this.modelCatalogCache.get(sourceId)?.models.get(selected)?.advertisement ?? agent.modelOptions?.[selected])?.supportsContext1M === true;
+    return (agent.modelOptions?.[selected] ?? this.modelCatalogCache.get(sourceId)?.models.get(selected)?.advertisement)?.supportsContext1M === true;
   }
 
   private validateContext1M(sourceId: string, agent: WebAgentSummary, model: string | undefined, value: unknown): void {

@@ -1694,6 +1694,7 @@ export const validateRunPreference = (
   // `modelOptions` entry, so without this the effort it advertises is judged
   // against nothing and the selection the picker just offered is erased.
   catalogByProvider: Readonly<Record<string, readonly CatalogModel[]>> = {},
+  inheritedModel?: string,
 ): StoredRunPreference => {
   // With no agent context there is nothing to judge the preference against.
   if (!agent) return preference;
@@ -1713,7 +1714,8 @@ export const validateRunPreference = (
   )
     ? preference.model
     : "";
-  const effectiveModel = effectiveModelForAgent(agent, model) ?? "";
+  const effectiveModel = (model ? effectiveModelForAgent(agent, model) : inheritedModel ?? effectiveModelForAgent(agent, model)) ?? "";
+  const contextAdvertisement = agent.modelOptions?.[effectiveModel] ?? findCatalogModel(catalogByProvider, effectiveModel);
   const efforts = effortLevelsForAgentModel(
     agent,
     effectiveModel,
@@ -1721,7 +1723,7 @@ export const validateRunPreference = (
   );
   return {
     model,
-    ...(preference.context1M === undefined ? {} : { context1M: preference.context1M }),
+    ...(preference.context1M === undefined ? {} : { context1M: preference.model === model && contextAdvertisement?.supportsContext1M === true ? preference.context1M : null }),
     effort: preference.effort && efforts.includes(preference.effort)
       ? preference.effort
       : "",
@@ -5961,11 +5963,23 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     try {
       const issuedAt = removedThreadsRef.current.epoch();
       const draftPreferenceKey = preferenceKeyForThread(selectedAgentId, null);
+      const catalog = Object.fromEntries(Object.entries(catalogByProvider).map(([provider, state]) => [provider, state.models]));
+      const draft = validateRunPreference(selectedAgent, {
+        model: modelByContext[draftPreferenceKey] ?? "", effort: effortByContext[draftPreferenceKey] ?? "",
+        ...(Object.hasOwn(context1MByContext, draftPreferenceKey) ? { context1M: context1MByContext[draftPreferenceKey] } : {}),
+      }, selectedAgent?.providers?.map((provider) => provider.id), catalog,
+      Object.hasOwn(modelByContext, draftPreferenceKey) ? undefined : selectedAgent?.runSettings.effective.model);
+      const selected = (modelByContext[draftPreferenceKey] && selectedAgent ? effectiveModelForAgent(selectedAgent, modelByContext[draftPreferenceKey]!) : Object.hasOwn(modelByContext, draftPreferenceKey)
+        ? selectedAgent?.defaultModel : selectedAgent?.runSettings.effective.model) ?? selectedAgent?.defaultModel;
+      const eligible = (selectedAgent?.modelOptions?.[selected ?? ""] ?? findCatalogModel(catalog, selected ?? ""))?.supportsContext1M === true;
+      // A pinned model inherits its own configured policy, not another model's web default.
+      const contextSelection = Object.hasOwn(context1MByContext, draftPreferenceKey) ? draft.context1M ?? null
+        : Object.hasOwn(modelByContext, draftPreferenceKey) && selectedAgent?.runSettings.override?.context1M !== undefined ? null : undefined;
       const runConfig = {
         ...(Object.hasOwn(modelByContext, draftPreferenceKey)
           ? { model: modelByContext[draftPreferenceKey] || null }
           : {}),
-        ...(Object.hasOwn(context1MByContext, draftPreferenceKey) ? { context1M: context1MByContext[draftPreferenceKey] } : {}),
+        ...(eligible && contextSelection !== undefined ? { context1M: contextSelection } : {}),
         ...(Object.hasOwn(effortByContext, draftPreferenceKey)
           ? { effort: effortByContext[draftPreferenceKey] || null }
           : {}),
@@ -6040,6 +6054,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
   }, [
     beginOperatorSelection,
+    catalogByProvider,
+    selectedAgent,
     context1MByContext,
     effortByContext,
     modelByContext,
@@ -6775,6 +6791,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     storedPreference,
     advertisedProviders,
     catalogModels,
+    selectedThread === null && !localModelPresent ? selectedAgent?.runSettings.effective.model : undefined,
   );
   const model = validatedPreference.model;
   const configModel = selectedAgent ? effectiveModelForAgent(selectedAgent, "") ?? "" : "";
@@ -6805,8 +6822,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   // An override is what the operator chose for THIS conversation, as opposed to
   // whatever the agent would otherwise start with.
   const contextAdvertisement = selectedAgent?.modelOptions?.[effectiveModel] ?? findCatalogModel(catalogModels, effectiveModel);
+  const inheritsWebContext = draftInheritsWebModel && !Object.hasOwn(context1MByContext, preferenceKey)
+    && (!selectedAgent?.runSettings.override?.model || selectedAgent.runSettings.override.context1M != null);
   const context1M = contextAdvertisement?.supportsContext1M === true
-    ? storedPreference.context1M ?? (selectedThread === null && !Object.hasOwn(context1MByContext, preferenceKey)
+    ? validatedPreference.context1M ?? (inheritsWebContext
       ? selectedAgent?.runSettings.effective.context1M : contextAdvertisement.context1M) ?? false
     : undefined;
   const hasRunOverride = selectedThread === null
@@ -6821,6 +6840,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         [preferenceKey]: validatedPreference.model,
       }));
     }
+    if (storedPreference.context1M !== validatedPreference.context1M) {
+      setContext1MByContext((current) => { const next = { ...current }; delete next[preferenceKey]; return next; });
+    }
     if (storedPreference.effort !== validatedPreference.effort) {
       setEffortByContext((current) => ({
         ...current,
@@ -6831,8 +6853,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     preferenceKey,
     serverOverrideActive,
     storedPreference.effort,
+    storedPreference.context1M,
     storedPreference.model,
     validatedPreference.effort,
+    validatedPreference.context1M,
     validatedPreference.model,
   ]);
 
@@ -6864,7 +6888,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     const local = {
       model: modelByContext[preferenceKey] ?? "",
       effort: effortByContext[preferenceKey] ?? "",
-        ...(Object.hasOwn(context1MByContext, preferenceKey) ? { context1M: context1MByContext[preferenceKey] } : {}),
+      // Preserve legacy route adoption; only sanitize the new context policy.
+      ...(validatedPreference.context1M == null ? {} : { context1M: validatedPreference.context1M }),
     };
     if (local.model === "" && local.effort === "" && local.context1M == null) return;
     const threadId = selectedThread.id;
@@ -6877,6 +6902,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     const writeGeneration = overrideWriteRef.current.get(threadId) ?? 0;
     migratedKeysRef.current.add(preferenceKey);
     const dropLocal = () => {
+      setContext1MByContext((current) => { const next = { ...current }; delete next[preferenceKey]; return next; });
       setModelByContext((current) => {
         const nextMap = { ...current };
         delete nextMap[preferenceKey];
@@ -6934,7 +6960,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         const next = await api.patchThread(threadId, {
           model: local.model || null,
           effort: local.effort || null,
-          ...(local.context1M === undefined ? {} : { context1M: local.context1M }),
+          ...(local.context1M == null ? {} : { context1M: local.context1M }),
           ifRunConfigUnset: true,
         }, signal);
         applyThreadUpdate(next, migrationIssuedAt);
@@ -6948,6 +6974,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   }, [
     applyThreadUpdate,
     context1MByContext,
+    validatedPreference.model,
+    validatedPreference.effort,
+    validatedPreference.context1M,
     effortByContext,
     enqueueThreadWrite,
     modelByContext,

@@ -199,3 +199,17 @@ describe("agent settings screen", () => {
   });
 
 });
+
+
+it("self-heals a hidden context draft and never revives it while changing effort", async () => {
+  setSettingsDraft("fictional", { model: "provider/other", effort: "high", context1M: true });
+  render(<AgentSettingsScreen {...props} section="new-conversations" />);
+  await waitFor(() => expect(getSettingsDraft("fictional")?.context1M).toBeNull());
+  fireEvent.click(screen.getByRole("button", { name: "Model and reasoning effort" }));
+  expect(screen.queryByRole("radiogroup", { name: "Context window" })).toBeNull();
+  fireEvent.click(await screen.findByRole("radio", { name: "Medium" }));
+  expect(getSettingsDraft("fictional")?.context1M).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save for new conversations" }));
+  await waitFor(() => expect(store.setAgentRunDefaults).toHaveBeenCalledExactlyOnceWith("provider/other", "medium"));
+});

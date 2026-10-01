@@ -864,7 +864,7 @@ secret-key-redacted. Exact declared resource reads remain read-only, while
 cross-resource requests fail. See
 [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/).
 
-The shared model selector offers an accessible **1M context** checkbox only
+The shared model selector offers accessible **Context window** chips below Thinking only
 when the agent advertises eligibility, including automatic and lazy catalog rows.
 Conversation and **New conversations** selections persist nullable booleans:
 true/false are explicit; reset inherits agent config. Changing to an unsupported
@@ -872,7 +872,7 @@ model clears the flag atomically; eligible switches retain it. New defaults affe
 only future conversations. Active conversation turns disable the selector.
 SQLite migration 42 preserves old rows as inherited selections, including retained
 context imports and queued turns. Old producers without the capability expose no
-checkbox. Measured context usage remains authoritative after a toggle.
+control. Measured context usage remains authoritative after a toggle.
 
 ## Architecture
 

@@ -294,14 +294,14 @@ describe("web storage migration history", () => {
   });
 
   it.each([
-    "CREATE INDEX messages_by_thread ON messages(created_at)",
-    "DROP TABLE agent_run_overrides; CREATE TABLE agent_run_overrides (source_id TEXT PRIMARY KEY, model TEXT, effort TEXT, updated_at TEXT NOT NULL)",
-  ])("rejects current-version index/FK drift: %s", async (sql) => {
+    { sql: "CREATE INDEX messages_by_thread ON messages(created_at)", message: "Web storage migration postconditions failed." },
+    { sql: "DROP TABLE agent_run_overrides; CREATE TABLE agent_run_overrides (source_id TEXT PRIMARY KEY, model TEXT, effort TEXT, updated_at TEXT NOT NULL)", message: "Web storage migration 42 (context-1m-selection) failed." },
+  ])("rejects current-version index/FK drift: $sql", async ({ sql, message }) => {
     const stateDir = await seeded(18);
     const database = new DatabaseSync(join(stateDir, "state.sqlite"));
     database.exec(sql);
     database.close();
-    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "storage_corrupt" });
+    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "storage_corrupt", message });
   });
 
   it("rolls back earlier steps and bootstrap when a later step fails without leaking its error", async () => {

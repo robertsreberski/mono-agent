@@ -12,8 +12,8 @@ export function NewConversationsSection({ agent, onNotice, onSaveError }: { read
   const saved = { model: agent.runSettings.override?.model ?? "", effort: agent.runSettings.override?.effort ?? "", context1M: agent.runSettings.override?.context1M ?? null };
   const model = draft?.model ?? saved.model;
   const effort = draft?.effort ?? saved.effort;
-  const context1M = draft === null ? saved.context1M : draft.context1M ?? null;
-  const dirty = draft !== null && (draft.model !== saved.model || draft.effort !== saved.effort || context1M !== saved.context1M);
+  const storedContext1M = draft === null ? saved.context1M : draft.context1M ?? null;
+  const dirty = draft !== null && (draft.model !== saved.model || draft.effort !== saved.effort || storedContext1M !== saved.context1M);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const pickerFieldRef = useRef<HTMLDivElement>(null);
@@ -24,6 +24,14 @@ export function NewConversationsSection({ agent, onNotice, onSaveError }: { read
   useEffect(() => () => pendingCleanupRef.current?.(), []);
   const catalogModels = useMemo(() => Object.fromEntries(Object.entries(store.catalogByProvider).map(([provider, state]) => [provider, state.models])), [store.catalogByProvider]);
   const models = useMemo(() => buildSelectorModels({ agent, modelOptions: agent.models ?? [], defaultEffort: agent.runSettings.config.effort ?? agent.defaultEffort ?? "", catalogByProvider: catalogModels, selectedModel: model }), [agent, catalogModels, model]);
+  const selectedRow = models.find((row) => row.id === model);
+  const eligible = selectedRow?.supportsContext1M === true;
+  const context1M = eligible ? storedContext1M : null;
+  useEffect(() => {
+    if (draft !== null && !eligible && draft.context1M != null) {
+      setSettingsDraft(agent.sourceId, { ...draft, context1M: null });
+    }
+  }, [agent.sourceId, draft, eligible]);
   const providerStatus = useMemo(() => Object.fromEntries(Object.entries(store.catalogByProvider).map(([provider, state]) => [provider, state.status])), [store.catalogByProvider]);
   const startModel = settingsModelName(agent, model || agent.runSettings.config.model || agent.defaultModel, catalogModels);
   const startEffort = settingsEffortName(effort || agent.runSettings.config.effort || agent.defaultEffort);
@@ -33,7 +41,7 @@ export function NewConversationsSection({ agent, onNotice, onSaveError }: { read
     for (const provider of providers) void store.ensureProviderCatalog(provider);
   }, [agent.sourceId]);
   useEffect(() => { clearSettingsDraftIfEqual(agent.sourceId, saved); }, [agent.sourceId, saved.model, saved.effort, saved.context1M]);
-  const update = (nextModel: string, nextEffort: string, nextContext1M: boolean | null | undefined = context1M) => { setError(null); setSettingsDraft(agent.sourceId, { model: nextModel, effort: nextEffort, context1M: nextContext1M ?? null }); };
+  const update = (nextModel: string, nextEffort: string, nextContext1M: boolean | null | undefined = context1M) => { setError(null); setSettingsDraft(agent.sourceId, { model: nextModel, effort: nextEffort, context1M: models.find((row) => row.id === nextModel)?.supportsContext1M === true ? nextContext1M ?? null : null }); };
   const chooseModel = (next: string) => {
     const effective = effectiveModelForAgent(agent, next) ?? "";
     const allowed = effortLevelsForAgentModel(agent, effective, findCatalogModel(catalogModels, effective));
@@ -67,7 +75,7 @@ export function NewConversationsSection({ agent, onNotice, onSaveError }: { read
       else if (context1M == null) await store.setAgentRunDefaults(model || null, effort || null);
       else await store.setAgentRunDefaults(model || null, effort || null, context1M);
       // Do not remove a newer draft made while this request was in flight.
-      clearSettingsDraftIfEqual(sourceId, { model, effort, context1M: context1M ?? null });
+      clearSettingsDraftIfEqual(sourceId, { model, effort, context1M: storedContext1M ?? null });
       if (sourceRef.current === sourceId && store.selectedAgent?.sourceId === sourceId) onNotice(`New conversations will start with ${startModel} · ${startEffort}.`);
       restoreQueued = true;
       window.setTimeout(() => {

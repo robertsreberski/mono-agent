@@ -529,3 +529,16 @@ describe("1M selector metadata", () => {
     expect(old.every((row) => row.supportsContext1M === undefined)).toBe(true);
   });
 });
+
+
+it("projects actual standard capacity and gives shortlist metadata priority over lazy metadata", () => {
+  const ref = "synthetic:gpt";
+  const selected = agent("synthetic", { defaultModel: ref, models: [ref], modelOptions: { [ref]: { supportsContext1M: true, context1M: false, contextWindow: 272_000 } } });
+  const page = { synthetic: [{ id: "gpt", name: "Synthetic GPT", provider: "synthetic", providerLabel: "Synthetic", supportsContext1M: true as const, contextWindow: 512_000 }] };
+  const rows = buildSelectorModels({ agent: selected, modelOptions: [ref], defaultEffort: "", catalogByProvider: page });
+  expect(rows.filter((row) => row.id === "" || row.id === ref).every((row) => row.standardContextWindow === 272_000)).toBe(true);
+  const hidden = buildSelectorModels({ agent: { ...selected, modelOptions: { [ref]: {} } }, modelOptions: [ref], defaultEffort: "", catalogByProvider: page });
+  expect(hidden.every((row) => row.supportsContext1M === undefined)).toBe(true);
+  const on = buildSelectorModels({ agent: { ...selected, modelOptions: { [ref]: { supportsContext1M: true, context1M: true, contextWindow: 1_000_000 } } }, modelOptions: [ref], defaultEffort: "" });
+  expect(on.every((row) => row.standardContextWindow === undefined)).toBe(true);
+});

@@ -40,6 +40,8 @@ export type ModelSelectorEffortOption = {
 };
 
 export type ModelSelectorOption = {
+  /** Advertised standard capacity, when it is not already the configured 1M overlay. */
+  readonly standardContextWindow?: number;
   readonly supportsContext1M?: true;
   readonly context1M?: boolean;
   readonly id: string;
@@ -235,7 +237,7 @@ export const buildSelectorModels = ({
   const contextMetadata = (reference: string) => {
     const advertisement = agent.modelOptions?.[reference] ?? findCatalogModel(catalogByProvider, reference);
     return advertisement?.supportsContext1M === true
-      ? { supportsContext1M: true as const, ...(typeof advertisement.context1M === "boolean" ? { context1M: advertisement.context1M } : {}) }
+      ? { supportsContext1M: true as const, ...(advertisement.context1M !== true && typeof advertisement.contextWindow === "number" && advertisement.contextWindow > 0 ? { standardContextWindow: advertisement.contextWindow } : {}), ...(typeof advertisement.context1M === "boolean" ? { context1M: advertisement.context1M } : {}) }
       : {};
   };
   const rows: ModelSelectorOption[] = [

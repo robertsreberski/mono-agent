@@ -844,6 +844,105 @@ describe("ConsoleStoreProvider integration", () => {
     expect(store.current.creatingThread).toBe(false);
   });
 
+  it("self-heals a stale ineligible context draft before creating a conversation", async () => {
+    const ref = "synthetic:standard";
+    const selected = agent("alpha", { defaultModel: ref, models: [ref], modelOptions: { [ref]: {} } });
+    const key = preferenceKeyForThread("alpha", null);
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    localStorage.setItem(RUN_PREFERENCES_STORAGE_KEY, JSON.stringify({ [key]: { model: ref, effort: "", context1M: true } }));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([selected], []));
+    vi.mocked(api.createThread).mockResolvedValue(thread("healed", "alpha", { runModel: ref }));
+    const store = await renderStore();
+    expect(store.current.context1M).toBeUndefined();
+    await waitFor(() => expect(JSON.parse(localStorage.getItem(RUN_PREFERENCES_STORAGE_KEY) ?? "{}")[key]?.context1M).toBeUndefined());
+    await act(async () => { await store.current.createThread(); });
+    expect(api.createThread).toHaveBeenLastCalledWith("alpha", { model: ref, effort: null }, expect.any(AbortSignal), undefined);
+  });
+
+  it.each([true, false])("uses a selected draft model's own configured policy (%s), not another model's defaults", async (enabled) => {
+    const primary = "synthetic:primary", other = "synthetic:other";
+    const selected = agent("alpha", { defaultModel: primary, models: [primary, other], modelOptions: {
+      [primary]: { supportsContext1M: true, context1M: !enabled }, [other]: { supportsContext1M: true, context1M: enabled },
+    }, runSettings: { config: { model: primary, context1M: !enabled }, override: null,
+      effective: { model: primary, modelSource: "config", effortSource: "config", context1M: !enabled } } });
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    localStorage.setItem(RUN_PREFERENCES_STORAGE_KEY, JSON.stringify({ [preferenceKeyForThread("alpha", null)]: { model: other, effort: "" } }));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([selected], []));
+    const store = await renderStore();
+    expect(store.current.context1M).toBe(enabled);
+  });
+
+  it("creates a pinned model with its own policy rather than copying an unrelated explicit web flag", async () => {
+    const primary = "synthetic:primary", other = "synthetic:other";
+    const selected = agent("alpha", { defaultModel: primary, models: [primary, other], modelOptions: {
+      [primary]: { supportsContext1M: true, context1M: false }, [other]: { supportsContext1M: true, context1M: true },
+    }, runSettings: { config: { model: primary, context1M: false }, override: { context1M: false },
+      effective: { model: primary, modelSource: "config", effortSource: "config", context1M: false } } });
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    localStorage.setItem(RUN_PREFERENCES_STORAGE_KEY, JSON.stringify({ [preferenceKeyForThread("alpha", null)]: { model: other, effort: "" } }));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([selected], []));
+    vi.mocked(api.createThread).mockResolvedValue(thread("context-created", "alpha", { runModel: other, runContext1M: null }));
+    const store = await renderStore(); expect(store.current.context1M).toBe(true);
+    await act(async () => { await store.current.createThread(); });
+    expect(api.createThread).toHaveBeenLastCalledWith("alpha", { model: other, effort: null, context1M: null }, expect.any(AbortSignal), undefined);
+    expect(store.current.context1M).toBe(true);
+  });
+
+  it("inherits a bound model's own policy when its durable context column is null", async () => {
+    const primary = "synthetic:primary", other = "synthetic:other";
+    const selected = agent("alpha", { defaultModel: primary, models: [primary, other], modelOptions: {
+      [primary]: { supportsContext1M: true, context1M: false }, [other]: { supportsContext1M: true, context1M: true },
+    }, runSettings: { config: { model: primary, context1M: false }, override: null,
+      effective: { model: primary, modelSource: "config", effortSource: "config", context1M: false } } });
+    const bound = thread("context-bound", "alpha", { runModel: other, runContext1M: null });
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    localStorage.setItem(SELECTED_THREADS_STORAGE_KEY, JSON.stringify({ alpha: bound.id }));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([selected], [bound]));
+    vi.mocked(api.thread).mockResolvedValue({ thread: bound, messages: [] });
+    const store = await renderStore(); expect(store.current.context1M).toBe(true);
+  });
+
+  it("uses configured model policy for model-only defaults, but honors an explicit inherited web flag", async () => {
+    const primary = "synthetic:primary", other = "synthetic:other";
+    const selected = agent("alpha", { defaultModel: primary, models: [primary, other], modelOptions: {
+      [primary]: { supportsContext1M: true, context1M: false }, [other]: { supportsContext1M: true, context1M: true },
+    }, runSettings: { config: { model: primary, context1M: false }, override: { model: other },
+      effective: { model: other, modelSource: "override", effortSource: "config", context1M: false } } });
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([selected], []));
+    let store = await renderStore(); expect(store.current.context1M).toBe(true);
+    cleanupDom();
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([{ ...selected, runSettings: { ...selected.runSettings,
+      override: { model: other, context1M: false }, effective: { ...selected.runSettings.effective, context1M: false } } }], []));
+    store = await renderStore(); expect(store.current.context1M).toBe(false);
+  });
+
+  it.each([true, false])("sanitizes adoption and drops its context preference key (eligible %s)", async (eligible) => {
+    const ref = "synthetic:selected";
+    const selected = agent("alpha", { defaultModel: ref, models: [ref], modelOptions: { [ref]: eligible ? { supportsContext1M: true, context1M: false } : {} } });
+    const original = thread("context-adoption", "alpha", { runModel: null, runEffort: null, runContext1M: null });
+    const adopted = { ...original, runModel: ref, ...(eligible ? { runContext1M: true } : {}) };
+    const key = preferenceKeyForThread("alpha", original.id);
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    localStorage.setItem(SELECTED_THREADS_STORAGE_KEY, JSON.stringify({ alpha: original.id }));
+    localStorage.setItem(RUN_PREFERENCES_STORAGE_KEY, JSON.stringify({ [key]: { model: ref, effort: "", context1M: true } }));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([selected], [original]));
+    vi.mocked(api.thread).mockResolvedValue({ thread: original, messages: [] });
+    vi.mocked(api.patchThread).mockResolvedValue(adopted);
+    let store = await renderStore();
+    await waitFor(() => expect(api.patchThread).toHaveBeenCalledWith(original.id, { model: ref, effort: null, ...(eligible ? { context1M: true } : {}), ifRunConfigUnset: true }, expect.any(AbortSignal)));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem(RUN_PREFERENCES_STORAGE_KEY) ?? "{}")[key]).toBeUndefined());
+    expect(store.current.actionError).toBeNull();
+    cleanupDom();
+    vi.mocked(api.patchThread).mockClear();
+    // A reset in another tab must not resurrect the adopted browser-local flag.
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([selected], [original]));
+    vi.mocked(api.thread).mockResolvedValue({ thread: original, messages: [] });
+    store = await renderStore();
+    expect(store.current.context1M).toBe(eligible ? false : undefined);
+    expect(api.patchThread).not.toHaveBeenCalled();
+  });
+
   it("persists an explicit false 1M draft, reloads it and clears it only on an ineligible model switch", async () => {
     const ref = "openai-codex:gpt-6.1-sol";
     const alternate = "openai:gpt-6-sol";

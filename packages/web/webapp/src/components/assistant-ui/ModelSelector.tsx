@@ -99,7 +99,7 @@ export function ModelSelector({
     },
     [controlledOpen, onOpenChange],
   );
-  const selectedModel = useMemo(() => {
+  const selectedModel = useMemo<ModelSelectorOption | undefined>(() => {
     const exact = models.find((model) => model.id === value);
     if (exact) return exact;
     // A controlled nonblank value is still the truth even if a lazy catalog
@@ -112,6 +112,13 @@ export function ModelSelector({
     // metadata is unavailable. Show it in the trigger without adding it to the
     // selectable effort ladder below.
     ?? (effort !== "" ? { id: effort, name: effortName(effort) } : undefined);
+  const hasEffort = (selectedModel?.efforts.length ?? 0) > 0;
+  const hasContextChoice = selectedModel?.supportsContext1M === true && onContext1MChange !== undefined;
+  const contextEnabled = context1M ?? selectedModel?.context1M ?? false;
+  const standardWindow = selectedModel?.standardContextWindow;
+  const standardLabel = standardWindow !== undefined && Number.isFinite(standardWindow) && standardWindow > 0
+    ? new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(standardWindow)
+    : "Standard";
   const selectedCommandValue = selectedModel ? commandValue(selectedModel) : undefined;
 
   useEffect(() => {
@@ -401,46 +408,47 @@ export function ModelSelector({
                 )}
               </Command.List>
 
-              {selectedModel?.supportsContext1M === true && onContext1MChange && (
-                <label className="model-selector__context" onKeyDown={(event) => event.stopPropagation()}>
-                  <input type="checkbox" checked={context1M ?? selectedModel.context1M ?? false}
-                    disabled={disabled} onChange={(event) => onContext1MChange(event.target.checked)} />
-                  <span>1M context</span>
-                </label>
-              )}
-              {(selectedModel?.efforts.length ?? 0) > 0 && (
-                <div
-                  data-slot="model-selector-effort"
-                  className="model-selector__effort"
-                  onKeyDown={(event) => {
-                    if (event.key === "Home" || event.key === "End") {
-                      event.stopPropagation();
-                    }
-                    if (event.key === "ArrowUp" || event.key === "ArrowDown") {
-                      searchRef.current?.focus();
-                    }
-                  }}
-                >
-                  <span className="model-selector__effort-label">Thinking</span>
-                  <RadioGroup
-                    className="model-selector__effort-options"
-                    value={activeEffort?.id ?? ""}
-                    onValueChange={(nextEffort) => onEffortChange(nextEffort)}
-                    aria-label="Reasoning effort"
-                  >
-                    {selectedModel?.efforts.map((option) => (
-                      <Radio.Root
-                        key={`${option.id}:${option.name}`}
-                        data-slot="model-selector-effort-option"
-                        className="model-selector__effort-option"
-                        value={option.id}
-                      >
-                        {option.name}
-                      </Radio.Root>
-                    ))}
-                  </RadioGroup>
+              <div className="model-selector__options-panel" data-visible={hasEffort || hasContextChoice}
+                aria-hidden={!hasEffort && !hasContextChoice} inert={!hasEffort && !hasContextChoice}>
+                <div className="model-selector__options-panel-inner">
+                  <div data-slot="model-selector-effort" className="model-selector__effort"
+                    onKeyDown={(event) => {
+                      if (event.key === "Home" || event.key === "End") event.stopPropagation();
+                      if (event.key === "ArrowUp" || event.key === "ArrowDown") searchRef.current?.focus();
+                    }}>
+                    {hasEffort && <>
+                      <span className="model-selector__effort-label">Thinking</span>
+                      <RadioGroup className="model-selector__effort-options" value={activeEffort?.id ?? ""}
+                        onValueChange={onEffortChange} aria-label="Reasoning effort" disabled={disabled}>
+                        {selectedModel?.efforts.map((option) => (
+                          <Radio.Root key={`${option.id}:${option.name}`} data-slot="model-selector-effort-option"
+                            className="model-selector__effort-option" value={option.id}>{option.name}</Radio.Root>
+                        ))}
+                      </RadioGroup>
+                    </>}
+                    <div className="model-selector__context-window" data-visible={hasContextChoice}
+                      aria-hidden={!hasContextChoice} inert={!hasContextChoice}>
+                      <div className="model-selector__context-window-inner">
+                        <div className="model-selector__context-window-content" data-after-effort={hasEffort}>
+                          <span className="model-selector__effort-label">Context window</span>
+                          <RadioGroup className="model-selector__effort-options" aria-label="Context window"
+                            aria-orientation="horizontal" value={contextEnabled ? "1m" : "standard"}
+                            disabled={disabled || !hasContextChoice}
+                            onKeyDown={(event) => event.stopPropagation()}
+                            onValueChange={(next) => { if (hasContextChoice) onContext1MChange?.(next === "1m"); }}>
+                            <Radio.Root className="model-selector__effort-option" value="standard"
+                              onClick={() => { if (hasContextChoice && !disabled && !contextEnabled) onContext1MChange?.(false); }}>
+                              {standardLabel}
+                            </Radio.Root>
+                            <Radio.Root className="model-selector__effort-option" value="1m"
+                              onClick={() => { if (hasContextChoice && !disabled && contextEnabled) onContext1MChange?.(true); }}>1M</Radio.Root>
+                          </RadioGroup>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
-              )}
+              </div>
 
               <div className="model-selector__actions">
                 {onReset !== undefined && (
