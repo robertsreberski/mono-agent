@@ -167,6 +167,7 @@ export interface OperatorInfo {
   readonly supportsAskUser: boolean;
   readonly supportsAskById?: boolean;
   readonly supportsLiveInput: boolean;
+  readonly supportsProcessJobWakeAdmission?: true;
   readonly supportsLiveInputTargeting?: true;
   readonly supportsToolEnvironment?: boolean;
   readonly replyAttachments?: { readonly version: 1; readonly maxBytes: number };
@@ -194,6 +195,7 @@ export interface OperatorLiveInputInput {
   readonly ownerText?: string;
   readonly receivedAt: string;
   readonly deliveryKey?: string;
+  readonly processJobWakeAttempt?: string;
   readonly targetTurnId?: string;
   readonly targetRunId?: string;
   readonly signal?: AbortSignal;
@@ -205,6 +207,7 @@ export interface OperatorTurnInput {
   readonly attachments: readonly AgentAttachment[];
   readonly metadata: Readonly<Record<string, unknown>>;
   readonly processJobWakeDeliveryKey?: string;
+  readonly processJobWakeAttempt?: string;
   readonly client?: "web" | "acp";
   readonly toolEnvironment?: AgentToolEnvironment;
   readonly signal: AbortSignal;
@@ -298,6 +301,7 @@ export class OperatorClient {
       supportsAskUser: capabilities?.askUser === true,
       ...(capabilities?.askById === true ? { supportsAskById: true } : {}),
       supportsLiveInput: capabilities?.liveInput === true,
+      ...(record(capabilities?.processJobWakeAdmission)?.version === 1 ? { supportsProcessJobWakeAdmission: true } : {}),
       ...(record(capabilities?.liveInputTargeting)?.version === 1 ? { supportsLiveInputTargeting: true } : {}),
       ...(capabilities?.toolEnvironment === true ? { supportsToolEnvironment: true } : {}),
       ...(replyAttachments === undefined ? {} : { replyAttachments }),
@@ -476,6 +480,7 @@ export class OperatorClient {
           text: input.text,
           client: input.client ?? "web",
           metadata: input.metadata,
+          ...(input.processJobWakeAttempt === undefined ? {} : { processJobWakeAttempt: input.processJobWakeAttempt }),
           ...(input.processJobWakeDeliveryKey === undefined
             ? {}
             : { processJobWakeDeliveryKey: input.processJobWakeDeliveryKey }),
@@ -545,6 +550,7 @@ export class OperatorClient {
           ...(input.targetTurnId === undefined ? {} : { targetTurnId: input.targetTurnId }),
           ...(input.targetRunId === undefined ? {} : { targetRunId: input.targetRunId }),
           ...(input.deliveryKey === undefined ? {} : { deliveryKey: input.deliveryKey }),
+          ...(input.processJobWakeAttempt === undefined ? {} : { processJobWakeAttempt: input.processJobWakeAttempt }),
         }),
       },
       undefined,

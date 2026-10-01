@@ -1,3 +1,4 @@
+import { type ProcessJobWakeRecovery } from "./process-job-wake-recovery.js";
 import { constants as fsConstants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 
@@ -30,6 +31,7 @@ export interface DeliverWebProcessJobNotificationInput {
   readonly threadId: string;
   readonly processJob: ProcessJobProjection;
   readonly wakePrompt?: string;
+  readonly wakeRecovery?: ProcessJobWakeRecovery;
   readonly text?: string;
   readonly parts?: readonly AgentReplyPart[];
 }

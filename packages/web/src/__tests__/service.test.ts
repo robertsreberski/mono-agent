@@ -7904,3 +7904,74 @@ describe("1M web selection", () => {
     } finally { await service.stop(); }
   });
 });
+
+describe("recovery-aware process-job wakes", () => {
+  it("supersedes a busy parent's old wake worker without cancelling the parent and redelivers once", async () => {
+    let parent!: ReadableStreamDefaultController<Uint8Array>; const bodies: Record<string, unknown>[] = [];
+    const service = await createService({ fetchImpl: operatorFetch({ supportsProcessJobWakeAdmission: true,
+      onTurn: (body) => bodies.push(body), turns: (body) => body.text === "Parent asks user"
+        ? new ReadableStream({ start: (controller) => { parent = controller; } })
+        : '{"type":"text","text":"Recovered child"}\n{"type":"done"}\n',
+    }) });
+    const thread = service.createThread("agent-one"); await service.startTurn(thread.id, { text: "Parent asks user" });
+    await vi.waitFor(() => expect(parent).toBeDefined());
+    const job = fakeProcessJob({ conversationId: `web:${thread.id}`, state: "succeeded" });
+    const input = { sourceId: "agent-one", threadId: thread.id, triggerKind: "job" as const,
+      processJob: job, deliveryKey: job.wake.deliveryKey, wakePrompt: "Inspect child result" };
+    const old = randomUUID(); const next = randomUUID();
+    const oldWake = service.deliverNotification({ ...input, wakeRecovery: { version: 1, token: old, notCrossed: [] } });
+    await vi.waitFor(() => expect(service.store.ownsProcessJobWake(input.deliveryKey, old)).toBe(true));
+    const newWake = service.deliverNotification({ ...input, wakeRecovery: { version: 1, token: next, notCrossed: [old] } });
+    await expect(oldWake).resolves.toMatchObject({ delivery: { ambiguous: true } });
+    expect(bodies).toHaveLength(1); // ordinary parent still blocked
+    parent.enqueue(new TextEncoder().encode('{"type":"done"}\n')); parent.close();
+    await expect(newWake).resolves.toMatchObject({ delivery: { delivered: true, disposition: "follow_up" } });
+    expect(bodies).toHaveLength(2); expect(bodies[1]?.processJobWakeAttempt).toBe(next);
+    await expect(service.deliverNotification({ ...input, wakeRecovery: { version: 1, token: next, notCrossed: [old] } }))
+      .resolves.toMatchObject({ delivery: { delivered: true } });
+    expect(bodies).toHaveLength(2); await service.stop();
+  });
+  it("never guesses an older operator through a recovery-aware request", async () => {
+    const onTurn = vi.fn(); const service = await createService({ fetchImpl: operatorFetch({ onTurn }) });
+    const thread = service.createThread("agent-one"); const job = fakeProcessJob({ conversationId: `web:${thread.id}` });
+    await expect(service.deliverNotification({ sourceId: "agent-one", threadId: thread.id, triggerKind: "job",
+      processJob: job, deliveryKey: job.wake.deliveryKey, wakePrompt: "Inspect child",
+      wakeRecovery: { version: 1, token: randomUUID(), notCrossed: [] },
+    })).resolves.toMatchObject({ delivery: { delivered: false, ambiguous: true } });
+    expect(onTurn).not.toHaveBeenCalled(); await service.stop();
+  });
+});
+
+
+describe("process-job dispatch generation fences", () => {
+  it.each(["same", "replacement", "stopping"] as const)("rechecks %s ownership after asynchronous turn preparation", async (mode) => {
+    let discovered = fakeDiscoveredAgent(); const onTurn = vi.fn();
+    const service = await createService({ discoverImpl: async () => [discovered],
+      fetchImpl: operatorFetch({ supportsProcessJobWakeAdmission: true, onTurn }) });
+    try {
+      const thread = service.createThread("agent-one");
+      const budget = (service as unknown as { attachmentTurnBudget: {
+        acquire(bytes: number, signal: AbortSignal): Promise<() => void>;
+      } }).attachmentTurnBudget;
+      const acquire = budget.acquire.bind(budget);
+      vi.spyOn(budget, "acquire").mockImplementationOnce(async (...args) => {
+        const release = await acquire(...args);
+        if (mode === "replacement") discovered = fakeDiscoveredAgent({ source: { ...discovered.source,
+          pid: 999, startedAt: "2026-09-14T12:00:00Z" } });
+        await service.refreshAgents(); // even a same-generation probe installs a new client
+        if (mode === "stopping") service.store.createRestartOperation({ sourceId: "agent-one",
+          generation: agentGeneration(discovered), requestedAt: new Date().toISOString(),
+          deadline: new Date(Date.now() + 60_000).toISOString(), approximateRunningTurns: 1 });
+        return release;
+      });
+      const job = fakeProcessJob({ conversationId: `web:${thread.id}`, state: "succeeded" });
+      const token = randomUUID();
+      const receipt = await service.deliverNotification({ sourceId: "agent-one", threadId: thread.id, triggerKind: "job",
+        processJob: job, deliveryKey: job.wake.deliveryKey, wakePrompt: "Inspect child result",
+        wakeRecovery: { version: 1, token, notCrossed: [] } });
+      expect(receipt.delivery).toMatchObject(mode === "same" ? { delivered: true } : { delivered: false, ambiguous: true });
+      expect(onTurn).toHaveBeenCalledTimes(mode === "same" ? 1 : 0);
+      if (mode !== "same") expect(service.store.ownsProcessJobWake(job.wake.deliveryKey, token)).toBe(true);
+    } finally { await service.stop(); }
+  });
+});

@@ -10,6 +10,10 @@
   including web-bound job wakes; clicks send a normal follow-up user message,
   and old choices become inert after a later user turn.
 
+- Fix interrupted process-job wakes proven never admitted to retry once after
+  restart, while keeping possibly admitted and legacy wakes replay-suppressed.
+  Keep child questions waiting for the parent visible in the console job shelf.
+
 - Keep pinned, conversation-owning, and mid-restart agents in the web console
   as offline without switching the selected agent or conversation during a stop
   or restart.

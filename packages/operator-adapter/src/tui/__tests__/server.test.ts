@@ -2997,3 +2997,49 @@ function rejectedBoundPort(error: unknown): number {
   }
   return boundPort;
 }
+
+describe("private wake admission boundary", () => {
+  const token = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const body = { client: "web", conversationId: "web:fictional", text: "Inspect child result",
+    processJobWakeDeliveryKey: "process-job:fictional", processJobWakeAttempt: token };
+  it.each(["refused", "write_failed", "missing"] as const)("never flushes admission or calls the responder on %s proof", async (mode) => {
+    const respond = vi.fn(async () => ({ text: "ok" }));
+    running = await startTuiAdapter({ port: 0, responder: { respond },
+      ...(mode === "missing" ? {} : { processJobWakeAdmission: {
+        claim: async () => { if (mode === "write_failed") throw new Error("fictional storage failure"); return false; },
+        release: async () => true,
+      } }) });
+    const response = await postTurn(running.baseUrl, body);
+    expect(response.ok).toBe(false); expect(respond).not.toHaveBeenCalled();
+  });
+  it("awaits durable marking before stream headers and admits a concurrent token only once", async () => {
+    let mark!: () => void; let marked = false;
+    const persisted = new Promise<void>((resolve) => { mark = () => { marked = true; resolve(); }; });
+    const respond = vi.fn(async () => { expect(marked).toBe(true); return { text: "ok" }; });
+    let claimed = false;
+    running = await startTuiAdapter({ port: 0, responder: { respond }, processJobWakeAdmission: {
+      claim: async () => { if (claimed) return false; claimed = true; await persisted; return true; }, release: async () => true,
+    } });
+    let headers = false; const first = postTurn(running.baseUrl, body).then((response) => { headers = true; return response; });
+    await vi.waitFor(() => expect(claimed).toBe(true));
+    expect(headers).toBe(false); expect(respond).not.toHaveBeenCalled();
+    const duplicate = await postTurn(running.baseUrl, body); expect(duplicate.ok).toBe(false);
+    mark(); await readFrames(await first); expect(respond).toHaveBeenCalledOnce();
+  });
+  it.each(["unavailable", "requeue", "applied", "uncertain", "lost"] as const)("releases only explicit safe steer %s before receipting", async (status) => {
+    const release = vi.fn(async () => true); const claim = vi.fn(async () => true);
+    running = await startTuiAdapter({ port: 0, processJobWakeAdmission: { claim, release }, responder: {
+      respond: async () => ({ text: "ok" }), offerLiveInput: () => {
+        if (status === "unavailable") return { status: "unavailable", reason: "inactive" };
+        return { status: "accepted", settled: status === "lost" ? Promise.reject(new Error("lost")) : Promise.resolve(
+          status === "applied" ? { status, runId: "run" } : status === "requeue" ? { status, reason: "closed" } : { status, reason: "delivery_uncertain" }) };
+      },
+    } });
+    const response = await fetch(`${running.baseUrl}/v1/conversations/web%3Afictional/live-input`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: "wake", text: "Inspect child result",
+        receivedAt: new Date().toISOString(), deliveryKey: body.processJobWakeDeliveryKey, processJobWakeAttempt: token }),
+    });
+    expect(response.status).toBe(200); expect(claim).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledTimes(status === "unavailable" || status === "requeue" ? 1 : 0);
+  });
+});

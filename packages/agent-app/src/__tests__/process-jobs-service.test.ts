@@ -3954,3 +3954,92 @@ it("counts admitted queued jobs and never advertises idle while handing a slot t
     second.resolve(processResult()); await waitFor(async () => service.activeExecutionCount() === 0);
   } finally { first.resolve(processResult()); second.resolve(processResult()); }
 });
+
+describe("private web wake admission fences", () => {
+  it.each(["not_crossed", "crossed", "legacy"] as const)("recovers only durable %s evidence across reopen", async (mode) => {
+    const fixture = await createFixture(); ownershipRoots.push(fixture.cwd);
+    const jobId = randomUUID(); const token = randomUUID(); const boundary = randomUUID();
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const record = durableRecord(jobId, { state: "succeeded", pid: null, pgid: null, stdoutRef: null, stderrRef: null,
+      completedAt: "2026-08-14T10:00:03.000Z", exitCode: 0,
+      origin: { ...ORIGIN, channel: "web", conversationId: "web:fictional#2026-08-14", baseConversationId: "web:fictional", replyToConversationId: "web:fictional", normalizedReplyTarget: "web:fictional" },
+      wake: { state: "pending", attempts: 1, deliveryKey: `process-job:${jobId}`, lastAttemptAt: "2026-08-14T10:00:03.000Z", retrySafe: false,
+        ...(mode === "legacy" ? {} : { admission: { version: 1, token, state: mode, ...(mode === "crossed" ? { boundary } : {}) } }) } });
+    delete record.processIncarnation;
+    await store.mutate((records) => records.set(jobId, record));
+    const wake = vi.fn(async (input: ProcessJobWakeInput) => {
+      expect(input.wakeRecovery?.notCrossed).toEqual([token]);
+      expect(input.wakeRecovery?.token).not.toBe(token);
+      expect(await service.wakeAdmission!.claim(input.deliveryKey, token, boundary)).toBe(false);
+      expect(await service.wakeAdmission!.claim(input.deliveryKey, "", boundary)).toBe(false);
+      expect(await service.wakeAdmission!.claim(input.deliveryKey, input.wakeRecovery!.token, boundary)).toBe(true);
+      expect(await service.wakeAdmission!.claim(input.deliveryKey, input.wakeRecovery!.token, randomUUID())).toBe(false);
+      return { delivered: true as const };
+    });
+    let service = await startService(fixture, { wake });
+    // Proof must survive another restart before ingress becomes available.
+    await service.stop();
+    service = await startService(fixture, { wake });
+    await service.activateWakes();
+    await waitFor(async () => (await service.get(jobId))?.wake.state === (mode === "not_crossed" ? "delivered" : "unknown"));
+    expect(wake).toHaveBeenCalledTimes(mode === "not_crossed" ? 1 : 0);
+    expect(JSON.stringify(await service.get(jobId))).not.toContain(token);
+    await service.stop();
+    const nextWake = vi.fn(async () => ({ delivered: true as const }));
+    const next = await startService(fixture, { wake: nextWake }); await next.activateWakes();
+    expect(nextWake).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])("persists exact safe refusal=%s before a lost receipt and never trusts transport errors", async (safe) => {
+    const fixture = await createFixture(); ownershipRoots.push(fixture.cwd);
+    const service = await startService(fixture, { wake: async (input) => {
+      const token = input.wakeRecovery!.token; const boundary = randomUUID();
+      expect(await service.wakeAdmission!.claim(input.deliveryKey, token, boundary)).toBe(true);
+      expect(await service.wakeAdmission!.release(input.deliveryKey, token, randomUUID())).toBe(false);
+      if (safe) expect(await service.wakeAdmission!.release(input.deliveryKey, token, boundary)).toBe(true);
+      return { delivered: false, code: "destination_channel_unavailable", retryable: !safe, ambiguous: safe };
+    } });
+    await service.activateWakes();
+    const done = deferred<ProcessJobProcessResult>();
+    const origin = { ...ORIGIN, channel: "web" as const, conversationId: "web:fictional#2026-08-14", baseConversationId: "web:fictional", replyToConversationId: "web:fictional", normalizedReplyTarget: "web:fictional" };
+    const started = await service.controller(origin, 0).start(requestOf(handleOf(done)));
+    done.resolve(processResult());
+    await waitFor(async () => (await service.get(started.jobId))?.wake.state === "unknown");
+    await service.stop();
+    const wake = vi.fn(async (_input: ProcessJobWakeInput) => ({ delivered: true as const }));
+    const next = await startService(fixture, { wake }); await next.activateWakes();
+    if (safe) await waitFor(async () => (await next.get(started.jobId))?.wake.state === "delivered");
+    expect(wake).toHaveBeenCalledTimes(safe ? 1 : 0);
+  });
+});
+
+
+describe("crossed web wake uncertainty remains non-replayable", () => {
+  it.each(["possibly_applied_steer", "lost_admission_response", "socket_loss", "timeout", "release_write_failure"] as const)(
+    "never retries %s across restart even with a retryable transport receipt", async (failure) => {
+      const fixture = await createFixture(); ownershipRoots.push(fixture.cwd);
+      const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+      const wake = vi.fn(async (input: ProcessJobWakeInput) => {
+        const token = input.wakeRecovery!.token; const boundary = randomUUID();
+        expect(await service.wakeAdmission!.claim(input.deliveryKey, token, boundary)).toBe(true);
+        if (failure === "release_write_failure") {
+          const write = vi.spyOn(store, "mutate").mockRejectedValueOnce(new Error("fictional write failure"));
+          await expect(service.wakeAdmission!.release(input.deliveryKey, token, boundary)).rejects.toThrow();
+          write.mockRestore();
+        }
+        return { delivered: false as const, code: "agent_connection_lost", retryable: true, ambiguous: false };
+      });
+      const service = await startService(fixture, { store, wake }); await service.activateWakes();
+      const done = deferred<ProcessJobProcessResult>();
+      const origin = { ...ORIGIN, channel: "web" as const, conversationId: "web:fictional#2026-08-14", baseConversationId: "web:fictional",
+        replyToConversationId: "web:fictional", normalizedReplyTarget: "web:fictional" };
+      const started = await service.controller(origin, 0).start(requestOf(handleOf(done))); done.resolve(processResult());
+      await waitFor(async () => (await service.get(started.jobId))?.wake.state === "unknown");
+      expect(wake).toHaveBeenCalledOnce(); await service.stop();
+      const nextWake = vi.fn(async () => ({ delivered: true as const }));
+      const next = await startService(fixture, { wake: nextWake }); await next.activateWakes();
+      expect((await next.get(started.jobId))?.wake.state).toBe("unknown");
+      expect(nextWake).not.toHaveBeenCalled();
+    },
+  );
+});

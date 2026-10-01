@@ -266,7 +266,7 @@ export const processJobItemIsIssue = (item: ProcessJobShelfItem): boolean => pro
  */
 export const processJobItemBucket = (item: ProcessJobShelfItem, now: number): ProcessJobBucket => {
   const jobs = processJobItemJobs(item);
-  if (jobs.some((job) => pendingPeerQuestion(job, now))) return "question";
+  if (jobs.some((job) => pendingPeerQuestion(job, now) || (processJobIsTerminal(job) && processJobIsCurrent(job, now)))) return "question";
   if (jobs.some((job) => !processJobIsTerminal(job))) return "active";
   if (processJobItemIsIssue(item)) return "issue";
   return outcomeOf(item).state === "cancelled" ? "cancelled" : "done";

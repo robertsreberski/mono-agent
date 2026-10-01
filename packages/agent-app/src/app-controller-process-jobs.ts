@@ -121,6 +121,7 @@ export function ensureProcessJobsService(
         registration,
         wake: async (input) => await runWithProcessJobWakeContext(
           { jobId: input.projection.jobId, chainDepth: input.chainDepth,
+            ...(input.wakeRecovery === undefined ? {} : { wakeRecovery: input.wakeRecovery }),
             pendingQuestion: input.projection.kind === "internal"
               && input.projection.peerQuestion?.state === "awaiting_answer" },
           async () => await routeProcessJobWake({

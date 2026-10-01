@@ -1,3 +1,4 @@
+import type { WakeRecovery } from "./process-jobs-wake-fence.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import {
@@ -14,6 +15,7 @@ export interface ProcessJobWakeContext {
   readonly jobId: string;
   readonly chainDepth: number;
   readonly pendingQuestion?: boolean;
+  readonly wakeRecovery?: WakeRecovery;
 }
 
 interface ProcessJobWakeFlight extends ProcessJobWakeContext {
@@ -38,6 +40,11 @@ const hostWakeRecallContext = new AsyncLocalStorage<boolean>();
 
 export function isHostProcessJobWakeRecall(): boolean {
   return hostWakeRecallContext.getStore() === true;
+}
+
+/** Private routing metadata for the authenticated app-owned web ingress. */
+export function currentProcessJobWakeRecovery(): WakeRecovery | undefined {
+  return wakeContext.getStore()?.wakeRecovery;
 }
 
 const PROCESS_JOB_WAKE_DELIVERY_METADATA = Symbol.for("mono-agent.process-job-wake.delivery-key.v1");

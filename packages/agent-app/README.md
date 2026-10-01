@@ -1303,6 +1303,20 @@ path:
 
 ## Public API
 
+Web process-job wakes use an optional owner-private v1 admission fence in the
+existing job record. Each attempt is marked before follow-up execution or a
+steer offer; only an exact explicit safe steer refusal releases that marker.
+Exclusive restart/shutdown recovery fences a still-unmarked token and carries
+its non-admission proof on the next authenticated web wake. Possibly admitted
+attempts and legacy records remain unknown and are never automatically replayed.
+Proofs are bounded to sixteen tokens per job and never evicted to authorize a
+retry; exhaustion fails closed. These identities do not enter job projections,
+prompts, history or browser DTOs. No historical data repair is performed.
+Upgrade both agent and console for recovery. Older strict job readers reject the
+new optional private fields: rollback requires a storage-compatible agent, not
+removing proof fields. Existing ProcessJobs retention/reset boundaries apply.
+
+
 ### Start here
 
 | Need | Primary API |

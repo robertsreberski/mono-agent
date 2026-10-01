@@ -7375,3 +7375,36 @@ describe("nullable 1M context selection", () => {
     store.close();
   });
 });
+
+describe("wake attempt reconciliation", () => {
+  it("migrates legacy reservations fail-closed and atomically fences every stale writer", async () => {
+    const base = await temporaryRoot(); cleanup.push(base);
+    const stateDir = join(base, "state"); const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]); const thread = store.createThread("agent-one");
+    const job = fakeProcessJob({ conversationId: `web:${thread.id}` });
+    const input = { sourceId: "agent-one", threadId: thread.id, jobId: job.jobId, deliveryKey: job.wake.deliveryKey };
+    const old = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"; const next = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    store.upsertProcessJobCard({ ...input, processJob: job });
+    expect(store.reserveProcessJobWake(input)).toEqual({ kind: "new" }); store.close();
+    // Exercise the actual schema-42 -> 43 nullable migration, not a fresh row.
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    database.exec("ALTER TABLE process_job_wake_deliveries DROP COLUMN attempt_token; PRAGMA user_version=42"); database.close();
+    const reopened = await WebStore.open({ stateDir });
+    const proof = { version: 1 as const, token: next, notCrossed: [old] };
+    expect(reopened.reserveProcessJobWake({ ...input, wakeRecovery: proof })).toEqual({ kind: "uncertain" });
+    expect(reopened.abandonProcessJobWake(input)).toBe(true);
+    expect(reopened.reserveProcessJobWake({ ...input, wakeRecovery: { version: 1, token: old, notCrossed: [] } })).toEqual({ kind: "new" });
+    expect(reopened.reserveProcessJobWake({ ...input, wakeRecovery: { ...proof, notCrossed: [] } })).toEqual({ kind: "uncertain" });
+    expect(reopened.reserveProcessJobWake({ ...input, wakeRecovery: proof })).toEqual({ kind: "new" });
+    expect(reopened.ownsProcessJobWake(input.deliveryKey, old)).toBe(false);
+    expect(reopened.abandonProcessJobWake({ ...input, attemptToken: old })).toBe(false);
+    expect(() => reopened.completeProcessJobWake({ ...input, attemptToken: old, disposition: "follow_up" })).toThrow();
+    const started = reopened.beginAssistantTurn({ threadId: thread.id, prompt: "Inspect child", processJobWakeAttempt: next,
+      processJobWake: { jobId: job.jobId, deliveryKey: job.wake.deliveryKey, disposition: "follow_up" } });
+    expect(() => reopened.associateProcessJobWakeTurn(input.deliveryKey, started.turnId, true, old)).toThrow();
+    reopened.releaseProcessJobWakeTurn(input.deliveryKey, started.turnId, old);
+    reopened.completeProcessJobWake({ ...input, attemptToken: next, disposition: "follow_up", turnId: started.turnId });
+    expect(reopened.reserveProcessJobWake({ ...input, wakeRecovery: proof })).toEqual({ kind: "completed", disposition: "follow_up" });
+    reopened.close();
+  });
+});

@@ -110,9 +110,12 @@ export const nextPeerQuestionDeadline = (jobs: readonly ProcessJobProjection[], 
   return next;
 };
 
-/** Current work: lifecycle-active jobs plus settled peer jobs whose question is still open. */
+const pendingChildQuestion = (job: ProcessJobProjection): boolean =>
+  job.kind === "internal" && job.subagentQuestion !== undefined && job.wake.state === "pending";
+
+/** Current work includes settled children whose question is waiting for the parent. */
 export const processJobIsCurrent = (job: ProcessJobProjection, now: number): boolean =>
-  !processJobIsTerminal(job) || pendingPeerQuestion(job, now);
+  !processJobIsTerminal(job) || pendingPeerQuestion(job, now) || pendingChildQuestion(job);
 
 /**
  * An outcome an operator may have to deal with. A cancelled job is what was
@@ -142,7 +145,8 @@ export function processJobDisplayState(job: ProcessJobProjection, now: number): 
     ...(job.wake.state === "failed" ? ["wake failed"] : []),
     ...(job.wake.state === "unknown" ? ["wake outcome unknown · replay suppressed"] : []),
   ] : [];
-  const notes = job.kind === "internal" && job.subagentQuestion ? ["asked the parent agent a question"] : [];
+  const notes = job.kind === "internal" && job.subagentQuestion
+    ? [pendingChildQuestion(job) ? "Child question waiting for parent" : "asked the parent agent a question"] : [];
   return { tone, mark, word, ...(pending === undefined ? {} : { pending }), details, alerts, notes, stopping };
 }
 

@@ -378,6 +378,9 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
       ["cron_reply_operations", "run_context_1m"], ["turns", "context_1m"], ["live_inputs", "context_1m"],
     ] as const) addColumn(database, table, column, `INTEGER CHECK (${column} IS NULL OR ${column} IN (0,1))`);
   } },
+  { version: 43, name: "process-job-wake-admission-fence", up: ({ database }) => {
+    addColumn(database, "process_job_wake_deliveries", "attempt_token", "TEXT");
+  } },
 ] satisfies WebStorageMigration[]).map((step) => Object.freeze(step)));
 
 export const WEB_STORAGE_SCHEMA_VERSION = WEB_STORAGE_MIGRATIONS.at(-1)!.version;
@@ -515,6 +518,7 @@ export function validateWebStorageShape(database: DatabaseSync): void {
     if (dispatchStartedAt?.type !== "TEXT" || dispatchStartedAt.notnull !== 0) {
       throw new Error("Invalid live-input dispatch marker.");
     }
+    assertColumns(database, "process_job_wake_deliveries", ["attempt_token"]);
     for (const [index, expected] of [
       ["messages_by_thread", ["thread_id", "created_at"]],
       ["process_job_cards_by_state", ["state", "thread_id"]],
