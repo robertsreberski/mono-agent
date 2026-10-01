@@ -100,7 +100,7 @@ an invalid expiry, an unsafe/unreadable store, or ambient file existence alone
 needs action. Environment API-key presence may establish only
 `present/not_verified`; it never establishes live health.
 
-The headless login flow is provider-owned by the bundled Pi version (0.99.1):
+The headless login flow is provider-owned by the bundled Pi version (0.99.2):
 
 - GitHub Copilot and OpenAI Codex use native device authorization: open the
   displayed URL on any browser, enter the displayed code, and leave the dialog

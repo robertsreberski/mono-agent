@@ -151,8 +151,8 @@ describe("packed consumer verification", () => {
     expect(consumer.dependencies).not.toHaveProperty("@earendil-works/pi-ai");
     expect(consumer.dependencies).not.toHaveProperty("@earendil-works/pi-agent-core");
     expect(runtime.dependencies).toMatchObject({
-      "@earendil-works/pi-ai": "0.99.1",
-      "@earendil-works/pi-agent-core": "0.99.1",
+      "@earendil-works/pi-ai": "0.99.2",
+      "@earendil-works/pi-agent-core": "0.99.2",
     });
 
     const packedImports = publicExportSpecifiers(runtime.name, runtime);
@@ -309,7 +309,7 @@ describe("packed consumer verification", () => {
     const fixture = packedDependencyFixture({
       rootPiVersion: "0.80.8",
       nestedCorePiVersion: null,
-      nestedRuntimePiVersion: "0.99.1",
+      nestedRuntimePiVersion: "0.99.2",
     });
     const runtimePackages = fixture.packages.filter(
       (pkg) => pkg.name === "@mono-agent/agent-runtime",
@@ -319,17 +319,17 @@ describe("packed consumer verification", () => {
     expect(() =>
       assertPackedDependencyResolution(fixture.consumerDir, runtimePackages),
     ).toThrow(
-      "Packed consumer resolved @earendil-works/pi-ai@0.80.8 from @earendil-works/pi-agent-core@0.99.1; expected 0.99.1",
+      "Packed consumer resolved @earendil-works/pi-ai@0.80.8 from @earendil-works/pi-agent-core@0.99.2; expected 0.99.2",
     );
   });
 
   test("rejects a packed manifest that can float to a newer Pi runtime", () => {
-    const fixture = packedDependencyFixture({ appPiRange: "^0.99.1" });
+    const fixture = packedDependencyFixture({ appPiRange: "^0.99.2" });
 
     expect(() =>
       assertPackedDependencyResolution(fixture.consumerDir, fixture.packages),
     ).toThrow(
-      /Packed @mono-agent\/agent-app dependencies\.@earendil-works\/pi-ai must remain 0\.99\.1; found \^0\.99\.1/u,
+      /Packed @mono-agent\/agent-app dependencies\.@earendil-works\/pi-ai must remain 0\.99\.2; found \^0\.99\.2/u,
     );
   });
 
@@ -339,17 +339,17 @@ describe("packed consumer verification", () => {
     expect(() =>
       assertPackedDependencyResolution(fixture.consumerDir, fixture.packages),
     ).toThrow(
-      /resolved @earendil-works\/pi-ai@0\.80\.8 from @earendil-works\/pi-agent-core@0\.99\.1; expected 0\.99\.1/u,
+      /resolved @earendil-works\/pi-ai@0\.80\.8 from @earendil-works\/pi-agent-core@0\.99\.2; expected 0\.99\.2/u,
     );
   });
 
 });
 
 function packedDependencyFixture({
-  appPiRange = "0.99.1",
-  nestedCorePiVersion = "0.99.1",
+  appPiRange = "0.99.2",
+  nestedCorePiVersion = "0.99.2",
   nestedRuntimePiVersion,
-  rootPiVersion = "0.99.1",
+  rootPiVersion = "0.99.2",
 } = {}) {
   const consumerDir = fs.mkdtempSync(path.join(os.tmpdir(), "packed-dependency-policy-"));
   temporaryDirectories.push(consumerDir);
@@ -364,14 +364,14 @@ function packedDependencyFixture({
     name: "@mono-agent/agent-runtime",
     version: "1.2.3",
     dependencies: {
-      "@earendil-works/pi-agent-core": "0.99.1",
-      "@earendil-works/pi-ai": "0.99.1",
+      "@earendil-works/pi-agent-core": "0.99.2",
+      "@earendil-works/pi-ai": "0.99.2",
     },
   });
   const coreDir = writePackage(modulesDir, {
     name: "@earendil-works/pi-agent-core",
-    version: "0.99.1",
-    dependencies: { "@earendil-works/pi-ai": "^0.99.1" },
+    version: "0.99.2",
+    dependencies: { "@earendil-works/pi-ai": "^0.99.2" },
   });
   writePackage(modulesDir, {
     name: "@earendil-works/pi-ai",
@@ -396,15 +396,15 @@ function packedDependencyFixture({
       {
         name: "@mono-agent/agent-app",
         packageJson: {
-          dependencies: { "@earendil-works/pi-ai": "0.99.1" },
+          dependencies: { "@earendil-works/pi-ai": "0.99.2" },
         },
       },
       {
         name: "@mono-agent/agent-runtime",
         packageJson: {
           dependencies: {
-            "@earendil-works/pi-agent-core": "0.99.1",
-            "@earendil-works/pi-ai": "0.99.1",
+            "@earendil-works/pi-agent-core": "0.99.2",
+            "@earendil-works/pi-ai": "0.99.2",
           },
         },
       },

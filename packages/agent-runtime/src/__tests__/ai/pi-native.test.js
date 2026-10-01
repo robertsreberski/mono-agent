@@ -727,6 +727,8 @@ describe("pi-native AgentHarness bridge", () => {
     // upstream-first supplement registration must resolve this id. Isolate
     // Pi's entire ambient auth context, including
     // ANTHROPIC_AUTH_TOKEN and ANTHROPIC_OAUTH_TOKEN, not just the API key.
+    // Pi 0.99.2 then probes workload identity federation, which stops at its
+    // first missing required setting.
     // Stored credentials are also disabled by the null resolver below.
     const authContext = { env: vi.fn(async () => undefined), fileExists: vi.fn(async () => false) };
     const result = await generatePiNativeResponse("system", {
@@ -743,6 +745,7 @@ describe("pi-native AgentHarness bridge", () => {
     if (provider === "anthropic") {
       expect(authContext.env.mock.calls.map(([name]) => name)).toEqual([
         "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY",
+        "ANTHROPIC_FEDERATION_RULE_ID",
       ]);
     }
   });
