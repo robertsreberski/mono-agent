@@ -371,7 +371,7 @@ describe("ModelSelector provider grouping", () => {
     };
 
     expect(labels()).toEqual(["All", "OpenAI Codex", "Anthropic"]);
-    expect(beforeDimensions.height).toBe("28px");
+    expect(beforeDimensions.height).toBe("36px");
     fireEvent.click(anthropic);
 
     const selected = within(providers).getByRole("radio", { name: "Anthropic" });
@@ -399,6 +399,16 @@ describe("ModelSelector provider grouping", () => {
     fireEvent.click(within(providers).getByRole("radio", { name: "Anthropic" }));
 
     expect(onProviderRequest).toHaveBeenCalledWith("anthropic");
+  });
+
+  it("avoids duplicating the automatic default signal but retains it without an automatic row", async () => {
+    const props = { models: providerModels, value: "", effort: "", agentDefaultId: "provider:codex", open: true,
+      onValueChange: vi.fn(), onEffortChange: vi.fn() };
+    const view = renderSelector(props);
+    const popup = await screen.findByRole("dialog", { name: "Model and reasoning effort" });
+    expect(popup.querySelector(".model-selector__item-default")).toBeNull();
+    view.rerender(<ModelSelector {...props} models={providerModels.slice(1)} value="provider:codex" />);
+    expect(within(popup).getByText("agent default")).toBeVisible();
   });
 
   it("shows an empty state when no models are offered", async () => {

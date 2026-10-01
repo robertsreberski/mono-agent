@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix the web model picker to fit the available screen space, with denser
+  provider and thinking controls and always-visible context and close actions.
+
 - Let authenticated console restarts validate and apply edited startup inputs
   on supervised workers, keeping the old worker online on invalid inputs or
   approval failures; require terminal restart for unavailable runtime packages.

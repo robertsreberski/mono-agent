@@ -90,6 +90,8 @@ export function ModelSelector({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const popupRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const effortRef = useRef<HTMLDivElement>(null);
   const keyboardOpenRef = useRef(false);
   const open = controlledOpen ?? internalOpen;
   const setOpen = useCallback(
@@ -120,6 +122,8 @@ export function ModelSelector({
     ? new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(standardWindow)
     : "Standard";
   const selectedCommandValue = selectedModel ? commandValue(selectedModel) : undefined;
+  // The automatic row already explains inheritance; avoid a second default badge.
+  const showAgentDefaultBadge = !models.some((model) => model.id === "");
 
   useEffect(() => {
     if (disabled) {
@@ -133,6 +137,19 @@ export function ModelSelector({
       return;
     }
   }, [disabled, open, setOpen]);
+
+  useEffect(() => {
+    // Filtering should start at the first match, not the old catalog offset.
+    if (listRef.current) listRef.current.scrollTop = 0;
+  }, [query, activeProvider]);
+
+  useEffect(() => {
+    if (!open) return;
+    const frame = window.requestAnimationFrame(() => {
+      effortRef.current?.querySelector("[data-checked]")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [open, activeEffort?.id, selectedModel?.id]);
 
   const closeSelector = () => {
     setOpen(false);
@@ -220,6 +237,7 @@ export function ModelSelector({
           align={align}
           side={side}
           sideOffset={6}
+          collisionPadding={12}
         >
           <Popover.Popup
             ref={popupRef}
@@ -277,6 +295,7 @@ export function ModelSelector({
                       if (provider !== null) onProviderRequest?.(provider);
                     }}
                     aria-label="Filter by provider"
+                    onFocusCapture={(event) => event.target.scrollIntoView({ block: "nearest", inline: "nearest" })}
                   >
                     <Radio.Root
                       data-slot="model-selector-provider-option"
@@ -300,6 +319,7 @@ export function ModelSelector({
               )}
 
               <Command.List
+                ref={listRef}
                 data-slot="model-selector-list"
                 className="model-selector__list"
               >
@@ -337,7 +357,7 @@ export function ModelSelector({
                             </span>
                           )}
                         </span>
-                        {model.id !== "" && model.id === agentDefaultId && (
+                        {showAgentDefaultBadge && model.id !== "" && model.id === agentDefaultId && (
                           <span className="model-selector__item-default">agent default</span>
                         )}
                         {selected && (
@@ -384,7 +404,7 @@ export function ModelSelector({
                               </span>
                             )}
                           </span>
-                          {model.id !== "" && model.id === agentDefaultId && (
+                          {showAgentDefaultBadge && model.id !== "" && model.id === agentDefaultId && (
                             <span className="model-selector__item-default">agent default</span>
                           )}
                           {selected && (
@@ -418,8 +438,9 @@ export function ModelSelector({
                     }}>
                     {hasEffort && <>
                       <span className="model-selector__effort-label">Thinking</span>
-                      <RadioGroup className="model-selector__effort-options" value={activeEffort?.id ?? ""}
-                        onValueChange={(nextEffort) => onEffortChange(nextEffort)} aria-label="Reasoning effort" disabled={disabled}>
+                      <RadioGroup ref={effortRef} className="model-selector__effort-options" value={activeEffort?.id ?? ""}
+                        onValueChange={(nextEffort) => onEffortChange(nextEffort)} aria-label="Reasoning effort" disabled={disabled}
+                        onFocusCapture={(event) => event.target.scrollIntoView({ block: "nearest", inline: "nearest" })}>
                         {selectedModel?.efforts.map((option) => (
                           <Radio.Root key={`${option.id}:${option.name}`} data-slot="model-selector-effort-option"
                             className="model-selector__effort-option" value={option.id}>{option.name}</Radio.Root>

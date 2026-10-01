@@ -64,7 +64,7 @@ for (const width of [390, 1280]) describe(`1M selection at ${width}px`, () => {
     await waitFor(() => expect(store.setAgentRunDefaults).toHaveBeenCalledWith(null, null, false));
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
   });
-  it("keeps context chips aligned in dark mode and respects reduced motion", async () => {
+  it("keeps the inline context choices right-aligned in dark mode and respects reduced motion", async () => {
     await page.viewport(width, 820);
     await commands.emulateColorScheme("dark");
     await commands.emulateReducedMotion("reduce");
@@ -73,8 +73,9 @@ for (const width of [390, 1280]) describe(`1M selection at ${width}px`, () => {
     await userEvent.click(screen.getByRole("radio", { name: "1M" }));
     expect(screen.getByRole("radio", { name: "1M" })).toBeChecked();
     expect(parseFloat(getComputedStyle(document.querySelector(".model-selector__context-window")!).transitionDuration)).toBeLessThanOrEqual(0.001);
-    const effort = screen.getByRole("radiogroup", { name: "Reasoning effort" });
-    expect(Math.abs(context.getBoundingClientRect().left - effort.getBoundingClientRect().left)).toBeLessThan(1);
+    const panel = document.querySelector<HTMLElement>(".model-selector__effort")!;
+    const edge = panel.getBoundingClientRect().right - parseFloat(getComputedStyle(panel).paddingRight);
+    expect(Math.abs(context.getBoundingClientRect().right - edge)).toBeLessThan(1);
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
     if (width === 1280) await shot("composer-1280-dark-1m");
   });
