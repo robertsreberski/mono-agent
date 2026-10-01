@@ -20,3 +20,7 @@ export const selectorModels: readonly ModelSelectorOption[] = [
     efforts: selectorEfforts, supportsContext1M: true as const, standardContextWindow: 272_000,
   }))),
 ];
+
+export const smallSelectorModels: readonly ModelSelectorOption[] = selectorModels
+  .filter((model) => model.provider === "atlas").slice(0, 3)
+  .map((model) => ({ ...model, supportsContext1M: undefined, efforts: selectorEfforts.slice(2, 4) }));

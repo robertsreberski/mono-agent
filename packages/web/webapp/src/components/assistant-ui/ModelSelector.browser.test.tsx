@@ -4,15 +4,15 @@ import { useState } from "react";
 import { afterEach, expect, it } from "vitest";
 import "../../styles.css";
 import { ModelSelector } from "./ModelSelector";
-import { selectorModels } from "./ModelSelector.fixtures";
+import { selectorModels, smallSelectorModels } from "./ModelSelector.fixtures";
 
-function Example({ settings = false, middle = false }: { settings?: boolean; middle?: boolean }) {
-  const [value, setValue] = useState("");
-  const [effort, setEffort] = useState("medium");
+function Example({ settings = false, middle = false, small = false }: { settings?: boolean; middle?: boolean; small?: boolean }) {
+  const [value, setValue] = useState(small ? "atlas:standard" : "");
+  const [effort, setEffort] = useState(small ? "low" : "medium");
   const [context, setContext] = useState(true);
   return <div className={settings ? "settings-screen" : "composer-actions"}
     style={{ position: "fixed", left: 16, right: 16, ...(middle ? { top: "50%" } : settings ? { top: 100 } : { bottom: 20 }) }}>
-    <ModelSelector models={selectorModels} value={value} effort={effort} context1M={context}
+    <ModelSelector models={small ? smallSelectorModels : selectorModels} value={value} effort={effort} context1M={context}
       onValueChange={setValue} onEffortChange={setEffort} onContext1MChange={setContext}
       onReset={() => { setValue(""); setEffort(""); }} agentDefaultId="atlas:standard"
       showModelChangeHint side={settings ? "bottom" : "top"} />
@@ -148,4 +148,105 @@ it("uses collision space for a settings trigger in the middle of a short desktop
     await waitFor(() => insideVisibleBox(model, popup));
     insideVisibleBox(close, popup);
   }
+});
+
+it.each([[390, 844], [1280, 800]])("sizes a small catalog to content at %ix%i", async (width, height) => {
+  await page.viewport(width, height);
+  await commands.emulateColorScheme("dark");
+  render(<Example small />);
+  fireEvent.click(screen.getByRole("button", { name: "Model and reasoning effort" }));
+  const popup = await screen.findByRole("dialog");
+  const close = within(popup).getByRole("button", { name: "Close" });
+  await waitFor(() => insideVisibleBox(close, popup));
+  const list = popup.querySelector<HTMLElement>('[data-slot="model-selector-list"]')!;
+  const sizer = list.querySelector<HTMLElement>("[cmdk-list-sizer]")!;
+  const style = getComputedStyle(list);
+  const naturalHeight = sizer.getBoundingClientRect().height + parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+  // The hint's collapsing paragraph margins may straddle the sizer box.
+  expect(Math.abs(list.getBoundingClientRect().height - naturalHeight)).toBeLessThan(16);
+  expect(popup.getBoundingClientRect().height).toBeLessThan(500);
+  const effort = within(popup).getByRole("radiogroup", { name: "Reasoning effort" });
+  expect(effort).toHaveAttribute("data-overflow-start", "false");
+  expect(effort).toHaveAttribute("data-overflow-end", "false");
+  expect(getComputedStyle(effort).getPropertyValue("--fade-start").trim()).toBe("#000");
+  expect(getComputedStyle(effort).getPropertyValue("--fade-end").trim()).toBe("#000");
+  expect(getComputedStyle(effort).maskImage).toBe("none");
+  await capture(`composer-dark-${width}x${height}-small-catalog`);
+});
+it("wraps all seven desktop efforts without horizontal scrolling", async () => {
+  await page.viewport(1280, 800);
+  render(<Example />);
+  fireEvent.click(screen.getByRole("button", { name: "Model and reasoning effort" }));
+  const popup = await screen.findByRole("dialog");
+  const group = within(popup).getByRole("radiogroup", { name: "Reasoning effort" });
+  await waitFor(() => expect(group).toHaveAttribute("data-overflow-end", "false"));
+  expect(group.scrollWidth).toBe(group.clientWidth);
+  expect(getComputedStyle(group).flexWrap).toBe("wrap");
+  expect(getComputedStyle(group).maskImage).toBe("none");
+  const radios = within(group).getAllByRole("radio");
+  expect(new Set(radios.map((radio) => radio.getBoundingClientRect().top)).size).toBe(2);
+  for (const radio of radios) insideVisibleBox(radio, popup);
+});
+it("updates edge fades on scroll/resize and translates wheel only while it can scroll", async () => {
+  await page.viewport(390, 844);
+  render(<Example />);
+  fireEvent.click(screen.getByRole("button", { name: "Model and reasoning effort" }));
+  const popup = await screen.findByRole("dialog");
+  const providers = within(popup).getByRole("radiogroup", { name: "Filter by provider" });
+  const effort = within(popup).getByRole("radiogroup", { name: "Reasoning effort" });
+  for (const group of [providers, effort]) {
+    group.scrollLeft = 0;
+    await waitFor(() => expect(group).toHaveAttribute("data-overflow-start", "false"));
+    expect(group).toHaveAttribute("data-overflow-end", "true");
+    expect(getComputedStyle(group).getPropertyValue("--fade-start").trim()).toBe("#000");
+    expect(getComputedStyle(group).getPropertyValue("--fade-end").trim()).toBe("transparent");
+    expect(getComputedStyle(group).maskImage).toContain("linear-gradient");
+    const wheelBack = new WheelEvent("wheel", { deltaY: -60, bubbles: true, cancelable: true });
+    group.dispatchEvent(wheelBack);
+    expect(wheelBack.defaultPrevented).toBe(false);
+    const wheelForward = new WheelEvent("wheel", { deltaY: 60, bubbles: true, cancelable: true });
+    group.dispatchEvent(wheelForward);
+    expect(wheelForward.defaultPrevented).toBe(true);
+    expect(group.scrollLeft).toBeGreaterThan(0);
+    expect(group).toHaveAttribute("data-overflow-start", "true");
+    expect(group).toHaveAttribute("data-overflow-end", "true");
+    expect(getComputedStyle(group).getPropertyValue("--fade-start").trim()).toBe("transparent");
+    group.scrollLeft = group.scrollWidth;
+    await waitFor(() => expect(group).toHaveAttribute("data-overflow-end", "false"));
+    expect(group).toHaveAttribute("data-overflow-start", "true");
+    expect(getComputedStyle(group).getPropertyValue("--fade-end").trim()).toBe("#000");
+    const wheelAtEnd = new WheelEvent("wheel", { deltaY: 60, bubbles: true, cancelable: true });
+    group.dispatchEvent(wheelAtEnd);
+    expect(wheelAtEnd.defaultPrevented).toBe(false);
+  }
+  await page.viewport(844, 390);
+  await waitFor(() => expect(providers).toHaveAttribute("data-overflow-start", "false"));
+  await waitFor(() => expect(providers).toHaveAttribute("data-overflow-end", "false"));
+  expect(getComputedStyle(providers).maskImage).toBe("none");
+  expect(getComputedStyle(providers).overscrollBehaviorY).toBe("auto");
+  const fittingWheel = new WheelEvent("wheel", { deltaY: 60, bubbles: true, cancelable: true });
+  providers.dispatchEvent(fittingWheel);
+  expect(fittingWheel.defaultPrevented).toBe(false);
+});
+it("keeps search height stable until cleared and suppresses only the popup focus ring", async () => {
+  await page.viewport(390, 844);
+  render(<Example />);
+  fireEvent.click(screen.getByRole("button", { name: "Model and reasoning effort" }));
+  const popup = await screen.findByRole("dialog");
+  const search = within(popup).getByRole("combobox", { name: "Search models" });
+  const initialHeight = popup.getBoundingClientRect().height;
+  popup.focus();
+  expect(getComputedStyle(popup).outlineStyle).toBe("none");
+  const close = within(popup).getByRole("button", { name: "Close" });
+  close.focus();
+  await userEvent.keyboard("{Shift>}{Tab}{/Shift}{Tab}");
+  expect(getComputedStyle(close).outlineStyle).not.toBe("none");
+  fireEvent.change(search, { target: { value: "no-such-model" } });
+  await waitFor(() => expect(within(popup).getByText("No models match.")).toBeVisible());
+  expect(Math.abs(popup.getBoundingClientRect().height - initialHeight)).toBeLessThan(1);
+  insideVisibleBox(close, popup);
+  fireEvent.change(search, { target: { value: "" } });
+  const provider = within(popup).getByRole("radio", { name: "Atlas" });
+  fireEvent.click(provider);
+  await waitFor(() => expect(popup.getBoundingClientRect().height).toBeLessThan(initialHeight - 20));
 });

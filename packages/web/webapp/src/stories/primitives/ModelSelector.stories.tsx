@@ -1,5 +1,5 @@
 import { userEvent, within } from "storybook/test";
-import { selectorModels } from "../../components/assistant-ui/ModelSelector.fixtures";
+import { selectorModels, smallSelectorModels } from "../../components/assistant-ui/ModelSelector.fixtures";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { ModelSelector } from "../../components/assistant-ui/ModelSelector";
 import { waitForOverlay } from "../overlay-play";
@@ -43,3 +43,5 @@ export const LoadingProvider: Story = {
     await userEvent.click(within(canvasElement.ownerDocument.body).getByRole("radio", { name: "Grove" }));
   },
 };
+
+export const SmallCatalog: Story = { ...DenseCatalog, args: { ...DenseCatalog.args!, models: smallSelectorModels, value: "atlas:standard", effort: "low" } };
