@@ -126,6 +126,14 @@ chain turns within five minutes pay slightly more with long retention and can
 set `"short"` instead.
 
 
+Eligible built-in `openai` / `openai-codex` GPT chat models can opt into
+`CONTEXT_1M_TOKENS` (1,000,000) through the per-reference runtime policy.
+`supportsPiContext1M()` infers eligibility from the pinned catalog's 272,000-token
+window and matching long-input pricing tier, not subscription entitlement. Model
+metadata is cloned for resolution and dispatch; pricing tiers stay unchanged.
+A positive compaction window override replaces the declared window, and learned
+provider overflow ceilings lower it across toggles. OFF preserves catalog behavior.
+
 ## Architecture
 
 The opt-in `local` search provider runs native Node search (fixed DuckDuckGo
@@ -288,6 +296,7 @@ ALLOWLIST_MODE_ALL
 ALLOWLIST_MODE_CUSTOM
 APPROVAL_DECISIONS
 BINARY_BLOAT_TOOLS
+CONTEXT_1M_TOKENS
 DEFAULT_RUNTIME_BRAND
 DEFAULT_TOOL_BLOAT_CONFIG
 MAX_TOOL_RESULT_BYTES
@@ -354,6 +363,7 @@ resolveRuntimeBridge
 runPiProviderCheck
 runtimeCapabilities
 storedAllowlistMode
+supportsPiContext1M
 syncProviderSession
 toolCompactionAppliedFromWarnings
 wrapToolsWithApprovalGate
@@ -488,6 +498,7 @@ renderResumeSnapshot
 **`@mono-agent/agent-runtime/ai`**
 
 ```text
+CONTEXT_1M_TOKENS
 PROVIDER_CHECK_PROMPT
 PiBuiltinModelSnapshot
 PiBuiltinProviderSnapshot
@@ -534,6 +545,7 @@ resolvePiOAuthApiKey
 resolveRuntimeBridge
 runPiProviderCheck
 runtimeCapabilities
+supportsPiContext1M
 syncProviderSession
 toolCompactionAppliedFromWarnings
 ```

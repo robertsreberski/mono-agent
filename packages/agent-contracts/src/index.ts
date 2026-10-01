@@ -981,6 +981,7 @@ export type AgentLiveInputOffer =
   | { readonly status: "accepted"; readonly settled: Promise<AgentLiveInputSettlement> };
 
 export type AgentManualCompactionOptions = {
+  readonly context1M?: boolean;
   /** Canonical `<provider>:<model>` selection, resolved exactly like a turn's model override. */
   readonly model?: string;
 };

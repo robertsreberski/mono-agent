@@ -1,5 +1,6 @@
 import { EFFORT_LEVELS } from "@mono-agent/config";
 import {
+  supportsPiContext1M,
   assertParsedRuntimeModelReference,
   MODEL_REFERENCE_ECHO_MAX_BYTES,
   MODEL_REFERENCE_REASON_MAX_BYTES,
@@ -71,6 +72,7 @@ export interface RequestModelOverrideOptions {
   }[];
   /** Host effort inherited only when the effective route admits it. */
   readonly baseEffort?: string;
+  readonly context1MModels?: Readonly<Record<string, boolean>>;
   /**
    * Configured local providers (`config.providers?.local`). When an override
    * names a model one of these serves, the extension recomputes the provider
@@ -89,6 +91,7 @@ interface RequestModelOverrideInput {
 
 interface RequestModelOverrideResult {
   readonly runtimeOptions: {
+    context1MModels?: Readonly<Record<string, boolean>>;
     model?: RuntimeModelReference;
     /** String pins effort; null explicitly selects the provider default. */
     effort?: string | null;
@@ -172,6 +175,17 @@ export function createRequestModelOverrideRuntimeExtension(
       if (inheritedEffort !== undefined) runtimeOptions.effort = inheritedEffort;
     }
 
+    const { context1M } = readOverride(input.request.metadata);
+    if (context1M !== undefined && context1M !== null) {
+      const selected = model ?? options?.baseModel;
+      if (typeof context1M === "boolean" && selected !== undefined
+        && supportsPiContext1M(modelReferenceKey(selected))
+        && !localProviders?.some((provider) => provider.id === selected.provider)) {
+        runtimeOptions.context1MModels = { ...options?.context1MModels, [modelReferenceKey(selected)]: context1M };
+      } else {
+        logger?.warn?.("Ignoring invalid or unsupported per-request 1M context override.");
+      }
+    }
     return { runtimeOptions, cleanup: async () => {} };
   };
 }
@@ -365,6 +379,7 @@ function applyLocalProviderBlock(
 function readOverride(metadata: Record<string, unknown> | undefined): {
   readonly model?: string;
   readonly effort?: string;
+  readonly context1M?: unknown;
 } {
   if (!isRecord(metadata)) {
     return {};
@@ -388,6 +403,7 @@ function readOverride(metadata: Record<string, unknown> | undefined): {
   return {
     ...(typeof source.model === "string" ? { model: source.model } : {}),
     ...(typeof source.effort === "string" ? { effort: source.effort } : {}),
+    ...(source.context1M === undefined ? {} : { context1M: source.context1M }),
   };
 }
 

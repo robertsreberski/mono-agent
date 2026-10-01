@@ -397,3 +397,5 @@ export async function loginPiOAuth(providerId, callbacks, options) {
   );
   return cloneInteropValue(credentials);
 }
+
+export { CONTEXT_1M_TOKENS, supportsPiContext1M } from "./context-1m.js";

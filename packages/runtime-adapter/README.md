@@ -119,6 +119,11 @@ conflicting retry fails rather than overwriting history.
 sink for oversized tool blocks. A per-run value overrides the kernel host
 default. Fallback route-attempt resolvers cannot supply or replace it.
 
+The facade re-exports `CONTEXT_1M_TOKENS` and `supportsPiContext1M()`.
+`RuntimeRunOptions.context1MModels` is the optional normalized per-reference
+boolean policy; omitted entries are off. Hosts should derive it from validated
+model declarations, not use it to override custom-provider metadata.
+
 ## Architecture
 
 `runtime-adapter` is the typed boundary between harness code and the JavaScript
@@ -201,6 +206,7 @@ Every symbol exported by each public code entrypoint is listed below.
 ```text
 AgentRuntimeCustomModel
 AgentRuntimeCustomProvider
+CONTEXT_1M_TOKENS
 CodedError
 CreateMonoRuntimeOptions
 DEFAULT_DENY_WRITE
@@ -349,6 +355,7 @@ sandboxPolicyToRuntimeOptions
 sandboxRequired
 sanitizeModelReferenceText
 srtSettingsForPolicy
+supportsPiContext1M
 validateLocalProviderDefinition
 validateProviderBaseUrl
 validateProviderDefinition

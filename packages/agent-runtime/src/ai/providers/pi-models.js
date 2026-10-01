@@ -4,6 +4,7 @@
 // `undefined` on an unknown provider/model exactly like the old `getModel`.
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { getBuiltinModel as getPiModel } from "@earendil-works/pi-ai/providers/all";
+import { withContext1M } from "../context-1m.js";
 import { DEFAULT_RUNTIME_BRAND } from "../../runtime-brand.js";
 
 export const EMPTY_USAGE = {
@@ -134,7 +135,7 @@ export function resolvePiRuntimeModel(resolved, options) {
     throw new Error(`pi model not found: ${provider}:${model}`);
   }
   return {
-    model: catalogModel,
+    model: withContext1M(catalogModel, options.context1MModels),
     capabilities: {
       tool_use: true,
       reasoning: !!catalogModel.reasoning,

@@ -692,3 +692,26 @@ describe("terminal compaction accounting", () => {
     expect(fixture.handlerCount()).toBe(0);
   });
 });
+
+describe("1M overflow ceiling across toggles", () => {
+  it("keeps learned provider limits authoritative through ON/OFF/ON and global corrections", async () => {
+    const fixture = hookHarness();
+    const reference = "openai-codex:gpt-6.1-sol";
+    let declared = 1_000_000;
+    const base = fixture.harness.getModel();
+    fixture.harness.getModel = () => ({ ...base, contextWindow: declared });
+    const runState = freshRunState(fixture.session, { policy: { enabled: true, keepRecentTokens: 4_000, summaryMaxTokens: 2_000, compactionMinSavingsTokens: 0 } });
+    await runReactiveCompaction(runState, {
+      harness: fixture.harness, runtime: { model: { ...base, contextWindow: declared } }, resolved: { reference }, options: {},
+      promptText: "synthetic question", promptImages: [], reference, onEvent: () => {}, runtimeWarnings: [],
+      state: { stopReason: "error", lastAssistant: { errorMessage: "maximum context length is 200000 tokens" } }, runError: null,
+      captureState: async () => ({ stopReason: "endTurn", lastAssistant: null }),
+    });
+    for (declared of [1_000_000, 272_000, 1_000_000]) {
+      for (const correction of [undefined, 100_000, 1_200_000]) {
+        const policy = resolveLiveCompactionPolicy({ harness: fixture.harness, runtime: {}, resolved: { reference }, contextWindowOverride: correction });
+        expect(policy.contextWindow).toBe(correction === 100_000 ? 100_000 : 200_000);
+      }
+    }
+  });
+});

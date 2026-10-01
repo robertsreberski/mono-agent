@@ -9,10 +9,19 @@ import type { PiTransport } from "@mono-agent/runtime-adapter";
 import { assertNoRetiredMonoAgentConfig, MonoAgentConfigError } from "./config.js";
 import type { MemoryBackend, MemoryEmbeddingsInstructions, MemoryEmbeddingsProvider, MemoryLlmProvider, MemoryMode, MemoryWriteMode } from "./types.js";
 
+/** An opt-in model declaration; effort remains a sibling runtime setting. */
+export type MonoAgentModelSelectionJson = string | { readonly model: string; readonly context1M?: boolean };
+
+/** Read a model reference without flattening the caller-owned JSON object. */
+export function modelReferenceFromConfigJson(value: MonoAgentModelSelectionJson | undefined): string | undefined {
+  return typeof value === "string" ? value : value?.model;
+}
+
 /** JSON form of one canonical runtime fallback route. */
 export type MonoAgentRuntimeFallbackJson = {
   readonly model?: string;
   readonly effort?: string;
+  readonly context1M?: boolean;
   /** Total attempts on this route including the first, 1-10. Omitted = single shot. */
   readonly attempts?: number;
 };
@@ -119,7 +128,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly name?: string;
   };
   readonly runtime?: {
-    readonly model?: string;
+    readonly model?: MonoAgentModelSelectionJson;
     readonly fallbacks?: readonly MonoAgentRuntimeFallbackJson[];
     readonly retry?: {
       readonly primaryAttempts?: number;
@@ -162,7 +171,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly maxTurns?: number;
   };
 
-    readonly models?: readonly (string | { readonly name?: string; readonly model: string })[];
+    readonly models?: readonly (string | { readonly name?: string; readonly model: string; readonly context1M?: boolean })[];
     readonly enabled?: boolean;
     readonly maxConcurrent?: number;
     readonly maxPerTurn?: number;
@@ -184,7 +193,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
       readonly description?: string;
       readonly prompt?: string;
       readonly promptPath?: string;
-      readonly model?: string;
+      readonly model?: MonoAgentModelSelectionJson;
       readonly effort?: string;
       readonly allowedTools?: readonly string[];
       readonly disallowedTools?: readonly string[];

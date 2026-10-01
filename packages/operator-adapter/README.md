@@ -207,6 +207,11 @@ The web consumer retains the legacy 8 MiB input ceiling so it can read an older
 agent even though current producers emit at most 256 KiB per frame. See
 [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/).
 
+Model advertisements optionally carry `supportsContext1M: true` and configured
+`context1M`; old readers/producers may omit them. The existing manual-compaction
+body also accepts an optional boolean `context1M`, forwarded without a user turn.
+Turn selection continues to travel through the existing metadata block.
+
 ## Architecture
 
 An app-owned `ProviderUsageOperator` enables bearer-protected `GET ${basePath}/v1/provider-usage` (optional exact `anthropic`, `openai-codex`, `opencode-go` or `github-copilot` provider filter) and `capabilities.providerUsage: {version: 1}`. This no-store read is separate from auth status and validates the secret-free v1 projection. An optional `ProviderUsageOperator.refresh()` additionally advertises `refresh: true` and enables bearer-protected `POST ${basePath}/v1/provider-usage/refresh` (empty JSON object, same strict optional provider query). It awaits a refresh respecting backoff; snapshot-only hosts return an explicit unavailable response, never cached fallback.

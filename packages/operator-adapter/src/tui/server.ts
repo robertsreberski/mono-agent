@@ -148,6 +148,8 @@ export interface TuiModelOption {
   readonly label?: string;
   /** Known model context capacity, in tokens. Omitted when unknown. */
   readonly contextWindow?: number;
+  readonly supportsContext1M?: true;
+  readonly context1M?: boolean;
   /** Canonical provider id the model belongs to. */
   readonly provider?: string;
   /** Provider display label. */
@@ -177,6 +179,8 @@ export interface TuiCatalogModel {
   readonly provider: string;
   readonly providerLabel: string;
   readonly contextWindow?: number;
+  readonly supportsContext1M?: true;
+  readonly context1M?: boolean;
   readonly reasoning?: boolean;
   readonly effortLevels?: readonly string[];
   readonly reasoningMode?: string;
@@ -885,11 +889,15 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     if (typeof id !== "string" || id.length === 0 || id.includes("\0")
       || Buffer.byteLength(id, "utf8") > 4096
       || typeof req.body !== "object" || req.body === null || Array.isArray(req.body)
-      || Object.keys(req.body as object).some((key) => key !== "model")) {
-      res.status(400).json({ error: { code: "invalid_compaction_request", message: "A conversation id and a body of {} or { model } are required." } });
+      || Object.keys(req.body as object).some((key) => key !== "model" && key !== "context1M")) {
+      res.status(400).json({ error: { code: "invalid_compaction_request", message: "A conversation id and an object with optional model/context1M are required." } });
       return;
     }
     // Optional: the same model selection a turn on this conversation carries.
+    const context1M = (req.body as { context1M?: unknown }).context1M;
+    if (context1M !== undefined && typeof context1M !== "boolean") {
+      res.status(400).json({ error: { code: "invalid_compaction_request", message: "context1M must be boolean." } }); return;
+    }
     const model = (req.body as { model?: unknown }).model;
     if (model !== undefined && (typeof model !== "string" || model.trim().length === 0
       || Buffer.byteLength(model, "utf8") > 256)) {
@@ -903,7 +911,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     const controller = new AbortController();
     const onClose = () => { if (!res.writableFinished) controller.abort(); };
     res.on("close", onClose);
-    void options.responder.compactConversation(id, model === undefined ? undefined : { model }, controller.signal).then((result) => {
+    void options.responder.compactConversation(id, model === undefined && context1M === undefined ? undefined : { ...(model === undefined ? {} : { model }), ...(context1M === undefined ? {} : { context1M }) }, controller.signal).then((result) => {
       if (controller.signal.aborted) return;
       const status = ["succeeded", "skipped", "failed"].includes(result.status) ? result.status : "failed";
       res.status(200).json({

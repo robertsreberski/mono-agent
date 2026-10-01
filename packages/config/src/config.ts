@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 
 import {
+  supportsPiContext1M,
   isAutodiscoverableProviderId,
   isPrivateBaseUrl,
   isPiBuiltinProvider,
@@ -421,7 +422,7 @@ export function resolveJsonMonoAgentConfig(input: ResolveJsonMonoAgentConfigInpu
   const toolsJson = jsonContainer(json.tools);
   const webJson = jsonContainer(toolsJson?.web);
   const agentName = readAgentName(jsonString(jsonContainer(json.agent)?.name, "agent.name"));
-  const model = parseModel(requireJsonString(runtimeJson?.model, "runtime.model"), "runtime.model");
+  const model = parseModel(readModelSelection(runtimeJson?.model, "runtime.model"), "runtime.model");
   const fallbacks = readFallbacks(runtimeJson?.fallbacks);
   const retry = readRetryConfig(runtimeJson);
   assertUniqueFallbackRoutes(model, fallbacks);
@@ -611,11 +612,13 @@ export function resolveJsonMonoAgentConfig(input: ResolveJsonMonoAgentConfigInpu
     ...(localProviders.length === 0 ? {} : { local: localProviders }),
     ...(piNative === undefined ? {} : { piNative }),
   };
-  assertConfiguredProviderCoverage(model, fallbacks, resolveConfiguredProviders({ providers }), subagentRoutes);
+  const configuredProviders = resolveConfiguredProviders({ providers });
+  const context1MModels = collectContext1MDeclarations(input.json ?? {}, configuredProviders);
+  assertConfiguredProviderCoverage(model, fallbacks, configuredProviders, subagentRoutes);
 
   const config: MonoAgentConfig = {
     ...(agentName === undefined ? {} : { agent: { name: agentName } }),
-    runtime,
+    runtime: Object.keys(context1MModels).length === 0 ? runtime : { ...runtime, context1MModels },
     ...(concurrency === undefined ? {} : { concurrency }),
     ...(peers === undefined ? {} : { peers }),
     ...(subagents === undefined ? {} : { subagents }),
@@ -875,12 +878,12 @@ function readFallbacks(value: unknown): readonly RuntimeFallbackConfig[] {
     }
     const record = entry as Record<string, unknown>;
     const unknownKeys = Object.keys(record).filter(
-      (key) => key !== "model" && key !== "effort" && key !== "attempts",
+      (key) => key !== "model" && key !== "effort" && key !== "attempts" && key !== "context1M",
     );
     if (unknownKeys.length > 0) {
       throw new MonoAgentConfigError(
         "invalid_json",
-        `runtime.fallbacks entry ${index + 1} contains unknown field${unknownKeys.length === 1 ? "" : "s"}: ${unknownKeys.sort().join(", ")}. Only model, effort, and attempts are supported.`,
+        `runtime.fallbacks entry ${index + 1} contains unknown field${unknownKeys.length === 1 ? "" : "s"}: ${unknownKeys.sort().join(", ")}. Only model, effort, attempts, and context1M are supported.`,
         { path: "runtime.fallbacks", index, unknownKeys: unknownKeys.sort() },
       );
     }
@@ -1004,7 +1007,7 @@ function readSubagentModels(
     }
     const record = typeof entry === "string" ? { model: entry } : entry as Record<string, unknown>;
     for (const key of Object.keys(record)) {
-      if (key !== "name" && key !== "model") throw invalidSubagents(`${subject} contains unknown field "${key}".`);
+      if (key !== "name" && key !== "model" && key !== "context1M") throw invalidSubagents(`${subject} contains unknown field "${key}".`);
     }
     if (typeof record.model !== "string" || record.model.trim().length === 0) {
       throw invalidSubagents(`${subject} model must be a model reference string.`);
@@ -1104,7 +1107,7 @@ function readSubagentDefinitions(
       description,
       ...(hasPrompt ? { prompt: String(record.prompt).trim() } : {}),
       ...(hasPromptPath ? { promptPath: readPath(String(record.promptPath), cwd) } : {}),
-      ...(record.model === undefined ? {} : { model: parseSubagentModel(record.model, name) }),
+      ...(record.model === undefined ? {} : { model: parseSubagentModel(readModelSelection(record.model, `subagents.definitions[${index}].model`), name) }),
       ...(record.effort === undefined ? {} : {
         effort: readChoice<EffortLevel>(String(record.effort), `subagents.definitions[${index}].effort`, EFFORT_LEVELS, "medium", invalidJson),
       }),
@@ -2599,4 +2602,51 @@ function readParallelWebConfig(value: unknown, path: string): { readonly apiKeyE
   // it from the effective environment at call time, so anonymous access is an
   // omitted field rather than a load error.
   return { apiKeyEnv: name };
+}
+
+/** Validate the object form before reading its ref; never coerce unknown values. */
+function readModelSelection(value: unknown, path: string): string {
+  if (typeof value === "string" || value === undefined) return requireJsonString(value, path);
+  if (value === null || typeof value !== "object" || Array.isArray(value)
+    || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) {
+    throw new MonoAgentConfigError("invalid_json", `${path} must be a string or a model/context1M object.`, { path });
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) => key !== "model" && key !== "context1M")
+    || typeof record.model !== "string" || record.model.length === 0
+    || (record.context1M !== undefined && typeof record.context1M !== "boolean")) {
+    throw new MonoAgentConfigError("invalid_json", `${path} accepts only model (string) and optional context1M (boolean).`, { path });
+  }
+  return record.model;
+}
+
+function collectContext1MDeclarations(json: MonoAgentConfigJson, providers: ResolvedProviders): Record<string, boolean> {
+  const declarations: Array<{ model: unknown; value: unknown; path: string }> = [];
+  const objectDeclaration = (value: unknown, path: string) => {
+    if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+      const record = value as Record<string, unknown>;
+      readModelSelection(value, path);
+      declarations.push({ model: record.model, value: record.context1M, path: `${path}.context1M` });
+    }
+  };
+  objectDeclaration(json.runtime?.model, "runtime.model");
+  json.runtime?.fallbacks?.forEach((route, index) => declarations.push({ model: route.model, value: route.context1M, path: `runtime.fallbacks[${index}].context1M` }));
+  json.subagents?.definitions?.forEach((definition, index) => objectDeclaration(definition.model, `subagents.definitions[${index}].model`));
+  json.subagents?.models?.forEach((choice, index) => { if (typeof choice !== "string") declarations.push({ model: choice.model, value: choice.context1M, path: `subagents.models[${index}].context1M` }); });
+  const result: Record<string, boolean> = {};
+  const paths: Record<string, string> = {};
+  for (const declaration of declarations) {
+    if (declaration.value === undefined) continue;
+    const ref = parseModel(requireJsonString(declaration.model, declaration.path), declaration.path);
+    const key = modelReferenceKey(ref);
+    if (typeof declaration.value !== "boolean" || !supportsPiContext1M(key) || providers.byId.get(ref.provider)?.type !== undefined) {
+      throw new MonoAgentConfigError("invalid_json", `${declaration.path} requires a boolean on an eligible built-in GPT model, not a configured provider shadow.`, { path: declaration.path });
+    }
+    if (Object.hasOwn(result, key) && result[key] !== declaration.value) {
+      throw new MonoAgentConfigError("invalid_json", `${declaration.path} conflicts with ${paths[key]} for the same model.`, { path: declaration.path });
+    }
+    result[key] = declaration.value;
+    paths[key] = declaration.path;
+  }
+  return result;
 }

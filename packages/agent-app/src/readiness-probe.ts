@@ -1,3 +1,4 @@
+import { modelReferenceFromConfigJson } from "@mono-agent/config";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -113,6 +114,7 @@ export type ReadinessProbeResult =
     };
 
 interface ReadinessRoutePlan {
+  readonly context1M?: boolean;
   readonly index: number;
   readonly model: string;
   readonly effort?: string;
@@ -246,6 +248,7 @@ interface ReadinessWorkerHandle {
 }
 
 interface ReadinessWorkerRuntimeSpec {
+  readonly context1MModels?: Readonly<Record<string, boolean>>;
   readonly model: RuntimeModelReference;
   readonly effort?: string;
   readonly workspace: string;
@@ -305,6 +308,7 @@ function startReadinessWorker(input: {
           reference: model.reference,
         },
         ...(input.runtime.effort === undefined ? {} : { effort: input.runtime.effort }),
+        ...(input.runtime.context1MModels === undefined ? {} : { context1MModels: input.runtime.context1MModels }),
         workspace: input.runtime.workspace,
         artifactDir: input.runtime.artifactDir,
         ...(input.runtime.piAuthPath === undefined ? {} : { piAuthPath: input.runtime.piAuthPath }),
@@ -419,11 +423,12 @@ function selectedReadinessRoutes(
   readonly fingerprint: string;
 } {
   const runtime = (plan.configJson.runtime ?? {}) as Record<string, unknown>;
-  const primary = typeof runtime.model === "string" ? runtime.model : "";
+  const primary = modelReferenceFromConfigJson(plan.configJson.runtime?.model) ?? "";
   const inheritedEffort = typeof runtime.effort === "string" ? runtime.effort : undefined;
-  const authored: Array<{ model: string; effort?: string }> = [];
+  const authored: Array<{ model: string; effort?: string; context1M?: boolean }> = [];
+  const primaryContext1M = typeof runtime.model === "object" && runtime.model !== null ? (runtime.model as Record<string, unknown>).context1M : undefined;
   if (primary.length > 0) {
-    authored.push({ model: primary, ...(inheritedEffort === undefined ? {} : { effort: inheritedEffort }) });
+    authored.push({ ...(typeof primaryContext1M === "boolean" ? { context1M: primaryContext1M } : {}), model: primary, ...(inheritedEffort === undefined ? {} : { effort: inheritedEffort }) });
   }
 
   // Canonical fallbacks have independent effort semantics: omission means the
@@ -435,12 +440,13 @@ function selectedReadinessRoutes(
       if (typeof entry.model !== "string" || entry.model.length === 0) continue;
       authored.push({
         model: entry.model,
+        ...(typeof entry.context1M === "boolean" ? { context1M: entry.context1M } : {}),
         ...(typeof entry.effort === "string" ? { effort: entry.effort } : {}),
       });
     }
   }
 
-  const immutableRoutes = authored.map((route, index) => ({ index, model: route.model, effort: route.effort ?? null }));
+  const immutableRoutes = authored.map((route, index) => ({ index, model: route.model, effort: route.effort ?? null, context1M: route.context1M ?? null }));
   const executionRuntime = { ...runtime };
   delete executionRuntime.model;
   delete executionRuntime.effort;
@@ -475,7 +481,7 @@ function selectedReadinessRoutes(
       index,
       ...route,
       key: createHash("sha256")
-        .update(JSON.stringify({ version: 1, index, model: route.model, effort: route.effort ?? null }))
+        .update(JSON.stringify({ version: 1, index, model: route.model, effort: route.effort ?? null, context1M: route.context1M ?? null }))
         .digest("hex"),
     })),
   };
@@ -496,7 +502,9 @@ function singleRouteWizardPlan(plan: WizardPlan, route: ReadinessRoutePlan): Wiz
   const configJson = structuredClone(plan.configJson) as Record<string, unknown>;
   const runtime: Record<string, unknown> = {
     ...((configJson.runtime ?? {}) as Record<string, unknown>),
-    model: route.model,
+    model: route.index === 0 && typeof plan.configJson.runtime?.model === "object"
+      ? structuredClone(plan.configJson.runtime.model)
+      : route.context1M === undefined ? route.model : { model: route.model, context1M: route.context1M },
   };
   delete runtime.fallbacks;
   delete runtime.session;
@@ -768,6 +776,7 @@ async function runSingleReadinessProbe(options: ReadinessProbeOptions): Promise<
           controller.abort();
         }
       },
+      ...(loaded.runtime.context1MModels === undefined ? {} : { context1MModels: loaded.runtime.context1MModels }),
       sessionKeepAlive: false,
       // The production runtime receives this environment through worker
       // isolation. The explicit immutable copy gives injected runs the same
@@ -795,6 +804,7 @@ async function runSingleReadinessProbe(options: ReadinessProbeOptions): Promise<
           cwd: dir,
           runtime: {
             model: loaded.runtime.model,
+            ...(loaded.runtime.context1MModels === undefined ? {} : { context1MModels: loaded.runtime.context1MModels }),
             ...(loaded.runtime.effort === undefined ? {} : { effort: loaded.runtime.effort }),
             workspace: loaded.runtime.workspace,
             artifactDir: loaded.artifacts.dir,

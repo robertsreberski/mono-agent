@@ -1,3 +1,4 @@
+import { modelReferenceFromConfigJson } from "@mono-agent/config";
 import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
@@ -1485,8 +1486,9 @@ function readinessRoutesForDisplay(plan: WizardPlan): readonly { model: string; 
   const runtime = (plan.configJson.runtime ?? {}) as Record<string, unknown>;
   const primaryEffort = typeof runtime.effort === "string" ? runtime.effort : undefined;
   const routes: Array<{ model: string; effort?: string }> = [];
-  if (typeof runtime.model === "string") {
-    routes.push({ model: runtime.model, ...(primaryEffort === undefined ? {} : { effort: primaryEffort }) });
+  const primary = modelReferenceFromConfigJson(plan.configJson.runtime?.model);
+  if (primary !== undefined) {
+    routes.push({ model: primary, ...(primaryEffort === undefined ? {} : { effort: primaryEffort }) });
   }
   if (Array.isArray(runtime.fallbacks) && runtime.fallbacks.length > 0) {
     for (const raw of runtime.fallbacks) {

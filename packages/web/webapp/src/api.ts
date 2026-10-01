@@ -629,7 +629,7 @@ export const api = {
    */
   createThread: async (
     sourceId: string,
-    runConfig: { readonly model?: string | null; readonly effort?: string | null } = {},
+    runConfig: { readonly model?: string | null; readonly effort?: string | null; readonly context1M?: boolean | null } = {},
     signal?: AbortSignal,
     projectId?: string,
   ) => {
@@ -793,7 +793,7 @@ export const api = {
 
   setAgentRunDefaults: async (
     sourceId: string,
-    input: { readonly model: string | null; readonly effort: string | null },
+    input: { readonly model: string | null; readonly effort: string | null; readonly context1M?: boolean | null },
   ) => {
     const result = await request<{ agent: AgentSummary }>(
       `/api/v1/agents/${encodeURIComponent(sourceId)}/run-defaults`,
@@ -969,6 +969,7 @@ export const api = {
       archived?: boolean;
       model?: string | null;
       effort?: string | null;
+      context1M?: boolean | null;
       tagIds?: readonly string[];
       projectId?: string | null;
       ifRunConfigUnset?: boolean;

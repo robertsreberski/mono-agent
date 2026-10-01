@@ -515,3 +515,30 @@ describe("the shared effort module", () => {
     expect(effectiveModelForAgent({}, "")).toBeUndefined();
   });
 });
+
+describe("1M selector metadata", () => {
+  it("keeps capabilities on automatic, shortlist and lazy rows while old producers fail closed", () => {
+    const primary = "openai-codex:gpt-6.1-sol";
+    const lazy = "openai:gpt-6-sol";
+    const selected = agent("synthetic", { defaultModel: primary, models: [primary], modelOptions: { [primary]: { supportsContext1M: true, context1M: false } } });
+    const rows = buildSelectorModels({ agent: selected, modelOptions: [primary], defaultEffort: "", catalogByProvider: { openai: [{ id: "gpt-6-sol", provider: "openai", name: "GPT-6 Sol", providerLabel: "OpenAI", supportsContext1M: true, context1M: true }] } });
+    expect(rows.find((row) => row.id === "")).toMatchObject({ supportsContext1M: true, context1M: false });
+    expect(rows.find((row) => row.id === primary)).toMatchObject({ supportsContext1M: true, context1M: false });
+    expect(rows.find((row) => row.id === lazy)).toMatchObject({ supportsContext1M: true, context1M: true });
+    const old = buildSelectorModels({ agent: agent("old"), modelOptions: [], defaultEffort: "" });
+    expect(old.every((row) => row.supportsContext1M === undefined)).toBe(true);
+  });
+});
+
+
+it("projects actual standard capacity and gives shortlist metadata priority over lazy metadata", () => {
+  const ref = "synthetic:gpt";
+  const selected = agent("synthetic", { defaultModel: ref, models: [ref], modelOptions: { [ref]: { supportsContext1M: true, context1M: false, contextWindow: 272_000 } } });
+  const page = { synthetic: [{ id: "gpt", name: "Synthetic GPT", provider: "synthetic", providerLabel: "Synthetic", supportsContext1M: true as const, contextWindow: 512_000 }] };
+  const rows = buildSelectorModels({ agent: selected, modelOptions: [ref], defaultEffort: "", catalogByProvider: page });
+  expect(rows.filter((row) => row.id === "" || row.id === ref).every((row) => row.standardContextWindow === 272_000)).toBe(true);
+  const hidden = buildSelectorModels({ agent: { ...selected, modelOptions: { [ref]: {} } }, modelOptions: [ref], defaultEffort: "", catalogByProvider: page });
+  expect(hidden.every((row) => row.supportsContext1M === undefined)).toBe(true);
+  const on = buildSelectorModels({ agent: { ...selected, modelOptions: { [ref]: { supportsContext1M: true, context1M: true, contextWindow: 1_000_000 } } }, modelOptions: [ref], defaultEffort: "" });
+  expect(on.every((row) => row.standardContextWindow === undefined)).toBe(true);
+});

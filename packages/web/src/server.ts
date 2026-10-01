@@ -1685,10 +1685,12 @@ function securityHeaders(_req: Request, res: Response, next: NextFunction): void
 
 function parseCreateThread(value: unknown): CreateWebThreadInput {
   const body = requireRecord(value);
+  const context1M = optionalNullableBoolean(body.context1M, "context1M");
   const model = optionalNullableString(body.model, "model", 120);
   const effort = optionalNullableString(body.effort, "effort", 120);
   const projectId = optionalProjectId(body.projectId);
   return {
+    ...(context1M === undefined ? {} : { context1M }),
     sourceId: requireString(body.sourceId, "sourceId", 256),
     ...(model === undefined ? {} : { model }),
     ...(effort === undefined ? {} : { effort }),
@@ -1776,17 +1778,18 @@ function parsePutAgentRunSettings(value: unknown): PutWebAgentRunSettingsInput {
   if (!("model" in body) || !("effort" in body)) {
     throw invalidBody("model and effort are required and must be strings or null.");
   }
-  const unknown = Object.keys(body).filter((key) => key !== "model" && key !== "effort");
+  const unknown = Object.keys(body).filter((key) => key !== "model" && key !== "effort" && key !== "context1M");
   if (unknown.length > 0) throw invalidBody(`Unknown run-defaults field: ${unknown[0]}.`);
+  const context1M = optionalNullableBoolean(body.context1M, "context1M");
   const model = optionalNullableString(body.model, "model", 120);
   const effort = optionalNullableString(body.effort, "effort", 120);
   if (model === undefined || effort === undefined) {
     throw invalidBody("model and effort are required and must be strings or null.");
   }
-  if (model === null && effort === null) {
+  if (model === null && effort === null && context1M == null) {
     throw invalidBody("Choose a model or effort override, or use Revert to config.");
   }
-  return { model, effort };
+  return { model, effort, ...(context1M === undefined ? {} : { context1M }) };
 }
 
 function parsePatchAgent(value: unknown): PatchWebAgentInput {
@@ -1813,6 +1816,7 @@ function wakeMutationBody(value: unknown): { expectedRevision: number; fields: R
 
 function parsePatchThread(value: unknown): PatchWebThreadInput {
   const body = requireRecord(value);
+  const context1M = optionalNullableBoolean(body.context1M, "context1M");
   const title = optionalString(body.title, "title", 120);
   const model = optionalNullableString(body.model, "model", 120);
   const effort = optionalNullableString(body.effort, "effort", 120);
@@ -1827,11 +1831,12 @@ function parsePatchThread(value: unknown): PatchWebThreadInput {
   if ((projectId !== undefined || tagIds !== undefined) && ifRunConfigUnset === true) {
     throw invalidBody("projectId and tagIds cannot be combined with ifRunConfigUnset.");
   }
-  if (title === undefined && archived === undefined && model === undefined && effort === undefined
+  if (title === undefined && archived === undefined && model === undefined && effort === undefined && context1M === undefined
     && projectId === undefined && tagIds === undefined) {
     throw invalidBody("Provide title, archived, model, or effort.");
   }
   return {
+    ...(context1M === undefined ? {} : { context1M }),
     ...(title === undefined ? {} : { title }),
     ...(archived === undefined ? {} : { archived }),
     ...(model === undefined ? {} : { model }),
@@ -1844,6 +1849,7 @@ function parsePatchThread(value: unknown): PatchWebThreadInput {
 
 function parseTurn(value: unknown): StartWebTurnInput {
   const body = requireRecord(value);
+  const context1M = optionalNullableBoolean(body.context1M, "context1M");
   const text = body.text === undefined
     ? undefined
     : requireString(body.text, "text", WEB_MAX_TURN_TEXT_CHARACTERS, true);
@@ -1865,6 +1871,7 @@ function parseTurn(value: unknown): StartWebTurnInput {
   const model = optionalString(body.model, "model", 512);
   const effort = optionalString(body.effort, "effort", 128);
   return {
+    ...(context1M === undefined ? {} : { context1M }),
     ...(text === undefined ? {} : { text }),
     ...(quote === undefined ? {} : { quote }),
     ...(attachmentIds === undefined ? {} : { attachmentIds }),
@@ -2441,4 +2448,9 @@ function normalizePort(value: number): number {
 
 function defaultStaticDir(): string {
   return resolve(dirname(fileURLToPath(import.meta.url)), "../webapp/dist");
+}
+
+function optionalNullableBoolean(value: unknown, name: string): boolean | null | undefined {
+  if (value === undefined || value === null || typeof value === "boolean") return value;
+  throw invalidBody(`${name} must be boolean or null.`);
 }

@@ -845,6 +845,7 @@ export function buildSubagentsOptions(
         ...(config.runtime.compaction === undefined ? {} : { compaction: config.runtime.compaction }),
       }),
       model: childModel,
+      ...(config.runtime.context1MModels === undefined ? {} : { context1MModels: config.runtime.context1MModels }),
       messages: [{ role: "user", content: composeHostTurnEnvelope(formatHostCapabilities(childCapabilityOptions), request.prompt) }],
       maxTurns: request.maxTurns,
       ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
@@ -2633,6 +2634,7 @@ function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | und
     && piNative?.piMaxRetries === undefined
     && piNative?.maxRetryDelayMs === undefined
     && compaction === undefined
+    && config.runtime.context1MModels === undefined
     && toolLimits === undefined
     && webSearchConfig === undefined
     && webFetchConfig === undefined
@@ -2646,6 +2648,7 @@ function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | und
     ...(piNative?.piMaxRetries === undefined ? {} : { piMaxRetries: piNative.piMaxRetries }),
     ...(piNative?.maxRetryDelayMs === undefined ? {} : { maxRetryDelayMs: piNative.maxRetryDelayMs }),
     ...(compaction === undefined ? {} : { compaction }),
+    ...(config.runtime.context1MModels === undefined ? {} : { context1MModels: config.runtime.context1MModels }),
     ...(toolLimits === undefined ? {} : { toolLimits }),
     ...(webSearchConfig === undefined ? {} : { webSearchConfig }),
     ...(webFetchConfig === undefined ? {} : { webFetchConfig }),

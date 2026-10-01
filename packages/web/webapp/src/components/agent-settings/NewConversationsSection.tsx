@@ -9,10 +9,11 @@ import { settingsEffortName, settingsModelName } from "./settings-labels";
 export function NewConversationsSection({ agent, onNotice, onSaveError }: { readonly agent: AgentSummary; readonly onNotice: (message: string) => void; readonly onSaveError?: (message: string) => void }) {
   const store = useConsoleStore();
   const draft = useSettingsDraft(agent.sourceId);
-  const saved = { model: agent.runSettings.override?.model ?? "", effort: agent.runSettings.override?.effort ?? "" };
+  const saved = { model: agent.runSettings.override?.model ?? "", effort: agent.runSettings.override?.effort ?? "", context1M: agent.runSettings.override?.context1M ?? null };
   const model = draft?.model ?? saved.model;
   const effort = draft?.effort ?? saved.effort;
-  const dirty = draft !== null && (draft.model !== saved.model || draft.effort !== saved.effort);
+  const storedContext1M = draft === null ? saved.context1M : draft.context1M ?? null;
+  const dirty = draft !== null && (draft.model !== saved.model || draft.effort !== saved.effort || storedContext1M !== saved.context1M);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const pickerFieldRef = useRef<HTMLDivElement>(null);
@@ -23,6 +24,14 @@ export function NewConversationsSection({ agent, onNotice, onSaveError }: { read
   useEffect(() => () => pendingCleanupRef.current?.(), []);
   const catalogModels = useMemo(() => Object.fromEntries(Object.entries(store.catalogByProvider).map(([provider, state]) => [provider, state.models])), [store.catalogByProvider]);
   const models = useMemo(() => buildSelectorModels({ agent, modelOptions: agent.models ?? [], defaultEffort: agent.runSettings.config.effort ?? agent.defaultEffort ?? "", catalogByProvider: catalogModels, selectedModel: model }), [agent, catalogModels, model]);
+  const selectedRow = models.find((row) => row.id === model);
+  const eligible = selectedRow?.supportsContext1M === true;
+  const context1M = eligible ? storedContext1M : null;
+  useEffect(() => {
+    if (draft !== null && !eligible && draft.context1M != null) {
+      setSettingsDraft(agent.sourceId, { ...draft, context1M: null });
+    }
+  }, [agent.sourceId, draft, eligible]);
   const providerStatus = useMemo(() => Object.fromEntries(Object.entries(store.catalogByProvider).map(([provider, state]) => [provider, state.status])), [store.catalogByProvider]);
   const startModel = settingsModelName(agent, model || agent.runSettings.config.model || agent.defaultModel, catalogModels);
   const startEffort = settingsEffortName(effort || agent.runSettings.config.effort || agent.defaultEffort);
@@ -31,12 +40,13 @@ export function NewConversationsSection({ agent, onNotice, onSaveError }: { read
     for (const provider of agent.providers ?? []) providers.add(provider.id);
     for (const provider of providers) void store.ensureProviderCatalog(provider);
   }, [agent.sourceId]);
-  useEffect(() => { clearSettingsDraftIfEqual(agent.sourceId, saved); }, [agent.sourceId, saved.model, saved.effort]);
-  const update = (nextModel: string, nextEffort: string) => { setError(null); setSettingsDraft(agent.sourceId, { model: nextModel, effort: nextEffort }); };
+  useEffect(() => { clearSettingsDraftIfEqual(agent.sourceId, saved); }, [agent.sourceId, saved.model, saved.effort, saved.context1M]);
+  const update = (nextModel: string, nextEffort: string, nextContext1M: boolean | null | undefined = context1M) => { setError(null); setSettingsDraft(agent.sourceId, { model: nextModel, effort: nextEffort, context1M: models.find((row) => row.id === nextModel)?.supportsContext1M === true ? nextContext1M ?? null : null }); };
   const chooseModel = (next: string) => {
     const effective = effectiveModelForAgent(agent, next) ?? "";
     const allowed = effortLevelsForAgentModel(agent, effective, findCatalogModel(catalogModels, effective));
-    update(next, effort && !allowed.includes(effort) ? "" : effort);
+    const selected = models.find((row) => row.id === next);
+    update(next, effort && !allowed.includes(effort) ? "" : effort, selected?.supportsContext1M ? context1M : null);
   };
   const save = async () => {
     if (!dirty || saving || agent.status === "offline" && (model !== "" || effort !== "")) return;
@@ -61,10 +71,11 @@ export function NewConversationsSection({ agent, onNotice, onSaveError }: { read
     for (const type of ["pointerdown", "wheel", "touchstart", "keydown"]) document.addEventListener(type, onInput, true);
     setSaving(true); setError(null);
     try {
-      if (model === "" && effort === "") await store.clearAgentRunDefaults();
-      else await store.setAgentRunDefaults(model || null, effort || null);
+      if (model === "" && effort === "" && context1M == null) await store.clearAgentRunDefaults();
+      else if (context1M == null) await store.setAgentRunDefaults(model || null, effort || null);
+      else await store.setAgentRunDefaults(model || null, effort || null, context1M);
       // Do not remove a newer draft made while this request was in flight.
-      clearSettingsDraftIfEqual(sourceId, { model, effort });
+      clearSettingsDraftIfEqual(sourceId, { model, effort, context1M: storedContext1M ?? null });
       if (sourceRef.current === sourceId && store.selectedAgent?.sourceId === sourceId) onNotice(`New conversations will start with ${startModel} · ${startEffort}.`);
       restoreQueued = true;
       window.setTimeout(() => {
@@ -84,13 +95,13 @@ export function NewConversationsSection({ agent, onNotice, onSaveError }: { read
   return <>
     <div className="settings-field" ref={pickerFieldRef}>
       <div className="dashboard-section-label">START WITH <span className={`settings-chip${dirty ? " is-warning" : ""}`}>{saving ? "Saving…" : dirty ? "Unsaved" : agent.runSettings.override ? "Custom override" : "Agent config"}</span></div>
-      <ModelSelector models={models} agentProviders={agent.providers} value={model} effort={effort} onValueChange={chooseModel} onEffortChange={(next) => update(model, next)} disabled={saving || agent.status === "offline"} agentDefaultId={agent.defaultModel} providerStatus={providerStatus} onProviderRequest={(provider) => { void store.ensureProviderCatalog(provider); }} conciseValue />
+      <ModelSelector models={models} agentProviders={agent.providers} value={model} effort={effort} onValueChange={chooseModel} onEffortChange={(next) => update(model, next)} context1M={context1M} onContext1MChange={(next) => update(model, effort, next)} disabled={saving || agent.status === "offline"} agentDefaultId={agent.defaultModel} providerStatus={providerStatus} onProviderRequest={(provider) => { void store.ensureProviderCatalog(provider); }} conciseValue />
       {agent.status === "offline" && <p className="settings-field-note is-warning">Reconnect {agent.label} to pick a model. Using the agent config works offline.</p>}
     </div>
     <div className="settings-group">
       <div className="settings-kv"><span className="settings-kv-label">Agent config</span><div className="settings-kv-value"><span>{settingsModelName(agent, agent.runSettings.config.model || agent.defaultModel, catalogModels)} · {settingsEffortName(agent.runSettings.config.effort || agent.defaultEffort)}</span><code>{agent.runSettings.config.model ?? "provider default"} · {agent.runSettings.config.effort ?? "provider default"}</code></div></div>
-      <div className="settings-kv"><span className="settings-kv-label">Console override</span><div className="settings-kv-value">{agent.runSettings.override ? <><span>{settingsModelName(agent, agent.runSettings.effective.model || agent.runSettings.config.model || agent.defaultModel, catalogModels)} · {settingsEffortName(agent.runSettings.effective.effort || agent.runSettings.config.effort || agent.defaultEffort)}</span><code>{saved.model || (agent.runSettings.config.model ? `agent config: ${agent.runSettings.config.model}` : "provider default")} · {saved.effort || (agent.runSettings.config.effort ? `agent config: ${agent.runSettings.config.effort}` : "provider default")}</code></> : "None"}{dirty && <small className="is-warning">{model === "" && effort === "" ? "Removed on save" : agent.runSettings.override ? "Replaced on save" : "Set on save"}</small>}</div>
-        {(model !== "" || effort !== "" || agent.runSettings.override !== null) && <button className="settings-button is-ghost is-inline" type="button" disabled={saving} onClick={() => update("", "")}>Use agent config</button>}
+      <div className="settings-kv"><span className="settings-kv-label">Console override</span><div className="settings-kv-value">{agent.runSettings.override ? <><span>{settingsModelName(agent, agent.runSettings.effective.model || agent.runSettings.config.model || agent.defaultModel, catalogModels)} · {settingsEffortName(agent.runSettings.effective.effort || agent.runSettings.config.effort || agent.defaultEffort)}</span><code>{saved.model || (agent.runSettings.config.model ? `agent config: ${agent.runSettings.config.model}` : "provider default")} · {saved.effort || (agent.runSettings.config.effort ? `agent config: ${agent.runSettings.config.effort}` : "provider default")}</code></> : "None"}{dirty && <small className="is-warning">{model === "" && effort === "" && context1M == null ? "Removed on save" : agent.runSettings.override ? "Replaced on save" : "Set on save"}</small>}</div>
+        {(model !== "" || effort !== "" || agent.runSettings.override !== null) && <button className="settings-button is-ghost is-inline" type="button" disabled={saving} onClick={() => update("", "", null)}>Use agent config</button>}
       </div>
     </div>
     <p className="settings-field-note">A fallback or model mismatch is shown on the run it affected.</p>

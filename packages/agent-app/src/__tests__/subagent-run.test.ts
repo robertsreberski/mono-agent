@@ -132,6 +132,18 @@ async function buildSubagents(config: MonoAgentConfig, extra: Record<string, unk
 }
 
 describe("configured subagents", () => {
+  it("keeps child context policy on config rather than the parent's turn overlay", async () => {
+    const config = monoConfig({ enabled: true });
+    const configured = { ...config, runtime: { ...config.runtime, context1MModels: { [PRIMARY.reference]: false } } };
+    const { runtime, subagents } = await buildSubagents(configured);
+    const run = subagents?.run as (request: unknown) => Promise<unknown>;
+    await run({ systemPrompt: "synthetic instructions", prompt: "synthetic question", definition: { name: "helper" },
+      model: PRIMARY, effort: "low", maxTurns: 5, depth: 1, abortSignal: new AbortController().signal, onEvent: () => {},
+      context1MModels: { [PRIMARY.reference]: true },
+    });
+    expect(runtime.run.mock.calls[0]?.[1].context1MModels).toEqual({ [PRIMARY.reference]: false });
+  });
+
   it("is absent unless subagents.enabled is true", async () => {
     expect((await buildSubagents(monoConfig())).subagents).toBeUndefined();
     expect((await buildSubagents(monoConfig({ definitions: [RESEARCHER] }))).subagents).toBeUndefined();

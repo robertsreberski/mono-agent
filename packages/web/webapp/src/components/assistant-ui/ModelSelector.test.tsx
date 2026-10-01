@@ -408,3 +408,36 @@ describe("ModelSelector provider grouping", () => {
     expect(within(popup).getByText("No models found.")).toBeVisible();
   });
 });
+
+
+describe("context window chips", () => {
+  it("lives below effort, uses the actual standard window and emits explicit false", async () => {
+    const onContext1MChange = vi.fn();
+    const props = { models: [{ id: "synthetic:gpt", name: "Synthetic GPT", efforts: [{ id: "low", name: "Low" }], supportsContext1M: true as const, standardContextWindow: 272_000 }],
+      value: "synthetic:gpt", effort: "low", onValueChange: vi.fn(), onEffortChange: vi.fn(), context1M: true, onContext1MChange, open: true };
+    const view = render(<ModelSelector {...props} />);
+    const thinking = await screen.findByRole("radiogroup", { name: "Reasoning effort" });
+    const context = screen.getByRole("radiogroup", { name: "Context window" });
+    expect(thinking.compareDocumentPosition(context) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "1M" })).toBeChecked();
+    fireEvent.click(screen.getByRole("radio", { name: "272K" }));
+    expect(onContext1MChange).toHaveBeenCalledExactlyOnceWith(false);
+    view.rerender(<ModelSelector {...props} models={[{ id: "synthetic:gpt", name: "Old producer", efforts: [] }]} />);
+    expect(screen.queryByRole("radiogroup", { name: "Context window" })).toBeNull();
+  });
+  it("works without effort, falls back to Standard and disables both choices", async () => {
+    const onContext1MChange = vi.fn();
+    const props = { models: [{ id: "synthetic:gpt", name: "Synthetic GPT", efforts: [], supportsContext1M: true as const }],
+      value: "synthetic:gpt", effort: "", onValueChange: vi.fn(), onEffortChange: vi.fn(), onContext1MChange, context1M: false, open: true };
+    const view = render(<ModelSelector {...props} />);
+    expect(await screen.findByRole("radio", { name: "Standard" })).toBeChecked();
+    expect(screen.queryByRole("radiogroup", { name: "Reasoning effort" })).toBeNull();
+    // Clicking the already-selected choice still explicitly pins false.
+    fireEvent.click(screen.getByRole("radio", { name: "Standard" }));
+    expect(onContext1MChange).toHaveBeenCalledExactlyOnceWith(false);
+    onContext1MChange.mockClear();
+    view.rerender(<ModelSelector {...props} disabled />);
+    fireEvent.click(screen.getByRole("radio", { name: "1M" }));
+    expect(onContext1MChange).not.toHaveBeenCalled();
+  });
+});

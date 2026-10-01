@@ -118,6 +118,11 @@ tools "when available" because the harness itself does not own or assume any
 app MCP tool.
 Unhinted interrupted-work recovery retains the `RunHistory {}` first step.
 
+Manual compaction optionally carries the conversation's boolean `context1M`
+selection through the host's model/context-policy hook, including explicit false
+on the configured primary. It allocates no turn tools and changes no shared
+history format. Ordinary turn options receive the same validated policy.
+
 ## Architecture
 
 Continuous provider sessions bind to the requested primary model. Repeated overrides stay warm; a model change retires the old owner's session and reseeds a new epoch from canonical history. `createSessionRuntimeResolver`, `SessionRuntimeResolver`, and `ProviderSessionHandle` preserve runtime ownership across cleanup paths; `ProviderSessionTurnBinding` is the durable coordinator's input. Without a runtime factory, all keys use the shared runtime with the effective per-run model.

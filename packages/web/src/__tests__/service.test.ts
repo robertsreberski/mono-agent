@@ -7835,3 +7835,72 @@ describe("adaptive stream persistence pacing", () => {
     } finally { clock.mockRestore(); vi.useRealTimers(); }
   });
 });
+
+
+describe("1M web selection", () => {
+  it.each([true, false])("prefers shortlist capability over contradictory cached catalog metadata (%s)", async (supported) => {
+    const ref = "openai-codex:gpt-6.1-sol";
+    const upstream = operatorFetch({ modelsPage: { models: [{ id: "gpt-6.1-sol", name: "Synthetic GPT", provider: "openai-codex", providerLabel: "Synthetic", ...(!supported ? { supportsContext1M: true } : {}) }], truncated: false } });
+    const service = await createService({ fetchImpl: async (input, init) => {
+      const response = await upstream(input, init);
+      if (!String(input).endsWith("/v1/info")) return response;
+      const info = await response.json() as Record<string, unknown>;
+      return new Response(JSON.stringify({ ...info, model: ref, models: [ref], modelOptions: { [ref]: supported ? { supportsContext1M: true } : {} } }), { headers: { "content-type": "application/json" } });
+    } });
+    await service.bootstrap();
+    try {
+      await service.agentModels("agent-one", { provider: "openai-codex", limit: 50 });
+      if (supported) expect(service.createThread("agent-one", { context1M: false }).runContext1M).toBe(false);
+      else expect(() => service.createThread("agent-one", { context1M: false })).toThrow(/1M context/u);
+    } finally { await service.stop(); }
+  });
+
+  it("filters a retained unsupported context flag when a queued input is promoted", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const service = await createService({ fetchImpl: operatorFetch({ turns: (body) => {
+      seen.push(body); return `${JSON.stringify({ type: "finish", text: "synthetic queued answer" })}\n`;
+    } }) });
+    await service.bootstrap();
+    try {
+      const thread = service.createThread("agent-one");
+      service.store.patchThread(thread.id, { context1M: true }); // Older durable selection; no current eligibility.
+      const reserved = service.store.reserveLiveInput(thread.id, "synthetic queued question");
+      service.store.queueLiveInput(reserved.input.id);
+      const database = new DatabaseSync(service.store.paths.database, { readOnly: true });
+      try { expect(database.prepare("SELECT context_1m FROM live_inputs WHERE id = ?").get(reserved.input.id)).toMatchObject({ context_1m: 1 }); }
+      finally { database.close(); }
+      service.submitLiveInput(thread.id, "synthetic next question"); // Public drain path promotes the retained head.
+      await waitFor(() => seen.length > 0);
+      expect((seen[0]?.metadata as { web: Record<string, unknown> }).web).not.toHaveProperty("context1M");
+    } finally { await service.stop(); }
+  });
+  it("validates explicit selections, forwards false and clears unsupported switches atomically", async () => {
+    const ref = "openai-codex:gpt-6.1-sol";
+    const other = "openai:gpt-6-sol";
+    const spark = "openai-codex:gpt-5.3-codex-spark";
+    const seen: Record<string, unknown>[] = [];
+    const upstream = operatorFetch({ turns: (body) => { seen.push(body); return `${JSON.stringify({ type: "finish", text: "synthetic answer" })}\n`; } });
+    const service = await createService({ fetchImpl: async (input, init) => {
+      const response = await upstream(input, init);
+      if (!String(input).endsWith("/v1/info")) return response;
+      const info = await response.json() as Record<string, unknown>;
+      return new Response(JSON.stringify({ ...info, model: ref, models: [ref, other, spark], modelOptions: {
+        [ref]: { supportsContext1M: true, context1M: false }, [other]: { supportsContext1M: true, context1M: false }, [spark]: {},
+      } }), { headers: { "content-type": "application/json" } });
+    } });
+    await service.bootstrap();
+    try {
+      expect(() => service.createThread("agent-one", { model: spark, context1M: false })).toThrow(/1M context/u);
+      service.setAgentRunDefaults("agent-one", { model: null, effort: null, context1M: true });
+      const thread = service.createThread("agent-one");
+      expect(thread.runContext1M).toBe(true);
+      const onOther = service.patchThread(thread.id, { model: other }); expect(onOther.runContext1M).toBe(true);
+      const onSpark = service.patchThread(thread.id, { model: spark }); expect(onSpark.runContext1M).toBeUndefined();
+      expect(() => service.patchThread(thread.id, { context1M: true })).toThrow(/1M context/u);
+      service.patchThread(thread.id, { model: ref, context1M: false });
+      await service.startTurn(thread.id, { text: "synthetic question" });
+      await waitFor(() => seen.length > 0);
+      expect((seen[0]?.metadata as { web?: { context1M?: boolean } }).web?.context1M).toBe(false);
+    } finally { await service.stop(); }
+  });
+});

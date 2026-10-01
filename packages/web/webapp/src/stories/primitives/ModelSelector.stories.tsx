@@ -7,3 +7,9 @@ const models = [{ id: "atlas/standard", name: "Atlas Standard", provider: "atlas
 export const Selected: Story = { args: { models, value: "atlas/standard", effort: "medium", onValueChange: () => {}, onEffortChange: () => {} } };
 export const Open: Story = { args: { ...Selected.args!, open: true, onOpenChange: () => {} }, play: async ({ canvasElement }) => { await waitForOverlay(canvasElement, '[data-slot="model-selector-content"]'); } };
 export const Disabled: Story = { args: { ...Selected.args!, disabled: true } };
+
+export const Context1M: Story = { args: { ...Selected.args!, models: [{ id: "synthetic:gpt", name: "Synthetic eligible GPT", efforts: models[0]!.efforts, standardContextWindow: 272_000, supportsContext1M: true }], value: "synthetic:gpt", context1M: true, onContext1MChange: () => {}, open: true }, play: Open.play };
+
+export const ContextStandard: Story = { ...Context1M, args: { ...Context1M.args!, context1M: false } };
+export const ContextWithoutEffort: Story = { ...Context1M, args: { ...Context1M.args!, models: [{ ...Context1M.args!.models![0]!, efforts: [] }] } };
+export const ContextIneligible: Story = { ...Context1M, args: { ...Context1M.args!, models: [{ id: "synthetic:standard", name: "Synthetic ineligible model", efforts: models[0]!.efforts }], value: "synthetic:standard", context1M: false } };

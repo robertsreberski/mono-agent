@@ -358,6 +358,26 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
   { version: 41, name: "turn-reply-disposition", up: ({ database }) => {
     addColumn(database, "turns", "reply_disposition", "TEXT CHECK (reply_disposition IN ('silent', 'visible'))");
   } },
+  { version: 42, name: "context-1m-selection", up: ({ database }) => {
+    const ddl = database.prepare("SELECT sql FROM sqlite_master WHERE name = 'agent_run_overrides'").get() as { sql: string };
+    if (!ddl.sql.includes("context_1m IS NOT NULL")) {
+      const keys = database.prepare("PRAGMA foreign_key_list(agent_run_overrides)").all() as Array<{ from: string; table: string; on_delete: string }>;
+      if (!keys.some((key) => key.from === "source_id" && key.table === "agents" && key.on_delete === "CASCADE")) throw new Error("Invalid defaults foreign key.");
+      addColumn(database, "agent_run_overrides", "context_1m", "INTEGER CHECK (context_1m IS NULL OR context_1m IN (0,1))");
+      database.exec(`CREATE TABLE agent_run_overrides_context_1m (
+        source_id TEXT PRIMARY KEY REFERENCES agents(source_id) ON DELETE CASCADE,
+        model TEXT, effort TEXT, context_1m INTEGER CHECK (context_1m IS NULL OR context_1m IN (0,1)), updated_at TEXT NOT NULL,
+        CHECK (model IS NOT NULL OR effort IS NOT NULL OR context_1m IS NOT NULL)
+      );
+      INSERT INTO agent_run_overrides_context_1m SELECT source_id, model, effort, context_1m, updated_at FROM agent_run_overrides;
+      DROP TABLE agent_run_overrides;
+      ALTER TABLE agent_run_overrides_context_1m RENAME TO agent_run_overrides;`);
+    }
+    for (const [table, column] of [
+      ["threads", "run_context_1m"], ["agent_run_overrides", "context_1m"],
+      ["cron_reply_operations", "run_context_1m"], ["turns", "context_1m"], ["live_inputs", "context_1m"],
+    ] as const) addColumn(database, table, column, `INTEGER CHECK (${column} IS NULL OR ${column} IN (0,1))`);
+  } },
 ] satisfies WebStorageMigration[]).map((step) => Object.freeze(step)));
 
 export const WEB_STORAGE_SCHEMA_VERSION = WEB_STORAGE_MIGRATIONS.at(-1)!.version;
@@ -404,7 +424,7 @@ export function validateWebStorageShape(database: DatabaseSync): void {
   try {
     const required: Readonly<Record<string, readonly string[]>> = {
       agents: ["cron_read", "cron_actions", "ask_by_id", "providers_json", "discovered", "supports_provider_auth"],
-      threads: ["trigger_kind", "run_model", "run_effort", "project_id", "read_revision"],
+      threads: ["trigger_kind", "run_model", "run_effort", "run_context_1m", "project_id", "read_revision"],
       console_tool_operations: ["operation_id", "thread_id", "turn_id", "payload_sha256", "result_json"],
       pending_project_memberships: ["thread_id", "project_id", "turn_id"],
       external_conversations: [
@@ -419,7 +439,7 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       attachments: ["origin"],
       monitor_wake_deliveries: ["projection_json", "thread_id", "payload_sha256"],
       notification_deliveries: ["message_id", "job_id", "run_id"],
-      agent_run_overrides: ["source_id", "model", "effort", "updated_at"],
+      agent_run_overrides: ["source_id", "model", "effort", "context_1m", "updated_at"],
       restart_operations: ["id", "source_id", "generation", "operation_id", "requested_at", "deadline", "stage", "outcome", "reason", "uncertain", "approximate_running_turns"],
       restart_proposal_bindings: ["message_id", "part_id", "thread_id", "source_id", "generation", "operation_id"],
       messages: ["seq", "cron_suppressed"],
@@ -437,6 +457,14 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       ],
     };
     for (const [table, names] of Object.entries(required)) assertColumns(database, table, names);
+    for (const [table, column] of [["threads", "run_context_1m"], ["agent_run_overrides", "context_1m"], ["cron_reply_operations", "run_context_1m"], ["turns", "context_1m"], ["live_inputs", "context_1m"]] as const) {
+      assertColumns(database, table, [column]);
+      const metadata = (database.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string; type: string; notnull: number }>).find((entry) => entry.name === column);
+      if (metadata?.type !== "INTEGER" || metadata.notnull !== 0
+        || database.prepare(`SELECT 1 FROM ${table} WHERE ${column} IS NOT NULL AND ${column} NOT IN (0,1) LIMIT 1`).get() !== undefined) throw new Error("Invalid nullable context selection.");
+    }
+    const overrideDdl = database.prepare("SELECT sql FROM sqlite_master WHERE name = 'agent_run_overrides'").get() as { sql: string };
+    if (!overrideDdl.sql.includes("context_1m IS NOT NULL")) throw new Error("Invalid flag-only default constraint.");
     assertWakeScheduleShape(database);
     if (database.prepare("SELECT 1 FROM sqlite_master WHERE name IN ('model_transitions', 'project_transitions')").get() !== undefined) throw new Error("Legacy transition tables remain.");
     const readRevision = (database.prepare("PRAGMA table_info(threads)").all() as Array<{
