@@ -52,9 +52,13 @@ afterEach(() => {
 function MessagesHarness({
   messages,
   onRuntime,
+  onNew = async () => undefined,
+  isRunning = false,
 }: {
   readonly messages: readonly WebMessage[];
   readonly onRuntime?: (runtime: AssistantRuntime) => void;
+  readonly onNew?: (message: unknown) => Promise<void>;
+  readonly isRunning?: boolean;
 }) {
   const presentation = projectProcessJobPresentation(
     visibleCompactionMessages(messages),
@@ -71,7 +75,8 @@ function MessagesHarness({
   const runtime = useExternalStoreRuntime<WebMessage>({
     messages: presentation.messages,
     convertMessage,
-    onNew: async () => undefined,
+    onNew,
+    isRunning,
     adapters: {
       threadList: {
         threadId: "thread",
@@ -1939,5 +1944,33 @@ describe("GitHub-Flavored Markdown rendering", () => {
     const link = screen.getByRole("link", { name: "https://example.com" });
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noreferrer noopener");
+  });
+});
+
+const quickReplyMessage: WebMessage = {
+  id: "choices-answer", threadId: "thread", role: "assistant", status: "complete",
+  createdAt: "2026-09-23T10:00:00.000Z", updatedAt: "2026-09-23T10:00:01.000Z", attachments: [],
+  parts: [{ type: "text", text: "Choose a next step." },
+    { type: "reply_options", id: "choices", options: ["Review draft", "Keep going", "Try another approach"] }],
+};
+describe("non-blocking quick replies", () => {
+  it("sends the exact choice through the normal runtime path and guards double clicks", async () => {
+    const onNew = vi.fn(async (_message: unknown) => undefined);
+    render(<MessagesHarness messages={[quickReplyMessage]} onNew={onNew} />);
+    const button = screen.getByRole("button", { name: "Review draft" });
+    fireEvent.click(button); fireEvent.click(button);
+    await waitFor(() => expect(onNew).toHaveBeenCalledTimes(1));
+    expect(onNew.mock.calls[0]?.[0]).toMatchObject({ role: "user", content: [{ type: "text", text: "Review draft" }] });
+    expect(button).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Keep going" })).toBeDisabled();
+  });
+  it("is inert during a running turn and after any later user message", () => {
+    const onNew = vi.fn(async (_message: unknown) => undefined);
+    const { rerender } = render(<MessagesHarness messages={[quickReplyMessage]} onNew={onNew} isRunning />);
+    expect(screen.getByRole("button", { name: "Review draft" })).toBeDisabled();
+    rerender(<MessagesHarness messages={[quickReplyMessage, { ...quickReplyMessage, id: "later", role: "user", parts: [{ type: "text", text: "Another question" }] }]} onNew={onNew} />);
+    const button = screen.getByRole("button", { name: "Review draft" });
+    expect(button).toBeDisabled(); fireEvent.click(button);
+    expect(onNew).not.toHaveBeenCalled();
   });
 });

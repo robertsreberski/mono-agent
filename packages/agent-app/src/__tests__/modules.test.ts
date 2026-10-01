@@ -128,7 +128,8 @@ describe("known-tools", () => {
     expect(isKnownToolName("NodeRepl")).toBe(true);
     expect(isKnownToolName("read")).toBe(false);
     expect(isKnownToolName("AskUser")).toBe(true);
-    expect(APP_TOOL_NAMES).toEqual(["RunHistory", "SessionHistory", "SetConversationTitle", "ListTags", "CreateTag", "UpdateTag", "DeleteTag", "UpdateConversationTags", "MarkConversationRead", "GetWakeSchedule", "SetWakeSchedule", "ClearWakeSchedule", "ListProjects", "GetProject", "CreateProject", "UpdateProject", "DeleteProject", "ListConversations", "SearchConversations", "CreateConversation", "SetConversationProject", "MemoryJournal", "PeerAgent", "Remember"]);
+    expect(APP_TOOL_NAMES).toEqual(["RunHistory", "SessionHistory", "SetConversationTitle",
+      "SuggestReplies", "ListTags", "CreateTag", "UpdateTag", "DeleteTag", "UpdateConversationTags", "MarkConversationRead", "GetWakeSchedule", "SetWakeSchedule", "ClearWakeSchedule", "ListProjects", "GetProject", "CreateProject", "UpdateProject", "DeleteProject", "ListConversations", "SearchConversations", "CreateConversation", "SetConversationProject", "MemoryJournal", "PeerAgent", "Remember"]);
     expect(isKnownToolName("RunHistory")).toBe(true);
     expect(isKnownToolName("run_history")).toBe(true);
     expect(isKnownToolName("SessionHistory")).toBe(true);

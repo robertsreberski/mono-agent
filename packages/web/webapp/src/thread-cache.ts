@@ -568,6 +568,12 @@ const isMessagePart = (value: unknown): value is MessagePart => {
       return text("id") && text("invocationId") && text("connectionId") && text("serverName")
         && text("toolName") && text("resourceUri") && text("mediaType")
         && text("protocolVersion");
+    case "reply_options":
+      return Object.keys(part).every((key) => ["type", "id", "options"].includes(key))
+        && text("id") && Array.isArray(part.options) && part.options.length >= 2 && part.options.length <= 8
+        && Array.from(part.options).every((label) => typeof label === "string" && label === label.trim()
+          && label.length > 0 && label.length <= 75 && !/[\x00-\x1f\x7f-\x9f\u2028\u2029]/u.test(label))
+        && new Set(part.options).size === part.options.length;
     case "restart_proposal":
       return isRestartProposalPart(part);
     case "failure":

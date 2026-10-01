@@ -135,6 +135,7 @@ const BUILTIN_TOOL_HINTS: Readonly<Record<string, string>> = {
 const APP_TOOL_HINTS: Readonly<Record<string, string>> = {
   RunHistory: "inspect safe evidence from prior runs in this conversation",
   SessionHistory: "search bounded tool calls and results retained for this session",
+  SuggestReplies: "offer non-blocking quick reply choices in web conversations",
   SetConversationTitle: "maintain semantic titles for writable web conversations",
   ListTags: "list the originating agent's tags",
   CreateTag: "create a named colored conversation tag",

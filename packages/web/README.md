@@ -814,6 +814,18 @@ are approximate warnings and never admission gates. The console does not add
 human login: its existing trusted-network/OS boundary and browser exact-origin
 checks still apply; web sends the discovered operator bearer to the agent.
 
+### Non-blocking quick replies
+
+Assistant `reply_options` parts persist in existing message JSON without a new
+table or migration. The webapp renders a compact wrapping chip row directly
+below the final answer. Clicking a label uses the normal user-message send
+path in that conversation; transcript state disables old choices after any
+later user message or while a turn runs, with a local double-click guard.
+Web-bound background/job wakes retain the part. Choices survive reload and
+other devices; no separate durable click state or cross-device lock is added.
+The app-owned `SuggestReplies` tool validates 2–8 distinct trimmed single-line
+labels (1–75 characters), obeys tool policy, and never blocks the current run.
+
 ### Reply files and MCP Apps
 
 Agents that advertise reply attachments expose message-bound downloads in the

@@ -93,6 +93,11 @@ than entering stream frames. A `restart_proposal` contains only a per-reply id
 and optional bounded display reason, not any restart authority, endpoint or
 target; the web service binds its real source/process on ingestion. Unsupported
 channels report a safe outcome or inert human warning, never a clickable link.
+A `reply_options` part carries only a per-reply id and 2–8 distinct canonical
+single-line labels. `isAgentReplyOptions` validates the bounded labels without
+coercion at delivery and persistence boundaries. Web choices are non-blocking;
+non-web human fallback is a fixed warning, and machine outcomes never copy labels.
+
 See [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/).
 
 Machine destinations project unsupported parts through the shared
@@ -116,7 +121,7 @@ The ordinary record shape is:
 }
 ```
 
-`partType` is `attachment`, `mcp_app`, `restart_proposal`, `failure`, or
+`partType` is `attachment`, `mcp_app`, `restart_proposal`, `reply_options`, `failure`, or
 `unknown`; `status` is the
 terminal literal `failed`; and `code` is one of the closed
 `AgentReplyPartFailure.code` values. Only the final overflow record adds
@@ -293,6 +298,7 @@ AgentReplyArtifactReference
 AgentReplyArtifactStream
 AgentReplyAttachmentPart
 AgentReplyMcpAppPart
+AgentReplyOptionsPart
 AgentReplyPart
 AgentReplyPartDeliveryOutcome
 AgentReplyPartDeliveryType
@@ -523,6 +529,7 @@ formatProviderUsageLead
 frameFeedingMessageStream
 generateBearerToken
 hostForUrl
+isAgentReplyOptions
 isAgentReplyPartDeliveryOutcomes
 isAgentResponseCancelledError
 isChannelUserCancelReason

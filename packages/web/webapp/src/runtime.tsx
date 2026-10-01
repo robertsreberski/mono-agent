@@ -188,6 +188,8 @@ const convertPart = (
       return { type: "data-reply-attachment", data: jsonObject(part) };
     case "mcp_app":
       return { type: "data-mcp-app", data: jsonObject(part) };
+    case "reply_options":
+      return { type: "data-reply-options", data: jsonObject(part) };
     case "restart_proposal":
       return { type: "data-restart-proposal", data: jsonObject(part) };
     case "failure":
@@ -321,11 +323,11 @@ const foldSettledActivity = (parts: readonly ConvertedPart[]): ConvertedPart[] =
     (ACTIVITY_PART_TYPES.has(part.type) ? activity : afterAnswer).push(part);
   });
   flush();
-  // The proposal belongs to the answer, not the activity/tool band or a
-  // later attachment row. Move it immediately after the settled answer text.
+  // Answer actions belong beneath the reply, not in Activity or after files.
+  const choices = afterAnswer.filter((part) => part.type === "data-reply-options");
   const proposals = afterAnswer.filter((part) => part.type === "data-restart-proposal");
-  return [...folded, visible[answerIndex]!, ...proposals,
-    ...afterAnswer.filter((part) => part.type !== "data-restart-proposal")];
+  return [...folded, visible[answerIndex]!, ...choices, ...proposals,
+    ...afterAnswer.filter((part) => part.type !== "data-restart-proposal" && part.type !== "data-reply-options")];
 };
 
 interface ConvertWebMessageOptions {

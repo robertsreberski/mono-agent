@@ -99,7 +99,14 @@ the web console, and because every route is Pi-native the whole fallback chain
 carries that bridge. Adapters consume the shared reply-part contract: Slack and
 Telegram confirm native uploads, the web serves authorized downloads and
 sandboxed Apps, and machine/verbatim adapters preserve answer text when they
-cannot represent a part. `ProposeRestart` is another app-owned request-scoped
+cannot represent a part. `SuggestReplies` is a web-only app-owned request-scoped tool for non-blocking
+quick reply choices, including web-bound job wakes: 2–8 distinct trimmed
+single-line labels, each 1–75 characters. A later call replaces the reply's
+choices; one set counts against the shared 20-part budget. A click sends the
+label as a new user turn; use `AskUser` when the current run must wait.
+Restrictive `tools.allowedTools` must name `SuggestReplies`; deny wins.
+
+`ProposeRestart` is another app-owned request-scoped
 tool, installed only on interactive web turns when the supervised agent's
 keyed restart support verifies successfully and tool policy allows it.
 Restrictive `tools.allowedTools` must name `ProposeRestart`; its reply part is

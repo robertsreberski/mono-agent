@@ -289,3 +289,12 @@ describe("rich reply part delivery outcomes", () => {
     expect(unsupportedReplyPartDeliveryOutcomes([])).toBeUndefined();
   });
 });
+
+it("sanitizes quick replies without copying choice labels into machine outcomes", () => {
+  const parts = [{ type: "reply_options" as const, id: "opaque", options: ["Review draft", "Continue"] }];
+  const outcomes = unsupportedReplyPartDeliveryOutcomes(parts);
+  expect(outcomes).toEqual([{ partIndex: 0, partType: "reply_options", status: "failed", code: "unsupported_destination",
+    message: "Quick reply buttons are available only in the web console." }]);
+  expect(isAgentReplyPartDeliveryOutcomes(outcomes)).toBe(true);
+  expect(JSON.stringify(outcomes)).not.toContain("Review draft");
+});

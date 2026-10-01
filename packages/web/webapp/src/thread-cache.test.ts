@@ -1345,3 +1345,13 @@ describe("cron revision eviction", () => {
     expect(cache.get("other")).toBe(other);
   });
 });
+
+it("round-trips bounded quick reply parts through delta replay", () => {
+  const part = { type: "reply_options" as const, id: "choices", options: ["Review draft", "Continue"] };
+  const wire = delta({ ops: [{ op: "set", index: 0, part }] });
+  expect(readMessageDelta(wire)).toBeDefined();
+  expect(applyMessageDelta(message("m1"), wire).parts).toEqual([part]);
+  for (const options of [["one", "one"], ["one"], [" one ", "two"], ["one\ntwo", "three"], ["x".repeat(76), "two"]]) {
+    expect(readMessageDelta(delta({ ops: [{ op: "set", index: 0, part: { ...part, options } }] }))).toBeUndefined();
+  }
+});

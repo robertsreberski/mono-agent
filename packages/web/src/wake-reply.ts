@@ -18,7 +18,7 @@ export function normalizeWakeTerminalReply(parts: readonly WebMessagePart[], exa
   const boundaries = explicit.length > 0 ? explicit
     : parts.flatMap((part, index) => isAssistantMessageBoundary(part, "context_usage") ? [index] : []);
   const lastBoundary = boundaries.at(-1) ?? -1;
-  const hasTrailingContent = parts.slice(lastBoundary + 1).some((part) => part.type === "text" || part.type === "reasoning" || part.type === "restart_proposal");
+  const hasTrailingContent = parts.slice(lastBoundary + 1).some((part) => part.type === "text" || part.type === "reasoning" || part.type === "restart_proposal" || part.type === "reply_options");
   const end = lastBoundary >= 0 && !hasTrailingContent ? lastBoundary : parts.length;
   let start = end === lastBoundary ? (boundaries.at(-2) ?? -1) + 1 : lastBoundary + 1;
   // Older providers without explicit boundaries still separate tool messages.
@@ -32,7 +32,7 @@ export function normalizeWakeTerminalReply(parts: readonly WebMessagePart[], exa
   const text = textParts.map((part) => part.text).join("");
   const suppression = classifyNotifySuppression(text);
   if (exactOnly && (suppression !== "sentinel"
-    || parts.some((part) => part.type === "attachment" || part.type === "mcp_app" || part.type === "restart_proposal" || part.type === "failure"))) {
+    || parts.some((part) => part.type === "attachment" || part.type === "mcp_app" || part.type === "restart_proposal" || part.type === "reply_options" || part.type === "failure"))) {
     return { parts: [...parts], changed: false };
   }
   if (suppression !== "sentinel" && suppression !== "narrated-sentinel") {
@@ -46,7 +46,7 @@ export function normalizeWakeTerminalReply(parts: readonly WebMessagePart[], exa
 
 export function hasWakeReplyContent(parts: readonly WebMessagePart[]): boolean {
   return parts.some((part) => part.type === "text" ? part.text.trim().length > 0
-    : part.type === "attachment" || part.type === "mcp_app" || part.type === "restart_proposal" || part.type === "failure");
+    : part.type === "attachment" || part.type === "mcp_app" || part.type === "restart_proposal" || part.type === "reply_options" || part.type === "failure");
 }
 
 /** Match the settled console's answer selection, excluding earlier commentary. */

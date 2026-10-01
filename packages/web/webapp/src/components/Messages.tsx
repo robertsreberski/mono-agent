@@ -9,6 +9,7 @@ import {
   type EmptyMessagePartProps,
   type ToolCallMessagePartProps,
   useAuiState,
+  useAui,
 } from "@assistant-ui/react";
 import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
 import {
@@ -1274,6 +1275,33 @@ function ErrorPart({ data }: DataMessagePartProps) {
   );
 }
 
+function ReplyOptionsPart({ data }: DataMessagePartProps) {
+  const payload = asRecord(data);
+  const aui = useAui();
+  const messageId = useAuiState((state) => state.message.id);
+  const threadId = useAuiState((state) => state.message.metadata.custom?.threadId);
+  const { selectedThreadId } = useConsoleStore();
+  const selectionChanged = selectedThreadId !== undefined && selectedThreadId !== threadId;
+  const settled = useAuiState((state) => state.message.status?.type === "complete");
+  const running = useAuiState((state) => state.thread.isRunning);
+  const laterUser = useAuiState((state) => {
+    const index = state.thread.messages.findIndex((message) => message.id === messageId);
+    return index < 0 || state.thread.messages.slice(index + 1).some((message) => message.role === "user");
+  });
+  const clicked = useRef(false);
+  const [sent, setSent] = useState(false);
+  const options = Array.isArray(payload.options) ? payload.options.filter((option): option is string => typeof option === "string") : [];
+  const disabled = !settled || running || laterUser || sent || selectionChanged;
+  return <div className="reply-options" role="group" aria-label="Suggested replies">
+    {options.map((label) => <button key={label} type="button" disabled={disabled} onClick={() => {
+      if (disabled || clicked.current) return;
+      clicked.current = true;
+      setSent(true);
+      aui.thread().append({ role: "user", content: [{ type: "text", text: label }] });
+    }}>{label}</button>)}
+  </div>;
+}
+
 function RestartProposalPart({ data }: DataMessagePartProps) {
   const payload = asRecord(data);
   const state = asRecord(payload.restartable);
@@ -1319,6 +1347,7 @@ const parts = {
       "reply-attachment": ReplyAttachmentPart,
       "mcp-app": McpAppPart,
       "restart-proposal": RestartProposalPart,
+      "reply-options": ReplyOptionsPart,
       "reply-failure": ReplyFailurePart,
       "process-job-event": ProcessJobActivityEventPart,
       "scheduled-wake": ScheduledWakePart,
@@ -1445,6 +1474,7 @@ function AssistantParts() {
             if (part.name === "error") return <ErrorPart {...part} />;
             if (part.name === "reply-attachment") return <ReplyAttachmentPart {...part} />;
             if (part.name === "mcp-app") return <McpAppPart {...part} />;
+            if (part.name === "reply-options") return <ReplyOptionsPart {...part} />;
             if (part.name === "restart-proposal") return <RestartProposalPart {...part} />;
             if (part.name === "reply-failure") return <ReplyFailurePart {...part} />;
             if (part.name === "process-job-event") return <ProcessJobActivityEventPart {...part} />;

@@ -222,7 +222,7 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
       if (!event.isError && runState.silentTurn
         && /^(?:AskUser|mcp__[^\s]+__AskUser)$/.test(event.toolName ?? "")) runState.silentTurn.visibleContent = true;
       if (!event.isError && runState.silentTurn
-        && /^(?:PublishReplyFile|ProposeRestart|mcp__[^\s]+__(?:PublishReplyFile|ProposeRestart))$/.test(event.toolName ?? "")) {
+        && /^(?:PublishReplyFile|ProposeRestart|SuggestReplies|mcp__[^\s]+__(?:PublishReplyFile|ProposeRestart|SuggestReplies))$/.test(event.toolName ?? "")) {
         runState.silentTurn.visibleContent = true;
       }
       if (event.toolName === "FinishSilently" && !event.isError

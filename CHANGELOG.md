@@ -6,6 +6,10 @@
   on supervised workers, keeping the old worker online on invalid inputs or
   approval failures; require terminal restart for unavailable runtime packages.
 
+- Add web-console `SuggestReplies` quick-action buttons beneath final replies,
+  including web-bound job wakes; clicks send a normal follow-up user message,
+  and old choices become inert after a later user turn.
+
 - Keep pinned, conversation-owning, and mid-restart agents in the web console
   as offline without switching the selected agent or conversation during a stop
   or restart.
