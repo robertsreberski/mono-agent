@@ -63,6 +63,10 @@ describe("golden consumer config contracts", () => {
           "status": "ok",
         },
         {
+          "id": "computer-use",
+          "status": "disabled",
+        },
+        {
           "id": "session-tool-history",
           "status": "ok",
         },
@@ -153,6 +157,10 @@ describe("golden consumer config contracts", () => {
         {
           "id": "tools",
           "status": "ok",
+        },
+        {
+          "id": "computer-use",
+          "status": "disabled",
         },
         {
           "id": "session-tool-history",

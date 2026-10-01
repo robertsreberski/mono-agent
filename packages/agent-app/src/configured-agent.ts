@@ -208,6 +208,8 @@ export interface ConfiguredAgentHarnessOptions {
   readonly onMemoryRememberUnavailable?: (error: unknown) => void;
   /** Best-effort host diagnostic for post-provider memory write failures. */
   readonly onMemoryWarning?: (message: string) => void;
+  /** Startup diagnostic when the optional desktop driver is unavailable. */
+  readonly onComputerUseWarning?: (message: string) => void;
   /** Best-effort diagnostic for bounded lifecycle-sidecar write failures. */
   readonly onToolHistoryWarning?: (message: string) => void;
   readonly onSessionEvent?: ConfiguredAgentSessionEventHandler;
@@ -1486,7 +1488,7 @@ async function createConfiguredAgentHarnessInternal(
     // Inbound channel attachments are saved here (under the artifacts dir, which
     // sits inside a sandbox-readable root) so the agent can open them by path.
     attachmentsDir: artifactDerivedRoots.attachments,
-    toolPolicy: createToolPolicy(toolPolicyInput(config)),
+    toolPolicy: createToolPolicy(toolPolicyInput(config, options.onComputerUseWarning ?? console.warn)),
     ...(harnessSandboxPolicy === undefined ? {} : { sandboxPolicy: harnessSandboxPolicy }),
     recorderFactory: ({ runId, conversationId, userInput, source, sourceDetail, isolated }) =>
       composeRunRecorder(recording, {

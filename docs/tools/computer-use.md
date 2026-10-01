@@ -98,12 +98,19 @@ resolution checks `PATH`, then `~/.local/bin/cua-driver` on macOS/Linux,
 `/Applications/CuaDriver.app/Contents/MacOS/cua-driver` on macOS, or the Windows
 installer location above. This works with the minimal PATH of supervised workers.
 `mono-agent doctor` reports the resolved path and version.
+If the driver is missing or moved, the agent still starts: it omits this server,
+logs one startup warning per config, and doctor reports waiting. Subagent profiles
+that explicitly select `computer-use` then fail the ordinary undefined-server
+check instead of receiving desktop tools.
 
 The reserved MCP server name is `computer-use`; an entry with that name in
 `tools.mcpConfigPath` is an error while this integration is enabled. Ordinary
 subagent MCP selection can include `computer-use` in its server-name list.
 The framework merges it with existing MCP servers and uses their normal
-runtime/sandbox lifecycle. Native subprocess sandboxing may prevent a driver
+runtime/sandbox lifecycle. The original `tools.mcpConfigPath` is still forwarded in
+the tool policy, but only the inline server map contains the injected entry;
+the current Pi runtime uses that map, whereas a custom CLI/runtime integration
+that reads the original file directly will not see `computer-use`. Native subprocess sandboxing may prevent a driver
 from reaching its daemon or desktop; it does not restrict a separately running
 desktop daemon. Do not treat the process sandbox as an application/UI allowlist.
 

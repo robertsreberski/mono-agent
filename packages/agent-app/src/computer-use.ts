@@ -55,17 +55,25 @@ export function assertComputerUseServerNameAvailable(servers: Record<string, unk
   }
 }
 
+const warnedMissingDriver = new WeakSet<MonoAgentConfig>();
+
 /** Shared by primary runs, harness policy and ordinary subagent MCP selection. */
-export function configuredToolPolicyInput(config: MonoAgentConfig): ToolPolicyInput {
+export function configuredToolPolicyInput(config: MonoAgentConfig, onWarning?: (message: string) => void): ToolPolicyInput {
   const filePolicy = config.tools.mcpConfigPath === undefined ? undefined : loadToolPolicyFromJsonFileSync(config.tools.mcpConfigPath);
   let servers = filePolicy?.mcpServers;
   if (config.tools.computerUse !== undefined) {
     assertComputerUseServerNameAvailable(servers ?? {});
     const command = resolveCuaDriverCommand(config.tools.computerUse.command, { cwd: config.runtime.workspace });
     if (command === undefined) {
-      throw new MonoAgentConfigError("invalid_json", "tools.computerUse: cua-driver executable not found; install it separately or set tools.computerUse.command. See docs/tools/computer-use.md.");
+      if (onWarning !== undefined && !warnedMissingDriver.has(config)) {
+        warnedMissingDriver.add(config);
+        try {
+          onWarning("Computer use unavailable: cua-driver executable not found; continuing without the computer-use MCP server. Install it separately or set tools.computerUse.command. See docs/tools/computer-use.md.");
+        } catch { /* Diagnostic failures must not prevent agent startup. */ }
+      }
+    } else {
+      servers = { ...servers, [COMPUTER_USE_SERVER_NAME]: { command, args: ["mcp"] } };
     }
-    servers = { ...servers, [COMPUTER_USE_SERVER_NAME]: { command, args: ["mcp"] } };
   }
   return {
     allowedTools: config.tools.allowedTools,

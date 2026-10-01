@@ -1,10 +1,11 @@
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadMonoAgentConfig, type MonoAgentConfig } from "@mono-agent/config";
 import { createToolPolicy } from "@mono-agent/agent-harness";
 import { parseMcpServers } from "@mono-agent/runtime-adapter";
+import { createConfiguredAgentHarness } from "../configured-agent.js";
 import { validateMonoAgentFolder } from "../doctor.js";
 import { computerUseSection, configuredToolPolicyInput, resolveCuaDriverCommand } from "../computer-use.js";
 
@@ -32,7 +33,9 @@ const configWithTools = (tools: MonoAgentConfig["tools"]): MonoAgentConfig => ({
 
 describe("computer-use MCP integration", () => {
   it("injects a resolved stdio server into the ordinary harness/runtime policy without mode env", () => {
-    const policy = createToolPolicy(configuredToolPolicyInput(config));
+    const warn = vi.fn();
+    const policy = createToolPolicy(configuredToolPolicyInput(config, warn));
+    expect(warn).not.toHaveBeenCalled();
     expect(parseMcpServers(policy.mcpServers)).toEqual([{ name: "computer-use", transport: "stdio", command, args: ["mcp"] }]);
     expect(policy.mcpServers?.["computer-use"]).toEqual({ command, args: ["mcp"] });
   });
@@ -46,10 +49,37 @@ describe("computer-use MCP integration", () => {
     const { computerUse: _computerUse, ...disabledTools } = enabled.tools;
     expect(configuredToolPolicyInput(configWithTools(disabledTools)).mcpServers).toEqual({ "computer-use": { command: "other" } });
   });
-  it("does not alter disabled policy and fails clearly for a missing explicit binary", () => {
+  it("does not alter disabled policy and omits a missing driver with one startup warning", () => {
     const { computerUse: _computerUse, ...disabledTools } = config.tools;
     expect(configuredToolPolicyInput(configWithTools(disabledTools))).toEqual({ allowedTools: config.tools.allowedTools, disallowedTools: config.tools.disallowedTools });
-    expect(() => configuredToolPolicyInput(configWithTools({ ...config.tools, computerUse: { backend: "cua-driver", command: join(dir, "missing") } }))).toThrow(/executable not found/u);
+    const unavailable = configWithTools({ ...config.tools, computerUse: { backend: "cua-driver", command: join(dir, "missing") } });
+    const warn = vi.fn();
+    expect(configuredToolPolicyInput(unavailable, warn).mcpServers).toBeUndefined();
+    expect(warn).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("continuing without the computer-use MCP server"));
+    configuredToolPolicyInput(unavailable, warn);
+    configuredToolPolicyInput(unavailable);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+  it("keeps actual harness construction available and forwards a startup warning", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "A fictional local automation agent.");
+    const unavailable = configWithTools({ ...config.tools, computerUse: { backend: "cua-driver", command: join(dir, "missing") } });
+    const warn = vi.fn();
+    const harness = await createConfiguredAgentHarness({
+      config: unavailable, cwd: dir,
+      runtime: { async run() { throw new Error("No provider call expected during construction"); } },
+      onComputerUseWarning: warn,
+    });
+    try {
+      expect(warn).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("executable not found"));
+      expect(configuredToolPolicyInput(unavailable).mcpServers).toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally { await harness.dispose?.(); }
+  });
+  it("preserves other MCP servers when unavailable and survives a failing warning sink", async () => {
+    const mcpConfigPath = join(dir, "mcp.json");
+    await writeFile(mcpConfigPath, JSON.stringify({ mcpServers: { other: { command: "other" } } }));
+    const unavailable = configWithTools({ ...config.tools, mcpConfigPath, computerUse: { backend: "cua-driver", command: join(dir, "missing") } });
+    expect(configuredToolPolicyInput(unavailable, () => { throw new Error("warning sink failed"); }).mcpServers).toEqual({ other: { command: "other" } });
   });
 });
 
