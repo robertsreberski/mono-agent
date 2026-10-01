@@ -419,7 +419,7 @@ export function ModelSelector({
                     {hasEffort && <>
                       <span className="model-selector__effort-label">Thinking</span>
                       <RadioGroup className="model-selector__effort-options" value={activeEffort?.id ?? ""}
-                        onValueChange={onEffortChange} aria-label="Reasoning effort" disabled={disabled}>
+                        onValueChange={(nextEffort) => onEffortChange(nextEffort)} aria-label="Reasoning effort" disabled={disabled}>
                         {selectedModel?.efforts.map((option) => (
                           <Radio.Root key={`${option.id}:${option.name}`} data-slot="model-selector-effort-option"
                             className="model-selector__effort-option" value={option.id}>{option.name}</Radio.Root>
