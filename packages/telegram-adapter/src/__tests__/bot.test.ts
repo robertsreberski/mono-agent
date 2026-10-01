@@ -234,6 +234,64 @@ function textUpdate(
   } as unknown as Parameters<Bot["handleUpdate"]>[0];
 }
 
+function forwardedRichItineraryUpdate(
+  options?: {
+    chatId?: number;
+    updateId?: number;
+    messageId?: number;
+    chatType?: "private" | "supergroup";
+  },
+): Parameters<Bot["handleUpdate"]>[0] {
+  const chatId = options?.chatId ?? 42;
+  return {
+    update_id: options?.updateId ?? 1,
+    message: {
+      message_id: options?.messageId ?? 10,
+      date: 1234,
+      chat: {
+        id: chatId,
+        type: options?.chatType ?? "private",
+        ...(options?.chatType === "supergroup" ? { title: "Trip planning" } : {}),
+      },
+      from: { id: 7, is_bot: false, first_name: "Person A", username: "person_a" },
+      forward_origin: {
+        type: "user",
+        sender_user: { id: 8, is_bot: false, first_name: "Planner" },
+        date: 1200,
+      },
+      rich_message: {
+        blocks: [
+          { type: "heading", size: 2, text: "Weekend itinerary" },
+          {
+            type: "table",
+            cells: [
+              [
+                { text: "Day", is_header: true, align: "left", valign: "top" },
+                { text: "Plan", is_header: true, align: "left", valign: "top" },
+              ],
+              [
+                { text: "Saturday", align: "left", valign: "top" },
+                { text: "Museum", align: "left", valign: "top" },
+              ],
+            ],
+          },
+          {
+            type: "list",
+            items: [{
+              label: "•",
+              blocks: [{
+                type: "details",
+                summary: "Tickets",
+                blocks: [{ type: "paragraph", text: "Book before Friday" }],
+              }],
+            }],
+          },
+        ],
+      },
+    },
+  } as unknown as Parameters<Bot["handleUpdate"]>[0];
+}
+
 function groupTextUpdate(
   text: string,
   options?: {
@@ -1370,6 +1428,97 @@ describe("createTelegramBot", () => {
     expect(texts(calls, "sendMessage")).not.toContain(
       "I can handle text and Telegram document, photo, audio, video, round video, or voice metadata in this adapter.",
     );
+  });
+
+  it("admits a forwarded native rich itinerary through the authorized bot handler", async () => {
+    const requests: AgentRequest[] = [];
+    const { bot, calls } = buildTestBot({
+      allowAllChats: false,
+      allowedChatIds: ["42"],
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "itinerary received" };
+      }),
+    });
+
+    await bot.handleUpdate(forwardedRichItineraryUpdate());
+    await bot.handleUpdate(forwardedRichItineraryUpdate({ chatId: 99, updateId: 2, messageId: 11 }));
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      chatId: 42,
+      conversationId: "telegram:42",
+      sender: { id: "7", displayName: "Person A", handle: "person_a", isBot: false },
+    });
+    expect(requests[0]?.text).toContain("## Weekend itinerary");
+    expect(requests[0]?.text).toContain("Day | Plan\nSaturday | Museum");
+    expect(requests[0]?.text).toContain("• Details: Tickets\n  Book before Friday");
+    expect(messageSendCalls(calls).some((call) =>
+      call.method === "sendRichMessage"
+      && call.payload.chat_id === 42
+      && (call.payload.rich_message as { markdown?: string }).markdown === "itinerary received"
+    )).toBe(true);
+    expect(texts(calls, "sendMessage")).toContain("This Telegram chat is not authorized to use this bot.");
+  });
+
+  it("quotes a native rich bot response when the user replies", async () => {
+    const requests: AgentRequest[] = [];
+    const { bot } = buildTestBot({
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "ok" };
+      }),
+    });
+    const update = {
+      update_id: 1,
+      message: {
+        message_id: 10,
+        date: 1234,
+        chat: { id: 42, type: "private" },
+        from: { id: 7, is_bot: false, first_name: "Person A", username: "person_a" },
+        text: "please revise this",
+        reply_to_message: {
+          message_id: 9,
+          date: 1233,
+          chat: { id: 42, type: "private" },
+          from: FAKE_BOT_INFO,
+          rich_message: {
+            blocks: [{ type: "paragraph", text: "Original rich answer" }],
+          },
+        },
+      },
+    } as unknown as Parameters<Bot["handleUpdate"]>[0];
+
+    await bot.handleUpdate(update);
+
+    expect(requests[0]?.text).toContain("> Original rich answer");
+    expect(requests[0]?.text).toContain("please revise this");
+    expect(requests[0]?.metadata.telegram.replyToMessage?.id).toBe(9);
+  });
+
+  it("reuses projected rich text as listen-mode background context", async () => {
+    const requests: AgentRequest[] = [];
+    const { bot } = buildTestBot({
+      groupMode: "listen",
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "ok" };
+      }),
+    });
+
+    await bot.handleUpdate(forwardedRichItineraryUpdate({
+      chatId: -10042,
+      chatType: "supergroup",
+    }));
+    await bot.handleUpdate(groupTextUpdate("@ExampleBot compare the options", {
+      updateId: 2,
+      mentionedUsername: "ExampleBot",
+    }));
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.precedingMessages?.[0]?.text).toContain("Weekend itinerary");
+    expect(requests[0]?.precedingMessages?.[0]?.text).toContain("Saturday | Museum");
   });
 
   it("decodes text/* document downloads into the attachment text field", async () => {

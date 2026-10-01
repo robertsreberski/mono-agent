@@ -12,6 +12,7 @@ import {
   downloadTelegramAttachments,
   mergeTelegramMessageInputs,
   normalizeTelegramMessageInput,
+  telegramContextText,
   type TelegramAttachment,
   type TelegramFileDownloader,
 } from "../adapter.js";
@@ -51,6 +52,69 @@ function inboundReply(overrides: TelegramMessageOverrides = {}): TelegramMessage
     reply_to_message: repliedMessage(),
     ...overrides,
   } as TelegramMessage;
+}
+
+function richItineraryMessage(overrides: TelegramMessageOverrides = {}): TelegramMessage {
+  return {
+    message_id: 101,
+    date: Date.parse("2026-08-28T12:36:00.000Z") / 1_000,
+    chat: { id: 42, type: "private" },
+    from: { id: 7, first_name: "Person A", username: "person_a" },
+    rich_message: {
+      blocks: [
+        { type: "heading", size: 1, text: "Rail itinerary" },
+        {
+          type: "paragraph",
+          text: [
+            { type: "bold", text: "Stay: " },
+            { type: "url", text: "Central Hotel", url: "https://example.test/hotel" },
+          ],
+        },
+        {
+          type: "table",
+          caption: "Schedule",
+          cells: [
+            [
+              { text: "Route", is_header: true, align: "left", valign: "top" },
+              { text: "Time", is_header: true, align: "left", valign: "top" },
+            ],
+            [
+              { text: "Budapest → Vienna", align: "left", valign: "top" },
+              { text: "08:15", align: "left", valign: "top" },
+            ],
+          ],
+        },
+        {
+          type: "list",
+          items: [{
+            label: "1.",
+            has_checkbox: true,
+            is_checked: true,
+            blocks: [
+              { type: "paragraph", text: "Validate tickets" },
+              {
+                type: "details",
+                summary: "Connection note",
+                blocks: [{
+                  type: "blockquote",
+                  blocks: [{ type: "paragraph", text: { type: "italic", text: "Platform may change" } }],
+                  credit: "Rail desk",
+                }],
+              },
+            ],
+          }],
+        },
+        {
+          type: "photo",
+          photo: [{ file_id: "private-photo-id", file_unique_id: "private-photo-unique", width: 1, height: 1 }],
+          caption: { text: "Station map", credit: "City office" },
+        },
+        { type: "mathematical_expression", expression: "d = vt" },
+        { type: "future_metadata", secret_id: "must-not-appear" },
+      ],
+    },
+    ...overrides,
+  } as unknown as TelegramMessage;
 }
 
 /** Fake downloader: file paths encode the file_id; bytes are looked up by file_id. */
@@ -196,6 +260,33 @@ describe("native Telegram reply context", () => {
     );
   });
 
+  it("quotes the projected body of a native rich bot reply", () => {
+    const richReply = richItineraryMessage({
+      message_id: 99,
+      from: repliedMessage().from,
+    });
+    const message = inboundReply({ reply_to_message: richReply });
+
+    const text = normalizeTelegramMessageInput(message)?.text;
+
+    expect(text).toContain("> # Rail itinerary");
+    expect(text).toContain("> Route | Time");
+    expect(text).toContain("> [x] 1. Validate tickets");
+    expect(text).toContain("that's me");
+  });
+
+  it("keeps a sender-selected quote ahead of the referenced rich body", () => {
+    const message = inboundReply({
+      quote: { text: "only this row", position: 12, is_manual: true },
+      reply_to_message: richItineraryMessage({ message_id: 99, from: repliedMessage().from }),
+    });
+
+    const text = normalizeTelegramMessageInput(message)?.text;
+
+    expect(text).toContain("> only this row");
+    expect(text).not.toContain("Rail itinerary");
+  });
+
   it("uses a clear fallback for unsupported source content and omits invalid time", () => {
     const message = inboundReply({
       reply_to_message: repliedMessage({
@@ -267,6 +358,88 @@ describe("native Telegram reply context", () => {
     expect(input?.text.match(/\[Quoted Telegram message —/gu)).toHaveLength(1);
     expect(input?.text.endsWith("compare these")).toBe(true);
     expect(input?.attachments).toHaveLength(2);
+  });
+});
+
+describe("native Telegram rich-message input", () => {
+  it("keeps ordinary text precedence and semantics", () => {
+    const message = richItineraryMessage({ text: "  plain wins  " });
+
+    expect(normalizeTelegramMessageInput(message)?.text).toBe("plain wins");
+  });
+
+  it("projects visible itinerary structure without exposing media ids or unknown metadata", () => {
+    const input = normalizeTelegramMessageInput(richItineraryMessage());
+
+    expect(input?.attachments).toEqual([]);
+    expect(input?.text).toContain("# Rail itinerary");
+    expect(input?.text).toContain("Stay: Central Hotel (https://example.test/hotel)");
+    expect(input?.text).toContain("Schedule\nRoute | Time\nBudapest → Vienna | 08:15");
+    expect(input?.text).toContain("[x] 1. Validate tickets");
+    expect(input?.text).toContain("Details: Connection note");
+    expect(input?.text).toContain("> Platform may change");
+    expect(input?.text).toContain("Credit: Rail desk");
+    expect(input?.text).toContain("Station map\nCredit: City office");
+    expect(input?.text).toContain("$$d = vt$$");
+    expect(input?.text).not.toContain("private-photo-id");
+    expect(input?.text).not.toContain("must-not-appear");
+  });
+
+  it("uses the same projection for album selection and listen-mode context", () => {
+    const rich = richItineraryMessage({
+      media_group_id: "album",
+      photo: [{ file_id: "p1", file_unique_id: "p1-unique", width: 10, height: 10 }],
+    });
+    const second = richItineraryMessage({
+      message_id: 102,
+      media_group_id: "album",
+      rich_message: undefined,
+      caption: "later caption",
+      photo: [{ file_id: "p2", file_unique_id: "p2-unique", width: 10, height: 10 }],
+    });
+
+    expect(mergeTelegramMessageInputs([rich, second])?.text).toContain("Rail itinerary");
+    expect(telegramContextText([rich])).toContain("Budapest → Vienna | 08:15");
+  });
+
+  it("bounds cyclic, deeply nested and oversized hostile structures", () => {
+    const cyclic: { type: string; blocks: unknown[] } = { type: "blockquote", blocks: [] };
+    cyclic.blocks.push(cyclic);
+    let deep: unknown = "buried";
+    for (let index = 0; index < 40; index += 1) deep = { type: "bold", text: deep };
+
+    const cyclicInput = normalizeTelegramMessageInput(richItineraryMessage({
+      rich_message: { blocks: [cyclic] } as never,
+    }));
+    const deepInput = normalizeTelegramMessageInput(richItineraryMessage({
+      rich_message: { blocks: [{ type: "paragraph", text: deep }] } as never,
+    }));
+    const oversizedInput = normalizeTelegramMessageInput(richItineraryMessage({
+      rich_message: { blocks: [{ type: "paragraph", text: "😀".repeat(40_000) }] } as never,
+    }));
+
+    expect(cyclicInput?.text).toContain("[Telegram rich message truncated]");
+    expect(deepInput?.text).toContain("[Telegram rich message truncated]");
+    expect(deepInput?.text).not.toContain("buried");
+    expect(Array.from(oversizedInput?.text ?? "")).toHaveLength(32_768);
+    expect(oversizedInput?.text).toMatch(/… \[Telegram rich message truncated\]$/u);
+  });
+
+  it("sanitizes controls and skips malformed link targets", () => {
+    const input = normalizeTelegramMessageInput(richItineraryMessage({
+      rich_message: {
+        blocks: [{
+          type: "paragraph",
+          text: [
+            "visible\u0000 text ",
+            { type: "url", text: "safe label", url: "https://example.test/\u0000hidden" },
+          ],
+        }],
+      } as never,
+    }));
+
+    expect(input?.text).toBe("visible text safe label");
+    expect(input?.text).not.toContain("hidden");
   });
 });
 
