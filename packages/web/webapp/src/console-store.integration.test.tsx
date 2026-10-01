@@ -1,8 +1,8 @@
 // The console keeps recent conversations on the device now, so every test in
 // this file runs the persistence path as well: hydration before the first read,
-// and the debounced write-through behind it. The store is emptied before each
-// test, so what any one of them restores is exactly what it seeded.
-import "fake-indexeddb/auto";
+// and the debounced write-through behind it. Each case owns a fresh IndexedDB
+// factory, so even a previous case's late write cannot reach what it hydrates.
+import { IDBFactory } from "fake-indexeddb";
 import { ThreadPrimitive } from "@assistant-ui/react";
 import { act, cleanup as cleanupDom, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { StrictMode, useEffect } from "react";
@@ -237,10 +237,10 @@ const detail = (threadSummary = cronThread, text = "first"): ThreadDetail => ({
  * Another owner of the same device store -- which is what a second tab is, and
  * what these tests use to seed a visit and to read back what one wrote.
  */
-const deviceStore = createThreadPersistence();
+let deviceStore: ReturnType<typeof createThreadPersistence>;
 
 /** The real (fake-indexeddb) factory, kept for the tests that stub a broken one. */
-const realIndexedDb = globalThis.indexedDB;
+let realIndexedDb: IDBFactory;
 
 /** An `indexedDB.open` that answers nothing at all -- WebKit, after a suspension. */
 const deafIndexedDb = (): IDBFactory => ({
@@ -286,7 +286,12 @@ const slowIndexedDb = (delay: number | Promise<void>): IDBFactory => ({
 
 describe("ConsoleStoreProvider integration", () => {
   beforeEach(async () => {
-    await deviceStore.clearAll();
+    // Clearing a shared database does not fence a save still awaiting open:
+    // its transaction can start after the clear commits, even after unmount.
+    // Keep late operations on the previous case's factory, not this one's.
+    realIndexedDb = new IDBFactory();
+    vi.stubGlobal("indexedDB", realIndexedDb);
+    deviceStore = createThreadPersistence();
     resetComposerDraft();
     vi.clearAllMocks();
     // `clearAllMocks` forgets CALLS, not implementations. A `mockImplementation`
@@ -339,9 +344,53 @@ describe("ConsoleStoreProvider integration", () => {
     // The setup-file cleanup runs later (Vitest stacks afterEach hooks). Unmount
     // while the stream and device globals are still available to passive effects.
     cleanupDom();
+    deviceStore.close();
     vi.useRealTimers();
     resetServerClock();
     vi.unstubAllGlobals();
+  });
+
+  describe.sequential("device-store isolation across cases", () => {
+    let pending: { release: () => void; write: Promise<void> } | undefined;
+
+    it("leaves a teardown write waiting for its database open", async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const factory = slowIndexedDb(gate);
+      const writer = createThreadPersistence({ factory: () => factory });
+      const summary = thread("alpha-first", "alpha", { title: "Alpha first", messageCount: 1 });
+      const write = writer.save({ entries: [{
+        thread: summary,
+        messages: [{ ...detail(summary, "Previous case answer").messages[0]!,
+          id: "alpha-first-assistant-1" }],
+        stale: false,
+        syncedAt: 0,
+        repairedToolCallIds: new Set<string>(),
+        pagedInIds: new Set<string>(),
+      }] });
+      // Like a debounce that fired just before unmount: close does not wait for
+      // the save already awaiting open. Release it only AFTER the next setup.
+      writer.close();
+      pending = { release, write };
+    });
+
+    it("cannot hydrate a previous case's late transcript", async () => {
+      if (pending !== undefined) {
+        pending.release();
+        await pending.write;
+        pending = undefined;
+      }
+      const summary = thread("alpha-first", "alpha", { title: "Alpha first", messageCount: 1 });
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha")], [summary], summary.id));
+      vi.mocked(api.thread).mockResolvedValue({
+        ...detail(summary, "Current case answer"),
+        messages: [{ ...detail(summary, "Current case answer").messages[0]!,
+          id: "alpha-first-assistant-1" }],
+      });
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.detail?.messages[0]?.parts)
+        .toEqual([{ type: "text", text: "Current case answer" }]));
+    });
   });
 
   it("keeps the server's clock from the stamp on every event", async () => {
