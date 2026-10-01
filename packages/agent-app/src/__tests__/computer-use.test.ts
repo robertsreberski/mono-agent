@@ -85,9 +85,9 @@ describe("computer-use MCP integration", () => {
 
 describe("cua-driver executable resolution", () => {
   it("resolves PATH first, then minimal-PATH Unix and macOS installations", () => {
-    const executable = (path: string) => ["/bin/cua-driver", "/home/morgan/.local/bin/cua-driver", "/Applications/CuaDriver.app/Contents/MacOS/cua-driver"].includes(path);
-    expect(resolveCuaDriverCommand(undefined, { platform: "linux", env: { PATH: "/bin" }, home: "/home/morgan", executable })).toBe("/bin/cua-driver");
-    expect(resolveCuaDriverCommand(undefined, { platform: "linux", env: {}, home: "/home/morgan", executable })).toBe("/home/morgan/.local/bin/cua-driver");
+    const executable = (path: string) => ["/bin/cua-driver", "/home/example/.local/bin/cua-driver", "/Applications/CuaDriver.app/Contents/MacOS/cua-driver"].includes(path);
+    expect(resolveCuaDriverCommand(undefined, { platform: "linux", env: { PATH: "/bin" }, home: "/home/example", executable })).toBe("/bin/cua-driver");
+    expect(resolveCuaDriverCommand(undefined, { platform: "linux", env: {}, home: "/home/example", executable })).toBe("/home/example/.local/bin/cua-driver");
     expect(resolveCuaDriverCommand(undefined, { platform: "darwin", env: {}, home: "/other", executable })).toBe("/Applications/CuaDriver.app/Contents/MacOS/cua-driver");
   });
   it("resolves Windows installer and PATH locations", () => {
