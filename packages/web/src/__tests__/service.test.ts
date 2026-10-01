@@ -1,3 +1,4 @@
+import { parseNotificationRequest } from "../notification-ingress.js";
 import { randomUUID } from "node:crypto";
 import { startWebNotificationIngress } from "../notification-ingress.js";
 import { createWebConsoleToolClient } from "../notification-client.js";
@@ -7937,7 +7938,8 @@ describe("recovery-aware process-job wakes", () => {
     await expect(service.deliverNotification({ sourceId: "agent-one", threadId: thread.id, triggerKind: "job",
       processJob: job, deliveryKey: job.wake.deliveryKey, wakePrompt: "Inspect child",
       wakeRecovery: { version: 1, token: randomUUID(), notCrossed: [] },
-    })).resolves.toMatchObject({ delivery: { delivered: false, ambiguous: true } });
+    })).resolves.toMatchObject({ delivery: { delivered: false, code: "destination_channel_unavailable", retryable: true } });
+    expect(service.store.ownsProcessJobWake(job.wake.deliveryKey)).toBe(false);
     expect(onTurn).not.toHaveBeenCalled(); await service.stop();
   });
 });
@@ -7969,9 +7971,53 @@ describe("process-job dispatch generation fences", () => {
       const receipt = await service.deliverNotification({ sourceId: "agent-one", threadId: thread.id, triggerKind: "job",
         processJob: job, deliveryKey: job.wake.deliveryKey, wakePrompt: "Inspect child result",
         wakeRecovery: { version: 1, token, notCrossed: [] } });
-      expect(receipt.delivery).toMatchObject(mode === "same" ? { delivered: true } : { delivered: false, ambiguous: true });
+      expect(receipt.delivery).toMatchObject(mode === "same" ? { delivered: true }
+        : { delivered: false, code: "destination_channel_unavailable", retryable: true });
       expect(onTurn).toHaveBeenCalledTimes(mode === "same" ? 1 : 0);
-      if (mode !== "same") expect(service.store.ownsProcessJobWake(job.wake.deliveryKey, token)).toBe(true);
+      if (mode !== "same") expect(service.store.ownsProcessJobWake(job.wake.deliveryKey, token)).toBe(false);
     } finally { await service.stop(); }
   });
+});
+
+
+describe("undispatched process-job wake refusals", () => {
+  it.each([true, false])("releases a stopping connection only when the exact claim release succeeds (%s)", async (released) => {
+    const onTurn = vi.fn(); const discovered = fakeDiscoveredAgent();
+    const service = await createService({ fetchImpl: operatorFetch({ supportsProcessJobWakeAdmission: true, onTurn }) });
+    try {
+      const thread = service.createThread("agent-one"); const token = randomUUID();
+      service.store.createRestartOperation({ sourceId: "agent-one", generation: agentGeneration(discovered),
+        requestedAt: new Date().toISOString(), deadline: new Date(Date.now() + 60_000).toISOString(), approximateRunningTurns: 0 });
+      if (!released) vi.spyOn(service.store, "abandonProcessJobWake").mockReturnValue(false);
+      const job = fakeProcessJob({ conversationId: `web:${thread.id}`, state: "succeeded" });
+      const receipt = await service.deliverNotification({ sourceId: "agent-one", threadId: thread.id, triggerKind: "job",
+        processJob: job, deliveryKey: job.wake.deliveryKey, wakePrompt: "Inspect child",
+        wakeRecovery: { version: 1, token, notCrossed: [] } });
+      expect(receipt.delivery).toMatchObject(released ? { delivered: false, code: "destination_channel_unavailable", retryable: true }
+        : { delivered: false, ambiguous: true, retryable: false });
+      expect(service.store.ownsProcessJobWake(job.wake.deliveryKey, token)).toBe(!released);
+      expect(onTurn).not.toHaveBeenCalled();
+    } finally { await service.stop(); }
+  });
+});
+
+
+it("delivers an older agent's null-token process-job payload unchanged and never replays its completed claim", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const service = await createService({ fetchImpl: operatorFetch({ onTurn: (body) => bodies.push(body) }) });
+  try {
+    const thread = service.createThread("agent-one"); const job = fakeProcessJob({ conversationId: `web:${thread.id}`, state: "succeeded" });
+    const input = { sourceId: "agent-one", threadId: thread.id, triggerKind: "job" as const,
+      processJob: job, deliveryKey: job.wake.deliveryKey, wakePrompt: "Inspect legacy child" };
+    const parsed = parseNotificationRequest(JSON.parse(JSON.stringify(input)));
+    if (parsed.triggerKind !== "job") throw new Error("Expected a process-job payload");
+    const reserve = vi.spyOn(service.store, "reserveProcessJobWake");
+    const complete = vi.spyOn(service.store, "completeProcessJobWake");
+    await expect(service.deliverNotification(parsed)).resolves.toMatchObject({ delivery: { delivered: true, disposition: "follow_up" } });
+    expect(reserve.mock.calls[0]?.[0]).not.toHaveProperty("wakeRecovery");
+    expect(complete.mock.calls[0]?.[0]).not.toHaveProperty("attemptToken");
+    expect(bodies).toHaveLength(1); expect(bodies[0]).not.toHaveProperty("processJobWakeAttempt");
+    await expect(service.deliverNotification(input)).resolves.toMatchObject({ delivery: { delivered: true } });
+    expect(bodies).toHaveLength(1);
+  } finally { await service.stop(); }
 });

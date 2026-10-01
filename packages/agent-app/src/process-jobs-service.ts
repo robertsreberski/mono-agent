@@ -662,7 +662,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
 
   private async changeWakeBoundary(deliveryKey: string, token: string, boundary: string, release: boolean): Promise<boolean> {
     return await this.withLock(async () => {
-      if (this.stopping || this.stopped || !this.storageOperational
+      if (this.stopped || (!release && this.stopping) || !this.storageOperational
         || !validWakeToken(boundary) || (token !== "" && !validWakeToken(token))
         || !deliveryKey.startsWith("process-job:")) return false;
       let changed = false;
@@ -672,10 +672,14 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         const record = records.get(deliveryKey.slice("process-job:".length));
         if (record === undefined || record.wake.deliveryKey !== deliveryKey || record.wake.state !== "pending") return;
         const fence = record.wake.admission;
-        // Legacy wakes remain legacy/ambiguous. Missing tokens cannot bypass
-        // an instrumented attempt's durable admission fence.
         if (fence === undefined && token === "" && !release) { changed = true; return; }
-        if (fence?.version !== 1 || fence.token !== token) return;
+        if (fence?.version !== 1) return;
+        // An older console can complete the same live steer-to-follow-up path,
+        // but switching to token-less delivery irrevocably disables recovery.
+        if (token === "") {
+          if (record.origin.channel !== "web" || fence.state === "fenced") return;
+          if (release && fence.legacy !== true) return;
+        } else if (fence.token !== token || fence.legacy === true) return;
         if (release) {
           if (fence.state !== "crossed" || fence.boundary !== boundary) return;
           fence.state = "not_crossed";
@@ -684,6 +688,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           if (fence.state !== "not_crossed") return;
           fence.state = "crossed";
           fence.boundary = boundary;
+          if (token === "") fence.legacy = true;
         }
         changed = true;
       });
@@ -699,10 +704,22 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         if (!isTerminalProcessJobState(record.state)
           || (record.wake.state !== "pending" && record.wake.state !== "unknown")
           || fence?.version !== 1 || fence.state !== "not_crossed") continue;
+        if (fence.legacy === true) {
+          fence.state = "fenced";
+          record.wake.state = "unknown";
+          record.wake.retrySafe = false;
+          recordWakeFailure(record, "A legacy wake was interrupted; automatic replay is suppressed.");
+          continue;
+        }
         const certificates = record.wake.notCrossed ?? [];
         // Bounded proof retention is fail-closed, never evicts a proof that web
         // might still need to reconcile an earlier accepted reservation.
-        if (certificates.length >= MAX_WAKE_CERTIFICATES) continue;
+        if (certificates.length >= MAX_WAKE_CERTIFICATES) {
+          record.wake.state = "unknown";
+          record.wake.retrySafe = false;
+          recordWakeFailure(record, "Wake non-admission proof capacity was exhausted; automatic replay is suppressed.");
+          continue;
+        }
         fence.state = "fenced";
         record.wake.notCrossed = [...certificates, fence.token];
         record.wake.state = "pending";
@@ -2210,7 +2227,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
             const fence = current.wake.admission;
             // Neither a transport code nor a supposedly safe adapter receipt
             // can override an instrumented may-have-crossed boundary.
-            if (fence.state === "crossed") {
+            if (fence.state === "crossed" || fence.legacy === true) {
               current.wake.state = "unknown";
               current.wake.retrySafe = false;
               recordWakeFailure(current, "A wake may have crossed admission; automatic replay is suppressed.");
@@ -2221,6 +2238,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
               if (certificates.length >= MAX_WAKE_CERTIFICATES) {
                 current.wake.state = "unknown";
                 current.wake.retrySafe = false;
+                recordWakeFailure(current, "Wake non-admission proof capacity was exhausted; automatic replay is suppressed.");
                 return;
               }
               fence.state = "fenced";
@@ -2315,7 +2333,9 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   private async stopOnce(shutdownDeadline?: number): Promise<void> {
     if (this.stopped) return;
     this.stopping = true;
-    await this.withLock(async () => await this.fenceUnadmittedWakes());
+    const failures: unknown[] = [];
+    try { await this.withLock(async () => await this.fenceUnadmittedWakes()); }
+    catch (error) { failures.push(error); }
     // Admission is closed before draining. Leave at least three seconds of the
     // supervised window for cancellation, durable settlement and owner cleanup.
     if (shutdownDeadline !== undefined && this.settlements.size > 0) {
@@ -2339,7 +2359,6 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     for (const timer of this.wakeRearmTimers.values()) clearTimeout(timer);
     this.wakeRearmTimers.clear();
     this.disarmQueueTimer();
-    const failures: unknown[] = [];
     try {
       try {
         await this.withLock(async () => {

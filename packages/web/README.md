@@ -1011,9 +1011,16 @@ parent", without interrupting `AskUser` or claiming the parent has read them.
 Schema 43 adds nullable `process_job_wake_deliveries.attempt_token`; existing rows
 remain null and fail closed. Migration changes no historical delivery outcome.
 Older consoles refuse this schema; rollback requires a compatible pre-upgrade
-backup, not a schema-version edit. Upgrade both console and agent for recovery;
-new agents refuse tokenless requests for instrumented attempts. Recovery metadata
-is not a browser DTO and requires no consumer configuration change.
+backup, not a schema-version edit. Upgrade the web console first, or together with the agents. A new agent behind
+an older strict console cannot deliver web wakes: the unsupported recovery
+metadata is rejected before acceptance and the agent records a terminal wake
+failure, with no stripped-payload retry. Paired upgrades enable recovery.
+
+New agents accept token-less old-console process-job delivery as legacy, marking
+each boundary durably and retaining the same live safe-steer-refusal/follow-up
+path. Such attempts never recover or replay after restart; fenced attempts still
+refuse execution. Recovery metadata is not a browser DTO and requires no consumer
+configuration change.
 
 
 `GET /api/v1/threads/:id/usage` returns `{usage: WebThreadUsage}` for the

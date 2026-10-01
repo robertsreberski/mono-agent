@@ -256,8 +256,11 @@ wake requests carry `processJobWakeAttempt` with their existing delivery key on
 before sending turn headers or offering input. Only explicit `unavailable` or
 `requeue` settlements await an exact durable release before returning a receipt.
 Missing capability, stale tokens, storage failure and stopping ownership refuse
-execution; lost receipts never imply non-admission. This does not expand the
-adapter-neutral responder contract or add a proof-lookup endpoint.
+execution; lost receipts never imply non-admission. Token-less `process-job:`
+requests from older consoles use a private legacy fence: safe refusal permits
+only the same live fallback, never restart replay. Non-process-job delivery keys
+(such as parent-interruption notices) do not enter this authority. This does not
+expand the adapter-neutral responder contract or add a proof-lookup endpoint.
 
 
 ### Start here

@@ -110,6 +110,8 @@ export const nextPeerQuestionDeadline = (jobs: readonly ProcessJobProjection[], 
   return next;
 };
 
+// Projection-owned attention: a stale pending card stays current until agent
+// reconciliation/surface delivery updates it. There is no invented expiry.
 const pendingChildQuestion = (job: ProcessJobProjection): boolean =>
   job.kind === "internal" && job.subagentQuestion !== undefined && job.wake.state === "pending";
 

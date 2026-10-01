@@ -4,6 +4,8 @@ export interface WakeAttemptFence {
   readonly token: string;
   state: "not_crossed" | "crossed" | "fenced";
   boundary?: string;
+  /** Token-less mixed-version delivery: live fallback only, never recovery. */
+  legacy?: true;
 }
 export interface WakeRecovery {
   readonly version: 1;
@@ -20,7 +22,8 @@ export function validWakeFence(value: unknown): value is WakeAttemptFence {
   return record.version === 1 && validWakeToken(record.token)
     && ["not_crossed", "crossed", "fenced"].includes(String(record.state))
     && (record.state === "crossed" ? validWakeToken(record.boundary) : record.boundary === undefined)
-    && Object.keys(record).every((key) => ["version", "token", "state", "boundary"].includes(key));
+    && (record.legacy === undefined || record.legacy === true)
+    && Object.keys(record).every((key) => ["version", "token", "state", "boundary", "legacy"].includes(key));
 }
 export function validWakeCertificates(value: unknown): value is string[] {
   return Array.isArray(value) && value.length <= MAX_WAKE_CERTIFICATES

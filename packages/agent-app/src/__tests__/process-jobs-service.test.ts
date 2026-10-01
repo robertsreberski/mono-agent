@@ -167,14 +167,19 @@ describe("process job service", () => {
     expect(wake).not.toHaveBeenCalled();
   });
 
-  it("records a pre-acceptance web refusal as failed rather than unknown without replay", async () => {
+  it.each(["slack", "web"] as const)("records a pre-acceptance web refusal for %s as failed rather than unknown without replay", async (channel) => {
     const fixture = await createFixture();
     const completion = deferred<ProcessJobProcessResult>();
-    const wake = vi.fn(async () => ({ delivered: false as const, code: "process_job_wake_failed" as const,
-      retryable: false, reason: "The web console rejected the process-job notification before accepting its wake." }));
+    const wake = vi.fn(async (input: ProcessJobWakeInput) => {
+      if (channel === "web") expect(input.wakeRecovery?.version).toBe(1);
+      return { delivered: false as const, code: "process_job_wake_failed" as const,
+        retryable: false, reason: "The web console rejected the process-job notification before accepting its wake." };
+    });
     const service = await startService(fixture, { wake });
     await service.activateWakes();
-    const started = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion)));
+    const origin = channel === "web" ? { ...ORIGIN, channel, conversationId: "web:fictional#2026-08-14",
+      baseConversationId: "web:fictional", replyToConversationId: "web:fictional", normalizedReplyTarget: "web:fictional" } : ORIGIN;
+    const started = await service.controller(origin, 0).start(requestOf(handleOf(completion)));
     completion.resolve(processResult());
     await waitFor(async () => (await service.get(started.jobId))?.wake.state === "failed");
     expect(await service.get(started.jobId)).toMatchObject({ wake: { state: "failed", attempts: 1 },
@@ -3971,7 +3976,7 @@ describe("private web wake admission fences", () => {
       expect(input.wakeRecovery?.notCrossed).toEqual([token]);
       expect(input.wakeRecovery?.token).not.toBe(token);
       expect(await service.wakeAdmission!.claim(input.deliveryKey, token, boundary)).toBe(false);
-      expect(await service.wakeAdmission!.claim(input.deliveryKey, "", boundary)).toBe(false);
+      expect(await service.wakeAdmission!.claim("process-job:missing", "", boundary)).toBe(false);
       expect(await service.wakeAdmission!.claim(input.deliveryKey, input.wakeRecovery!.token, boundary)).toBe(true);
       expect(await service.wakeAdmission!.claim(input.deliveryKey, input.wakeRecovery!.token, randomUUID())).toBe(false);
       return { delivered: true as const };
@@ -4042,4 +4047,90 @@ describe("crossed web wake uncertainty remains non-replayable", () => {
       expect(nextWake).not.toHaveBeenCalled();
     },
   );
+});
+
+
+describe("wake fence review regressions", () => {
+  const webOrigin = { ...ORIGIN, channel: "web" as const, conversationId: "web:fictional#2026-08-14",
+    baseConversationId: "web:fictional", replyToConversationId: "web:fictional", normalizedReplyTarget: "web:fictional" };
+
+  it("allows one token-less legacy steer-refused follow-up, then suppresses all replay", async () => {
+    const fixture = await createFixture(); ownershipRoots.push(fixture.cwd);
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const wake = vi.fn(async (input: ProcessJobWakeInput) => {
+      const steer = randomUUID(); const followUp = randomUUID();
+      expect(await service.wakeAdmission!.claim(input.deliveryKey, "", steer)).toBe(true);
+      expect((await store.get(input.projection.jobId))?.wake.admission).toMatchObject({ state: "crossed", legacy: true });
+      expect(await service.wakeAdmission!.release(input.deliveryKey, "", randomUUID())).toBe(false);
+      expect(await service.wakeAdmission!.release(input.deliveryKey, "", steer)).toBe(true);
+      expect(await service.wakeAdmission!.claim(input.deliveryKey, input.wakeRecovery!.token, followUp)).toBe(false);
+      expect(await service.wakeAdmission!.claim(input.deliveryKey, "", followUp)).toBe(true);
+      expect(await service.wakeAdmission!.claim(input.deliveryKey, "", randomUUID())).toBe(false);
+      return { delivered: true as const };
+    });
+    const service = await startService(fixture, { store, wake }); await service.activateWakes();
+    const done = deferred<ProcessJobProcessResult>();
+    const started = await service.controller(webOrigin, 0).start(requestOf(handleOf(done))); done.resolve(processResult());
+    await waitFor(async () => (await service.get(started.jobId))?.wake.state === "delivered");
+    expect(wake).toHaveBeenCalledOnce(); await service.stop();
+    const nextWake = vi.fn(async () => ({ delivered: true as const }));
+    const next = await startService(fixture, { wake: nextWake }); await next.activateWakes();
+    expect(nextWake).not.toHaveBeenCalled();
+  });
+
+  it.each(["crossed", "not_crossed"] as const)("never recovers a legacy crash at %s, including after safe refusal", async (state) => {
+    const fixture = await createFixture(); ownershipRoots.push(fixture.cwd);
+    const jobId = randomUUID(); const token = randomUUID(); const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const record = durableRecord(jobId, { state: "succeeded", origin: webOrigin, pid: null, pgid: null, stdoutRef: null, stderrRef: null,
+      completedAt: "2026-08-14T10:00:03.000Z", exitCode: 0,
+      wake: { state: "pending", attempts: 1, deliveryKey: `process-job:${jobId}`, lastAttemptAt: "2026-08-14T10:00:03.000Z", retrySafe: false,
+        admission: { version: 1, token, state, legacy: true, ...(state === "crossed" ? { boundary: randomUUID() } : {}) } } });
+    delete record.processIncarnation; await store.mutate((records) => records.set(jobId, record));
+    const wake = vi.fn(async () => ({ delivered: true as const })); const service = await startService(fixture, { wake });
+    await service.activateWakes(); expect((await service.get(jobId))?.wake.state).toBe("unknown");
+    expect(await service.wakeAdmission!.claim(record.wake.deliveryKey, "", randomUUID())).toBe(false);
+    expect((await (await openProcessJobStore(fixture.cwd, fixture.settings.stateDir)).get(jobId))?.wake.notCrossed).toBeUndefined();
+    expect(wake).not.toHaveBeenCalled();
+  });
+
+  it("refuses token-less requests to a revoked modern attempt before any retry starts", async () => {
+    const fixture = await createFixture(); ownershipRoots.push(fixture.cwd);
+    const jobId = randomUUID(); const token = randomUUID(); const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const record = durableRecord(jobId, { state: "succeeded", origin: webOrigin, pid: null, pgid: null, stdoutRef: null, stderrRef: null,
+      completedAt: "2026-08-14T10:00:03.000Z", exitCode: 0,
+      wake: { state: "pending", attempts: 1, deliveryKey: `process-job:${jobId}`, lastAttemptAt: "2026-08-14T10:00:03.000Z", retrySafe: false,
+        admission: { version: 1, token, state: "not_crossed" } } });
+    delete record.processIncarnation; await store.mutate((records) => records.set(jobId, record));
+    const service = await startService(fixture);
+    expect(await service.wakeAdmission!.claim(record.wake.deliveryKey, "", randomUUID())).toBe(false);
+  });
+
+  it("continues cancellation, cleanup and owner release when wake fencing sees a poisoned store", async () => {
+    const fixture = await createFixture(); ownershipRoots.push(fixture.cwd);
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const release = vi.fn(async () => {}); const done = deferred<ProcessJobProcessResult>(); const handle = handleOf(done);
+    handle.cancel.mockImplementation(() => done.resolve(processResult({ aborted: true, code: null })));
+    const cleanup = vi.fn(async () => {});
+    const service = await startService(fixture, { store, acquireLock: async () => ({ path: "fictional-lock", ownerPid: process.pid, release }) });
+    await service.controller(ORIGIN, 0).start(requestOf(handle, cleanup));
+    const mutation = vi.spyOn(store, "mutate").mockRejectedValue(new Error("fictional poisoned store"));
+    try {
+      await expect(service.stop()).rejects.toThrow("shutdown encountered failures");
+      expect(handle.cancel).toHaveBeenCalled(); expect(cleanup).toHaveBeenCalledOnce(); expect(release).toHaveBeenCalledOnce();
+      await expect(service.stop()).rejects.toThrow("shutdown encountered failures"); expect(release).toHaveBeenCalledOnce();
+    } finally { mutation.mockRestore(); }
+  });
+
+  it("records a stable wake failure when certificate capacity is exhausted", async () => {
+    const fixture = await createFixture(); ownershipRoots.push(fixture.cwd);
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const service = await startService(fixture, { store, wake: async (input) => {
+      await store.mutate((records) => { records.get(input.projection.jobId)!.wake.notCrossed = Array.from({ length: 16 }, () => randomUUID()); });
+      return { delivered: false, code: "destination_channel_unavailable", retryable: true };
+    } });
+    await service.activateWakes(); const done = deferred<ProcessJobProcessResult>();
+    const started = await service.controller(webOrigin, 0).start(requestOf(handleOf(done))); done.resolve(processResult());
+    await waitFor(async () => (await service.get(started.jobId))?.wake.state === "unknown");
+    expect((await service.get(started.jobId))?.lastError).toEqual(processJobPublicError("process_job_wake_unknown"));
+  });
 });

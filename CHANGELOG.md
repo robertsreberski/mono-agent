@@ -13,6 +13,8 @@
 - Fix interrupted process-job wakes proven never admitted to retry once after
   restart, while keeping possibly admitted and legacy wakes replay-suppressed.
   Keep child questions waiting for the parent visible in the console job shelf.
+  Upgrade the web console first or with agents; older strict consoles reject new
+  agent wakes as visible terminal failures without stripped-payload retries.
 
 - Keep pinned, conversation-owning, and mid-restart agents in the web console
   as offline without switching the selected agent or conversation during a stop
