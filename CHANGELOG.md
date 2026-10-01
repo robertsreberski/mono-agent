@@ -5,6 +5,12 @@
 - Fix the web model picker to fit the available screen space, with denser
   provider and thinking controls and always-visible context and close actions.
 
+- Update Pi to 0.99.2: Anthropic requests no longer fail on strict tool
+  schemas that use keywords such as `minimum`/`maximum`, and providers back off
+  instead of retrying immediately on an unparseable `Retry-After` date.
+  Anthropic workload identity federation settings are reported as ambient
+  evidence, not a verified credential.
+
 - Let authenticated console restarts validate and apply edited startup inputs
   on supervised workers, keeping the old worker online on invalid inputs or
   approval failures; require terminal restart for unavailable runtime packages.

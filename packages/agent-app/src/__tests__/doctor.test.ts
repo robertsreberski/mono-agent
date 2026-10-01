@@ -4168,7 +4168,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     ["openai-codex:gpt-6-sol", "openai-codex", { type: "oauth", expires: FUTURE, refresh: "r" }],
     ["openai-codex:gpt-6-luna", "openai-codex", { type: "oauth", expires: FUTURE, refresh: "r" }],
     ["openai:gpt-6-sol", "openai", { type: "api_key", key: "sk-test" }],
-  ])("accepts Pi 0.99.1 native model %s", async (model, provider, credential) => {
+  ])("accepts Pi 0.99.2 native model %s", async (model, provider, credential) => {
     const authPath = await writeAuthStore({ [provider]: credential });
     const configPath = await writeCredConfig({
       runtime: { model },

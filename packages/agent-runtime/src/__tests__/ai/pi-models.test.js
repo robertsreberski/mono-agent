@@ -11,12 +11,12 @@ import { reasoningLevelsForPiModel, resolvePiRuntimeModel } from "../../ai/provi
 import { retryableProviderFailureInfo } from "../../ai/failure.js";
 import { thinkingLevelForEffort } from "../../ai/providers/pi-native/turn-runner.js";
 import { getBuiltinModel, getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
-import { describePiProviderAuth, getPiBuiltinModel, listPiBuiltinModels } from "../../ai/pi-interop.js";
+import { checkPiProviderAuth, describePiProviderAuth, getPiBuiltinModel, listPiBuiltinModels } from "../../ai/pi-interop.js";
 import { estimateCost } from "../../ai/cost.js";
 
-// Exercise the real pinned 0.99.1 chat catalog, rather than a mock or a copied
+// Exercise the real pinned 0.99.2 chat catalog, rather than a mock or a copied
 // temporary row: pricing, dispatch, advertised effort and listing must agree.
-describe("Pi 0.99.1 native model integration", () => {
+describe("Pi 0.99.2 native model integration", () => {
   const rows = [
     ["anthropic", "claude-opus-5-5", 1_000_000, ["low", "medium", "high", "xhigh", "max"], 4, 20],
     ["anthropic", "claude-sonnet-5-5", 1_000_000, ["low", "medium", "high", "xhigh", "max"], 2, 10],
@@ -24,7 +24,7 @@ describe("Pi 0.99.1 native model integration", () => {
     ["openai-codex", "gpt-6-luna", 272_000, ["none", "minimal", "low", "medium", "high", "xhigh", "max"], 0.1, 0.5],
     ["openai", "gpt-6-sol", 272_000, ["none", "low", "medium", "high", "xhigh", "max"], 2, 10],
     ["openai", "gpt-6-luna", 272_000, ["none", "low", "medium", "high", "xhigh", "max"], 0.1, 0.5],
-    // Pi 0.99.1 does not expose disabled effort for GPT-6.1 Sol.
+    // Pi 0.99.2 does not expose disabled effort for GPT-6.1 Sol.
     ["openai", "gpt-6.1-sol", 272_000, ["low", "medium", "high", "xhigh", "max"], 2, 10],
     ["openai-codex", "gpt-6.1-sol", 272_000, ["minimal", "low", "medium", "high", "xhigh", "max"], 2, 10],
   ];
@@ -316,4 +316,31 @@ describe("resolvePiRuntimeModel — GPT-6 Astra metadata", () => {
       expect(thinkingLevelForEffort("max", resolved.capabilities)).toBe("max");
     });
   }
+});
+
+// Pi 0.99.2 adds Anthropic workload identity federation from SDK environment
+// variables. The ids and token file path are configuration, not a credential,
+// so status must keep reporting them as ambient evidence that cannot establish
+// a usable credential, while an API key keeps precedence as environment auth.
+describe("Pi 0.99.2 Anthropic workload identity federation", () => {
+  const federation = {
+    ANTHROPIC_FEDERATION_RULE_ID: "fdrl_example",
+    ANTHROPIC_ORGANIZATION_ID: "org_example",
+    ANTHROPIC_IDENTITY_TOKEN_FILE: "/nonexistent/identity-token",
+  };
+
+  it("reports complete federation settings as ambient evidence", async () => {
+    await expect(checkPiProviderAuth("anthropic", undefined, federation))
+      .resolves.toEqual({ source: "ambient", type: "api_key" });
+  });
+
+  it("ignores incomplete federation settings", async () => {
+    await expect(checkPiProviderAuth("anthropic", undefined, { ANTHROPIC_ORGANIZATION_ID: "org_example" }))
+      .resolves.toBeUndefined();
+  });
+
+  it("keeps an API key ahead of federation", async () => {
+    await expect(checkPiProviderAuth("anthropic", undefined, { ...federation, ANTHROPIC_API_KEY: "example-key" }))
+      .resolves.toEqual({ source: "environment", type: "api_key" });
+  });
 });
