@@ -37,6 +37,7 @@ import type {
 } from "./types.js";
 import { telegramConversationId, telegramMessageTarget } from "./conversation.js";
 import { redactTelegramErrorMessage } from "./log-redaction.js";
+import { telegramMessageText } from "./rich-message.js";
 
 export type TelegramAttachmentKind =
   | "document"
@@ -554,7 +555,7 @@ export function telegramContextText(messages: readonly TelegramMessage[]): strin
 }
 
 function normalizeMessageText(message: TelegramMessage): string {
-  return (message.text ?? message.caption ?? "").trim();
+  return telegramMessageText(message);
 }
 
 const TELEGRAM_REPLY_CONTEXT_MAX_CODE_POINTS = 4_096;

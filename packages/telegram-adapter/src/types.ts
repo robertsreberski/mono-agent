@@ -1,3 +1,5 @@
+import type { RichMessage } from "grammy/types";
+
 export type TelegramChatId = number | string;
 
 export interface TelegramUser {
@@ -54,6 +56,8 @@ export interface TelegramMessage {
   entities?: TelegramMessageEntity[];
   caption?: string;
   caption_entities?: TelegramMessageEntity[];
+  /** Native inbound blocks or the outbound Markdown shape returned by custom senders. */
+  rich_message?: RichMessage | TelegramInputRichMessage;
   reply_to_message?: TelegramMessage;
   quote?: TelegramTextQuote;
   /** Present on the service message that opens a forum topic. */

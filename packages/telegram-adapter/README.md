@@ -141,14 +141,32 @@ The canonical shared constants are `DEFAULT_AGENT_ATTACHMENT_MAX_BYTES` and
 `DEFAULT_ATTACHMENT_MAX_BYTES` and `DEFAULT_ATTACHMENT_MIME_ALLOWLIST` names are
 Telegram compatibility aliases with the same values.
 
+### Native rich-message input
+
+Telegram native rich messages are projected to readable request text, including
+headings, nested formatting and visible link targets, lists and checkboxes,
+tables, details, quotations, captions and credits, and mathematical expressions.
+The same projection supplies direct and forwarded message bodies, album text,
+native reply quotations, and `groupMode: "listen"` background context. Ordinary
+`text` and `caption` values keep precedence when Telegram supplies them.
+
+Projection follows Telegram's 32,768-code-point, 500-block and 16-level rich
+message bounds and additionally stops after 8,192 rich-text nodes. Bounded input
+ends with an explicit truncation marker. Unknown fields and embedded media data
+are not serialized: a rich media block contributes only its visible caption and
+credit. The adapter does not fetch media referenced only inside
+`rich_message.blocks`; ordinary top-level Telegram attachments keep the download
+behavior described above.
+
 ### Native reply context
 
 An inbound Telegram native reply carries its referenced message in the update,
 so the adapter prepends a bounded, model-visible quotation to the current user
 text. This also works for a proactive or otherwise artificial bot message that
 was never recorded in agent history. Telegram's sender-selected `quote.text`
-wins when present; otherwise the adapter uses the replied-to text, caption, or a
-safe attachment summary. It never downloads media from the quoted message.
+wins when present; otherwise the adapter uses the replied-to text, caption,
+projected native rich-message body, or a safe attachment summary. It never
+downloads media from the quoted message.
 
 The envelope labels the quotation as untrusted context, includes a sanitized
 author and valid timestamp when available, and caps the quoted body at 4,096
