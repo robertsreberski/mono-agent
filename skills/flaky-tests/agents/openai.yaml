@@ -1,0 +1,4 @@
+interface:
+  display_name: "Flaky Tests"
+  short_description: "Fix in-scope flakes, file issues for the rest"
+  default_prompt: "Use $flaky-tests to confirm this suspected flaky test and either fix it in the current PR or file a GitHub issue."

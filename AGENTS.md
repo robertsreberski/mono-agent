@@ -34,6 +34,7 @@ This repository is a config-first agent framework built from npm packages under 
 - Use a two-stage verification loop. During iteration on small, localized changes, run only the nearest focused tests plus the minimum build or typecheck needed to refresh the development preview. Do not rerun package-wide, architecture, documentation, website, or accessibility gates after every edit. Run the complete risk-based verification lane once when the PR is ready, or rely on hosted CI for broad gates when appropriate. High-risk changes still require their prescribed local gates and smoke tests.
 - Release and restart only explicitly requested consumers. Prove the exact target's version, process, and bounded health evidence instead of automatically verifying unrelated agents.
 - Give every external review finding an explicit disposition (fixed / follow-up issue / rejected-with-reason) before merge.
+- Never rerun a flaky test to green and move on: fix it in the PR when it is within that PR's scope, otherwise file or update a GitHub issue; see `skills/flaky-tests`.
 - `agents/` holds the subagent templates; each `agents/*.md` has a `.toml` companion kept in sync by `pnpm run check:codex-discoverability`.
 - Canonical website pages under `docs/` use frontmatter `title` and `description` as their page heading; do not add a second Markdown H1. Run `pnpm run check:docs` for headings, code-fence labels, accessible link text, diagram summaries, and local links.
 
