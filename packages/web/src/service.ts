@@ -2216,6 +2216,10 @@ export class WebService {
       || this.hostWakeReservations.has(threadId) || this.drainingLiveInputThreads.has(threadId)) {
       throw new WebConsoleError("compaction_busy", "Wait for the current turn or compaction to finish.", 409);
     }
+    return this.compactIdleThread(threadId, connection);
+  }
+
+  private async compactIdleThread(threadId: string, connection: AgentConnection, drainInputs = true): Promise<import("@mono-agent/agent-contracts").AgentManualCompactionResult> {
     // The model the next turn on this thread would declare (see launchTurn metadata).
     const { model, context1M } = this.resolveTurnSelection(threadId);
     const operation = (async () => {
@@ -2251,10 +2255,14 @@ export class WebService {
       // leave a durable outcome (including an explicitly unknown one).
       this.activeCompactions.delete(threadId);
       this.manualCompactionStartedAt.delete(threadId);
-      if (!this.stopped) this.emitStoredThread(threadId, ["thread.changed"]);
-      // Live input queued while compacting was held back; drain it now.
-      if (!this.stopped) void this.drainQueuedLiveInputs(threadId);
-      this.dispatchWake(threadId);
+      // Preparation keeps its reservation until claim/launch; do not publish
+      // an idle boundary (or drain input) before that synchronous handoff.
+      if (drainInputs) {
+        if (!this.stopped) this.emitStoredThread(threadId, ["thread.changed"]);
+        // Live input queued during manual compaction can now drain.
+        if (!this.stopped) void this.drainQueuedLiveInputs(threadId);
+        this.dispatchWake(threadId);
+      }
     }
   }
 
@@ -4091,10 +4099,47 @@ export class WebService {
     if (this.store.getThread(threadId)?.revision !== revision) this.emitWakeThread(threadId);
     if (connection === undefined || this.activeTurns.has(threadId) || this.activeCompactions.has(threadId)
       || this.hostWakeReservations.has(threadId) || this.drainingLiveInputThreads.has(threadId)) return;
+    const schedule = this.store.wakeSchedule(threadId);
+    if (schedule?.definition.compactFirst === true && this.store.wakeReadyForCompaction(threadId)) {
+      // Leave the occurrence pending until compaction settles. A restart can
+      // retry preparation, but only claimWake can consume/launch the occurrence.
+      this.retainHostWakeReservation(threadId);
+      void (async () => {
+        try {
+          if (connection.info.supportsManualCompaction === true) {
+            try { await this.compactIdleThread(threadId, connection, false); }
+            catch { /* The normal compaction marker records failure/uncertainty. */ }
+          } else {
+            this.store.recordManualCompaction(threadId, { operationId: randomUUID(), trigger: "manual",
+              status: "failed", reason: "unsupported" });
+            this.emitStoredThread(threadId, ["thread.changed"]);
+          }
+          // Do not apply preparation to a replaced schedule or a new connection.
+          if (!this.stopped && this.connections.get(thread.sourceId) === connection
+            && this.store.wakeSchedule(threadId)?.scheduleId === schedule.scheduleId
+            && this.store.wakeSchedule(threadId)?.revision === schedule.revision) {
+            this.launchScheduledWake(threadId, connection, true);
+          }
+        } finally {
+          if (!this.stopped) this.emitStoredThread(threadId, ["thread.changed"]);
+          this.releaseHostWakeReservation(threadId);
+        }
+      })().catch((error: unknown) => {
+        this.options.logger?.error?.("Scheduled wake-up preparation failed.", { threadId, errorCode: errorCode(error) ?? "unknown" });
+      });
+      return;
+    }
+    this.launchScheduledWake(threadId, connection);
+  }
+
+  private launchScheduledWake(threadId: string, connection: AgentConnection, afterCompaction = false): void {
+    const thread = this.store.getThread(threadId);
+    if (thread === undefined) return;
     const selection = this.resolveTurnSelection(threadId);
     const claimed = this.store.claimWake(threadId, thread.sourceId,
       () => !this.stopped && this.connections.get(thread.sourceId) === connection
-        && !this.hostWakeReservations.has(threadId) && !this.activeCompactions.has(threadId), selection);
+        && (afterCompaction ? this.hostWakeReservations.has(threadId) : !this.hostWakeReservations.has(threadId))
+        && !this.activeCompactions.has(threadId), selection, afterCompaction);
     if (claimed === null) return;
     const { started, prompt } = claimed;
     this.emitWakeThread(threadId);

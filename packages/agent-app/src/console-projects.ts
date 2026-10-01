@@ -24,7 +24,7 @@ export const CONSOLE_PROJECT_SCHEMAS = {
   SetWakeSchedule: z.object({
     kind: z.enum(["once", "weekly"]), expectedRevision: wakeRevision.optional(), timezone: z.string().min(1).max(128),
     localAt: z.string().optional(), days: z.array(z.number().int().min(0).max(6)).min(1).max(7).optional(),
-    times: z.array(z.string()).min(1).max(8).optional(), message: wakeMessage,
+    times: z.array(z.string()).min(1).max(8).optional(), message: wakeMessage, compactFirst: z.boolean().optional(),
   }).strict(),
   ClearWakeSchedule: z.object({ expectedRevision: wakeRevision }).strict(),
   ListTags: z.object({}).strict(),
@@ -72,7 +72,7 @@ export function isConsoleProjectToolAllowed(tool: ToolName, policy: Policy): boo
 const descriptions: Record<ToolName, string> = {
   MarkConversationRead: "Mark one of this agent's conversations read at its current revision (this conversation by default). Clears the console unread dot on connected devices without opening it or changing recency; later updates can make it unread again. Returns conversationId and readRevision.",
   GetWakeSchedule: "Read this conversation's wake-up schedule or null: definition (once or weekly), state, nextFireAt (UTC instant for the given IANA timezone), lastOutcome and revision. A fired turn arrives later in this conversation.",
-  SetWakeSchedule: "Set this conversation's wake-up schedule: kind once with localAt YYYY-MM-DDTHH:mm at least 5 minutes ahead, or weekly with 1–7 days (0=Sunday) and at most 8 HH:mm times; times are local to timezone (IANA). Optional message is at most 1000 UTF-8 bytes. Omit expectedRevision to create; supply the current revision to replace. A fired turn arrives later in this conversation.",
+  SetWakeSchedule: "Set this conversation's wake-up schedule: kind once with localAt YYYY-MM-DDTHH:mm at least 5 minutes ahead, or weekly with 1–7 days (0=Sunday) and at most 8 HH:mm times; times are local to timezone (IANA). Optional message is at most 1000 UTF-8 bytes. Optional compactFirst (default false) requests manual conversation compaction before the wake turn; the turn still runs if compaction is skipped, unsupported, fails or has an unknown outcome. Omit expectedRevision to create; supply the current revision to replace. A fired turn arrives later in this conversation.",
   ClearWakeSchedule: "Clear this conversation's wake-up schedule. Pass the current revision from GetWakeSchedule as expectedRevision.",
   ListTags: "List this agent's tags with their names, colors, and IDs.",
   CreateTag: "Create a named tag for this agent with an optional palette color.",

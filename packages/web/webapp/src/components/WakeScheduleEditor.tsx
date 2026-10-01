@@ -22,8 +22,9 @@ type Failure = { readonly message: string; readonly conflict: boolean; readonly 
  * Escape dismissal, scroll lock); this component owns the draft and the
  * server round trips.
  */
-export function WakeScheduleEditor({ thread, onClose, returnFocusRef }: {
+export function WakeScheduleEditor({ thread, onClose, returnFocusRef, supportsManualCompaction = false }: {
   readonly thread: ThreadSummary;
+  readonly supportsManualCompaction?: boolean;
   readonly onClose: () => void;
   /** Where focus lands after closing; the menu item that opened this is gone by then. */
   readonly returnFocusRef?: RefObject<HTMLElement | null>;
@@ -33,6 +34,7 @@ export function WakeScheduleEditor({ thread, onClose, returnFocusRef }: {
   const keepRef = useRef<HTMLButtonElement>(null);
   const noteId = useId();
   const messageId = useId();
+  const compactId = useId();
   const order = useMemo(() => weekOrder(), []);
   // A new schedule's draft is computed once; later renders never move its date.
   const [draft, setDraft] = useState<WakeDraft>(() => newDraft(deviceTimeZone(), new Date()));
@@ -218,6 +220,19 @@ export function WakeScheduleEditor({ thread, onClose, returnFocusRef }: {
           <fieldset className="wake-form" disabled={!loaded || busy !== null}>
             <legend className="sr-only">Schedule</legend>
             <WakeWhenFields draft={draft} issues={issues} pastHint={pastHint} order={order} onChange={edit} />
+            <div className="wake-group wake-compact">
+              <label className="wake-compact-label" htmlFor={compactId}>
+                <input id={compactId} type="checkbox" checked={draft.compactFirst}
+                  disabled={!supportsManualCompaction && !draft.compactFirst}
+                  aria-describedby={`${compactId}-help`}
+                  onChange={(event) => edit({ compactFirst: event.target.checked })} />
+                <span>Compact conversation first</span>
+              </label>
+              <p className="wake-message-foot" id={`${compactId}-help`}>
+                {supportsManualCompaction ? "Compact before the scheduled request. The wake-up still runs if compaction fails or is skipped."
+                  : "This agent does not support manual compaction. The wake-up will still run without it."}
+              </p>
+            </div>
             <div className="wake-group wake-message">
               <div className="wake-label wake-label-row">
                 <label htmlFor={messageId}>Message</label><span className="wake-label-hint">Optional</span>

@@ -515,3 +515,36 @@ describe("scheduled wake UI in Chromium", () => {
     await page.viewport(1440, 1000);
   });
 });
+
+describe("compact-first wake option", () => {
+  it("persists the checkbox, reloads it, and captures mobile and desktop evidence", async () => {
+    const read = vi.spyOn(api, "wakeSchedule").mockResolvedValue({ schedule });
+    const compacted = { ...schedule, definition: { ...schedule.definition, compactFirst: true } };
+    const save = vi.spyOn(api, "saveWakeSchedule").mockResolvedValue({ schedule: compacted });
+    const view = render(<WakeScheduleEditor supportsManualCompaction thread={thread} onClose={() => undefined} />);
+    const checkbox = screen.getByRole("checkbox", { name: "Compact conversation first" });
+    await waitFor(() => expect(checkbox).toBeEnabled());
+    expect(checkbox).not.toBeChecked();
+    await userEvent.click(checkbox);
+    expect(screen.getByRole("region", { name: "Schedule summary" })).toHaveTextContent("Compact conversation first");
+    await page.viewport(1440, 1000);
+    await capture("compact-first-desktop");
+    await page.viewport(390, 844);
+    await capture("compact-first-mobile");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(thread.id, expect.objectContaining({ compactFirst: true }), schedule.revision));
+    view.unmount();
+    read.mockResolvedValue({ schedule: compacted });
+    const reopened = render(<WakeScheduleEditor supportsManualCompaction thread={thread} onClose={() => undefined} />);
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: "Compact conversation first" })).toBeChecked());
+    reopened.unmount(); read.mockRestore(); save.mockRestore();
+    await page.viewport(1440, 1000);
+  });
+
+  it("explains and disables unsupported compaction without promising it", async () => {
+    const { read, view } = await loadedEditor();
+    expect(screen.getByRole("checkbox", { name: "Compact conversation first" })).toBeDisabled();
+    expect(screen.getByText(/This agent does not support manual compaction/u)).toBeVisible();
+    view.unmount(); read.mockRestore();
+  });
+});

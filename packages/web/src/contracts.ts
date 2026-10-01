@@ -396,8 +396,8 @@ export interface WebJobActivity {
 }
 
 export type WebWakeScheduleDefinition =
-  | { readonly kind: "once"; readonly timezone: string; readonly localAt: string; readonly message?: string }
-  | { readonly kind: "weekly"; readonly timezone: string; readonly days: readonly number[]; readonly times: readonly string[]; readonly message?: string };
+  | { readonly kind: "once"; readonly timezone: string; readonly localAt: string; readonly message?: string; readonly compactFirst?: boolean }
+  | { readonly kind: "weekly"; readonly timezone: string; readonly days: readonly number[]; readonly times: readonly string[]; readonly message?: string; readonly compactFirst?: boolean };
 
 export interface WebWakeSchedule {
   readonly scheduleId: string;
@@ -414,7 +414,7 @@ export interface WebWakeSchedule {
 export interface WebThread {
   /** Transient service-owned operation; not part of the stored thread or revision. */
   readonly compaction?: { readonly status: "running"; readonly trigger: "manual"; readonly startedAt: string };
-  readonly wakeSchedule?: Pick<WebWakeSchedule, "state" | "revision" | "nextFireAt"> & { readonly kind: WebWakeScheduleDefinition["kind"] };
+  readonly wakeSchedule?: Pick<WebWakeSchedule, "state" | "revision" | "nextFireAt"> & { readonly kind: WebWakeScheduleDefinition["kind"]; readonly compactFirst?: boolean };
   readonly id: string;
   readonly sourceId: string;
   readonly title: string;

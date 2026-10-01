@@ -94,3 +94,127 @@ describe("scheduled wake dispatch through the fake operator", () => {
     } finally { await service.stop(); }
   });
 });
+
+
+const dispatch = (service: WebService) => (service as unknown as { dispatchWakes: () => void }).dispatchWakes();
+
+describe("compact-first scheduled wake admission", () => {
+  it("reserves compaction, then launches exactly one wake before newly queued live input", async () => {
+    const root = await temporaryRoot(); roots.push(root);
+    let now = Date.parse("2027-01-02T09:59:00Z");
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const order: string[] = [];
+    const service = await WebService.create({ stateDir: join(root, "state"), clock: () => new Date(now),
+      discoveryIntervalMs: 0, purgeIntervalMs: 0, discoverImpl: async () => [fakeDiscoveredAgent()],
+      fetchImpl: operatorFetch({ supportsManualCompaction: true,
+        onCompact: async (_id, body) => {
+          order.push("compact"); expect(body).toMatchObject({ model: "provider/fallback" });
+          await gate; return { status: "succeeded", trigger: "manual", operationId: "compact-wake" };
+        }, onTurn: (body) => order.push(String(body.text).includes("<scheduled-user-message>") ? "wake" : "queued"),
+      }),
+    });
+    try {
+      const thread = service.createThread("agent-one", { model: "provider/fallback" });
+      service.createWakeSchedule(thread.id, { kind: "once", timezone: "UTC", localAt: "2027-01-02T10:00",
+        compactFirst: true, message: "Review the fictional draft." });
+      now += 60_000; dispatch(service);
+      await waitFor(() => order.length === 1);
+      expect(service.thread(thread.id).thread.compaction?.status).toBe("running");
+      expect(service.submitLiveInput(thread.id, "Queued during compaction").disposition).toBe("queued");
+      dispatch(service); dispatch(service);
+      expect(order).toEqual(["compact"]);
+      expect(service.wakeSchedule(thread.id)?.state).toBe("active");
+      release();
+      await waitFor(() => order.length === 3 && service.store.getThread(thread.id)?.runState.status === "complete");
+      expect(order).toEqual(["compact", "wake", "queued"]);
+      expect(service.thread(thread.id).messages.flatMap((message) => message.parts)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: "compaction", status: "succeeded" }),
+      ]));
+      dispatch(service); expect(order).toHaveLength(3);
+    } finally { release(); await service.stop(); }
+  });
+
+  it.each(["failed", "nothing_to_compact", "model_changed", "unknown", "unsupported"])("still runs once after %s compaction", async (outcome) => {
+    const root = await temporaryRoot(); roots.push(root);
+    let now = Date.parse("2027-01-02T09:59:00Z");
+    let compactions = 0; let turns = 0;
+    const service = await WebService.create({ stateDir: join(root, "state"), clock: () => new Date(now),
+      discoveryIntervalMs: 0, purgeIntervalMs: 0, discoverImpl: async () => [fakeDiscoveredAgent()],
+      fetchImpl: operatorFetch({ supportsManualCompaction: outcome !== "unsupported", onCompact: () => {
+        compactions += 1;
+        if (outcome === "unknown") throw new Error("Connection lost");
+        return { status: outcome === "failed" ? "failed" : "skipped", reason: outcome,
+          trigger: "manual", operationId: "compact-outcome" };
+      }, onTurn: () => { turns += 1; } }),
+    });
+    try {
+      const thread = service.createThread("agent-one");
+      service.createWakeSchedule(thread.id, { kind: "once", timezone: "UTC", localAt: "2027-01-02T10:00", compactFirst: true });
+      now += 60_000; dispatch(service);
+      await waitFor(() => turns === 1 && service.store.getThread(thread.id)?.runState.status === "complete");
+      expect(service.wakeSchedule(thread.id)?.lastOutcome).toBe("fired");
+      expect(compactions).toBe(outcome === "unsupported" ? 0 : 1);
+      expect(service.thread(thread.id).messages.flatMap((message) => message.parts)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: "compaction", status: ["failed", "unknown", "unsupported"].includes(outcome) ? "failed" : "skipped",
+          ...(outcome === "unknown" ? { reason: "outcome_unknown" } : {}) }),
+      ]));
+      dispatch(service); expect(turns).toBe(1);
+    } finally { await service.stop(); }
+  });
+
+  it("leaves preparation pending across service restart and claims the turn only once", async () => {
+    const root = await temporaryRoot(); roots.push(root);
+    let now = Date.parse("2027-01-02T09:59:00Z");
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let compactions = 0; let turns = 0;
+    const options = { stateDir: join(root, "state"), clock: () => new Date(now),
+      discoveryIntervalMs: 0, purgeIntervalMs: 0, discoverImpl: async () => [fakeDiscoveredAgent()],
+      fetchImpl: operatorFetch({ supportsManualCompaction: true, onCompact: async () => {
+        compactions += 1; if (compactions === 1) await gate;
+        return { status: "succeeded", trigger: "manual", operationId: `compact-${compactions}` };
+      }, onTurn: () => { turns += 1; } }),
+    };
+    const first = await WebService.create(options);
+    const thread = first.createThread("agent-one");
+    first.createWakeSchedule(thread.id, { kind: "once", timezone: "UTC", localAt: "2027-01-02T10:00", compactFirst: true });
+    now += 60_000; dispatch(first);
+    await waitFor(() => compactions === 1);
+    await first.stop();
+    const second = await WebService.create(options);
+    try {
+      await waitFor(() => turns === 1 && second.store.getThread(thread.id)?.runState.status === "complete");
+      release(); await new Promise((resolve) => setTimeout(resolve, 30));
+      dispatch(second); expect(turns).toBe(1); expect(compactions).toBe(2);
+    } finally { release(); await second.stop(); }
+  });
+});
+
+
+it("defers a compact-first wake across disconnection and never duplicates it on reconnection", async () => {
+  const root = await temporaryRoot(); roots.push(root);
+  let now = Date.parse("2027-01-02T09:59:00Z");
+  let online = true; let compactions = 0; let turns = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const service = await WebService.create({ stateDir: join(root, "state"), clock: () => new Date(now),
+    discoveryIntervalMs: 0, purgeIntervalMs: 0, discoverImpl: async () => online ? [fakeDiscoveredAgent()] : [],
+    fetchImpl: operatorFetch({ supportsManualCompaction: true, onCompact: async () => {
+      compactions += 1; if (compactions === 1) await gate;
+      return { status: "succeeded", operationId: `disconnected-${compactions}`, trigger: "manual" };
+    }, onTurn: () => { turns += 1; } }),
+  });
+  try {
+    const thread = service.createThread("agent-one");
+    service.createWakeSchedule(thread.id, { kind: "once", timezone: "UTC", localAt: "2027-01-02T10:00", compactFirst: true });
+    now += 60_000; dispatch(service);
+    await waitFor(() => compactions === 1);
+    online = false; await service.refreshAgents(); release();
+    await waitFor(() => service.thread(thread.id).thread.compaction === undefined);
+    dispatch(service); expect(turns).toBe(0);
+    online = true; await service.refreshAgents();
+    await waitFor(() => turns === 1 && service.store.getThread(thread.id)?.runState.status === "complete");
+    dispatch(service); expect(turns).toBe(1); expect(compactions).toBe(2);
+  } finally { release(); await service.stop(); }
+});

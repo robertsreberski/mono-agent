@@ -71,8 +71,8 @@ export function parseWakeDefinition(value: unknown, now = new Date()): WebWakeSc
   if (typeof value !== "object" || value === null || Array.isArray(value)) invalid("schedule", "Expected an object.");
   const body = value as Record<string, unknown>;
   const kind = body.kind;
-  const keys = kind === "once" ? ["kind", "timezone", "localAt", "message"]
-    : kind === "weekly" ? ["kind", "timezone", "days", "times", "message"] : [];
+  const keys = kind === "once" ? ["kind", "timezone", "localAt", "message", "compactFirst"]
+    : kind === "weekly" ? ["kind", "timezone", "days", "times", "message", "compactFirst"] : [];
   if (keys.length === 0) invalid("kind", "Choose once or weekly.");
   for (const key of Object.keys(body)) if (!keys.includes(key)) invalid(key, "Unknown field for this schedule kind.");
   if (typeof body.timezone !== "string" || body.timezone.length > 128) invalid("timezone", "Enter an IANA timezone.");
@@ -82,10 +82,14 @@ export function parseWakeDefinition(value: unknown, now = new Date()): WebWakeSc
   if (body.message !== undefined && (typeof body.message !== "string" || Buffer.byteLength(body.message, "utf8") > 1000)) {
     invalid("message", "Must be at most 1000 UTF-8 bytes.");
   }
+  if (body.compactFirst !== undefined && typeof body.compactFirst !== "boolean") {
+    invalid("compactFirst", "Must be a boolean.");
+  }
+  const compaction = body.compactFirst === undefined ? {} : { compactFirst: body.compactFirst as boolean };
   const message = body.message as string | undefined;
   if (kind === "once") {
     if (typeof body.localAt !== "string" || !LOCAL.test(body.localAt)) invalid("localAt", "Enter a local date and time (YYYY-MM-DDTHH:mm).");
-    const definition: WebWakeScheduleDefinition = { kind: "once", timezone, localAt: body.localAt, ...(message === undefined ? {} : { message }) };
+    const definition: WebWakeScheduleDefinition = { kind: "once", timezone, localAt: body.localAt, ...compaction, ...(message === undefined ? {} : { message }) };
     if (nextWakeOccurrence(definition, now) === null) invalid("localAt", "Choose a future local date and time.");
     return definition;
   }
@@ -96,5 +100,5 @@ export function parseWakeDefinition(value: unknown, now = new Date()): WebWakeSc
     || !body.times.every((time) => typeof time === "string" && TIME.test(time))
     || new Set(body.times).size !== body.times.length) invalid("times", "Select 1–8 distinct HH:mm times.");
   return { kind: "weekly", timezone, days: [...body.days].sort() as number[], times: [...body.times].sort() as string[],
-    ...(message === undefined ? {} : { message }) };
+    ...compaction, ...(message === undefined ? {} : { message }) };
 }

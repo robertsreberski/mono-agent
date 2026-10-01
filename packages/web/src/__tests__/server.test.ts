@@ -183,7 +183,7 @@ describe("conversation wake schedule HTTP", () => {
     const { baseUrl } = await start();
     const threadId = await createThread(baseUrl, "agent-one");
     const url = `${baseUrl}/api/v1/threads/${threadId}/wake-schedule`;
-    const body = { kind: "weekly", timezone: "UTC", days: [1], times: ["09:00"], message: "Review the sample." };
+    const body = { kind: "weekly", timezone: "UTC", days: [1], times: ["09:00"], message: "Review the sample.", compactFirst: true };
     const send = (method: string, payload: object, origin = baseUrl) => fetch(url, {
       method, headers: { "Content-Type": "application/json", Origin: origin }, body: JSON.stringify(payload),
     });
@@ -195,6 +195,8 @@ describe("conversation wake schedule HTTP", () => {
     expect(created.status).toBe(201);
     const schedule = (await json(created)).schedule as { revision: number; nextFireAt: string };
     expect(schedule.nextFireAt).toBeTruthy();
+    expect(schedule).toMatchObject({ definition: { compactFirst: true } });
+    expect(await json(await fetch(url))).toMatchObject({ schedule: { definition: { compactFirst: true } } });
     expect((await send("POST", body)).status).toBe(409);
     const detail = await json(await fetch(`${baseUrl}/api/v1/threads/${threadId}`));
     expect((detail.thread as { wakeSchedule: { state: string } }).wakeSchedule.state).toBe("active");
@@ -202,7 +204,12 @@ describe("conversation wake schedule HTTP", () => {
     const paused = await send("PATCH", { expectedRevision: schedule.revision, state: "paused" });
     expect(paused.status).toBe(200);
     const revision = ((await json(paused)).schedule as { revision: number }).revision;
-    expect((await send("DELETE", { expectedRevision: revision })).status).toBe(204);
+    const updated = await send("PUT", { ...body, compactFirst: false, expectedRevision: revision });
+    expect(updated.status).toBe(200);
+    const replacement = (await json(updated)).schedule as { revision: number };
+    expect(replacement).toMatchObject({ definition: { compactFirst: false } });
+    expect(await json(await fetch(url))).toMatchObject({ schedule: { definition: { compactFirst: false } } });
+    expect((await send("DELETE", { expectedRevision: replacement.revision })).status).toBe(204);
     expect((await json(await fetch(url))).schedule).toBeNull();
   });
 });
