@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  appendReplyPartFallback,
   ChannelDeliveryError,
   ResilientMessageStream,
   type ChannelSendOutcome,
@@ -1391,4 +1392,10 @@ describe("ResilientMessageStream provider routing activity", () => {
     expect(lastEdit?.text).toContain("the answer");
     expect(lastEdit?.text).not.toContain("Failed over");
   });
+});
+
+it("quick reply fallback is non-actionable for humans and leaves machine text unchanged", () => {
+  const parts = [{ type: "reply_options" as const, id: "choices", options: ["Review draft", "Continue"] }];
+  expect(appendReplyPartFallback("Answer", parts)).toBe("Answer\n\n⚠️ Quick reply buttons are available only in the web console.");
+  expect(appendReplyPartFallback("Answer", parts, "none")).toBe("Answer");
 });

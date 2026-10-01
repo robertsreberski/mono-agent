@@ -1,3 +1,4 @@
+import { createSuggestRepliesService, isSuggestRepliesToolAllowed } from "./suggest-replies.js";
 import { trackResponderActivity, type WorkerActivityTracker } from "./worker-activity.js";
 import { createProviderUsageRuntimeExtension } from "./provider-usage-tool.js";
 import { readJsonSection, readSettingsJson, type ProviderUsageOperator } from "@mono-agent/agent-contracts";
@@ -239,6 +240,8 @@ export async function buildResponder(
   const adapterSendTools = await controller.adapterSendToolsRuntimeOptions(coreConfig);
   const historyToolSupport = historyToolRouteSupport(coreConfig);
   const replyPartBudget = createReplyPartBudget();
+  const suggestedReplies = isSuggestRepliesToolAllowed(coreConfig.tools)
+    ? createSuggestRepliesService({ budget: replyPartBudget }) : undefined;
   const restartProposals = isProposeRestartToolAllowed(coreConfig.tools)
     ? createRestartProposalService({
         authority: controller.restartAuthority,
@@ -351,6 +354,7 @@ export async function buildResponder(
     sessionHistoryExtension,
     conversationTitleExtension,
     restartProposals?.extension,
+    suggestedReplies?.extension,
     consoleProjectsExtension,
     mcpAppsExtension,
     replyArtifactsExtension,
@@ -466,7 +470,8 @@ export async function buildResponder(
     },
   });
   const replyResponder = replyArtifacts.wrapResponder(responder);
-  const proposedReplyResponder = restartProposals === undefined ? replyResponder : restartProposals.wrapResponder(replyResponder);
+  const suggestedReplyResponder = suggestedReplies === undefined ? replyResponder : suggestedReplies.wrapResponder(replyResponder);
+  const proposedReplyResponder = restartProposals === undefined ? suggestedReplyResponder : restartProposals.wrapResponder(suggestedReplyResponder);
   const richReplyResponder = postedReplyHistory.wrapResponder(
     mcpApps === undefined ? proposedReplyResponder : mcpApps.wrapResponder(proposedReplyResponder),
   );

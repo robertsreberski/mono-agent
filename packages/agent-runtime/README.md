@@ -90,6 +90,9 @@ revisions, reads only the originating tool's declared `ui://` resource, and
 receives one exact connection capability. Successful registration retains that
 existing MCP client instead of creating a client per UI call; host LRU/idle
 eviction closes the client, transport, and sandbox cleanup.
+Successful app-owned `SuggestReplies` calls also count as visible content for
+Pi-native silent-turn admission: a web reply with choices cannot finish silently.
+
 See [Reply files and MCP Apps](https://docs.mono-agent.dev/tools/rich-replies/).
 
 ### Anthropic cache retention

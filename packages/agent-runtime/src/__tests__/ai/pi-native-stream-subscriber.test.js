@@ -471,7 +471,7 @@ describe("createStreamSubscriber — turn counting + maxTurns stop", () => {
     expect(harness.calls.aborts).toBe(1);
   });
 
-  it("blocks silence after rich output and exempts a sole successful terminal silence", () => {
+  it.each(["mcp__reply_files__PublishReplyFile", "SuggestReplies", "mcp__mono-agent-suggest-replies__SuggestReplies"])("blocks silence after %s and exempts a sole successful terminal silence", (toolName) => {
     const { runState, harness, handler } = driver({ maxTurns: 1 });
     runState.silentTurn = { soleCall: true, visibleContent: false, pendingQuestion: false,
       failed: false, accepted: true, completed: false };
@@ -482,7 +482,7 @@ describe("createStreamSubscriber — turn counting + maxTurns stop", () => {
     handler({ type: "turn_end", message: { stopReason: "toolUse" } });
     expect(runState.maxTurnsHit).toBe(false);
     expect(harness.calls.aborts).toBe(0);
-    handler({ type: "tool_execution_end", toolName: "mcp__reply_files__PublishReplyFile", toolCallId: "file-1",
+    handler({ type: "tool_execution_end", toolName, toolCallId: "file-1",
       result: { content: [{ type: "text", text: "published" }] }, isError: false });
     expect(runState.silentTurn.visibleContent).toBe(true);
   });

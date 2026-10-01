@@ -145,6 +145,9 @@ export function isAgentReplyPartDeliveryOutcomes(
         return code === "unsupported_destination"
           && message === mcpAppUnsupportedOutcome(position).message;
       }
+      if (partType === "reply_options") {
+        return code === "unsupported_destination" && message === replyOptionsUnsupportedOutcome(position).message;
+      }
       if (partType === "failure") {
         return FAILURE_CODES.has(code as AgentReplyPartFailure["code"])
           && message === failedBeforeDeliveryOutcome(position, code as AgentReplyPartFailure["code"]).message;
@@ -172,6 +175,7 @@ function unsupportedOutcome(
   if (partType === "mcp_app") {
     return mcpAppUnsupportedOutcome(partIndex);
   }
+  if (partType === "reply_options") return replyOptionsUnsupportedOutcome(partIndex);
   if (partType === "restart_proposal") {
     return restartProposalUnsupportedOutcome(partIndex);
   }
@@ -198,6 +202,7 @@ function sanitizeOutcome(value: unknown, partIndex: number): AgentReplyPartDeliv
   if (partType === "mcp_app") {
     return mcpAppUnsupportedOutcome(partIndex);
   }
+  if (partType === "reply_options") return replyOptionsUnsupportedOutcome(partIndex);
   if (partType === "restart_proposal") {
     return restartProposalUnsupportedOutcome(partIndex);
   }
@@ -249,6 +254,11 @@ function mcpAppUnsupportedOutcome(partIndex: number): AgentReplyPartDeliveryOutc
     code: "unsupported_destination",
     message: "MCP App reply parts are unsupported on this destination.",
   };
+}
+
+function replyOptionsUnsupportedOutcome(partIndex: number): AgentReplyPartDeliveryOutcome {
+  return { partIndex, partType: "reply_options", status: "failed", code: "unsupported_destination",
+    message: "Quick reply buttons are available only in the web console." };
 }
 
 function restartProposalUnsupportedOutcome(partIndex: number): AgentReplyPartDeliveryOutcome {
@@ -310,7 +320,7 @@ function hasOnlyKeys(value: Record<string, unknown>, allowedKeys: readonly strin
 function replyPartType(part: unknown): AgentReplyPartDeliveryType {
   if (isRecord(part)) {
     const type = objectDataValue(part, "type");
-    if (type === "attachment" || type === "mcp_app" || type === "restart_proposal" || type === "failure") {
+    if (type === "attachment" || type === "mcp_app" || type === "restart_proposal" || type === "reply_options" || type === "failure") {
       return type;
     }
   }

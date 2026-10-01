@@ -5,7 +5,7 @@ sidebar:
   order: 1
 ---
 
-The tool policy decides which tools an agent may call — built-in tools (Read, Bash, …) and policy-gated app-owned MCP tools such as `RunHistory`, `SessionHistory`, `MemoryJournal`, `SetConversationTitle`, `Remember`, and adapter send tools. It is **allow-all by default**: an agent with no `tools` block gets every policy-gated tool, and you subtract from there. You declare it under `tools.allowedTools` / `tools.disallowedTools` (coverage: `config`), with deny always winning and overlaps rejected up front. External MCP-server tools use server declaration as their boundary instead.
+The tool policy decides which tools an agent may call — built-in tools (Read, Bash, …) and policy-gated app-owned MCP tools such as `RunHistory`, `SessionHistory`, `MemoryJournal`, `SetConversationTitle`, `SuggestReplies`, `Remember`, and adapter send tools. It is **allow-all by default**: an agent with no `tools` block gets every policy-gated tool, and you subtract from there. You declare it under `tools.allowedTools` / `tools.disallowedTools` (coverage: `config`), with deny always winning and overlaps rejected up front. External MCP-server tools use server declaration as their boundary instead.
 
 ## Allow-all by default
 
@@ -87,7 +87,7 @@ The example above keeps allow-all (every tool stays available) but denies `Bash`
 
 ## Deny enforcement
 
-`disallowedTools` filters the built-in tools (`Read`, `Bash`, …), the progressive-disclosure `ReadSkill` tool, `RunHistory`, `SessionHistory`, `MemoryJournal`, `SetConversationTitle`, and app-owned adapter send tools (`SlackSendMessage`, `TelegramSendMessage`, …). The Pi runtime honors the list for all of those on every route.
+`disallowedTools` filters the built-in tools (`Read`, `Bash`, …), the progressive-disclosure `ReadSkill` tool, `RunHistory`, `SessionHistory`, `MemoryJournal`, `SetConversationTitle`, `SuggestReplies`, and app-owned adapter send tools (`SlackSendMessage`, `TelegramSendMessage`, …). The Pi runtime honors the list for all of those on every route.
 
 :::caution
 **Known limitation — external MCP tools on pi.** Arbitrary tools advertised by an external MCP server are **not** deny-filtered on the pi-native runtime yet. Listing such a tool in `disallowedTools` has no effect there. To hard-restrict an external MCP tool on pi, **don't declare its server** in `mcp.json` / `tools.mcpServers` — server declaration, not the denylist, is what governs its availability. (The app-owned adapter send tools are exempt from this limitation: they are gated by the app, so their `disallowedTools` entries are honored everywhere.)
@@ -155,6 +155,15 @@ The tool is omitted when memory is absent, explicit reads are disabled, or the
 store is unsupported. A supported empty date range is a successful
 `noData: true` result. See [MCP servers](/tools/mcp/#memoryjournal-curated-chronology)
 for its strict range, snapshot, cursor, privacy, and evidence contracts.
+
+## SuggestReplies
+
+`SuggestReplies` is an app-owned, request-scoped tool only for web-console
+conversation replies, including web-bound job wakes. Allow-all permits it;
+restrictive `tools.allowedTools` must include the name, and deny wins.
+It adds non-blocking choices rather than waiting for a response. Use `AskUser`
+when the run must wait. See [web-only quick replies](./rich-replies.md#web-only-quick-replies)
+for label limits, persistence, and unsupported-destination behavior.
 
 ## SetConversationTitle
 

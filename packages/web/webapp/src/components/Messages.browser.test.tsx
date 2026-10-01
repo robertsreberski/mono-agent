@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   AssistantRuntimeProvider,
   ThreadPrimitive,
@@ -864,6 +865,52 @@ describe("reasoning-split reply in Chromium", () => {
       expect(screen.getByRole("button", { name: "Activity in progress" })).toBeVisible();
       const directory = import.meta.env.VITE_TRANSCRIPT_SHOTS as string | undefined;
       if (directory) await page.screenshot({ path: `${directory}/synthetic-transcript-running-${label}.png` });
+    },
+  );
+});
+
+function QuickRepliesHarness({ width, onSend }: { readonly width: number; readonly onSend: (text: string) => void }) {
+  const [messages, setMessages] = useState<readonly WebMessage[]>([{
+    id: "quick-answer", threadId: "thread", role: "assistant", status: "complete",
+    createdAt: "2026-09-23T10:00:00.000Z", updatedAt: "2026-09-23T10:00:01.000Z", attachments: [],
+    parts: [{ type: "text", text: "The project draft is ready. What would you like to do next?" },
+      { type: "reply_options", id: "quick-choices", options: ["Review draft", "Keep going", "Try another approach", "Summarize changes"] }],
+  }]);
+  const runtime = useExternalStoreRuntime<WebMessage>({
+    messages, convertMessage: (message) => convertWebMessage(message), onNew: async (message) => {
+      const text = message.content.filter((part) => part.type === "text").map((part) => part.text).join("");
+      onSend(text);
+      setMessages((held) => [...held, { id: "chosen", threadId: "thread", role: "user", status: "complete",
+        createdAt: "2026-09-23T10:00:02.000Z", updatedAt: "2026-09-23T10:00:02.000Z", attachments: [],
+        parts: [{ type: "text", text }] }]);
+    },
+  });
+  return <div style={{ width, minHeight: 320, padding: 16, boxSizing: "border-box" }}>
+    <AssistantRuntimeProvider runtime={runtime}>
+      <ThreadPrimitive.Root><ThreadPrimitive.Messages components={{ AssistantMessage, SystemMessage, UserMessage }} /></ThreadPrimitive.Root>
+    </AssistantRuntimeProvider>
+  </div>;
+}
+describe("quick reply choices in Chromium", () => {
+  it.each([[1280, 800, "desktop"], [390, 844, "mobile"]] as const)(
+    "wraps accessible choices beneath the answer at %ipx (%s)", async (width, height, label) => {
+      await page.viewport(width, height);
+      const onSend = vi.fn();
+      const { container } = render(<QuickRepliesHarness width={Math.min(width, 760)} onSend={onSend} />);
+      const answer = screen.getByText("The project draft is ready. What would you like to do next?");
+      const row = screen.getByRole("group", { name: "Suggested replies" });
+      expect(row.getBoundingClientRect().top).toBeGreaterThanOrEqual(answer.getBoundingClientRect().bottom - 1);
+      expect(row.closest(".activity-root")).toBeNull();
+      expect(container.scrollWidth).toBeLessThanOrEqual(width);
+      expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+      const button = screen.getByRole("button", { name: "Review draft" });
+      button.focus(); expect(document.activeElement).toBe(button);
+      const directory = import.meta.env.VITE_QUICK_REPLIES_SHOTS as string | undefined;
+      if (directory) await page.screenshot({ path: `${directory}/quick-replies-${label}.png` });
+      await page.getByRole("button", { name: "Review draft" }).click();
+      await waitFor(() => expect(onSend).toHaveBeenCalledExactlyOnceWith("Review draft"));
+      await waitFor(() => expect(container.querySelector(".message-user")?.textContent).toContain("Review draft"));
+      expect(screen.getByRole("button", { name: "Keep going" })).toBeDisabled();
     },
   );
 });

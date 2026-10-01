@@ -967,6 +967,18 @@ select direct OpenCode suppress the tool because that bridge has no compatible
 host MCP seam. When the tool is absent or unused, the existing first-user-message
 title remains the fallback.
 
+### Web-console quick replies
+
+`SuggestReplies` attaches non-blocking quick-action buttons to a final reply
+on web-console turns, including web-bound background/job wakes. It accepts
+`{ options: string[] }`: 2–8 distinct trimmed single-line labels of 1–75
+characters, rejecting control characters and duplicates. The later call
+replaces the earlier set; one set uses one shared reply-part budget slot.
+Clicking sends the label as a later ordinary user turn. Use `AskUser` when the
+current run must wait. A restrictive `tools.allowedTools` must name
+`SuggestReplies`; deny wins. Other channels never receive the tool and use the
+existing sanitized unsupported-part fallback if a producer sends the part.
+
 ### Web-console restart proposals
 
 An interactive web turn on a keyed, verified supervised worker may expose the

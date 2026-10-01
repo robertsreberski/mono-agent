@@ -1403,3 +1403,15 @@ describe("restart proposal placement", () => {
     ]);
   });
 });
+
+it("places quick replies immediately after the answer outside activity", () => {
+  const converted = convertWebMessage(message({ role: "assistant", parts: [
+    { type: "tool-call", toolCallId: "read", toolName: "Read", status: "complete" },
+    { type: "text", text: "What next?" },
+    { type: "failure", id: "old", code: "unsupported_destination", message: "Other part." },
+    { type: "reply_options", id: "choices", options: ["Review draft", "Continue"] },
+  ] }));
+  expect((converted.content as readonly { type: string }[]).map((part) => part.type)).toEqual([
+    "tool-call", "text", "data-reply-options", "data-reply-failure",
+  ]);
+});

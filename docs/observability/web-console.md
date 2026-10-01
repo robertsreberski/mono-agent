@@ -920,6 +920,19 @@ wake response. The separate stack remains the single live operational owner.
 
 Type `/` in an empty composer to open the keyboard-friendly command popover for available actions such as run settings, starting a new conversation, or stopping an active response. Type `$` to find an available skill, or use **Browse skills** without entering a trigger.
 
+## Suggested quick replies
+
+An agent can call `SuggestReplies` to attach 2–8 non-blocking choices directly
+beneath its final answer, including web-bound background/job wake replies.
+The compact buttons wrap on mobile and support keyboard navigation. Clicking
+one sends its label verbatim as an ordinary user message in the same
+conversation; the current agent run never waits for a choice. The choices are
+stored with the answer and survive reload. They remain readable but disabled
+after a click, while a turn is running, or after any later user message.
+Use `AskUser` instead when a run must wait for the operator's response.
+See [web-only quick replies](/tools/rich-replies/#web-only-quick-replies) for
+validation, tool policy, and unsupported-destination behavior.
+
 ## Reply files and MCP Apps
 
 Assistant replies can include host-owned file or MCP App references when the

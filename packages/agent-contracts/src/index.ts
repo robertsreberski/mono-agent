@@ -668,6 +668,22 @@ export interface AgentReplyMcpAppPart {
   readonly expiresAt?: string;
 }
 
+/** Non-blocking choices delivered with an assistant reply in the web console. */
+export interface AgentReplyOptionsPart {
+  readonly type: "reply_options";
+  readonly id: string;
+  readonly options: readonly string[];
+}
+
+/** Validate canonical labels at delivery/persistence boundaries without coercion. */
+export function isAgentReplyOptions(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.length >= 2 && value.length <= 8
+    && Array.from(value).every((label) => typeof label === "string"
+      && label === label.trim() && label.length >= 1 && label.length <= 75
+      && !/[\x00-\x1f\x7f-\x9f\u2028\u2029]/u.test(label))
+    && new Set(value).size === value.length;
+}
+
 /** A display-only restart suggestion. Target and authority are NEVER model-supplied. */
 export interface AgentReplyRestartProposalPart {
   readonly type: "restart_proposal";
@@ -710,6 +726,7 @@ export type AgentReplyPart =
   | AgentReplyAttachmentPart
   | AgentReplyMcpAppPart
   | AgentReplyRestartProposalPart
+  | AgentReplyOptionsPart
   | AgentReplyPartFailure;
 
 export interface AgentMessageFinishOptions {

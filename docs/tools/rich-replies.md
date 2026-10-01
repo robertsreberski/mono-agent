@@ -7,7 +7,7 @@ sidebar:
 
 mono-agent can return more than answer text without placing file bytes, local
 paths, or app HTML in the reply stream. A response may carry an opaque file
-reference, an MCP App reference, a restart proposal, or a visible per-part failure. These parts are
+reference, an MCP App reference, quick reply choices, a restart proposal, or a visible per-part failure. These parts are
 additive: valid text and earlier parts remain deliverable when a later part
 fails.
 
@@ -58,6 +58,37 @@ run id, conversation id, workspace, or artifact path. The tool is removed by
 the host's sealed tool policy and is not installed on a route that
 cannot safely receive its MCP server.
 
+## Web-only quick replies
+
+`SuggestReplies` is an app-owned, request-scoped MCP tool on web-console
+conversation turns, including existing web-bound background/job wakes. It is
+non-blocking: the agent finishes its reply, and a click arrives later as a new
+user turn in the same conversation. Use `AskUser` when the current run must
+wait for a selection. Ordinary `tools.allowedTools` / `tools.disallowedTools`
+policy applies; a restrictive allow-list must include `SuggestReplies`.
+
+```json
+{ "options": ["Review draft", "Keep going", "Try another approach"] }
+```
+
+Supply 2–8 distinct single-line labels, each 1–75 characters after trimming.
+Control characters and duplicate trimmed labels are rejected. The tool adds
+one `reply_options` part containing only `type`, an opaque `id`, and `options`.
+A later call in the same run replaces the choices without claiming another
+slot in the shared 20-part reply budget. The choices persist with the assistant
+message and appear as keyboard-accessible, wrapping buttons directly below the
+final answer. A click sends the label verbatim through the normal chat path and
+shows it as a user message. Buttons become disabled after a click, while a turn
+is running, or once any later user message exists. There is no separate click
+store or cross-device lock: the later user message makes old choices inert on
+reload and other devices.
+
+Telegram, Slack, webhook, terminal, ACP, cron, A2A and OpenAI-compatible turns
+never receive this tool. Unexpected delivery to a non-web human destination
+adds only a concise warning, not choices or actionable controls. Machine
+transports leave answer text unchanged and expose a sanitized
+`unsupported_destination` outcome with `partType: "reply_options"`, never labels.
+
 ## Web-only restart proposals
 
 `ProposeRestart` is an app-owned, request-scoped MCP tool only on an
@@ -89,7 +120,7 @@ transports leave assistant text unchanged and return only sanitized terminal
 | --- | --- | --- |
 | Slack | Uses `files.getUploadURLExternal`, uploads bytes to Slack's returned URL, then confirms with `files.completeUploadExternal` in the exact channel/thread. | Concise human-readable warning. |
 | Telegram | Sends a native `sendDocument` to the exact chat/reply target and preserves silent proactive delivery. | Concise human-readable warning. |
-| Web console | Shows a message-bound download control after server-side authorization and integrity verification. | MCP Apps render as described below; failures remain individual message parts. |
+| Web console | Shows a message-bound download control after server-side authorization and integrity verification. | Quick replies and restart proposals render beneath the answer; MCP Apps render as described below; failures remain individual message parts. |
 | Terminal and other human channels | Preserve the answer and render a safe warning when a part has no native representation. | Same. |
 | OpenAI-compatible API | Keeps assistant `content` byte-for-byte unchanged and returns sanitized failures in `mono_agent.reply_part_outcomes`. | Non-stream JSON and a metadata-only SSE chunk use the same bounded shape. |
 | Webhook | Keeps `text` byte-for-byte unchanged and returns sanitized `replyPartOutcomes`. | Sync responses, async status reads, and result callbacks retain the outcomes. |
@@ -113,7 +144,8 @@ Every machine adapter uses the shared
 ```
 
 - `partIndex` is rewritten to the dense zero-based output position.
-- `partType` is exactly `attachment`, `mcp_app`, `failure`, or `unknown`.
+- `partType` is exactly `attachment`, `mcp_app`, `restart_proposal`, `reply_options`,
+  `failure`, or `unknown`.
 - `status` is the terminal literal `failed`.
 - `code` is exactly one of `app_capability_mismatch`,
   `app_connection_closed`, `app_resource_invalid`, `artifact_expired`,

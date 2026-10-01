@@ -14,6 +14,7 @@ import {
   AGENT_LIVE_INPUT_MAX_MESSAGES,
   MAX_AGENT_REPLY_PARTS,
   sanitizeRestartProposalReason,
+  isAgentReplyOptions,
   classifyNotifySuppression,
   NOTHING_TO_REPORT_SENTINEL,
   type AgentReplyPart,
@@ -9036,7 +9037,7 @@ const REPLY_FAILURE_CODES = new Set([
 
 const REPLY_PARTS_TRUNCATED_ID = "web-reply-parts-truncated";
 const INVALID_REPLY_PART_ID = "invalid-rich-part";
-type DurableWebReplyPart = Extract<WebMessagePart, { type: "attachment" | "mcp_app" | "restart_proposal" | "failure" }>;
+type DurableWebReplyPart = Extract<WebMessagePart, { type: "attachment" | "mcp_app" | "restart_proposal" | "reply_options" | "failure" }>;
 
 /**
  * The SQLite boundary does not trust the operator wire parser. A truncated
@@ -9074,7 +9075,7 @@ function replyPartIdCounts(values: readonly unknown[]): Map<string, number> {
 }
 
 function isDurableWebReplyPart(part: WebMessagePart): part is DurableWebReplyPart {
-  return part.type === "attachment" || part.type === "mcp_app" || part.type === "restart_proposal" || part.type === "failure";
+  return part.type === "attachment" || part.type === "mcp_app" || part.type === "restart_proposal" || part.type === "reply_options" || part.type === "failure";
 }
 
 function boundedWebReplyParts(
@@ -9122,6 +9123,7 @@ function boundedWebReplyParts(
     inputParts.length,
     Math.max(0, MAX_AGENT_REPLY_PARTS - retainedExistingCount - (needsDiagnostic ? 1 : 0)),
   );
+  let optionsSeen = retainedExistingParts.some((part) => part.type === "reply_options");
   let proposalSeen = retainedExistingParts.some((part) => part.type === "restart_proposal");
   const retained = Array.from(
     { length: retainedCount },
@@ -9134,6 +9136,12 @@ function boundedWebReplyParts(
           ? inputId
           : nextSyntheticReplyPartId(INVALID_REPLY_PART_ID, ids);
       });
+      if (converted.type === "reply_options" && optionsSeen) {
+        const duplicate: DurableWebReplyPart = { type: "failure", id: nextSyntheticReplyPartId(INVALID_REPLY_PART_ID, ids),
+          code: "unsupported_destination", message: "Only one quick reply set can be displayed with a reply." };
+        claimedIds.add(duplicate.id);
+        return duplicate;
+      }
       if (converted.type === "restart_proposal" && proposalSeen) {
         const duplicate: DurableWebReplyPart = { type: "failure", id: nextSyntheticReplyPartId(INVALID_REPLY_PART_ID, ids),
           code: "unsupported_destination", message: "Only one restart proposal can be displayed with a reply." };
@@ -9142,6 +9150,7 @@ function boundedWebReplyParts(
       }
       if (!claimedIds.has(converted.id)) {
         claimedIds.add(converted.id);
+        if (converted.type === "reply_options") optionsSeen = true;
         if (converted.type === "restart_proposal") proposalSeen = true;
         return converted;
       }
@@ -9248,6 +9257,13 @@ function toWebReplyPart(input: unknown, syntheticId: () => string): DurableWebRe
       ...(part.expiresAt === undefined ? {} : { expiresAt: part.expiresAt as string }),
     };
   }
+  if (part?.type === "reply_options") {
+    if (!hasOnlyKeys(part, DURABLE_REPLY_OPTIONS_KEYS) || !validRichId(part.id) || !isAgentReplyOptions(part.options)) {
+      return { type: "failure", id: syntheticId(), code: "unsupported_destination",
+        message: "Invalid quick reply metadata could not be displayed." };
+    }
+    return { type: "reply_options", id: part.id, options: [...part.options] };
+  }
   if (part?.type === "restart_proposal") {
     if (!hasOnlyKeys(part, DURABLE_RESTART_PROPOSAL_KEYS) || !validRichId(part.id)
       || (part.reason !== undefined && (typeof part.reason !== "string" || part.reason.length > 1_024))) {
@@ -9311,6 +9327,9 @@ function durableMessagePart(part: WebMessagePart): WebMessagePart {
       ...(part.description === undefined ? {} : { description: part.description }),
       ...(part.expiresAt === undefined ? {} : { expiresAt: part.expiresAt }),
     };
+  }
+  if (part.type === "reply_options") {
+    return { type: "reply_options", id: part.id, options: [...part.options] };
   }
   if (part.type === "restart_proposal") {
     return { type: "restart_proposal", id: part.id, ...(part.reason === undefined ? {} : { reason: part.reason }) };
@@ -9715,6 +9734,7 @@ const DURABLE_MCP_APP_KEYS = new Set([
 const DURABLE_REPLY_FAILURE_KEYS = new Set([
   "type", "id", "code", "message", "relatedPartId",
 ]);
+const DURABLE_REPLY_OPTIONS_KEYS = new Set(["type", "id", "options"]);
 const DURABLE_RESTART_PROPOSAL_KEYS = new Set(["type", "id", "reason"]);
 
 function hasOnlyKeys(value: Readonly<Record<string, unknown>>, allowed: ReadonlySet<string>): boolean {
@@ -9830,6 +9850,9 @@ function isWebMessagePart(value: unknown): value is WebMessagePart {
       && validOptionalBoundedText(part.title, 240)
       && validOptionalBoundedText(part.description, 1_000)
       && validOptionalDate(part.expiresAt);
+  }
+  if (part.type === "reply_options") {
+    return hasOnlyKeys(part, DURABLE_REPLY_OPTIONS_KEYS) && validRichId(part.id) && isAgentReplyOptions(part.options);
   }
   if (part.type === "restart_proposal") {
     return hasOnlyKeys(part, DURABLE_RESTART_PROPOSAL_KEYS)
