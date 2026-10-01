@@ -4481,3 +4481,24 @@ it("reads cache retention from provider JSON, with a long default and strict val
     })).toThrow();
   }
 });
+
+describe("computer-use config", () => {
+  const load = (computerUse?: unknown) => resolveJsonMonoAgentConfig({ cwd: "/repo", json: {
+    ...baseJson, tools: computerUse === undefined ? {} : { computerUse },
+  } as MonoAgentConfigJson });
+  it("is absent by default and accepts only the cua-driver backend", () => {
+    expect(load().tools.computerUse).toBeUndefined();
+    expect(load({ backend: "cua-driver" }).tools.computerUse).toEqual({ backend: "cua-driver" });
+    expect(load({ backend: "cua-driver", command: "./bin/cua-driver" }).tools.computerUse?.command).toBe("/repo/bin/cua-driver");
+    expect(load({ backend: "cua-driver", command: "custom-driver" }).tools.computerUse?.command).toBe("custom-driver");
+  });
+  it.each([null, [], true, "cua-driver", {}, { backend: "other" },
+    { backend: "cua-driver", command: " " }, { backend: "cua-driver", command: 4 },
+    { backend: "cua-driver", command: "bad\ncommand" },
+    { backend: "cua-driver", permissionMode: "standard" },
+    { backend: "cua-driver", capabilityManifest: "scope.yaml" },
+    { backend: "cua-driver", unrestricted: true }, { backend: "cua-driver", typo: true },
+  ])("rejects malformed or unsupported configuration %j", (value) => {
+    expect(() => load(value)).toThrow(/tools\.computerUse.*docs\/tools\/computer-use\.md/u);
+  });
+});

@@ -1,3 +1,4 @@
+import { configuredToolPolicyInput as toolPolicyInput } from "./computer-use.js";
 import { composeHostTurnEnvelope, formatHostCapabilities, HOST_TURN_CONTEXT_GUIDANCE } from "@mono-agent/agent-harness";
 import { createSubagentRecoveryAccess } from "./subagent-recovery-access.js";
 import type { OwnedForegroundProcesses } from "@mono-agent/runtime-adapter";
@@ -10,7 +11,6 @@ import {
   acquireToolHistoryWriter,
   createDurableHistoryStore,
   createToolPolicy,
-  loadToolPolicyFromJsonFileSync,
   renderSkillIndexSection,
   ToolHistoryReader,
   toolHistoryLogicalConversationId,
@@ -27,7 +27,6 @@ import type {
   SkillIndexSummary,
   ToolHistoryWriterHandle,
 } from "@mono-agent/agent-harness";
-import type { ToolPolicyInput } from "@mono-agent/agent-harness";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve as resolvePath } from "node:path";
@@ -601,7 +600,7 @@ function selectMcpServers(
   for (const name of names) {
     if (!Object.hasOwn(available, name)) {
       throw new Error(
-        `Subagent "${profile}" references MCP server "${name}", which is not defined in tools.mcpConfigPath.`,
+        `Subagent "${profile}" references MCP server "${name}", which is not defined in tools.mcpConfigPath or tools.computerUse.`,
       );
     }
     selected[name] = available[name];
@@ -2589,23 +2588,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function toolPolicyInput(config: MonoAgentConfig): ToolPolicyInput {
-  if (config.tools.mcpConfigPath === undefined) {
-    return {
-      allowedTools: config.tools.allowedTools,
-      disallowedTools: config.tools.disallowedTools,
-    };
-  }
-  // SDK runtimes only consume inline mcpServers, so the referenced mcp.json is
-  // resolved here; the path is still forwarded for CLI runtimes that take it.
-  const filePolicy = loadToolPolicyFromJsonFileSync(config.tools.mcpConfigPath);
-  return {
-    allowedTools: config.tools.allowedTools,
-    disallowedTools: config.tools.disallowedTools,
-    mcpConfigPath: config.tools.mcpConfigPath,
-    ...(filePolicy.mcpServers === undefined ? {} : { mcpServers: filePolicy.mcpServers }),
-  };
-}
 
 function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | undefined {
   const { compaction } = config.runtime;

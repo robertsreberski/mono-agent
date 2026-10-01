@@ -1256,6 +1256,18 @@ are turn-scoped: fallback routes and child agents keep their configured policy.
 Catalog advertisements expose inferred capability and configured capacity without
 claiming provider entitlement. Manual compaction honors the conversation selection.
 
+### Local desktop computer use
+
+Opt into the separately installed cua-driver MCP server with
+`tools.computerUse: { "backend": "cua-driver", "command": "/opt/tools/cua-driver" }`.
+`command` is optional; executable discovery also handles supervised workers'
+minimal PATH. Doctor reports the resolved binary/version and waits for unconfirmed
+macOS app-daemon permissions. The reserved `computer-use` server follows ordinary
+MCP/subagent routing; a declared-name collision is a config error. Permission
+modes remain operator-owned and external MCP tools bypass built-in allow/deny
+policy. See [Computer use](../../docs/tools/computer-use.md) for installation,
+OS grants, privacy, and safe unattended-operation limits.
+
 ## Architecture
 
 The controller wraps its shared Pi-store-scoped `provider-usage.ts` service in an agent-config-scoped `provider-usage-scope.ts` operator for web/TUI and `provider-usage-tool.ts` request extensions. Activation reuses provider authentication’s effective primary/fallback, agent-host memory LLM, and enabled cron/webhook model references. Each read reloads channel references; new configs receive new scopes without changing the shared credential cache. Aggregate reads/refreshes visit only active supported providers, and explicit inactive reads return an empty snapshot before credential discovery or vendor work. Credential presence alone never activates usage. Pure mappers retain only Claude/Codex/OpenCode Go/GitHub Copilot core subscription windows. Copilot OAuth quota reads use Pi's underlying GitHub device token (`credential.refresh`), never inference `access`; inference expiry/rotation/model catalogs do not refresh or invalidate usage. Cache/retention identity follows source, GitHub token and Pi-normalized host. Missing/blank refresh or malformed/non-github.com `enterpriseUrl` omits usage without local fallback. Blank/absent host means github.com. Pi API keys are sent directly. All Copilot quota 401/403 responses get one request, no resolver/retry, and the five-minute failure fence. Only absent Pi Copilot entries allow bounded local editor apps.json/hosts.json, the active github.com token in gh hosts.yml, and shell-free noninteractive `gh auth token --hostname github.com` (2s, bounded output, token environment removed). The private `copilot-usage-credentials.ts` discovery seams are injectable; stores are never mutated. Unusable Pi entries or unreadable ownership never select a local account. Only github.com tokens qualify; no environment-token fallback, cookies or organization billing calls. Paid Credits and free Chat/Completions are percentages; unlimited/zero placeholders are omitted and explicit token billing may show only a plan. Demand-driven five-minute caching, coalescing, last-good stale data and Retry-After keep usage reads bounded. Explicit `refresh()` bypasses successful freshness and awaits shared vendor work, but honors error/backoff fences and preserves last-good fetch times. Default snapshots and tool reads retain their cached/SWR behavior. `ProviderUsage` honors normal app-tool policy and never purchases quota or changes routing. Only agent-owned Pi credential success/auth-failure outcomes feed the controller's credential-generation-fenced auth observations without additional vendor calls. Account acceptance is weaker than live inference proof; account rejection has no model and uses the existing `provider_auth` failure kind.

@@ -493,6 +493,14 @@ export function buildMonoAgentConfigSchema(): JsonSchema {
   setContinuationSchema(root);
   setStructuredAppSchemas(root);
   setRemovedConfigSchemas(root);
+  setSchemaPath(root, ["tools", "computerUse"], {
+    type: "object", additionalProperties: false, required: ["backend"],
+    properties: {
+      backend: { type: "string", enum: ["cua-driver"] },
+      command: { type: "string", minLength: 1, pattern: "^[^\\u0000-\\u001f\\u007f]+$" },
+    },
+    description: "Opt-in desktop control via a separately installed cua-driver. Permission modes/manifests are operator-owned, not configured here.",
+  });
   setSchemaPath(root, ["channels", "plugins"], {
     type: "array",
     description: "External channel plugins loaded by package name.",
@@ -1608,6 +1616,8 @@ function exampleFor(id: string): SettingsJsonValue {
     "sandbox.mode": "native",
     "traceability.sourceId": "my-agent",
     "traceability.sourceLabel": "My Agent",
+    "tools.computerUse.backend": "cua-driver",
+    "tools.computerUse.command": "/opt/tools/cua-driver",
     "tools.mcpRequestContextServers": ["transcribe"],
     "tools.filesystem.readableRoots": ["/srv/shared/reference"],
     "tools.filesystem.writableRoots": ["/srv/shared/output"],
@@ -1784,6 +1794,12 @@ function descriptionFor(id: string): string {
   }
   if (id === "runtime.effort") {
     return "Route-specific effort forwarded through Pi to the selected provider. Doctor warns when a configured value falls outside the model's advertised ladder but keeps turn-time handling permissive. Message text never changes effort.";
+  }
+  if (id === "tools.computerUse.backend") {
+    return 'Opt into local desktop control using "cua-driver" (only backend). Absent means disabled; MCP tools bypass built-in allow/deny policy. See Computer use for safety and permission boundaries.';
+  }
+  if (id === "tools.computerUse.command") {
+    return "Optional executable name or path. Relative paths resolve against the config workspace. Otherwise resolve PATH, then platform installation locations; doctor reports the selected path.";
   }
   if (id === "tools.mcpRequestContextServers") {
     return "Configured stdio MCP server names that receive trusted per-request conversation, run, output-directory, and scoped progress context.";

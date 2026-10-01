@@ -205,6 +205,8 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `telegram.transcription.timeoutMs` | `integer` | `MONO_AGENT_TELEGRAM_TRANSCRIPTION_TIMEOUT_MS` | unset | `1` | Configures transcription.timeoutMs for the telegram section. |
 | `telegram.transport.ipFamily` | `integer` | `MONO_AGENT_TELEGRAM_IP_FAMILY` | unset | `example` | Configures transport.ipFamily for the telegram section. |
 | `tools.allowedTools` | `string[]` | `--` | ["*"] | `["Read","Grep"]` | Configures allowedTools for the tools section. |
+| `tools.computerUse.backend` | `string` | `--` | unset | `cua-driver` | Opt into local desktop control using "cua-driver" (only backend). Absent means disabled; MCP tools bypass built-in allow/deny policy. See Computer use for safety and permission boundaries. |
+| `tools.computerUse.command` | `string` | `--` | unset | `/opt/tools/cua-driver` | Optional executable name or path. Relative paths resolve against the config workspace. Otherwise resolve PATH, then platform installation locations; doctor reports the selected path. |
 | `tools.continuationServers` | `string[]` | `--` | unset | `["example"]` | Configures continuationServers for the tools section. |
 | `tools.disallowedTools` | `string[]` | `--` | [] | `["Read","Grep"]` | Configures disallowedTools for the tools section. |
 | `tools.filesystem.readableRoots` | `string[]` | `--` | unset | `["/srv/shared/reference"]` | Extra roots for managed Read, Glob, and Grep while sandbox.mode is off. Access requires lexical and realpath containment; native sandbox roots remain authoritative when sandboxing is enabled. |

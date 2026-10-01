@@ -239,6 +239,11 @@ export interface MonoAgentConfigJson extends SettingsJson {
       readonly readableRoots?: readonly string[];
       readonly writableRoots?: readonly string[];
     };
+    /** Opt-in local desktop control via the separately installed cua-driver. */
+    readonly computerUse?: {
+      readonly backend: "cua-driver";
+      readonly command?: string;
+    };
     readonly mcpConfigPath?: string;
     readonly mcpRequestContextServers?: readonly string[];
     readonly continuationServers?: readonly string[];

@@ -86,6 +86,8 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "tools.disallowedTools": "string[]",
   "tools.filesystem.readableRoots": "string[]",
   "tools.filesystem.writableRoots": "string[]",
+  "tools.computerUse.backend": "string",
+  "tools.computerUse.command": "string",
   "tools.mcpConfigPath": "string",
   "tools.mcpRequestContextServers": "string[]",
   "tools.continuationServers": "string[]",
@@ -140,6 +142,7 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
 
 interface SchemaNode {
   readonly type?: string;
+  readonly additionalProperties?: boolean | SchemaNode;
   readonly required?: readonly string[];
   readonly enum?: readonly string[];
   readonly const?: string;
@@ -173,6 +176,16 @@ function repoRoot(): string {
 }
 
 describe("config reference", () => {
+  it("keeps computer-use schema strict and opt-in", () => {
+    const schema = buildMonoAgentConfigSchema() as SchemaNode;
+    const block = schema.properties!.tools!.properties!.computerUse!;
+    expect(block.required).toEqual(["backend"]);
+    expect(block.additionalProperties).toBe(false);
+    expect(Object.keys(block.properties!)).toEqual(["backend", "command"]);
+    expect(block.properties!.backend!.enum).toEqual(["cua-driver"]);
+    expect(block.default).toBeUndefined();
+  });
+
   it("accepts the retired monitors block only as deprecated inert configuration", () => {
     const schema = buildMonoAgentConfigSchema();
     expect((schema.properties as Record<string, unknown>).monitors).toEqual({

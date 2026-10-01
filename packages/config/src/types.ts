@@ -381,6 +381,11 @@ export interface MonoAgentConfig {
       readonly readableRoots: readonly string[];
       readonly writableRoots: readonly string[];
     };
+    /** Opt-in local desktop control via the separately installed cua-driver. */
+    readonly computerUse?: {
+      readonly backend: "cua-driver";
+      readonly command?: string;
+    };
     readonly mcpConfigPath?: string;
     /**
      * Names of configured stdio MCP servers that receive trusted per-request

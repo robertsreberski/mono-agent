@@ -44,6 +44,15 @@ file contributes an empty JSON source. Duplicate object keys are returned as
 `duplicateKeyPaths` by `readMonoAgentConfigJson`; loading warns and retains JSON's
 last-value-wins result. Agent-app's validate/doctor treats these as errors.
 
+### Computer use
+
+`tools.computerUse` is absent by default. Set `{ "backend": "cua-driver" }`
+to register separately installed local desktop control in agent-app; optional
+`command` selects an executable name/path. The block accepts only those two
+keys. Permission modes/manifests are not framework settings. See
+[Computer use](../../docs/tools/computer-use.md) before enabling this external
+MCP surface, which bypasses built-in tool allow/deny policy.
+
 ### Agent identity and runtime routes
 
 `agent.name` is public display metadata. It can seed human-facing trace and A2A
