@@ -30,6 +30,7 @@ export interface WakeDraft {
   /** Weekly: `HH:mm`, in entry order while editing. */
   readonly times: readonly string[];
   readonly message: string;
+  readonly compactFirst: boolean;
 }
 
 export interface WakeIssues {
@@ -77,24 +78,26 @@ export function tomorrowAtNine(timeZone: string, now: Date): { date: string; tim
 }
 
 export function newDraft(timezone: string, now: Date): WakeDraft {
-  return { kind: "once", timezone, ...tomorrowAtNine(timezone, now), days: [], times: ["09:00"], message: "" };
+  return { kind: "once", timezone, ...tomorrowAtNine(timezone, now), days: [], times: ["09:00"], message: "", compactFirst: false };
 }
 
 /** The editable form of a saved definition. The other kind starts empty. */
 export function draftFromDefinition(definition: WebWakeScheduleDefinition): WakeDraft {
   const message = definition.message ?? "";
+  const compactFirst = definition.compactFirst === true;
   if (definition.kind === "once") {
     const [date = "", time = ""] = definition.localAt.split("T");
-    return { kind: "once", timezone: definition.timezone, date, time, days: [], times: ["09:00"], message };
+    return { kind: "once", timezone: definition.timezone, date, time, days: [], times: ["09:00"], message, compactFirst };
   }
   return { kind: "weekly", timezone: definition.timezone, date: "", time: "09:00",
-    days: [...definition.days], times: [...definition.times], message };
+    days: [...definition.days], times: [...definition.times], message, compactFirst };
 }
 
 /** What Save would send. Days are sorted like the server stores them. */
 export function definitionFromDraft(draft: WakeDraft): WebWakeScheduleDefinition {
   const timezone = normalizeTimeZone(draft.timezone) ?? draft.timezone;
-  const message = draft.message === "" ? {} : { message: draft.message };
+  const message = { ...(draft.message === "" ? {} : { message: draft.message }),
+    ...(draft.compactFirst ? { compactFirst: true } : {}) };
   return draft.kind === "once"
     ? { kind: "once", timezone, localAt: `${draft.date}T${draft.time}`, ...message }
     : { kind: "weekly", timezone, days: [...draft.days].sort((a, b) => a - b), times: [...draft.times], ...message };
@@ -105,8 +108,8 @@ function definitionKey(definition: WebWakeScheduleDefinition): string {
   const timezone = normalizeTimeZone(definition.timezone) ?? definition.timezone;
   const message = definition.message ?? "";
   return definition.kind === "once"
-    ? JSON.stringify(["once", timezone, definition.localAt, message])
-    : JSON.stringify(["weekly", timezone, [...definition.days].sort((a, b) => a - b), [...definition.times].sort(), message]);
+    ? JSON.stringify(["once", timezone, definition.localAt, message, definition.compactFirst === true])
+    : JSON.stringify(["weekly", timezone, [...definition.days].sort((a, b) => a - b), [...definition.times].sort(), message, definition.compactFirst === true]);
 }
 
 /** Whether the draft differs from the loaded definition (`null` means there is none). */
@@ -217,6 +220,11 @@ function dayPhrase(days: readonly number[], order: readonly number[]): string {
 
 /** One sentence for what the draft will do, or `null` while it is incomplete. */
 export function describeDraft(draft: WakeDraft, options: { locale?: string; order?: readonly number[] } = {}): string | null {
+  const sentence = describeWhen(draft, options);
+  return sentence === null ? null : `${sentence}${draft.compactFirst ? " · Compact conversation first" : ""}`;
+}
+
+function describeWhen(draft: WakeDraft, options: { locale?: string; order?: readonly number[] }): string | null {
   if (draft.kind === "once") {
     if (!DATE.test(draft.date) || !TIME.test(draft.time)) return null;
     return `${formatWallDate(draft.date, options.locale)} at ${formatWallTime(draft.time, options.locale)}`;
@@ -271,6 +279,10 @@ type WakeSummary = NonNullable<import("../../types").ThreadSummary["wakeSchedule
 
 /** The conversation menu's one-line status, in this device's time (the summary has no zone). */
 export function wakeStatusText(summary: WakeSummary, locale?: string): string {
+  return `${wakeTimingText(summary, locale)}${summary.compactFirst ? " · compact first" : ""}`;
+}
+
+function wakeTimingText(summary: WakeSummary, locale?: string): string {
   const kind = summary.kind === "once" ? "Once" : "Weekly";
   if (summary.state === "paused") return `${kind} · paused`;
   if (summary.state === "completed") return `${kind} · completed`;

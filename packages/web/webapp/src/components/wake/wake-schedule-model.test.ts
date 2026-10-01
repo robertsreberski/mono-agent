@@ -6,7 +6,7 @@ import {
   type WakeDraft,
 } from "./wake-schedule-model";
 
-const weekly: WakeDraft = { kind: "weekly", timezone: "UTC", date: "", time: "09:00", days: [3, 1], times: ["14:30", "09:00"], message: "" };
+const weekly: WakeDraft = { kind: "weekly", timezone: "UTC", date: "", time: "09:00", days: [3, 1], times: ["14:30", "09:00"], message: "", compactFirst: false };
 const mondayFirst = [1, 2, 3, 4, 5, 6, 0];
 
 describe("wake schedule draft rules", () => {
@@ -120,4 +120,15 @@ describe("wake schedule wording", () => {
     expect(describeWakeError(new ApiError("thread_archived: nope", 409, "thread_archived")).message).toBe("thread_archived: nope");
     expect(describeWakeError(new Error("Offline.")).message).toBe("Offline.");
   });
+});
+
+it("round-trips compact first, defaults off, and includes it in dirty/summary state", () => {
+  const draft = { ...weekly, compactFirst: true };
+  const definition = definitionFromDraft(draft);
+  expect(definition.compactFirst).toBe(true);
+  expect(draftFromDefinition(definition).compactFirst).toBe(true);
+  expect(draftFromDefinition(definitionFromDraft(weekly)).compactFirst).toBe(false);
+  expect(isDraftDirty(draft, definitionFromDraft(weekly))).toBe(true);
+  expect(describeDraft(draft)).toContain("Compact conversation first");
+  expect(wakeStatusText({ kind: "weekly", state: "paused", revision: 1, nextFireAt: null, compactFirst: true })).toContain("compact first");
 });

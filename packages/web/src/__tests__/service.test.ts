@@ -7568,15 +7568,15 @@ describe("authenticated console wake callback", () => {
         const get = () => call({ operationId: randomUUID(), tool: "GetWakeSchedule", args: {} });
         expect(await get()).toEqual({ schedule: null });
         const future = new Date(Date.now() + 15 * 60_000).toISOString().slice(0, 16);
-        const created = await call({ operationId: randomUUID(), tool: "SetWakeSchedule", args: { kind: "once", timezone: "UTC", localAt: future } });
-        expect(created).toMatchObject({ schedule: { threadId: thread.id, revision: 1 } });
+        const created = await call({ operationId: randomUUID(), tool: "SetWakeSchedule", args: { kind: "once", timezone: "UTC", localAt: future, compactFirst: true } });
+        expect(created).toMatchObject({ schedule: { threadId: thread.id, revision: 1, definition: { compactFirst: true } } });
         expect(events.slice(-2)).toMatchObject([
           { type: "thread.changed", payload: { thread: { wakeSchedule: { kind: "once", revision: 1 } } } },
           { type: "threads.changed", payload: { thread: { wakeSchedule: { kind: "once", revision: 1 } } } },
         ]);
         expect(await get()).toEqual(created);
-        const updated = await call({ operationId: randomUUID(), tool: "SetWakeSchedule", args: { kind: "weekly", timezone: "UTC", days: [1], times: ["09:00"], expectedRevision: 1 } });
-        expect(updated).toMatchObject({ schedule: { revision: 2, definition: { kind: "weekly" } } });
+        const updated = await call({ operationId: randomUUID(), tool: "SetWakeSchedule", args: { kind: "weekly", timezone: "UTC", days: [1], times: ["09:00"], expectedRevision: 1, compactFirst: false } });
+        expect(updated).toMatchObject({ schedule: { revision: 2, definition: { kind: "weekly", compactFirst: false } } });
         await expect(call({ operationId: randomUUID(), tool: "ClearWakeSchedule", args: { expectedRevision: 1 } })).rejects.toMatchObject({ code: "wake_revision_conflict" });
         expect(await call({ operationId: randomUUID(), tool: "ClearWakeSchedule", args: { expectedRevision: 2 } })).toEqual({ cleared: true });
         expect(events.slice(-2)).toMatchObject([

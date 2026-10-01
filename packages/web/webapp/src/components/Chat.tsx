@@ -361,6 +361,7 @@ function ConversationActions() {
   const actionsTriggerRef = useRef<HTMLButtonElement>(null);
   const {
     selectedThread,
+    selectedAgent,
     archiveThread,
     unarchiveThread,
     deleteThread,
@@ -491,7 +492,7 @@ function ConversationActions() {
       </Menu.Portal>
     </Menu.Root>
     {scheduleThreadId === selectedThread.id && <WakeScheduleEditor key={selectedThread.id} thread={selectedThread}
-      returnFocusRef={actionsTriggerRef} onClose={() => setScheduleThreadId(null)} />}
+      supportsManualCompaction={selectedAgent?.supportsManualCompaction === true} returnFocusRef={actionsTriggerRef} onClose={() => setScheduleThreadId(null)} />}
     </>
   );
 }

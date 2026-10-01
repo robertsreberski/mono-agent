@@ -4785,8 +4785,22 @@ export class WebStore {
     });
   }
 
+  /** Idle pending work eligible for a pre-claim compaction reservation. */
+  wakeReadyForCompaction(threadId: string): boolean {
+    const row = this.wakeRow(threadId);
+    const thread = this.getThread(threadId);
+    return row !== undefined && thread !== undefined && row.source_id === thread.sourceId
+      && row.state === "active" && thread.archivedAt === null && thread.canSend
+      && thread.runState.status !== "running"
+      && this.database.prepare("SELECT 1 FROM live_inputs WHERE thread_id = ? AND status = 'queued'").get(threadId) === undefined
+      && this.database.prepare(`SELECT 1 FROM wake_occurrences WHERE thread_id = ? AND schedule_id = ?
+        AND generation = ? AND state = 'pending'`).get(threadId, row.schedule_id, row.generation) !== undefined;
+  }
+
   claimWake(threadId: string, sourceId: string, ready: () => boolean,
     selection: { model?: string; effort?: string; requestedModel?: string; requestedEffort?: string },
+    // Only a service-held idle reservation may run ahead of newly queued input.
+    afterCompaction = false,
   ): { started: BeginStoredAssistantTurnResult; prompt: string } | null {
     return this.transaction(() => {
       const row = this.wakeRow(threadId);
@@ -4794,7 +4808,7 @@ export class WebStore {
       if (row === undefined || thread === undefined || thread.sourceId !== sourceId || row.source_id !== sourceId
         || row.state !== "active" || thread.archivedAt !== null || !thread.canSend || !ready()) return null;
       if (this.database.prepare("SELECT 1 FROM turns WHERE thread_id = ? AND status = 'running'").get(thread.id) !== undefined
-        || this.database.prepare("SELECT 1 FROM live_inputs WHERE thread_id = ? AND status = 'queued'").get(thread.id) !== undefined) return null;
+        || (!afterCompaction && this.database.prepare("SELECT 1 FROM live_inputs WHERE thread_id = ? AND status = 'queued'").get(thread.id) !== undefined)) return null;
       const occurrence = this.database.prepare(`SELECT id, scheduled_at, message FROM wake_occurrences
         WHERE thread_id = ? AND schedule_id = ? AND generation = ? AND state = 'pending'
         ORDER BY scheduled_at LIMIT 1`).get(thread.id, row.schedule_id, row.generation) as
@@ -6905,13 +6919,14 @@ export class WebStore {
     const previews = this.lastMessagePreviews(ids);
     const jobActivities = this.jobActivities(ids);
     const wakes = new Map((this.database.prepare(`SELECT schedules.thread_id, schedules.state, schedules.kind,
-      schedules.next_due_at, schedules.revision FROM wake_schedules schedules
+      schedules.next_due_at, schedules.revision, schedules.definition_json FROM wake_schedules schedules
       JOIN threads ON threads.id = schedules.thread_id AND threads.source_id = schedules.source_id
       WHERE schedules.thread_id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(ids)) as Array<{
         thread_id: string; state: "active" | "paused" | "completed"; kind: "once" | "weekly";
-        next_due_at: string | null; revision: number;
+        next_due_at: string | null; revision: number; definition_json: string;
       }>).map((wake) => [wake.thread_id, { state: wake.state, kind: wake.kind,
-        nextFireAt: wake.next_due_at, revision: wake.revision }]));
+        nextFireAt: wake.next_due_at, revision: wake.revision,
+        ...(JSON.parse(wake.definition_json).compactFirst === true ? { compactFirst: true } : {}) }]));
     const pending = new Map((this.database.prepare(`SELECT thread_id, project_id, turn_id FROM pending_project_memberships
       WHERE thread_id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(ids)) as Array<{
         thread_id: string; project_id: string | null; turn_id: string;

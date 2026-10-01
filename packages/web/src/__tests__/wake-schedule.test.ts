@@ -31,3 +31,13 @@ describe("scheduled wake wall-clock policy", () => {
     expect(() => parseWakeDefinition({ kind: "once", timezone: "UTC", localAt: "2028-02-30T12:00" })).toThrow(/calendar/u);
   });
 });
+
+it("accepts optional boolean compactFirst for both kinds and rejects other values", () => {
+  const now = new Date("2027-01-01T00:00:00Z");
+  for (const definition of [{ kind: "once", timezone: "UTC", localAt: "2027-01-02T10:00" },
+    { kind: "weekly", timezone: "UTC", days: [1], times: ["10:00"] }]) {
+    expect(parseWakeDefinition(definition, now).compactFirst).toBeUndefined();
+    for (const compactFirst of [true, false]) expect(parseWakeDefinition({ ...definition, compactFirst }, now).compactFirst).toBe(compactFirst);
+    for (const compactFirst of [null, 1, "true", {}, []]) expect(() => parseWakeDefinition({ ...definition, compactFirst }, now)).toThrow(/compactFirst/u);
+  }
+});

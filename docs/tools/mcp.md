@@ -558,7 +558,10 @@ without `expectedRevision` or replaces with the current revision. Provide
 `kind: "once"`, an IANA `timezone` and `localAt: "YYYY-MM-DDTHH:mm"` at least
 five minutes in the future, or `kind: "weekly"`, `timezone`, 1–7 distinct `days`
 (0=Sunday) and at most eight distinct `times` (`HH:mm`). Times are local to that
-timezone; `message` is optional, at most 1,000 UTF-8 bytes. A fired turn arrives
+timezone; `message` is optional, at most 1,000 UTF-8 bytes. Optional boolean
+`compactFirst` (default false) requests manual compaction before the scheduled
+turn. The turn still runs if compaction fails, is skipped, is unsupported or has
+an unknown outcome, with the normal transcript marker retained. A fired turn arrives
 later in this conversation. `ClearWakeSchedule({ expectedRevision })` removes
 it. These tools cannot target another conversation. Reads leave no operation
 receipt; mutations have replayable receipts, update browser summaries and

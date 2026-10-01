@@ -100,7 +100,7 @@ export function executeConsoleTool(store: WebStore, scope: ConsoleToolScope, ope
     ListTags: [], CreateTag: ["name", "color"], UpdateTag: ["tagId", "name", "color"], DeleteTag: ["tagId"],
     UpdateConversationTags: ["conversationId", "add", "remove"],
     MarkConversationRead: ["conversationId"],
-    GetWakeSchedule: [], SetWakeSchedule: ["expectedRevision", "kind", "timezone", "localAt", "days", "times", "message"],
+    GetWakeSchedule: [], SetWakeSchedule: ["expectedRevision", "kind", "timezone", "localAt", "days", "times", "message", "compactFirst"],
     ClearWakeSchedule: ["expectedRevision"],
     ListProjects: ["channel", "limit", "cursor"], GetProject: ["projectId"], CreateProject: ["name", "context", "color", "attachCurrentConversation"],
     UpdateProject: ["projectId", "name", "context", "color", "archived"], DeleteProject: ["projectId"],

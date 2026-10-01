@@ -25,7 +25,7 @@ function WakeEditorHarness({ thread }: { readonly thread: ThreadSummary }) {
   return <div style={{ display: "grid", gap: 12, justifyItems: "start" }}>
     <button ref={trigger} type="button" className="secondary-button" onClick={() => setOpen(true)}>Open wake-up schedule</button>
     <span style={{ color: "var(--text-muted)", fontSize: 12 }}>{open ? "Editor open" : "Editor closed"}</span>
-    {open && <WakeScheduleEditor thread={live} returnFocusRef={trigger} onClose={() => setOpen(false)} />}
+    {open && <WakeScheduleEditor supportsManualCompaction thread={live} returnFocusRef={trigger} onClose={() => setOpen(false)} />}
   </div>;
 }
 
@@ -181,3 +181,12 @@ export const MobileEightTimes: Story = { ...EightTimes, globals: { viewport: { v
 export const MobileDeleteConfirm: Story = { ...DeleteConfirm, globals: { viewport: { value: "phone" } } };
 export const DarkActiveWeekly: Story = { ...ActiveWeekly, globals: { scheme: "dark" } };
 export const TerracottaDarkMobileNewOnce: Story = { ...NewOnce, globals: { scheme: "dark", theme: "terracotta", viewport: { value: "phone" } } };
+
+export const CompactFirst: Story = story({ schedule: { ...wakeFixtures.activeWeekly,
+  definition: { ...wakeFixtures.activeWeekly.definition, compactFirst: true } } }, {
+  play: async ({ canvasElement }) => {
+    await loaded(canvasElement);
+    expect(body(canvasElement).getByRole("checkbox", { name: "Compact conversation first" })).toBeChecked();
+    expect(body(canvasElement).getByRole("region", { name: "Schedule summary" })).toHaveTextContent("Compact conversation first");
+  },
+});

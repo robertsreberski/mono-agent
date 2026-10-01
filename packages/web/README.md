@@ -110,7 +110,9 @@ An ordinary existing conversation can have one schedule, configured through
 **Conversation actions → Schedule wake-up**. Choose a one-off local date and time
 or weekly weekdays and up to eight distinct times, an editable IANA timezone
 (defaulting to the browser's zone), and an optional message of up to 1,000 UTF-8
-bytes. The editor summarizes the schedule in words and shows the saved next
+bytes. **Compact conversation first** (off by default) requests the same manual
+compaction as the Compact action before each wake-up; the option is unavailable
+when the connected agent does not support it. The editor summarizes the schedule in words and shows the saved next
 wake-up in the schedule's timezone, plus this device's time when it differs.
 The conversation row indicates active schedules; the menu shows the kind with
 the state or next fire time in local display time. Paused schedules stay
@@ -123,13 +125,14 @@ During a writable turn, `GetWakeSchedule({})`, `SetWakeSchedule` and
 conversation's schedule. Set a one-off with `kind: "once"`, `timezone` and
 `localAt` at least five minutes ahead, or a weekly schedule with `kind: "weekly"`,
 `timezone`, 1–7 `days` and at most eight `times`; optional `message` is limited
-to 1,000 UTF-8 bytes. Times are local to the IANA timezone. Creating omits
+to 1,000 UTF-8 bytes. Optional `compactFirst: true` compacts before the turn.
+Times are local to the IANA timezone. Creating omits
 `expectedRevision`; replacing requires the current revision. A fired turn
 arrives later in this conversation. The five-minute restriction does not apply
 to browser edits. See [console tools](../../docs/tools/mcp.md#console-project-tools).
 
 `GET /api/v1/threads/:id/wake-schedule` returns `{schedule:null|schedule}`;
-`POST` creates with `{kind,timezone,localAt?,days?,times?,message?}`; `PUT`
+`POST` creates with `{kind,timezone,localAt?,days?,times?,message?,compactFirst?}`; `PUT`
 replaces the definition, `PATCH` accepts `{state:"paused"|"active"}`, and
 `DELETE` clears it. PUT/PATCH/DELETE also require `expectedRevision` from the
 latest GET; conflicting revisions return 409. Mutations require the console's
@@ -139,7 +142,13 @@ unarchiving does not resume it. Deleting the conversation deletes its schedule.
 
 Due wakes run on the first connected idle boundary after existing queued user
 input and host follow-ups drain, never concurrently with a turn or steering into
-one. Busy occurrences persist as pending, including through restart or temporary
+one. With `compactFirst`, the console reserves that idle boundary through
+compaction and launches the wake before any follow-up queued during compaction.
+Compaction success, skips, failures and unknown outcomes retain the normal
+transcript marker; unsupported compaction is recorded as failed. None prevents
+the wake turn. Restart or disconnection before claim leaves the occurrence pending
+(and may repeat compaction); once claimed, the usual no-replay rule applies.
+Busy occurrences persist as pending, including through restart or temporary
 disconnection. An occurrence not queued while busy is admitted once within a
 60-minute grace after downtime/offline, otherwise skipped. Multiple missed weekly
 occurrences coalesce to one; weekly schedules continue at their next future local

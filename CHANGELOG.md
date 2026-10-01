@@ -7,6 +7,9 @@
   Keep startup available with a warning when the optional driver is missing.
   Keep permission modes operator-owned; external MCP tools bypass built-in policy.
 
+- Add an optional compact-first setting to web scheduled wake-ups, in the editor
+  and console tools; keep wake turns running even when compaction cannot finish.
+
 - Fix the web model picker to fit the available screen space, with denser
   provider and thinking controls and always-visible context and close actions.
 

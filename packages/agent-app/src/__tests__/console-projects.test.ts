@@ -114,11 +114,11 @@ it("registers strict conversation-only wake tools and gives safe, actionable wak
   const once = { kind: "once", timezone: "UTC", localAt: "2030-01-01T09:00" };
   const weekly = { kind: "weekly", timezone: "UTC", days: [1], times: ["09:00"] };
   expect(schemas.SetWakeSchedule.safeParse(once).success).toBe(true);
-  expect(schemas.SetWakeSchedule.safeParse({ ...once, expectedRevision: 1 }).success).toBe(true);
+  expect(schemas.SetWakeSchedule.safeParse({ ...once, expectedRevision: 1, compactFirst: true }).success).toBe(true);
   expect(schemas.SetWakeSchedule.safeParse(weekly).success).toBe(true);
   // Kind-specific combinations are rejected by the shared web parser, not by
   // this SDK-compatible, top-level-object transport schema.
-  for (const bad of [{ ...weekly, times: Array(9).fill("09:00") },
+  for (const bad of [{ ...once, compactFirst: "true" }, { ...weekly, times: Array(9).fill("09:00") },
     { ...once, message: "é".repeat(501) }, { ...once, expectedRevision: 0 }, { ...once, sourceId: "another" }]) {
     expect(schemas.SetWakeSchedule.safeParse(bad).success).toBe(false);
   }

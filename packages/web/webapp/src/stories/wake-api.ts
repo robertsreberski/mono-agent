@@ -134,5 +134,5 @@ export const wakeFixtures = {
 
 /** The thread summary a schedule implies, as the conversation list would carry it. */
 export const wakeSummary = (value: WebWakeSchedule): NonNullable<ThreadSummary["wakeSchedule"]> => ({
-  state: value.state, kind: value.definition.kind, revision: value.revision, nextFireAt: value.nextFireAt,
+  state: value.state, kind: value.definition.kind, compactFirst: value.definition.compactFirst, revision: value.revision, nextFireAt: value.nextFireAt,
 });
