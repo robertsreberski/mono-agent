@@ -23,10 +23,12 @@ const MAX_LOCAL_CONFIGURATION_BYTES = 1024 * 1024;
 export interface DiscoverOperatorAgentsOptions {
   readonly registryDirs?: readonly string[];
   readonly staleAfterMs?: number;
+  /** Include stopped manifests for the web console's offline-agent projection. */
+  readonly includeStopped?: boolean;
   readonly env?: Readonly<Record<string, string | undefined>>;
 }
 
-export type DiscoverAcpBridgeAgentsOptions = DiscoverOperatorAgentsOptions;
+export type DiscoverAcpBridgeAgentsOptions = Omit<DiscoverOperatorAgentsOptions, "includeStopped">;
 
 export interface DiscoveredOperatorAgent {
   readonly source: TraceSourceListItem;
@@ -48,8 +50,10 @@ export async function discoverOperatorAgents(
   const env = options.env ?? process.env;
   const sources = await discoverTraceSources(options, env);
   return Promise.all(sources
-    .filter((source) => source.health !== "stopped")
+    .filter((source) => options.includeStopped === true || source.health !== "stopped")
     .map(async (source): Promise<DiscoveredOperatorAgent> => {
+      // A stopped source supplies identity only, never endpoint authority.
+      if (source.health === "stopped") return { source };
       const baseUrl = operatorBaseUrlFromMetadata(source.metadata);
       const apiKey = baseUrl === undefined ? undefined : await resolveOperatorApiKey(source, env);
       const processJobsBearer = baseUrl === undefined ? undefined : await resolveOwnerBearer(source, "processJobs");

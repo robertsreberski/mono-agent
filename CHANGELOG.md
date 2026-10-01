@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep stopped agents in the web console as offline without switching the
+  selected agent or conversation during a stop or restart.
+
 - Fix orphaned background subagent reservations blocking new `Agent` calls after
   restart; retire failed first admissions and require close/recreate when session
   continuity cannot be proven.

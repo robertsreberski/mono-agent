@@ -21,6 +21,31 @@ afterEach(async () => {
 });
 
 describe("operator discovery", () => {
+  it("includes stopped identities only when the web console opts in", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const registry = join(base, "registry");
+    await mkdir(registry);
+    await writeFile(join(registry, "agent-one.json"), JSON.stringify({
+      schema: "agent-runtime.trace-source.v1",
+      sourceId: "agent-one",
+      label: "Agent One",
+      artifactDir: join(base, "artifacts"),
+      status: "stopped",
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      // Even if terminal metadata still carries an endpoint, it is not live.
+      metadata: { channels: { tui: { kind: "running", baseUrl: "http://127.0.0.1:5555/gui" } } },
+    }));
+
+    const options = { registryDirs: [registry], env: {} };
+    expect(await discoverOperatorAgents(options)).toEqual([]);
+    expect((await discoverAcpBridgeAgents(options)).sources).toEqual([]);
+    expect(await discoverOperatorAgents({ ...options, includeStopped: true })).toEqual([
+      { source: expect.objectContaining({ sourceId: "agent-one", status: "stopped", health: "stopped" }) },
+    ]);
+  });
+
   it("publishes a canonical, secret-free ACP bridge discovery contract", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);

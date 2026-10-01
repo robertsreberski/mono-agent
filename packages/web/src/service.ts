@@ -3652,6 +3652,7 @@ export class WebService {
     let discovered: readonly DiscoveredOperatorAgent[];
     try {
       discovered = await discover({
+        includeStopped: true,
         ...(this.options.registryDirs === undefined ? {} : { registryDirs: this.options.registryDirs }),
         ...(this.options.staleAfterMs === undefined ? {} : { staleAfterMs: this.options.staleAfterMs }),
         ...(this.options.env === undefined ? {} : { env: this.options.env }),
