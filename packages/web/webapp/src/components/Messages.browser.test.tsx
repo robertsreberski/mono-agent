@@ -909,7 +909,7 @@ describe("quick reply choices in Chromium", () => {
       if (directory) await page.screenshot({ path: `${directory}/quick-replies-${label}.png` });
       await page.getByRole("button", { name: "Review draft" }).click();
       await waitFor(() => expect(onSend).toHaveBeenCalledExactlyOnceWith("Review draft"));
-      expect(container.querySelector(".message-user")?.textContent).toContain("Review draft");
+      await waitFor(() => expect(container.querySelector(".message-user")?.textContent).toContain("Review draft"));
       expect(screen.getByRole("button", { name: "Keep going" })).toBeDisabled();
     },
   );

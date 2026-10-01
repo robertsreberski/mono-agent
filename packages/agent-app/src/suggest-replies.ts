@@ -88,7 +88,9 @@ export function createSuggestRepliesService(input: {
               ...(result.metadata?.turnDisposition === "silent"
                 ? { metadata: { ...result.metadata, turnDisposition: "visible" } } : {}) };
           } finally {
-            for (const id of context.runIds) choices.delete(id);
+            for (const id of context.runIds) {
+              if (choices.delete(id)) input.budget.unclaim(id, "reply_options");
+            }
           }
         },
       };
