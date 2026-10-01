@@ -1,3 +1,4 @@
+import { parseNotificationRequest } from "../notification-ingress.js";
 import { randomUUID } from "node:crypto";
 import { startWebNotificationIngress } from "../notification-ingress.js";
 import { createWebConsoleToolClient } from "../notification-client.js";
@@ -7903,4 +7904,120 @@ describe("1M web selection", () => {
       expect((seen[0]?.metadata as { web?: { context1M?: boolean } }).web?.context1M).toBe(false);
     } finally { await service.stop(); }
   });
+});
+
+describe("recovery-aware process-job wakes", () => {
+  it("supersedes a busy parent's old wake worker without cancelling the parent and redelivers once", async () => {
+    let parent!: ReadableStreamDefaultController<Uint8Array>; const bodies: Record<string, unknown>[] = [];
+    const service = await createService({ fetchImpl: operatorFetch({ supportsProcessJobWakeAdmission: true,
+      onTurn: (body) => bodies.push(body), turns: (body) => body.text === "Parent asks user"
+        ? new ReadableStream({ start: (controller) => { parent = controller; } })
+        : '{"type":"text","text":"Recovered child"}\n{"type":"done"}\n',
+    }) });
+    const thread = service.createThread("agent-one"); await service.startTurn(thread.id, { text: "Parent asks user" });
+    await vi.waitFor(() => expect(parent).toBeDefined());
+    const job = fakeProcessJob({ conversationId: `web:${thread.id}`, state: "succeeded" });
+    const input = { sourceId: "agent-one", threadId: thread.id, triggerKind: "job" as const,
+      processJob: job, deliveryKey: job.wake.deliveryKey, wakePrompt: "Inspect child result" };
+    const old = randomUUID(); const next = randomUUID();
+    const oldWake = service.deliverNotification({ ...input, wakeRecovery: { version: 1, token: old, notCrossed: [] } });
+    await vi.waitFor(() => expect(service.store.ownsProcessJobWake(input.deliveryKey, old)).toBe(true));
+    const newWake = service.deliverNotification({ ...input, wakeRecovery: { version: 1, token: next, notCrossed: [old] } });
+    await expect(oldWake).resolves.toMatchObject({ delivery: { ambiguous: true } });
+    expect(bodies).toHaveLength(1); // ordinary parent still blocked
+    parent.enqueue(new TextEncoder().encode('{"type":"done"}\n')); parent.close();
+    await expect(newWake).resolves.toMatchObject({ delivery: { delivered: true, disposition: "follow_up" } });
+    expect(bodies).toHaveLength(2); expect(bodies[1]?.processJobWakeAttempt).toBe(next);
+    await expect(service.deliverNotification({ ...input, wakeRecovery: { version: 1, token: next, notCrossed: [old] } }))
+      .resolves.toMatchObject({ delivery: { delivered: true } });
+    expect(bodies).toHaveLength(2); await service.stop();
+  });
+  it("never guesses an older operator through a recovery-aware request", async () => {
+    const onTurn = vi.fn(); const service = await createService({ fetchImpl: operatorFetch({ onTurn }) });
+    const thread = service.createThread("agent-one"); const job = fakeProcessJob({ conversationId: `web:${thread.id}` });
+    await expect(service.deliverNotification({ sourceId: "agent-one", threadId: thread.id, triggerKind: "job",
+      processJob: job, deliveryKey: job.wake.deliveryKey, wakePrompt: "Inspect child",
+      wakeRecovery: { version: 1, token: randomUUID(), notCrossed: [] },
+    })).resolves.toMatchObject({ delivery: { delivered: false, code: "destination_channel_unavailable", retryable: true } });
+    expect(service.store.ownsProcessJobWake(job.wake.deliveryKey)).toBe(false);
+    expect(onTurn).not.toHaveBeenCalled(); await service.stop();
+  });
+});
+
+
+describe("process-job dispatch generation fences", () => {
+  it.each(["same", "replacement", "stopping"] as const)("rechecks %s ownership after asynchronous turn preparation", async (mode) => {
+    let discovered = fakeDiscoveredAgent(); const onTurn = vi.fn();
+    const service = await createService({ discoverImpl: async () => [discovered],
+      fetchImpl: operatorFetch({ supportsProcessJobWakeAdmission: true, onTurn }) });
+    try {
+      const thread = service.createThread("agent-one");
+      const budget = (service as unknown as { attachmentTurnBudget: {
+        acquire(bytes: number, signal: AbortSignal): Promise<() => void>;
+      } }).attachmentTurnBudget;
+      const acquire = budget.acquire.bind(budget);
+      vi.spyOn(budget, "acquire").mockImplementationOnce(async (...args) => {
+        const release = await acquire(...args);
+        if (mode === "replacement") discovered = fakeDiscoveredAgent({ source: { ...discovered.source,
+          pid: 999, startedAt: "2026-09-14T12:00:00Z" } });
+        await service.refreshAgents(); // even a same-generation probe installs a new client
+        if (mode === "stopping") service.store.createRestartOperation({ sourceId: "agent-one",
+          generation: agentGeneration(discovered), requestedAt: new Date().toISOString(),
+          deadline: new Date(Date.now() + 60_000).toISOString(), approximateRunningTurns: 1 });
+        return release;
+      });
+      const job = fakeProcessJob({ conversationId: `web:${thread.id}`, state: "succeeded" });
+      const token = randomUUID();
+      const receipt = await service.deliverNotification({ sourceId: "agent-one", threadId: thread.id, triggerKind: "job",
+        processJob: job, deliveryKey: job.wake.deliveryKey, wakePrompt: "Inspect child result",
+        wakeRecovery: { version: 1, token, notCrossed: [] } });
+      expect(receipt.delivery).toMatchObject(mode === "same" ? { delivered: true }
+        : { delivered: false, code: "destination_channel_unavailable", retryable: true });
+      expect(onTurn).toHaveBeenCalledTimes(mode === "same" ? 1 : 0);
+      if (mode !== "same") expect(service.store.ownsProcessJobWake(job.wake.deliveryKey, token)).toBe(false);
+    } finally { await service.stop(); }
+  });
+});
+
+
+describe("undispatched process-job wake refusals", () => {
+  it.each([true, false])("releases a stopping connection only when the exact claim release succeeds (%s)", async (released) => {
+    const onTurn = vi.fn(); const discovered = fakeDiscoveredAgent();
+    const service = await createService({ fetchImpl: operatorFetch({ supportsProcessJobWakeAdmission: true, onTurn }) });
+    try {
+      const thread = service.createThread("agent-one"); const token = randomUUID();
+      service.store.createRestartOperation({ sourceId: "agent-one", generation: agentGeneration(discovered),
+        requestedAt: new Date().toISOString(), deadline: new Date(Date.now() + 60_000).toISOString(), approximateRunningTurns: 0 });
+      if (!released) vi.spyOn(service.store, "abandonProcessJobWake").mockReturnValue(false);
+      const job = fakeProcessJob({ conversationId: `web:${thread.id}`, state: "succeeded" });
+      const receipt = await service.deliverNotification({ sourceId: "agent-one", threadId: thread.id, triggerKind: "job",
+        processJob: job, deliveryKey: job.wake.deliveryKey, wakePrompt: "Inspect child",
+        wakeRecovery: { version: 1, token, notCrossed: [] } });
+      expect(receipt.delivery).toMatchObject(released ? { delivered: false, code: "destination_channel_unavailable", retryable: true }
+        : { delivered: false, ambiguous: true, retryable: false });
+      expect(service.store.ownsProcessJobWake(job.wake.deliveryKey, token)).toBe(!released);
+      expect(onTurn).not.toHaveBeenCalled();
+    } finally { await service.stop(); }
+  });
+});
+
+
+it("delivers an older agent's null-token process-job payload unchanged and never replays its completed claim", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const service = await createService({ fetchImpl: operatorFetch({ onTurn: (body) => bodies.push(body) }) });
+  try {
+    const thread = service.createThread("agent-one"); const job = fakeProcessJob({ conversationId: `web:${thread.id}`, state: "succeeded" });
+    const input = { sourceId: "agent-one", threadId: thread.id, triggerKind: "job" as const,
+      processJob: job, deliveryKey: job.wake.deliveryKey, wakePrompt: "Inspect legacy child" };
+    const parsed = parseNotificationRequest(JSON.parse(JSON.stringify(input)));
+    if (parsed.triggerKind !== "job") throw new Error("Expected a process-job payload");
+    const reserve = vi.spyOn(service.store, "reserveProcessJobWake");
+    const complete = vi.spyOn(service.store, "completeProcessJobWake");
+    await expect(service.deliverNotification(parsed)).resolves.toMatchObject({ delivery: { delivered: true, disposition: "follow_up" } });
+    expect(reserve.mock.calls[0]?.[0]).not.toHaveProperty("wakeRecovery");
+    expect(complete.mock.calls[0]?.[0]).not.toHaveProperty("attemptToken");
+    expect(bodies).toHaveLength(1); expect(bodies[0]).not.toHaveProperty("processJobWakeAttempt");
+    await expect(service.deliverNotification(input)).resolves.toMatchObject({ delivery: { delivered: true } });
+    expect(bodies).toHaveLength(1);
+  } finally { await service.stop(); }
 });

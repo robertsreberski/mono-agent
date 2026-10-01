@@ -36,7 +36,7 @@ import {
   type AgentMessageStream,
   type AgentReplyAttachmentPart,
   type AgentReplyPart,
-  type AgentLiveInputOffer,
+  type AgentLiveInputRequest,
   type AgentRequestBase,
   type AgentResponder,
   type AgentResponse,
@@ -80,16 +80,8 @@ function liveInputTargetKey(conversationId: string, turnId: string): string {
   return `${conversationId.length}:${conversationId}${turnId}`;
 }
 
-function settleLiveInputOffer(res: Response, offer: AgentLiveInputOffer): void {
-  if (offer.status === "unavailable") {
-    res.status(200).json(offer);
-    return;
-  }
-  void offer.settled.then((settlement) => {
-    if (!res.writableEnded) res.status(200).json(settlement);
-  }).catch(() => {
-    if (!res.writableEnded) res.status(200).json({ status: "uncertain", reason: "delivery_uncertain" });
-  });
+function validWakeAttempt(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u.test(value);
 }
 
 import { DEFAULT_BASE_PATH, DEFAULT_HOST, DEFAULT_PORT, MAX_FRAME_BYTES, TUI_WIRE_SCHEMA } from "./constants.js";
@@ -302,6 +294,11 @@ export interface TuiAdapterOptions {
   readonly interaction?: ChannelInteractionHub;
   /** Agent-owned cron truth and controls. Absent on older/non-cron hosts. */
   readonly cron?: CronOperatorService;
+  /** Private app-owned v1 fence; deliberately not an AgentResponder contract. */
+  readonly processJobWakeAdmission?: {
+    claim(deliveryKey: string, token: string, boundary: string): Promise<boolean>;
+    release(deliveryKey: string, token: string, boundary: string): Promise<boolean>;
+  };
   /** Owner-authorized process-job control plane; omitted when unavailable. */
   readonly processJobs?: ProcessJobOperator;
   /** Independent owner bearer for process-job routes. Required with processJobs. */
@@ -464,6 +461,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
                 }
               : {}),
             ...(typeof options.responder.offerLiveInput === "function" ? { liveInput: true } : {}),
+            ...(options.processJobWakeAdmission === undefined ? {} : { processJobWakeAdmission: { version: 1 } }),
             ...(typeof options.responder.offerLiveInput === "function"
               && options.responder.liveInputOwnership?.version === 1
               ? { liveInputTargeting: { version: 1 } }
@@ -953,6 +951,32 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     }).finally(() => res.off("close", onClose));
   });
 
+  async function offerWakeLiveInput(res: Response, body: Record<string, unknown>, request: AgentLiveInputRequest): Promise<void> {
+    const token = body.processJobWakeAttempt;
+    const boundary = randomUUID();
+    const fenced = token !== undefined || (request.deliveryKey?.startsWith("process-job:") === true
+      && options.processJobWakeAdmission !== undefined);
+    if (stopping) throw new TuiAdapterError("invalid_request", "Process-job wake admission is unavailable.");
+    if (fenced && (options.processJobWakeAdmission === undefined
+      || !await options.processJobWakeAdmission.claim(request.deliveryKey!, typeof token === "string" ? token : "", boundary))) {
+      throw new TuiAdapterError("invalid_request", "Process-job wake admission is unavailable.");
+    }
+    if (stopping) {
+      if (fenced) await options.processJobWakeAdmission!.release(request.deliveryKey!, typeof token === "string" ? token : "", boundary);
+      throw new TuiAdapterError("invalid_request", "Process-job wake admission is unavailable.");
+    }
+    const offer = options.responder.offerLiveInput!(request);
+    const settlement = offer.status === "unavailable" ? offer : await offer.settled.catch(() => ({
+      status: "uncertain" as const, reason: "delivery_uncertain" as const,
+    }));
+    if (fenced && (settlement.status === "unavailable" || settlement.status === "requeue")) {
+      if (!await options.processJobWakeAdmission!.release(request.deliveryKey!, typeof token === "string" ? token : "", boundary)) {
+        throw new TuiAdapterError("invalid_request", "Process-job wake release is unavailable.");
+      }
+    }
+    if (!res.writableEnded) res.status(200).json(settlement);
+  }
+
   app.post(liveInputPath, express.json({ limit: MAX_LIVE_INPUT_BODY_BYTES, strict: true }), (req, res, next) => {
     if (!authorize(req, res, apiKey)) return;
     const conversationId = normalizeOptionalString(
@@ -974,6 +998,8 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
         && (typeof body.deliveryKey !== "string"
           || body.deliveryKey.trim().length === 0
           || body.deliveryKey.length > 1_024))
+      || (body.processJobWakeAttempt !== undefined
+        && (!validWakeAttempt(body.processJobWakeAttempt) || typeof body.deliveryKey !== "string"))
       || (body.targetTurnId !== undefined
         && (typeof body.targetTurnId !== "string" || body.targetTurnId.trim().length === 0 || body.targetTurnId.length > 4_096))
       || (body.targetRunId !== undefined
@@ -1007,7 +1033,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
           return;
         }
         try {
-          settleLiveInputOffer(res, options.responder.offerLiveInput!({
+          void offerWakeLiveInput(res, body, {
             conversationId,
             id: inputId,
             text: inputText,
@@ -1016,7 +1042,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
             receivedAt,
             targetRunId: runId,
             ...(typeof body.deliveryKey === "string" ? { deliveryKey: body.deliveryKey } : {}),
-          }));
+          }).catch(next);
         } catch (error) {
           next(error);
         }
@@ -1053,23 +1079,15 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       res.once("close", abort);
       return;
     }
-    let offer: AgentLiveInputOffer;
-    try {
-      offer = options.responder.offerLiveInput({
-        conversationId,
-        id: body.id,
-        text: body.text,
-        ...(typeof body.ownerText === "string" && body.ownerText.length <= body.text.length
-          ? { ownerText: body.ownerText } : {}),
-        receivedAt: body.receivedAt,
-        ...(explicitRunId === undefined ? {} : { targetRunId: explicitRunId }),
-        ...(typeof body.deliveryKey === "string" ? { deliveryKey: body.deliveryKey } : {}),
-      });
-    } catch (error) {
-      next(error);
-      return;
-    }
-    settleLiveInputOffer(res, offer);
+    void offerWakeLiveInput(res, body, {
+      conversationId,
+      id: inputId,
+      text: inputText,
+      ...(typeof body.ownerText === "string" && body.ownerText.length <= inputText.length ? { ownerText: body.ownerText } : {}),
+      receivedAt,
+      ...(explicitRunId === undefined ? {} : { targetRunId: explicitRunId }),
+      ...(typeof body.deliveryKey === "string" ? { deliveryKey: body.deliveryKey } : {}),
+    }).catch(next);
   });
 
   app.get(askPath, (req, res) => {
@@ -1494,8 +1512,21 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     const targetKey = webTurnId === undefined || options.responder.liveInputOwnership?.version !== 1
       ? undefined
       : liveInputTargetKey(body.conversationId, webTurnId);
+    if (stopping) throw new TuiAdapterError("invalid_request", "Process-job wake admission is unavailable.");
     if (targetKey !== undefined && liveInputTargets.has(targetKey)) {
       throw new TuiAdapterError("invalid_request", "Web turn is already active.");
+    }
+    const fenced = body.processJobWakeAttempt !== undefined
+      || (body.processJobWakeDeliveryKey?.startsWith("process-job:") === true && options.processJobWakeAdmission !== undefined);
+    if (fenced && (options.processJobWakeAdmission === undefined
+      || !await options.processJobWakeAdmission.claim(body.processJobWakeDeliveryKey!, body.processJobWakeAttempt ?? "", requestId))) {
+      throw new TuiAdapterError("invalid_request", "Process-job wake admission is unavailable.");
+    }
+    // Claim persistence yields. A certain synchronous refusal afterward must
+    // release only this boundary; it must not leave a false admission marker.
+    if (stopping || (targetKey !== undefined && liveInputTargets.has(targetKey))) {
+      if (fenced) await options.processJobWakeAdmission!.release(body.processJobWakeDeliveryKey!, body.processJobWakeAttempt ?? "", requestId);
+      throw new TuiAdapterError("invalid_request", "Process-job wake admission is unavailable.");
     }
     const controller = new AbortController();
     activeTurns.add(controller);
@@ -2047,6 +2078,7 @@ interface NormalizedTurnBody {
   readonly metadata: Record<string, unknown>;
   readonly client: "tui" | "web" | "acp";
   readonly processJobWakeDeliveryKey?: string;
+  readonly processJobWakeAttempt?: string;
   readonly attachments?: readonly AgentAttachment[];
   readonly toolEnvironment?: AgentToolEnvironment;
 }
@@ -2161,6 +2193,10 @@ function normalizeTurnBody(
       ? record.processJobWakeDeliveryKey
       : undefined,
   );
+  const processJobWakeAttempt = record.processJobWakeAttempt;
+  if (processJobWakeAttempt !== undefined && (!validWakeAttempt(processJobWakeAttempt) || processJobWakeDeliveryKey === undefined)) {
+    throw new TuiAdapterError("invalid_request", "processJobWakeAttempt is invalid.");
+  }
   if (processJobWakeDeliveryKey !== undefined
     && (client !== "web" || processJobWakeDeliveryKey.length > 1_024)) {
     throw new TuiAdapterError("invalid_request", "processJobWakeDeliveryKey is invalid.");
@@ -2180,6 +2216,7 @@ function normalizeTurnBody(
     metadata,
     client,
     ...(processJobWakeDeliveryKey === undefined ? {} : { processJobWakeDeliveryKey }),
+    ...(processJobWakeAttempt === undefined ? {} : { processJobWakeAttempt: processJobWakeAttempt as string }),
     ...(attachments === undefined ? {} : { attachments }),
     ...(toolEnvironment === undefined ? {} : { toolEnvironment }),
   };

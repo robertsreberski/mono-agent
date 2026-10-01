@@ -1,3 +1,4 @@
+import { validWakeFence, validWakeCertificates, type WakeAttemptFence } from "./process-jobs-wake-fence.js";
 import { isSubagentVerificationTarget, isSubagentVerificationObservation, type SubagentVerificationTarget, type SubagentVerificationObservation } from "./subagent-verification-observer.js";
 import { isSubagentCommandReceipts, type SubagentCommandReceipts } from "./subagent-command-receipts.js";
 import { hasSubagentObligation, hasUnresolvedSubagentOwnership, isSubagentExecutionOwnership, type SubagentExecutionOwnership } from "./subagent-execution-ownership.js";
@@ -148,6 +149,8 @@ export interface DurableProcessJobRecord {
     lastAttemptAt: string | null;
     /** Private durable proof that the last adapter result explicitly permitted retry. */
     retrySafe?: boolean;
+    admission?: WakeAttemptFence;
+    notCrossed?: string[];
     /** Optional in pre-integration record v1; omission means zero for older branch records. */
     destinationUnavailableAttempts?: number;
     /** Optional in older record v1; counts durable pre-dispatch busy refusals. */
@@ -1341,6 +1344,8 @@ function validWake(value: unknown): boolean {
   return isRecord(value)
     && hasExactKeys(value, [
       "state", "attempts", "deliveryKey", "lastAttemptAt",
+      ...(Object.prototype.hasOwnProperty.call(value, "admission") ? ["admission"] : []),
+      ...(Object.prototype.hasOwnProperty.call(value, "notCrossed") ? ["notCrossed"] : []),
       ...(Object.prototype.hasOwnProperty.call(value, "retrySafe") ? ["retrySafe"] : []),
       ...(Object.prototype.hasOwnProperty.call(value, "destinationUnavailableAttempts")
         ? ["destinationUnavailableAttempts"]
@@ -1354,6 +1359,8 @@ function validWake(value: unknown): boolean {
     ])
     && (value.state === "pending" || value.state === "delivered" || value.state === "failed"
       || value.state === "unknown" || value.state === "suppressed")
+    && (value.admission === undefined || validWakeFence(value.admission))
+    && (value.notCrossed === undefined || validWakeCertificates(value.notCrossed))
     && nonNegativeInteger(value.attempts)
     && boundedNonEmptyString(value.deliveryKey, 512)
     && nullableIso(value.lastAttemptAt)

@@ -1,3 +1,4 @@
+import { currentProcessJobWakeRecovery } from "../process-jobs-context.js";
 import type { ProviderUsageOperator } from "@mono-agent/agent-contracts";
 import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -284,7 +285,7 @@ const APP_OWNED_TUI_START = Symbol("app-owned-tui-start");
 interface AppOwnedTuiChannelDriver extends ChannelDriver<TuiAdapterConfig> {
   [APP_OWNED_TUI_START](
     input: ChannelStartInput<TuiAdapterConfig>,
-    processJobs: ProcessJobOperator | undefined,
+    processJobs: (ProcessJobOperator & { readonly wakeAdmission?: TuiAdapterOptions["processJobWakeAdmission"] }) | undefined,
     providerAuth: ProviderAuthOperator | undefined,
     providerUsage?: ProviderUsageOperator,
     restart?: TuiRestartAuthority,
@@ -301,7 +302,7 @@ const appOwnedTuiDrivers = new WeakSet<ChannelDriver>();
 export function startAppOwnedTuiChannel(
   driver: ChannelDriver,
   input: ChannelStartInput<unknown>,
-  processJobs: ProcessJobOperator | undefined,
+  processJobs: (ProcessJobOperator & { readonly wakeAdmission?: TuiAdapterOptions["processJobWakeAdmission"] }) | undefined,
   providerAuth: ProviderAuthOperator | undefined,
   providerUsage?: ProviderUsageOperator,
   restart?: TuiRestartAuthority,
@@ -552,7 +553,8 @@ export function createTuiChannelDriver(
         responder: input.responder,
         ...(processJobs === undefined
           ? {}
-          : { processJobs, processJobsBearer: processJobs.operatorToken }),
+          : { processJobs, processJobsBearer: processJobs.operatorToken,
+              ...(processJobs.wakeAdmission === undefined ? {} : { processJobWakeAdmission: processJobs.wakeAdmission }) }),
         ...(providerAuth === undefined ? {} : { providerAuth }),
         ...(providerUsage === undefined ? {} : { providerUsage }),
         ...(restart === undefined || input.config.apiKey === undefined ? {} : { restart }),
@@ -652,6 +654,7 @@ export function createTuiChannelDriver(
                 threadId,
                 processJob,
                 wakePrompt: text,
+                ...(currentProcessJobWakeRecovery() === undefined ? {} : { wakeRecovery: currentProcessJobWakeRecovery()! }),
               });
             } catch (error) {
               if (webConsoleErrorCode(error) === "notification_ingress_unavailable") {

@@ -1,3 +1,4 @@
+import { type ProcessJobWakeRecovery } from "./process-job-wake-recovery.js";
 import type { ProviderUsageId, ProviderUsageSnapshot } from "@mono-agent/agent-contracts";
 import type { WebCancelOrigin, WebExternalConversationChannel } from "./contracts.js";
 import type { ConsoleToolScope, ConsoleToolOperation, ExternalConsoleToolScope } from "./console-tools.js";
@@ -578,6 +579,7 @@ export interface DeliverWebProcessJobNotificationInput {
   readonly processJob: ProcessJobProjection;
   /** Present only for the terminal wake delivery, not lifecycle-only updates. */
   readonly wakePrompt?: string;
+  readonly wakeRecovery?: ProcessJobWakeRecovery;
   readonly text?: string;
   readonly parts?: readonly AgentReplyPart[];
 }
@@ -666,6 +668,7 @@ export class WebService {
   private connections = new Map<string, AgentConnection>();
   /** Preserve the process binding of in-flight turn clients across discovery replacement. */
   private readonly clientProcessGeneration = new WeakMap<OperatorClient, string>();
+  private readonly clientConnectionGeneration = new WeakMap<OperatorClient, string>();
   /**
    * Source id -> the capability signature projected for it on the last
    * discovery pass. No projected capability is on the summary or in the store,
@@ -2657,6 +2660,8 @@ export class WebService {
     onAdmitted?: () => void,
     scheduledWake = false,
     ownerText?: string,
+    hostWakeAttempt?: string,
+    onRefusedBeforeDispatch?: () => void,
   ): Promise<void> {
     const coalescer = new StreamFrameCoalescer(
       async (frames) => {
@@ -2693,6 +2698,20 @@ export class WebService {
       // webhook channels stay excluded here and in `assertConsoleToolTurn`.
       const consoleTools = started.thread.trigger === undefined;
       if (consoleTools) this.consoleToolTurns.add(started.turnId);
+      if (hostWakeDeliveryKey !== undefined && !scheduledWake) {
+        // Attachment preparation yields: re-check the exact wake claim and
+        // connection immediately before dispatch, not just before launchTurn.
+        const connection = this.connections.get(started.thread.sourceId);
+        const restart = this.store.activeRestartOperation(started.thread.sourceId);
+        if (this.stopped || connection === undefined
+          || connection.generation !== this.clientConnectionGeneration.get(client)
+          || (restart !== undefined && restart.generation === connection.processGeneration)
+          || (hostWakeAttempt !== undefined && !connection.info.supportsProcessJobWakeAdmission)
+          || !this.store.ownsProcessJobWake(hostWakeDeliveryKey, hostWakeAttempt)) {
+          onRefusedBeforeDispatch?.();
+          throw new WebConsoleError("process_job_wake_superseded", "The wake's dispatch ownership changed.", 409);
+        }
+      }
       this.store.markTurnDispatchStarted(started.turnId, this.clientProcessGeneration.get(client));
       let response;
       try {
@@ -2717,6 +2736,7 @@ export class WebService {
           tui: modelMetadata,
         },
         ...(hostWakeDeliveryKey === undefined ? {} : { processJobWakeDeliveryKey: hostWakeDeliveryKey }),
+        ...(hostWakeAttempt === undefined ? {} : { processJobWakeAttempt: hostWakeAttempt }),
         onFrame: (frame) => {
           this.observeAskUserFrame(started.thread.id, started.turnId, frame);
           this.observeConversationTitleFrame(started.thread.id, started.turnId, frame);
@@ -2810,7 +2830,8 @@ export class WebService {
     operatorText: string,
     hostWakeDeliveryKey?: string,
     scheduledWake = false,
-  ): { readonly completion: Promise<void>; readonly admitted: Promise<boolean> } {
+    hostWakeAttempt?: string,
+  ): { readonly completion: Promise<void>; readonly admitted: Promise<boolean>; readonly refusedBeforeDispatch: () => boolean } {
     const rawOwnerText = operatorText;
     operatorText = withProjectContext(operatorText, this.projectContextForThread(started.thread.id), this.store.conversationMarkersForTurn(started.turnId));
     const ownerText = operatorText === rawOwnerText ? rawOwnerText : neutraliseProjectContext(rawOwnerText);
@@ -2818,6 +2839,7 @@ export class WebService {
     const controller = new AbortController();
     let resolveAdmitted!: (admitted: boolean) => void;
     const admitted = new Promise<boolean>((resolve) => { resolveAdmitted = resolve; });
+    let refusedBeforeDispatch = false;
     const completion = this.runTurn(
       started,
       client,
@@ -2827,6 +2849,8 @@ export class WebService {
       () => { resolveAdmitted(true); },
       scheduledWake,
       ownerText,
+      hostWakeAttempt,
+      () => { refusedBeforeDispatch = true; },
     ).finally(() => {
       // Inert once admission already resolved; the turn settled without the
       // operator ever returning a stream when it did not.
@@ -2865,7 +2889,7 @@ export class WebService {
       admitted,
       resolveAdmitted,
     });
-    return { completion, admitted };
+    return { completion, admitted, refusedBeforeDispatch: () => refusedBeforeDispatch };
   }
 
   private submissionReceipt(submission: StoredWebSubmission): WebSubmissionReceipt {
@@ -3137,10 +3161,14 @@ export class WebService {
     }
   }
 
+  private readonly processJobWakeWorkers = new Map<string, AbortController>();
+
   private async deliverProcessJobWake(
     input: DeliverWebProcessJobNotificationInput & { readonly wakePrompt: string },
   ): Promise<HostWakeReceipt> {
-    const activeKey = `${input.sourceId}\0${input.deliveryKey}`;
+    const workerKey = `${input.sourceId}\0${input.deliveryKey}`;
+    const attemptToken = input.wakeRecovery?.token;
+    const activeKey = `${workerKey}\0${attemptToken ?? "legacy"}`;
     const existing = this.activeHostWakes.get(activeKey);
     if (existing !== undefined) return await existing;
 
@@ -3149,6 +3177,7 @@ export class WebService {
       threadId: input.threadId,
       jobId: input.processJob.jobId,
       deliveryKey: input.deliveryKey,
+      ...(input.wakeRecovery === undefined ? {} : { wakeRecovery: input.wakeRecovery }),
     });
     if (reservation.kind === "completed") {
       return { delivered: true, disposition: reservation.disposition };
@@ -3162,40 +3191,67 @@ export class WebService {
       };
     }
 
+    this.processJobWakeWorkers.get(workerKey)?.abort();
+    const worker = new AbortController();
+    this.processJobWakeWorkers.set(workerKey, worker);
+    const ambiguous: HostWakeReceipt = { delivered: false, code: "process_job_wake_ambiguous", retryable: false, ambiguous: true };
+    const ownsClaim = (): boolean => !worker.signal.aborted && this.store.ownsProcessJobWake(input.deliveryKey, attemptToken);
+    const abandonUndispatched = (): HostWakeReceipt => {
+      try {
+        if (ownsClaim() && this.store.abandonProcessJobWake({ sourceId: input.sourceId,
+          jobId: input.processJob.jobId, deliveryKey: input.deliveryKey,
+          ...(attemptToken === undefined ? {} : { attemptToken }) })) {
+          return { delivered: false, code: "destination_channel_unavailable", retryable: true };
+        }
+      } catch { /* A failed exact release preserves ambiguity, never retry authority. */ }
+      return ambiguous;
+    };
+    const stoppingConnection = (connection: AgentConnection): boolean => {
+      const restart = this.store.activeRestartOperation(input.sourceId);
+      return restart !== undefined && restart.generation === connection.processGeneration;
+    };
+    const cancelled = new Promise<HostWakeReceipt>((resolve) => worker.signal.addEventListener("abort", () => resolve(ambiguous), { once: true }));
     this.retainHostWakeReservation(input.threadId);
     const previous = this.hostWakeTails.get(input.threadId) ?? Promise.resolve();
-    const delivery = previous.catch(() => undefined).then(async (): Promise<HostWakeReceipt> => {
+    const work = previous.catch(() => undefined).then(async (): Promise<HostWakeReceipt> => {
+      if (!ownsClaim()) return ambiguous;
       const connection = this.connections.get(input.sourceId);
       if (connection === undefined) {
         this.store.abandonProcessJobWake({
           sourceId: input.sourceId,
           jobId: input.processJob.jobId,
           deliveryKey: input.deliveryKey,
+          ...(attemptToken === undefined ? {} : { attemptToken }),
         });
         return { delivered: false, code: "destination_channel_unavailable", retryable: true };
       }
+      if (stoppingConnection(connection) || (attemptToken !== undefined && !connection.info.supportsProcessJobWakeAdmission)) return abandonUndispatched();
       const active = this.activeTurns.get(input.threadId);
       // The wake text is steered operator-facing with the member prefix; an
       // oversized composition skips steering and falls through to the normal
       // follow-up below instead of truncating.
       const steeredText = this.withProjectPrefix(input.threadId, input.wakePrompt);
       if (active !== undefined && connection.info.supportsLiveInput
+        && this.clientConnectionGeneration.get(active.client) === connection.generation
         && steeredText.length <= AGENT_LIVE_INPUT_MAX_CHARACTERS) {
         try {
-          this.store.associateProcessJobWakeTurn(input.deliveryKey, active.turnId);
+          this.store.associateProcessJobWakeTurn(input.deliveryKey, active.turnId, true, attemptToken);
           const settlement = await active.client.liveInput({
             conversationId: `web:${input.threadId}`,
             id: input.deliveryKey,
             text: steeredText,
             receivedAt: new Date().toISOString(),
             deliveryKey: input.deliveryKey,
-            signal: AbortSignal.timeout(10 * 60 * 1_000),
+            ...(attemptToken === undefined ? {} : { processJobWakeAttempt: attemptToken }),
+            signal: AbortSignal.any([worker.signal, AbortSignal.timeout(10 * 60 * 1_000)]),
           });
+          if (!ownsClaim()) return ambiguous;
           if (settlement.status === "applied") {
             const message = this.store.completeProcessJobWake({
               sourceId: input.sourceId,
               jobId: input.processJob.jobId,
               deliveryKey: input.deliveryKey,
+              ...(attemptToken === undefined ? {} : { attemptToken }),
               disposition: "steered",
               turnId: active.turnId,
             });
@@ -3205,7 +3261,7 @@ export class WebService {
             return { delivered: true, disposition: "steered" };
           }
           if (settlement.status !== "requeue" && settlement.status !== "unavailable") {
-            this.store.releaseProcessJobWakeTurn(input.deliveryKey, active.turnId);
+            this.store.releaseProcessJobWakeTurn(input.deliveryKey, active.turnId, attemptToken);
             return {
               delivered: false,
               code: "process_job_wake_ambiguous",
@@ -3213,11 +3269,11 @@ export class WebService {
               ambiguous: true,
             };
           }
-          this.store.associateProcessJobWakeTurn(input.deliveryKey, active.turnId, false);
+          this.store.associateProcessJobWakeTurn(input.deliveryKey, active.turnId, false, attemptToken);
         } catch (error) {
           // Receipt uncertainty forbids replay, but is not authority to silence
           // the ordinary answer from the active turn indefinitely.
-          this.store.releaseProcessJobWakeTurn(input.deliveryKey, active.turnId);
+          this.store.releaseProcessJobWakeTurn(input.deliveryKey, active.turnId, attemptToken);
           this.options.logger?.warn?.("Web process-job steering outcome is unknown; automatic fallback is suppressed.", {
             threadId: input.threadId,
             error: errorMessage(error),
@@ -3233,7 +3289,7 @@ export class WebService {
 
       if (active !== undefined) {
         try {
-          await active.completion;
+          if (!await Promise.race([active.completion.then(() => true), cancelled.then(() => false)])) return ambiguous;
         } catch {
           // No live-input request was sent, or the active run explicitly said
           // requeue/unavailable before this wait. This wake therefore has not
@@ -3245,6 +3301,7 @@ export class WebService {
               sourceId: input.sourceId,
               jobId: input.processJob.jobId,
               deliveryKey: input.deliveryKey,
+              ...(attemptToken === undefined ? {} : { attemptToken }),
             });
           } catch {
             // The accepted claim may remain. Preserve ambiguity and no-replay.
@@ -3266,12 +3323,15 @@ export class WebService {
       }
       // Like an active turn, an in-flight manual compaction is waited out; the
       // wake's reservation keeps any new compaction from starting meanwhile.
-      await this.activeCompactions.get(input.threadId);
+      if (!await Promise.race([Promise.resolve(this.activeCompactions.get(input.threadId)).then(() => true),
+        cancelled.then(() => false)])) return ambiguous;
+      if (!ownsClaim()) return ambiguous;
       if (this.stopped) {
         this.store.abandonProcessJobWake({
           sourceId: input.sourceId,
           jobId: input.processJob.jobId,
           deliveryKey: input.deliveryKey,
+          ...(attemptToken === undefined ? {} : { attemptToken }),
         });
         return { delivered: false, code: "destination_channel_unavailable", retryable: true };
       }
@@ -3281,7 +3341,15 @@ export class WebService {
           sourceId: input.sourceId,
           jobId: input.processJob.jobId,
           deliveryKey: input.deliveryKey,
+          ...(attemptToken === undefined ? {} : { attemptToken }),
         });
+        return { delivered: false, code: "destination_channel_unavailable", retryable: true };
+      }
+      if (refreshedConnection.generation !== connection.generation
+        || stoppingConnection(refreshedConnection)
+        || (attemptToken !== undefined && !refreshedConnection.info.supportsProcessJobWakeAdmission)) {
+        this.store.abandonProcessJobWake({ sourceId: input.sourceId, jobId: input.processJob.jobId,
+          deliveryKey: input.deliveryKey, ...(attemptToken === undefined ? {} : { attemptToken }) });
         return { delivered: false, code: "destination_channel_unavailable", retryable: true };
       }
       // Bounded before any turn exists: an over-limit composition fails the
@@ -3294,6 +3362,7 @@ export class WebService {
           sourceId: input.sourceId,
           jobId: input.processJob.jobId,
           deliveryKey: input.deliveryKey,
+          ...(attemptToken === undefined ? {} : { attemptToken }),
         });
         return { delivered: false, code: "process_job_wake_failed", retryable: false };
       }
@@ -3303,6 +3372,7 @@ export class WebService {
         started = this.store.beginAssistantTurn({
           threadId: input.threadId,
           prompt: input.wakePrompt,
+          ...(attemptToken === undefined ? {} : { processJobWakeAttempt: attemptToken }),
           processJobWake: {
             jobId: input.processJob.jobId,
             deliveryKey: input.deliveryKey,
@@ -3319,6 +3389,7 @@ export class WebService {
           sourceId: input.sourceId,
           jobId: input.processJob.jobId,
           deliveryKey: input.deliveryKey,
+          ...(attemptToken === undefined ? {} : { attemptToken }),
         });
         return {
           delivered: false,
@@ -3326,11 +3397,13 @@ export class WebService {
           retryable: false,
         };
       }
-      const { completion, admitted } = this.launchTurn(
+      const { completion, admitted, refusedBeforeDispatch } = this.launchTurn(
         started,
         refreshedConnection.client,
         input.wakePrompt,
         input.deliveryKey,
+        false,
+        attemptToken,
       );
       // Receipt ownership moves to the durable turn below. The turn remains
       // owned by `activeTurns`, but its completion is no longer part of the
@@ -3365,6 +3438,9 @@ export class WebService {
       // follow-up can no longer start the next job. This waits for admission
       // only; the model turn itself stays detached above.
       if (!await admitted) {
+        // Only this explicit local guard certifies that client.turn was never
+        // called. A dispatched request without a receipt remains ambiguous.
+        if (refusedBeforeDispatch()) return abandonUndispatched();
         // The request may still have reached the agent, so the accepted claim
         // stays put: no abandon, no replay, and any retry fails closed.
         return {
@@ -3374,10 +3450,12 @@ export class WebService {
           ambiguous: true,
         };
       }
+      if (!ownsClaim()) return ambiguous;
       const message = this.store.completeProcessJobWake({
         sourceId: input.sourceId,
         jobId: input.processJob.jobId,
         deliveryKey: input.deliveryKey,
+        ...(attemptToken === undefined ? {} : { attemptToken }),
         disposition: "follow_up",
         turnId: started.turnId,
       });
@@ -3386,6 +3464,7 @@ export class WebService {
       }
       return { delivered: true, disposition: "follow_up" };
     });
+    const delivery = Promise.race([work, cancelled]);
     const tail = delivery.then(() => undefined, () => undefined);
     this.hostWakeTails.set(input.threadId, tail);
     this.activeHostWakes.set(activeKey, delivery);
@@ -3398,6 +3477,7 @@ export class WebService {
       if (this.activeHostWakes.get(activeKey) === delivery) {
         this.activeHostWakes.delete(activeKey);
       }
+      if (this.processJobWakeWorkers.get(workerKey) === worker) this.processJobWakeWorkers.delete(workerKey);
       this.releaseHostWakeReservation(input.threadId);
     }
   }
@@ -3763,6 +3843,7 @@ export class WebService {
         this.probeFailures.delete(agent.source.sourceId);
         nextConnections.set(agent.source.sourceId, { client, info, pid: agent.source.pid, generation: connectionGeneration, processGeneration: generation });
         this.clientProcessGeneration.set(client, generation);
+        this.clientConnectionGeneration.set(client, connectionGeneration);
         this.seedModelCatalogFromOptions(agent.source.sourceId, generation, info.modelOptions);
         await this.restorePersistedModelAdmission(
           client,

@@ -1,3 +1,4 @@
+import type { ProcessJobWakeRecovery } from "./process-job-wake-recovery.js";
 import type { WebCancelOrigin } from "./contracts.js";
 import { CONSOLE_READ_TOOL_NAMES, executeConsoleTool, type ConsoleToolScope, type ConsoleToolOperation, type ConsoleToolCommit } from "./console-tools.js";
 import { createECDH, createHash, randomUUID, timingSafeEqual } from "node:crypto";
@@ -2544,6 +2545,7 @@ export class WebStore {
     readonly threadId: string;
     readonly jobId: string;
     readonly deliveryKey: string;
+    readonly wakeRecovery?: ProcessJobWakeRecovery;
   }): ProcessJobWakeReservation {
     const card = this.database.prepare(`
       SELECT thread_id, delivery_key FROM process_job_cards WHERE source_id = ? AND job_id = ?
@@ -2557,25 +2559,43 @@ export class WebStore {
       throw new WebConsoleError("invalid_notification", "The process-job wake does not match its retained card.", 409);
     }
     const existing = this.database.prepare(`
-      SELECT state, disposition FROM process_job_wake_deliveries
+      SELECT state, disposition, delivery_key, attempt_token FROM process_job_wake_deliveries
       WHERE source_id = ? AND job_id = ?
     `).get(input.sourceId, input.jobId) as unknown as {
       state: "accepted" | "completed";
+      delivery_key: string;
+      attempt_token: string | null;
       disposition: "steered" | "follow_up" | null;
     } | undefined;
     if (existing?.state === "completed"
       && (existing.disposition === "steered" || existing.disposition === "follow_up")) {
       return { kind: "completed", disposition: existing.disposition };
     }
-    if (existing !== undefined) return { kind: "uncertain" };
+    if (existing !== undefined) {
+      const proof = input.wakeRecovery;
+      if (existing.state !== "accepted" || existing.delivery_key !== input.deliveryKey
+        || existing.attempt_token === null || proof?.version !== 1
+        || !proof.notCrossed.includes(existing.attempt_token) || proof.token === existing.attempt_token) return { kind: "uncertain" };
+      const replaced = this.database.prepare(`
+        UPDATE process_job_wake_deliveries SET attempt_token = ?, turn_id = NULL
+        WHERE source_id = ? AND job_id = ? AND delivery_key = ? AND state = 'accepted' AND attempt_token = ?
+      `).run(proof.token, input.sourceId, input.jobId, input.deliveryKey, existing.attempt_token);
+      return replaced.changes === 1 ? { kind: "new" } : { kind: "uncertain" };
+    }
     const now = this.now();
     this.database.prepare(`
       INSERT INTO process_job_wake_deliveries (
         source_id, job_id, delivery_key, thread_id, state, disposition, turn_id,
-        created_at, completed_at
-      ) VALUES (?, ?, ?, ?, 'accepted', NULL, NULL, ?, NULL)
-    `).run(input.sourceId, input.jobId, input.deliveryKey, input.threadId, now);
+        created_at, completed_at, attempt_token
+      ) VALUES (?, ?, ?, ?, 'accepted', NULL, NULL, ?, NULL, ?)
+    `).run(input.sourceId, input.jobId, input.deliveryKey, input.threadId, now, input.wakeRecovery?.token ?? null);
     return { kind: "new" };
+  }
+
+  ownsProcessJobWake(deliveryKey: string, attemptToken?: string): boolean {
+    return this.database.prepare(`SELECT 1 FROM process_job_wake_deliveries
+      WHERE delivery_key = ? AND state = 'accepted' AND attempt_token IS ?`)
+      .get(deliveryKey, attemptToken ?? null) !== undefined;
   }
 
   /**
@@ -2587,13 +2607,14 @@ export class WebStore {
     readonly sourceId: string;
     readonly jobId: string;
     readonly deliveryKey: string;
+    readonly attemptToken?: string;
     readonly disposition: "steered" | "follow_up";
     readonly turnId?: string;
   }): WebMessage | undefined {
     const result = this.database.prepare(`
       UPDATE process_job_wake_deliveries
       SET state = 'completed', disposition = ?, turn_id = ?, completed_at = ?
-      WHERE source_id = ? AND job_id = ? AND delivery_key = ? AND state = 'accepted'
+      WHERE source_id = ? AND job_id = ? AND delivery_key = ? AND state = 'accepted' AND attempt_token IS ?
     `).run(
       input.disposition,
       input.turnId ?? null,
@@ -2601,6 +2622,7 @@ export class WebStore {
       input.sourceId,
       input.jobId,
       input.deliveryKey,
+      input.attemptToken ?? null,
     );
     if (result.changes !== 1) {
       throw new WebConsoleError("notification_reservation_lost", "The process-job wake reservation was lost.", 409);
@@ -2619,13 +2641,13 @@ export class WebStore {
   }
 
   /** Bind an accepted host wake to its exact follow-up before crossing the turn boundary. */
-  associateProcessJobWakeTurn(deliveryKey: string, turnId: string, pending = true): void {
+  associateProcessJobWakeTurn(deliveryKey: string, turnId: string, pending = true, attemptToken?: string): void {
     const result = this.database.prepare(`
       UPDATE process_job_wake_deliveries SET turn_id = ?
-      WHERE delivery_key = ? AND state = 'accepted'
+      WHERE delivery_key = ? AND state = 'accepted' AND attempt_token IS ?
         AND thread_id = (SELECT turns.thread_id FROM turns JOIN threads ON threads.id = turns.thread_id
           WHERE turns.id = ? AND threads.source_id = process_job_wake_deliveries.source_id)
-    `).run(pending ? turnId : null, deliveryKey, turnId);
+    `).run(pending ? turnId : null, deliveryKey, attemptToken ?? null, turnId);
     if (result.changes !== 1) {
       throw new WebConsoleError("notification_reservation_lost", "The process-job wake turn association was lost.", 409);
     }
@@ -2642,11 +2664,11 @@ export class WebStore {
   }
 
   /** Release only a pending notification hold; the ambiguous delivery reservation remains durable. */
-  releaseProcessJobWakeTurn(deliveryKey: string, turnId: string): void {
+  releaseProcessJobWakeTurn(deliveryKey: string, turnId: string, attemptToken?: string): void {
     this.database.prepare(`
       UPDATE process_job_wake_deliveries SET turn_id = NULL
-      WHERE delivery_key = ? AND turn_id = ? AND state = 'accepted'
-    `).run(deliveryKey, turnId);
+      WHERE delivery_key = ? AND turn_id = ? AND state = 'accepted' AND attempt_token IS ?
+    `).run(deliveryKey, turnId, attemptToken ?? null);
   }
 
   /** Release a reservation only while no operator delivery has begun, proving the exact claim was removed. */
@@ -2654,11 +2676,12 @@ export class WebStore {
     readonly sourceId: string;
     readonly jobId: string;
     readonly deliveryKey: string;
+    readonly attemptToken?: string;
   }): boolean {
     const result = this.database.prepare(`
       DELETE FROM process_job_wake_deliveries
-      WHERE source_id = ? AND job_id = ? AND delivery_key = ? AND state = 'accepted'
-    `).run(input.sourceId, input.jobId, input.deliveryKey);
+      WHERE source_id = ? AND job_id = ? AND delivery_key = ? AND state = 'accepted' AND attempt_token IS ?
+    `).run(input.sourceId, input.jobId, input.deliveryKey, input.attemptToken ?? null);
     return result.changes === 1;
   }
 
@@ -4837,6 +4860,7 @@ export class WebStore {
   readonly context1M?: boolean;
     readonly requestedModel?: string;
     readonly requestedEffort?: string;
+    readonly processJobWakeAttempt?: string;
     readonly processJobWake?: {
       readonly jobId: string;
       readonly deliveryKey: string;
@@ -4906,7 +4930,7 @@ export class WebStore {
         VALUES (?, ?, ?, 'assistant', ?, ?, ?, 'running')
       `).run(assistantMessageId, threadId, turnId, serializeParts(initialParts), now, now);
       if (input.processJobWake !== undefined) {
-        this.associateProcessJobWakeTurn(input.processJobWake.deliveryKey, turnId);
+        this.associateProcessJobWakeTurn(input.processJobWake.deliveryKey, turnId, true, input.processJobWakeAttempt);
       }
       this.database.prepare(
         "UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?",

@@ -257,3 +257,16 @@ describe("row text", () => {
     expect(peerQuestionExpiryLabel("not a date", NOW)).toBe("");
   });
 });
+
+it("keeps a terminal AskParent question current through reload and grouping without inventing receipt", () => {
+  const base = backgroundSubagentJob(true);
+  const job = { ...base, subagentQuestion: { question: "Which approach?" },
+    wake: { ...base.wake, state: "pending", attempts: 1 } };
+  const reloaded = JSON.parse(JSON.stringify(job)) as ProcessJobProjection;
+  expect(processJobIsCurrent(reloaded, NOW)).toBe(true);
+  expect(processJobDisplayState(reloaded, NOW).notes).toContain("Child question waiting for parent");
+  expect(processJobStackCounts([reloaded], NOW).question).toBe(1);
+  expect(processJobIsCurrent({ ...reloaded, wake: { ...reloaded.wake, state: "unknown" } }, NOW)).toBe(false);
+  expect(processJobDisplayState({ ...reloaded, wake: { ...reloaded.wake, state: "unknown" } }, NOW).alerts)
+    .toContain("wake outcome unknown · replay suppressed");
+});

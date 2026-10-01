@@ -1,3 +1,4 @@
+import { type ProcessJobWakeRecovery, validProcessJobWakeRecovery } from "./process-job-wake-recovery.js";
 import {
   CONSOLE_TOOL_NAMES,
   type ConsoleToolName,
@@ -336,6 +337,7 @@ type ParsedNotificationRequest = {
   readonly threadId: string;
   readonly processJob: ProcessJobProjection;
   readonly wakePrompt?: string;
+  readonly wakeRecovery?: ProcessJobWakeRecovery;
   readonly text?: string;
   readonly parts?: readonly AgentReplyPart[];
 
@@ -347,7 +349,7 @@ export function parseNotificationRequest(body: unknown): ParsedNotificationReque
   }
   const record = body as Record<string, unknown>;
   const allowed = record.triggerKind === "job"
-    ? new Set(["sourceId", "triggerKind", "deliveryKey", "threadId", "processJob", "wakePrompt", "text", "parts"])
+    ? new Set(["sourceId", "triggerKind", "deliveryKey", "threadId", "processJob", "wakePrompt", "wakeRecovery", "text", "parts"])
     : new Set(["sourceId", "triggerKind", "deliveryKey", "text", "jobId", "runId"]);
   if (Object.keys(record).some((key) => !allowed.has(key))) {
     throw new WebConsoleError("invalid_notification", "Notification body contains unsupported fields.", 400);
@@ -368,6 +370,9 @@ export function parseNotificationRequest(body: unknown): ParsedNotificationReque
     if (typeof record.text === "string" && record.text.length > 8_000) {
       throw new WebConsoleError("invalid_notification", "Process-job response text exceeds its limit.", 413);
     }
+    if (record.wakeRecovery !== undefined && (!validProcessJobWakeRecovery(record.wakeRecovery) || record.wakePrompt === undefined)) {
+      throw new WebConsoleError("invalid_notification", "Invalid process-job wake recovery proof.", 400);
+    }
     if (record.wakePrompt !== undefined
       && (typeof record.wakePrompt !== "string"
         || record.wakePrompt.trim().length === 0
@@ -382,6 +387,7 @@ export function parseNotificationRequest(body: unknown): ParsedNotificationReque
       threadId,
       processJob,
       ...(typeof record.wakePrompt === "string" ? { wakePrompt: record.wakePrompt } : {}),
+      ...(record.wakeRecovery === undefined ? {} : { wakeRecovery: record.wakeRecovery as ProcessJobWakeRecovery }),
       ...(typeof record.text === "string" ? { text: record.text } : {}),
       ...(parts === undefined ? {} : { parts }),
     };

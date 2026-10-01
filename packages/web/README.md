@@ -997,6 +997,32 @@ id discovery no longer reports, are left alone.
 
 ## Public API
 
+Recovery-aware process-job notifications optionally carry private v1
+`wakeRecovery` metadata through the existing bearer-authenticated ingress. A
+bounded exact-token non-admission proof replaces only the matching `accepted`
+reservation; completed reservations stay idempotent and legacy reservations
+stay uncertain. Superseded wake workers cannot dispatch or overwrite the new
+claim, and the ordinary blocked parent turn is not cancelled. Connection
+identity and requested shutdown are rechecked before dispatch; transport loss,
+missing runs and `admitted=false` are not retry authority. Pending child questions
+remain current in the loaded job shelf, labelled "Child question waiting for
+parent", without interrupting `AskUser` or claiming the parent has read them.
+
+Schema 43 adds nullable `process_job_wake_deliveries.attempt_token`; existing rows
+remain null and fail closed. Migration changes no historical delivery outcome.
+Older consoles refuse this schema; rollback requires a compatible pre-upgrade
+backup, not a schema-version edit. Upgrade the web console first, or together with the agents. A new agent behind
+an older strict console cannot deliver web wakes: the unsupported recovery
+metadata is rejected before acceptance and the agent records a terminal wake
+failure, with no stripped-payload retry. Paired upgrades enable recovery.
+
+New agents accept token-less old-console process-job delivery as legacy, marking
+each boundary durably and retaining the same live safe-steer-refusal/follow-up
+path. Such attempts never recover or replay after restart; fenced attempts still
+refuse execution. Recovery metadata is not a browser DTO and requires no consumer
+configuration change.
+
+
 `GET /api/v1/threads/:id/usage` returns `{usage: WebThreadUsage}` for the
 whole conversation, independently of the paginated transcript. It folds
 synchronous delegation cost into the parent run, adds detached job spend once,

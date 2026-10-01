@@ -2997,3 +2997,110 @@ function rejectedBoundPort(error: unknown): number {
   }
   return boundPort;
 }
+
+describe("private wake admission boundary", () => {
+  const token = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const body = { client: "web", conversationId: "web:fictional", text: "Inspect child result",
+    processJobWakeDeliveryKey: "process-job:fictional", processJobWakeAttempt: token };
+  it.each(["refused", "write_failed", "missing"] as const)("never flushes admission or calls the responder on %s proof", async (mode) => {
+    const respond = vi.fn(async () => ({ text: "ok" }));
+    running = await startTuiAdapter({ port: 0, responder: { respond },
+      ...(mode === "missing" ? {} : { processJobWakeAdmission: {
+        claim: async () => { if (mode === "write_failed") throw new Error("fictional storage failure"); return false; },
+        release: async () => true,
+      } }) });
+    const response = await postTurn(running.baseUrl, body);
+    expect(response.ok).toBe(false); expect(respond).not.toHaveBeenCalled();
+  });
+  it("awaits durable marking before stream headers and admits a concurrent token only once", async () => {
+    let mark!: () => void; let marked = false;
+    const persisted = new Promise<void>((resolve) => { mark = () => { marked = true; resolve(); }; });
+    const respond = vi.fn(async () => { expect(marked).toBe(true); return { text: "ok" }; });
+    let claimed = false;
+    running = await startTuiAdapter({ port: 0, responder: { respond }, processJobWakeAdmission: {
+      claim: async () => { if (claimed) return false; claimed = true; await persisted; return true; }, release: async () => true,
+    } });
+    let headers = false; const first = postTurn(running.baseUrl, body).then((response) => { headers = true; return response; });
+    await vi.waitFor(() => expect(claimed).toBe(true));
+    expect(headers).toBe(false); expect(respond).not.toHaveBeenCalled();
+    const duplicate = await postTurn(running.baseUrl, body); expect(duplicate.ok).toBe(false);
+    mark(); await readFrames(await first); expect(respond).toHaveBeenCalledOnce();
+  });
+  it.each(["unavailable", "requeue", "applied", "uncertain", "lost"] as const)("releases only explicit safe steer %s before receipting", async (status) => {
+    const release = vi.fn(async () => true); const claim = vi.fn(async () => true);
+    running = await startTuiAdapter({ port: 0, processJobWakeAdmission: { claim, release }, responder: {
+      respond: async () => ({ text: "ok" }), offerLiveInput: () => {
+        if (status === "unavailable") return { status: "unavailable", reason: "inactive" };
+        return { status: "accepted", settled: status === "lost" ? Promise.reject(new Error("lost")) : Promise.resolve(
+          status === "applied" ? { status, runId: "run" } : status === "requeue" ? { status, reason: "closed" } : { status, reason: "delivery_uncertain" }) };
+      },
+    } });
+    const response = await fetch(`${running.baseUrl}/v1/conversations/web%3Afictional/live-input`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: "wake", text: "Inspect child result",
+        receivedAt: new Date().toISOString(), deliveryKey: body.processJobWakeDeliveryKey, processJobWakeAttempt: token }),
+    });
+    expect(response.status).toBe(200); expect(claim).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledTimes(status === "unavailable" || status === "requeue" ? 1 : 0);
+  });
+});
+
+
+describe("wake admission compatibility and synchronous refusal", () => {
+  const token = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const deliveryKey = "process-job:fictional";
+  const liveBody = { id: "input", text: "Inspect child", receivedAt: "2026-08-14T10:00:03.000Z", deliveryKey, processJobWakeAttempt: token };
+  const turnBody = { client: "web", conversationId: "web:fictional", text: "Inspect child", processJobWakeDeliveryKey: deliveryKey,
+    processJobWakeAttempt: token, metadata: { web: { turnId: "fictional-turn" } } };
+
+  it("passes parent-interruption steering keys through without invoking process-job admission", async () => {
+    const claim = vi.fn(async () => false); const release = vi.fn(async () => false);
+    const offer = vi.fn(() => ({ status: "accepted" as const, settled: Promise.resolve({ status: "applied" as const, runId: "parent-run" }) }));
+    running = await startTuiAdapter({ port: 0, processJobWakeAdmission: { claim, release },
+      responder: { respond: async () => ({ text: "ok" }), offerLiveInput: offer } });
+    const response = await fetch(`${running.baseUrl}/v1/conversations/web%3Afictional/live-input`, { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ ...liveBody, processJobWakeAttempt: undefined,
+        deliveryKey: "parent-interruption:fictional" }) });
+    expect(await response.json()).toMatchObject({ status: "applied" }); expect(offer).toHaveBeenCalledOnce();
+    expect(claim).not.toHaveBeenCalled(); expect(release).not.toHaveBeenCalled();
+  });
+
+  it("releases an exact token-less legacy safe refusal before accepting its live follow-up", async () => {
+    const calls: string[] = []; const boundaries: string[] = [];
+    const claim = vi.fn(async (_key: string, attempt: string, boundary: string) => { expect(attempt).toBe(""); boundaries.push(boundary); calls.push("claim"); return true; });
+    const release = vi.fn(async (_key: string, attempt: string, boundary: string) => { expect(attempt).toBe(""); expect(boundary).toBe(boundaries[0]); calls.push("release"); return true; });
+    const respond = vi.fn(async () => { calls.push("respond"); return { text: "ok" }; });
+    running = await startTuiAdapter({ port: 0, processJobWakeAdmission: { claim, release }, responder: { respond,
+      offerLiveInput: () => ({ status: "unavailable", reason: "inactive" }) } });
+    const response = await fetch(`${running.baseUrl}/v1/conversations/web%3Afictional/live-input`, { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ ...liveBody, processJobWakeAttempt: undefined }) });
+    expect(await response.json()).toMatchObject({ status: "unavailable" });
+    await readFrames(await postTurn(running.baseUrl, { ...turnBody, processJobWakeAttempt: undefined }));
+    expect(calls).toEqual(["claim", "release", "claim", "respond"]); expect(respond).toHaveBeenCalledOnce();
+  });
+
+  it("refuses an already-active target before marking a new wake boundary", async () => {
+    let finish!: () => void; const pending = new Promise<void>((resolve) => { finish = resolve; });
+    const claim = vi.fn(async () => true); const release = vi.fn(async () => true);
+    const respond = vi.fn(async () => { await pending; return { text: "done" }; });
+    running = await startTuiAdapter({ port: 0, processJobWakeAdmission: { claim, release },
+      responder: { respond, liveInputOwnership: { version: 1 } } });
+    const original = await postTurn(running.baseUrl, { ...turnBody, processJobWakeAttempt: undefined, processJobWakeDeliveryKey: undefined });
+    try {
+      const refused = await postTurn(running.baseUrl, turnBody); expect(refused.ok).toBe(false);
+      expect(claim).not.toHaveBeenCalled(); expect(release).not.toHaveBeenCalled(); expect(respond).toHaveBeenCalledOnce();
+    } finally { finish(); await readFrames(original); }
+  });
+
+  it.each(["turn", "steer"] as const)("releases its exact boundary if stopping begins while the %s claim persists", async (kind) => {
+    let persisted!: () => void; const marking = new Promise<void>((resolve) => { persisted = resolve; });
+    const claim = vi.fn(async (_key: string, _attempt: string, _boundary: string) => { await marking; return true; }); const release = vi.fn(async () => true);
+    const respond = vi.fn(async () => ({ text: "ok" }));
+    const offer = vi.fn(() => ({ status: "unavailable" as const, reason: "inactive" as const }));
+    running = await startTuiAdapter({ port: 0, processJobWakeAdmission: { claim, release }, responder: { respond, offerLiveInput: offer } });
+    const request = kind === "turn" ? postTurn(running.baseUrl, turnBody) : fetch(`${running.baseUrl}/v1/conversations/web%3Afictional/live-input`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(liveBody) });
+    await vi.waitFor(() => expect(claim).toHaveBeenCalledOnce()); const stopping = running.stop(); persisted();
+    expect((await request).ok).toBe(false); await stopping;
+    expect(release).toHaveBeenCalledWith(...claim.mock.calls[0]!); expect(respond).not.toHaveBeenCalled(); expect(offer).not.toHaveBeenCalled();
+  });
+});
