@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
+import { writeJsonAtomic } from "../continuation-store-fs.js";
 import { isSubagentRecoveryFence, type SubagentOwnerIdentity, type SubagentOwnerResolution } from "../subagent-registry-ownership.js";
 
 it("loads old recovery fences and restricts new timeout certificates to retained timeout", () => {
@@ -75,6 +76,33 @@ describe("registry ownership fences independent of process-job service availabil
     await handle.finish("child", { status: "ok" });
     expect((await handle.get("child"))?.recovery).toBeUndefined();
   });
+  it("requires exact orphan identity and retains unknown continuity without pre-provider rollback", async () => {
+    const { root, identity, disk } = await crashedLinkedTurn();
+    const model = { provider: "ollama", model: "review", reference: "ollama:review" };
+    disk.definition.model = model;
+    disk.definition.effort = "high";
+    disk.recovery = { turnToken: randomUUID(), sequence: 7, reason: "timeout", continuity: "retained", certifiedTimeout: true };
+    disk.preProvider.recovery = disk.recovery;
+    const question = { question: "Which scope?" }; disk.pendingQuestion = question;
+    await writeJsonAtomic(resolve(subagentConversationRoot(root, "conversation"), "instances.json"), [disk], true);
+    let returnedIdentity: SubagentOwnerIdentity = { ...identity, instanceIncarnation: randomUUID() };
+    const handle = await createSubagentInstanceRegistry({ root, retireSession: async () => {}, authorizeRecovery: async () => true,
+      resolveOwner: async () => ({ state: "orphaned", identity: returnedIdentity }) }).open("conversation");
+    await expect(handle.close("child")).rejects.toMatchObject({ code: "subagent_owner_unavailable" });
+    returnedIdentity = identity;
+    const recovered = await handle.get("child");
+    expect(recovered).toMatchObject({ status: "awaiting_reply", pendingQuestion: question,
+      definition: { model, effort: "high" }, recovery: { turnToken: identity.turnToken, sequence: 1, reason: "settlement_unknown", continuity: "unknown" } });
+    expect(recovered?.recovery).not.toHaveProperty("certifiedTimeout");
+    expect(recovered).not.toHaveProperty("activeTurn");
+    const stored = JSON.parse(await readFile(resolve(subagentConversationRoot(root, "conversation"), "instances.json"), "utf8"))[0];
+    expect(stored).not.toHaveProperty("preProvider"); expect(stored).not.toHaveProperty("ownerLink");
+    expect(stored.recoveryBinding).not.toEqual(disk.recoveryBinding);
+    expect(await handle.inspect("child")).toMatchObject({ status: "structured_job_recovery_unavailable", recovery: { continuity: "unknown" } });
+    await expect(handle.begin("child")).rejects.toMatchObject({ code: "subagent_recovery_required" });
+    await handle.close("child");
+  });
+
   it("treats an old released certificate as a no-op against a newer active replacement", async () => {
     const root = await mkdtemp(resolve(process.cwd(), ".registry-certificate-noop-")); roots.push(root);
     const storeRoot = resolve(root, "jobs"); const oldJob = randomUUID();

@@ -374,11 +374,29 @@ export function createSubagentInstanceRegistry(options: {
         if (record.recovery.continuity !== "retained") throw new SubagentRecoveryError("subagent_recovery_not_retained");
         if (subjectOf(record).owner && acknowledgement.background !== true) throw new SubagentRecoveryError("subagent_recovery_background_required");
       };
-      const reconcileOwner = async (record: StoredSubagentInstance): Promise<void> => {
+      const reconcileOwner = async (record: StoredSubagentInstance, abandoned = false): Promise<void> => {
         if (!record.ownerLink || !record.activeTurn || !record.incarnation || !options.resolveOwner) return;
         const identity: SubagentOwnerIdentity = { ...record.ownerLink, conversationId, instanceId: record.id,
           instanceIncarnation: record.incarnation, turnToken: record.activeTurn.token };
         const proof = await options.resolveOwner(identity).catch(() => ({ state: "unavailable" as const }));
+        if (proof.state === "orphaned") {
+          // Requires both the held OS turn lock and the healthy registered root
+          // owner's absence verdict. Never roll back routes/acknowledgements or
+          // grant continuity from missing bytes: this job may have run and aged out.
+          if (!abandoned || turns.has(turnPath(record.id)) || !sameSubagentOwner(identity, proof.identity)) return;
+          record.recovery = { turnToken: identity.turnToken,
+            sequence: record.recovery?.turnToken === identity.turnToken ? record.recovery.sequence : 1,
+            reason: "settlement_unknown", continuity: "unknown" };
+          record.recoveryBinding = newSubagentRecoveryBinding();
+          record.status = record.pendingQuestion ? "awaiting_reply" : "idle";
+          record.lastStatus = "interrupted";
+          record.updatedAt = now();
+          delete record.preProvider;
+          delete record.activeTurn; delete record.ownerLink; delete record.reservation;
+          if (record.createdForAdmission) { record.status = "closed"; delete record.pendingQuestion; await retire(record); }
+          delete record.createdForAdmission;
+          return;
+        }
         if ((proof.state !== "released" && proof.state !== "not_admitted") || !sameSubagentOwner(identity, proof.identity)
           || !Number.isSafeInteger(proof.sequence) || proof.sequence < 1) return;
         if (proof.neverStarted) {
@@ -438,19 +456,20 @@ export function createSubagentInstanceRegistry(options: {
             if (["queued", "running"].includes(record.status) && !turns.has(turnPath(record.id))) {
               try {
                 const abandoned = await acquireContinuationStoreLock(turnPath(record.id));
-                await abandoned.release();
-                if (record.activeTurn?.kind === "detached") {
-                  // No OS turn lock is not proof of command cleanup or job publication.
-                  await reconcileOwner(record);
-                } else {
-                  record.incarnation ??= randomUUID();
-                  record.recovery = { turnToken: record.activeTurn?.token ?? randomUUID(), sequence: 1,
-                    reason: "settlement_unknown", continuity: "unknown" };
-                  record.status = record.pendingQuestion ? "awaiting_reply" : "idle";
-                  record.lastStatus = "interrupted";
-                  delete record.reservation;
-                  delete record.activeTurn;
-                }
+                try {
+                  if (record.activeTurn?.kind === "detached") {
+                    // No OS turn lock alone is not proof of cleanup/publication.
+                    await reconcileOwner(record, true);
+                  } else {
+                    record.incarnation ??= randomUUID();
+                    record.recovery = { turnToken: record.activeTurn?.token ?? randomUUID(), sequence: 1,
+                      reason: "settlement_unknown", continuity: "unknown" };
+                    record.status = record.pendingQuestion ? "awaiting_reply" : "idle";
+                    record.lastStatus = "interrupted";
+                    delete record.reservation;
+                    delete record.activeTurn;
+                  }
+                } finally { await abandoned.release(); }
               } catch (error) {
                 if (!String(error).includes("already owned by another live process")) {
                   throw new SubagentRecoveryError("subagent_owner_unavailable");

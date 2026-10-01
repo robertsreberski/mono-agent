@@ -782,9 +782,21 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     return await this.withManagedLock(async (): Promise<SubagentOwnerResolution> => {
       if (!this.storageOperational || this.stopping || identity.storeRoot !== this.settings.stateDir) return { state: "unavailable" };
       const unadmitted = this.unadmittedManagedStarts.get(identity.jobId);
-      if (unadmitted && sameSubagentOwner(identity, unadmitted)) return { state: "not_admitted", identity, sequence: 1, neverStarted: true, continuity: "retained" };
+      if (unadmitted) return sameSubagentOwner(identity, unadmitted)
+        ? { state: "not_admitted", identity, sequence: 1, neverStarted: true, continuity: "retained" }
+        : { state: "unavailable" };
       const record = await this.storeGet(identity.jobId, "subagent.resolve");
-      if (!record?.subagentOwnership || !sameSubagentOwner(identity, this.managedIdentity(record))) return { state: "unavailable" };
+      if (!record) {
+        // The service still holds this registered root's exclusive lease. Missing
+        // durable bytes cannot certify neverStarted: terminal jobs may be pruned.
+        // Serialize absence with admission, and exclude every live hand-off gap.
+        const jobId = identity.jobId;
+        if (this.managedAdmissionTickets.has(jobId) || this.pending.has(jobId) || this.active.has(jobId)
+          || this.startingExecutions.has(jobId) || this.internalExecutionFlights.has(jobId)
+          || this.managedExecutionFlights.has(jobId) || this.managedPublications.has(jobId)) return { state: "held" };
+        return { state: "orphaned", identity };
+      }
+      if (!record.subagentOwnership || !sameSubagentOwner(identity, this.managedIdentity(record))) return { state: "unavailable" };
       const owner = record.subagentOwnership;
       if (!isTerminalProcessJobState(record.state) || hasUnresolvedSubagentOwnership(record) || owner.publication.state !== "confirmed") return { state: "held" };
       // Positive job/disposition proof can certify the registry while its durable
