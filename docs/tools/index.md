@@ -85,6 +85,7 @@ approximated.
 
 - **[Tool Policy](/tools/policy/)** — allowlist/denylist semantics, built-in tools, naming MCP tools, and how approval gates relate (the latter is `code`-only, and covers built-in tools only — MCP-backed tools are authorized by declaring their server, not per call. See [programmatic/](/programmatic/approval-and-structured-output/)).
 - **[Local-first web research](/tools/web-research/)** — explicit Ollama or SearXNG, ChatGPT-subscription Codex, and keyless discovery with deterministic static extraction, retry, browser isolation, and validation.
+- **[Computer use](/tools/computer-use/)** — opt-in cua-driver screenshots, accessibility trees, and desktop input, with operator-owned permissions.
 - **[MCP Servers](/tools/mcp/)** — authoring `mcp.json`, stdio/sse/http transports, and how the Pi runtime inlines servers into run options.
 - **[Reply files and MCP Apps](/tools/rich-replies/)** — opaque file publication, native Slack/Telegram delivery, browser sandboxing, limits, retention, and fallback policy.
 - **[Documentation MCP companion](/tools/documentation-mcp/)** — offline semantic and exact-identifier search for the composer and other MCP clients.

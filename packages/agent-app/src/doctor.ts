@@ -1,3 +1,4 @@
+import { assertComputerUseServerNameAvailable, COMPUTER_USE_SERVER_NAME, computerUseSection } from "./computer-use.js";
 import { describeMaintenanceActivity, readLaunchdMaintenanceActivityStatus } from "./launchd-maintenance-activity.js";
 import { persistentSubagentsEnabled, subagentInstancesRoot } from "./subagent-instances.js";
 import { inspectLocalWeb, inspectParallelWeb } from "@mono-agent/agent-runtime/agent/tools/index.js";
@@ -306,6 +307,7 @@ export async function validateMonoAgentFolder(
       options.preferAppPluginInstall === true,
     ));
     sections.push(await toolsSection(coreConfig, options));
+    sections.push(await computerUseSection(coreConfig.tools.computerUse));
     sections.push(await sessionToolHistorySection({
       historyRoot: join(coreConfig.artifacts.dir, "..", "history"),
       requestScopedToolSupported: true,
@@ -1685,6 +1687,17 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
     } else {
       status = "error";
       details.push(`MCP config file is missing: ${config.tools.mcpConfigPath}`);
+    }
+  }
+  if (config.tools.computerUse !== undefined) {
+    try {
+      assertComputerUseServerNameAvailable(configuredMcpServers);
+      configuredMcpServers[COMPUTER_USE_SERVER_NAME] = { command: config.tools.computerUse.command ?? "cua-driver", args: ["mcp"] };
+      configuredMcpServerNames = Object.keys(configuredMcpServers);
+      details.push("Computer-use MCP server is configured; external MCP tools bypass built-in allow/deny policy.");
+    } catch (error) {
+      status = "error";
+      details.push(error instanceof Error ? error.message : "Computer-use MCP server name collision.");
     }
   }
   for (const serverName of config.tools.mcpRequestContextServers ?? []) {

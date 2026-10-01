@@ -439,6 +439,9 @@ export async function buildResponder(
     onToolHistoryWarning: (message) => {
       controller.logger?.warn?.(message);
     },
+    ...(controller.logger?.warn === undefined ? {} : {
+      onComputerUseWarning: (message: string) => { controller.logger?.warn?.(message); },
+    }),
     // Preserve per-app trace-source identity and config-path correlation.
     observabilityContext,
     onSessionEvent: (event) => controller.recordSessionEvent(event, coreConfig),

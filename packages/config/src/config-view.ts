@@ -113,6 +113,8 @@ export const CORE_CONFIG_FIELD_IDS = {
   "tools.disallowedTools": true,
   "tools.filesystem.readableRoots": true,
   "tools.filesystem.writableRoots": true,
+  "tools.computerUse.backend": true,
+  "tools.computerUse.command": true,
   "tools.mcpConfigPath": true,
   "tools.mcpRequestContextServers": true,
   "tools.continuationServers": true,
@@ -749,6 +751,18 @@ function buildToolsSection(input: BuildMonoAgentConfigViewInput): ConfigViewSect
         label: "Additional file-tool write roots",
         value: tools.filesystem?.writableRoots.join(", ") ?? "none",
         jsonPresent: json.tools?.filesystem?.writableRoots !== undefined,
+      }),
+      toField({
+        id: "tools.computerUse.backend",
+        label: "Computer-use backend",
+        value: tools.computerUse?.backend ?? PLACEHOLDER,
+        jsonPresent: json.tools?.computerUse?.backend !== undefined,
+      }),
+      toField({
+        id: "tools.computerUse.command",
+        label: "Computer-use executable",
+        value: tools.computerUse?.command ?? PLACEHOLDER,
+        jsonPresent: json.tools?.computerUse?.command !== undefined,
       }),
       toField({
         id: "tools.mcpConfigPath",

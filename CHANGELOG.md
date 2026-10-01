@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add opt-in `tools.computerUse` desktop control through separately installed
+  `cua-driver`, with executable discovery, doctor readiness, and safety guidance.
+  Keep startup available with a warning when the optional driver is missing.
+  Keep permission modes operator-owned; external MCP tools bypass built-in policy.
+
 - Fix the web model picker to fit the available screen space, with denser
   provider and thinking controls and always-visible context and close actions.
 

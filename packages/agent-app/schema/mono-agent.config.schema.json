@@ -1226,6 +1226,27 @@
             }
           }
         },
+        "computerUse": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "backend"
+          ],
+          "properties": {
+            "backend": {
+              "type": "string",
+              "enum": [
+                "cua-driver"
+              ]
+            },
+            "command": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+            }
+          },
+          "description": "Opt-in desktop control via a separately installed cua-driver. Permission modes/manifests are operator-owned, not configured here."
+        },
         "mcpConfigPath": {
           "description": "Configures mcpConfigPath for the tools section.",
           "examples": [

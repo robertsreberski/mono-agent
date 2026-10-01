@@ -442,6 +442,7 @@ export function resolveJsonMonoAgentConfig(input: ResolveJsonMonoAgentConfigInpu
     ? undefined
     : jsonChoice<SkillDisclosureMode>(contextJson.skillDisclosure, "context.skillDisclosure", ["index", "full"], "full");
   const memory = readMemoryConfig(json.memory, cwd);
+  const computerUse = readComputerUseConfig(toolsJson?.computerUse, cwd);
   const mcpConfigPath = readOptionalPath(jsonString(toolsJson?.mcpConfigPath, "tools.mcpConfigPath"), cwd);
   const mcpRequestContextServers = jsonStringArray(toolsJson?.mcpRequestContextServers, "tools.mcpRequestContextServers");
   const continuationServers = jsonStringArray(toolsJson?.continuationServers, "tools.continuationServers");
@@ -582,6 +583,7 @@ export function resolveJsonMonoAgentConfig(input: ResolveJsonMonoAgentConfigInpu
             writableRoots: fileToolWritableRoots,
           },
         }),
+    ...(computerUse === undefined ? {} : { computerUse }),
     ...(mcpConfigPath === undefined ? {} : { mcpConfigPath }),
     ...(mcpRequestContextServers.length === 0 ? {} : { mcpRequestContextServers }),
     ...(continuationServers.length === 0 ? {} : { continuationServers }),
@@ -2649,4 +2651,25 @@ function collectContext1MDeclarations(json: MonoAgentConfigJson, providers: Reso
     paths[key] = declaration.path;
   }
   return result;
+}
+
+function readComputerUseConfig(value: unknown, cwd: string): MonoAgentConfig["tools"]["computerUse"] {
+  if (value === undefined) return undefined;
+  const fail = (message: string): never => {
+    throw new MonoAgentConfigError("invalid_json", `${message} See docs/tools/computer-use.md#restricting-cua-driver.`, { path: "tools.computerUse" });
+  };
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return fail("tools.computerUse must be an object.");
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) => key !== "backend" && key !== "command")) {
+    return fail("tools.computerUse accepts only backend and command; permission modes and manifests are not supported.");
+  }
+  if (record.backend !== "cua-driver") return fail('tools.computerUse.backend must be "cua-driver".');
+  if (record.command === undefined) return { backend: "cua-driver" };
+  if (typeof record.command !== "string" || record.command.trim().length === 0 || /[\x00-\x1f\x7f]/u.test(record.command)) {
+    return fail("tools.computerUse.command must be a non-empty executable name or path, without control characters.");
+  }
+  const command = record.command.trim();
+  return { backend: "cua-driver", command: /[\\/]/u.test(command) || command.startsWith("~") ? readPath(command, cwd) : command };
 }

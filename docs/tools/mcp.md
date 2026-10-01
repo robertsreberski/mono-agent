@@ -449,6 +449,11 @@ For the full allow/deny semantics of built-in tools, see [Tool policy](/tools/po
 
 ## Related
 
+For first-class local desktop control via a separately installed driver, see
+[Computer use](/tools/computer-use/). `tools.computerUse` registers the reserved
+`computer-use` server through the same runtime MCP path and bypasses built-in
+allow/deny policy like other external servers.
+
 - [Tool policy](/tools/policy/) — the allow/deny model and app-owned MCP exceptions.
 - [Tools & guards](/runtime/tools-and-guards/) — built-in tool catalog and runtime guards.
 - [Capture & recall](/memory/capture-and-recall/) — `MemoryRecall` and local `MemoryJournal`, app-injected MCP tools.
