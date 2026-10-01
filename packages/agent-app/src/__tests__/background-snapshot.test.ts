@@ -16,6 +16,7 @@ vi.mock("../background-snapshot-key.js", async (importOriginal) => {
 });
 
 import {
+  assertBackgroundInputVersionsUnchanged,
   backgroundSnapshotFromMetadata,
   captureBackgroundSnapshot,
   captureDurableBackgroundInputs,
@@ -633,4 +634,25 @@ describe("background operational environment", () => {
     });
     expect(sameBackgroundSnapshot(approved, worker)).toBe(true);
   });
+});
+
+it("seals final-capture versions, including missing dotenv creation and file deletion", async () => {
+  await rm(join(dir, ".env"));
+  const captured = await captureDurableBackgroundInputs({ cwd: dir, configPath: "mono-agent.config.json", operationalEnvironment: { PATH: "/usr/bin:/bin" } });
+  expect(() => assertBackgroundInputVersionsUnchanged(captured.inputVersions)).not.toThrow();
+  expect(captured.inputVersions.find((input) => input.path.endsWith("/.env"))?.version).toBeUndefined();
+  await writeFile(join(dir, ".env"), "FICTIONAL_VALUE=changed\n");
+  expect(() => assertBackgroundInputVersionsUnchanged(captured.inputVersions)).toThrow("inputs changed while preparing");
+  await rm(join(dir, ".env"));
+  await rm(join(dir, "IDENTITY.md"));
+  expect(() => assertBackgroundInputVersionsUnchanged(captured.inputVersions)).toThrow("inputs changed while preparing");
+});
+
+it("keeps device identity ephemeral but load-bearing at synchronous acceptance", async () => {
+  const captured = await captureDurableBackgroundInputs({ cwd: dir, configPath: "mono-agent.config.json", operationalEnvironment: { PATH: "/usr/bin:/bin" } });
+  const altered = captured.inputVersions.map((input) => ({ ...input,
+    version: input.version === undefined ? undefined : { ...input.version, dev: input.version.dev + 1n },
+  }));
+  expect(() => assertBackgroundInputVersionsUnchanged(altered)).toThrow("inputs changed while preparing");
+  expect(JSON.stringify(captured.snapshot)).not.toContain('"dev"');
 });

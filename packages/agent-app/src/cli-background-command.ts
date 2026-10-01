@@ -45,6 +45,7 @@ import type { LaunchdMaintenanceLifecycleLease } from "./launchd-maintenance-gat
 import {
   captureBackgroundSnapshot,
   captureDurableBackgroundInputs,
+  assertBackgroundInputVersionsUnchanged,
   decodeBackgroundSnapshot,
   loadDurableBackgroundEnvironment,
   materializeBackgroundRuntimeInputs,
@@ -360,6 +361,7 @@ export async function prepareSupervisedRestartInputs(input: {
     if (input.signal.aborted) return await refuse("Startup input validation timed out. The old worker is still serving.");
     return { supported: true, dispose, publish: () => {
       if (input.signal.aborted || release === undefined) throw new Error("Startup approval preparation expired. The old worker is still serving.");
+      assertBackgroundInputVersionsUnchanged(final.inputVersions);
       staged!.publish();
       published = true;
       input.retainLifecycle(release);

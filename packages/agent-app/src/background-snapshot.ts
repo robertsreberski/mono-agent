@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import { constants as fsConstants, type BigIntStats } from "node:fs";
+import { constants as fsConstants, lstatSync, type BigIntStats } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, open, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
@@ -109,6 +109,11 @@ export interface CaptureDurableBackgroundSnapshotInput {
   readonly proofKey?: Uint8Array;
 }
 
+export interface BackgroundInputVersion {
+  readonly path: string;
+  readonly version: BigIntStats | undefined;
+}
+
 export interface DurableBackgroundInputs {
   /** Exact environment a managed worker reconstructs from dotenv + plist. */
   readonly environment: Readonly<Record<string, string>>;
@@ -116,6 +121,8 @@ export interface DurableBackgroundInputs {
   readonly snapshot: BackgroundSnapshot;
   /** Internal setup guard only; contains a digest and must never be serialized. */
   readonly configSourceFingerprint: string;
+  /** Ephemeral final-capture versions, never serialized into approval or trace metadata. */
+  readonly inputVersions: readonly BackgroundInputVersion[];
 }
 
 /**
@@ -141,7 +148,7 @@ export async function captureDurableBackgroundInputs(
   const environment = await loadDurableBackgroundEnvironment(input);
   const configPath = resolve(cwd, input.configPath);
   const configBefore = await readCliConfigSnapshot(configPath);
-  const snapshot = await captureBackgroundSnapshot({
+  const captured = await captureBackgroundSnapshotWithVersions({
     cwd,
     configPath: input.configPath,
     ...(input.envFile === undefined ? {} : { envFile: input.envFile }),
@@ -152,7 +159,7 @@ export async function captureDurableBackgroundInputs(
   if (configBefore.fingerprint !== configAfter.fingerprint) {
     throw new Error("Refusing to prove background readiness because the config changed during durable capture.");
   }
-  return { environment, snapshot, configSourceFingerprint: configAfter.fingerprint };
+  return { environment, snapshot: captured.snapshot, inputVersions: captured.inputVersions, configSourceFingerprint: configAfter.fingerprint };
 }
 
 export async function loadDurableBackgroundEnvironment(
@@ -168,6 +175,13 @@ export async function loadDurableBackgroundEnvironment(
 export async function captureBackgroundSnapshot(
   input: CaptureBackgroundSnapshotInput,
 ): Promise<BackgroundSnapshot> {
+  return (await captureBackgroundSnapshotWithVersions(input)).snapshot;
+}
+
+async function captureBackgroundSnapshotWithVersions(input: CaptureBackgroundSnapshotInput): Promise<{
+  readonly snapshot: BackgroundSnapshot;
+  readonly inputVersions: readonly BackgroundInputVersion[];
+}> {
   const cwd = resolve(input.cwd);
   const configPath = resolve(cwd, input.configPath);
   const dotenvPath = resolve(cwd, input.envFile ?? ".env");
@@ -177,7 +191,7 @@ export async function captureBackgroundSnapshot(
   const [config, dotenv, dotenvFingerprint] = await Promise.all([
     readRegularFileProof(configPath, "config", proofKey),
     readCliDotenvSnapshot(dotenvPath),
-    fingerprintOptionalRegularFile(dotenvPath, "dotenv", proofKey),
+    readOptionalRegularFileProof(dotenvPath, "dotenv", proofKey),
   ]);
   assertDotenvMatchesEffectiveEnvironment(
     dotenv.env,
@@ -209,20 +223,20 @@ export async function captureBackgroundSnapshot(
   ] = await Promise.all([
     readRegularFileProof(configPath, "config", proofKey),
     readCliDotenvSnapshot(dotenvPath),
-    fingerprintOptionalRegularFile(dotenvPath, "dotenv", proofKey),
-    fingerprintRegularFile(identityPath, "identity", proofKey),
-    soulPath === undefined ? Promise.resolve(undefined) : fingerprintRegularFile(soulPath, "soul", proofKey),
+    readOptionalRegularFileProof(dotenvPath, "dotenv", proofKey),
+    readRegularFileProof(identityPath, "identity", proofKey),
+    soulPath === undefined ? Promise.resolve(undefined) : readRegularFileProof(soulPath, "soul", proofKey),
     mcpConfigPath === undefined
       ? Promise.resolve(undefined)
-      : fingerprintRegularFile(mcpConfigPath, "MCP config", proofKey),
+      : readRegularFileProof(mcpConfigPath, "MCP config", proofKey),
   ]);
   if (
     config.fingerprint !== configAfter.fingerprint
     || dotenv.fingerprint !== dotenvAfter.fingerprint
-    || dotenvFingerprint !== dotenvFingerprintAfter
-    || identityFingerprint !== identityAfter
-    || soulFingerprint !== soulAfter
-    || mcpConfigFingerprint !== mcpConfigAfter
+    || (dotenvFingerprint?.fingerprint ?? "missing") !== (dotenvFingerprintAfter?.fingerprint ?? "missing")
+    || identityFingerprint !== identityAfter.fingerprint
+    || soulFingerprint !== soulAfter?.fingerprint
+    || mcpConfigFingerprint !== mcpConfigAfter?.fingerprint
   ) {
     throw new Error("Refusing to prove background readiness because a durable input changed during startup capture.");
   }
@@ -232,12 +246,12 @@ export async function captureBackgroundSnapshot(
     dotenvPath,
     input.operationalEnvironmentPolicy,
   );
-  return {
+  return { snapshot: {
     schema: BACKGROUND_SNAPSHOT_SCHEMA,
     configPath,
     configFingerprint: config.fingerprint,
     dotenvPath,
-    dotenvFingerprint,
+    dotenvFingerprint: dotenvFingerprint?.fingerprint ?? "missing",
     identityPath,
     identityFingerprint,
     ...(soulPath === undefined || soulFingerprint === undefined ? {} : { soulPath, soulFingerprint }),
@@ -247,7 +261,13 @@ export async function captureBackgroundSnapshot(
     operationalEnvironmentFingerprint: input.operationalEnvironmentPolicy === "systemd"
       ? fingerprintSystemdBackgroundOperationalEnvironment(input.env)
       : fingerprintBackgroundOperationalEnvironment(input.env),
-  };
+  }, inputVersions: [
+    { path: configPath, version: configAfter.version },
+    { path: dotenvPath, version: dotenvFingerprintAfter?.version },
+    { path: identityPath, version: identityAfter.version },
+    ...(soulPath === undefined ? [] : [{ path: soulPath, version: soulAfter?.version }]),
+    ...(mcpConfigPath === undefined ? [] : [{ path: mcpConfigPath, version: mcpConfigAfter?.version }]),
+  ] };
 }
 
 /**
@@ -488,6 +508,32 @@ async function fingerprintRegularFile(path: string, label: string, proofKey: Buf
   return (await readRegularFileProof(path, label, proofKey)).fingerprint;
 }
 
+async function readOptionalRegularFileProof(path: string, label: string, proofKey: Buffer) {
+  try { return await readRegularFileProof(path, label, proofKey); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+/** Last synchronous fence before authenticated publication, including missing dotenv. */
+export function assertBackgroundInputVersionsUnchanged(versions: readonly BackgroundInputVersion[]): void {
+  try {
+    for (const input of versions) {
+      let current: BigIntStats | undefined;
+      try { current = lstatSync(input.path, { bigint: true }); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      if ((input.version === undefined) !== (current === undefined)
+        || (input.version !== undefined && current !== undefined
+          && (!current.isFile() || current.isSymbolicLink() || !sameBackgroundRegularFileVersion(input.version, current)))) {
+        throw new Error("changed");
+      }
+    }
+  } catch {
+    throw new Error("Startup inputs changed while preparing the restart. Retry; the old worker is still serving.");
+  }
+}
+
 async function fingerprintOptionalRegularFile(path: string, label: string, proofKey: Buffer): Promise<string> {
   try {
     return await fingerprintRegularFile(path, label, proofKey);
@@ -501,7 +547,7 @@ async function readRegularFileProof(
   path: string,
   label: string,
   proofKey: Buffer,
-): Promise<{ readonly bytes: Buffer; readonly fingerprint: string }> {
+): Promise<{ readonly bytes: Buffer; readonly fingerprint: string; readonly version: BigIntStats }> {
   let handle;
   try {
     handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
@@ -533,6 +579,7 @@ async function readRegularFileProof(
     }
     return {
       bytes,
+      version: before,
       fingerprint: fingerprintBackgroundRegularFile({ path, label, proofKey, bytes, version: before }),
     };
   } finally {

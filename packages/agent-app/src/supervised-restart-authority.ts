@@ -56,18 +56,21 @@ export function createSupervisedRestartAuthority(
     },
     verifyFresh() {
       if (fresh !== undefined) return fresh;
+      let deadline = Date.now() + INSPECTION_TIMEOUT_MS + INPUT_TIMEOUT_MS;
       fresh = (async () => {
         const ticket = ++revision;
         let verdict = { ...await inspect() };
         let prepared: PreparedSupervisedRestartInputs | undefined;
         if (verdict.supported && (deps.prepareStartupInputs !== undefined || deps.verifyStartupInputs !== undefined)) {
+          deadline = Math.min(deadline, Date.now() + INPUT_TIMEOUT_MS);
           let timer: ReturnType<typeof setTimeout> | undefined;
           const controller = new AbortController();
           const preparation = (async () => {
             const result = deps.prepareStartupInputs === undefined
               ? { ...await deps.verifyStartupInputs!(), dispose: async () => undefined }
               : await deps.prepareStartupInputs(controller.signal);
-            if (controller.signal.aborted) {
+            if (controller.signal.aborted || Date.now() >= deadline) {
+              controller.abort();
               await result.dispose().catch(() => undefined);
               return { supported: false, reason: "Startup input validation timed out." };
             }
@@ -88,12 +91,13 @@ export function createSupervisedRestartAuthority(
           } finally { if (timer !== undefined) clearTimeout(timer); }
         }
         if (ticket === revision) cached = { verdict: { ...verdict }, expiresAt: Date.now() + CAPABILITY_TTL_MS };
+        const expiresAt = Math.min(deadline, Date.now() + INSPECTION_TIMEOUT_MS);
         const timer = setTimeout(() => {
           freshTokens.delete(verdict);
           void prepared?.dispose().catch(() => undefined);
-        }, INSPECTION_TIMEOUT_MS);
+        }, Math.max(0, expiresAt - Date.now()));
         timer.unref();
-        freshTokens.set(verdict, { expiresAt: Date.now() + INSPECTION_TIMEOUT_MS, timer,
+        freshTokens.set(verdict, { expiresAt, timer,
           ...(prepared === undefined ? {} : { prepared }) });
         return verdict;
       })().finally(() => { fresh = undefined; });
@@ -108,7 +112,7 @@ export function createSupervisedRestartAuthority(
         return { kind: "refused", reason: verified.reason ?? "Supervisor verification failed." };
       }
       const token = freshTokens.get(verified);
-      if (token === undefined || token.expiresAt < Date.now()) {
+      if (token === undefined || token.expiresAt <= Date.now()) {
         return { kind: "refused", reason: "Supervisor verification is no longer current." };
       }
       freshTokens.delete(verified);

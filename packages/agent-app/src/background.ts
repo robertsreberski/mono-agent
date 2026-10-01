@@ -662,10 +662,10 @@ export async function forceRestartBackground(
     return 1;
   }
   try {
-    await deps.invalidateApprovedSnapshots?.(target);
     const controlPoll = poll ?? DEFAULT_CONTROL_POLL;
     const stopCode = await stopBackgroundUnlocked(target, deps, controlPoll);
     if (stopCode !== 0) return stopCode;
+    await deps.invalidateApprovedSnapshots?.(target);
     await whileStopped();
     return (await ensureBackgroundReadyUnlocked(
       target,
@@ -719,7 +719,6 @@ export async function ensureBackgroundReady(
     return { ok: false, action: "start", reason: "ownership" };
   }
   try {
-    await deps.invalidateApprovedSnapshots?.(target);
     return await ensureBackgroundReadyUnlocked(
       target,
       deps,
@@ -1448,8 +1447,9 @@ export async function stopBackground(
     return 1;
   }
   try {
-    await deps.invalidateApprovedSnapshots?.(target);
-    return await stopBackgroundUnlocked(target, deps, poll);
+    const code = await stopBackgroundUnlocked(target, deps, poll);
+    if (code === 0) await deps.invalidateApprovedSnapshots?.(target);
+    return code;
   } finally {
     await release().catch((error: unknown) => {
       deps.stderr(ui.errorLine(

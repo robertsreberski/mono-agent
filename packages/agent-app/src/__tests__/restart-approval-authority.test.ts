@@ -103,3 +103,39 @@ it.each([undefined, "wrong"])("rejects a keyless or wrong-key POST before prepar
     expect(prepare).not.toHaveBeenCalled();
   } finally { await adapter.stop(); }
 });
+
+it("cannot share a late prepared verdict through dedupe into a later POST's fresh deadline", async () => {
+  vi.useFakeTimers();
+  const started = Date.now();
+  let finish: ((value: PreparedSupervisedRestartInputs) => void) | undefined;
+  const publish = vi.fn(); const dispose = vi.fn(async () => undefined);
+  const prepare = vi.fn(() => new Promise<PreparedSupervisedRestartInputs>((resolve) => { finish = resolve; }));
+  const { authority, latch, stop } = fixture(prepare);
+  const firstPost = authority.verifyFresh!();
+  await vi.advanceTimersByTimeAsync(0);
+  // Model an overdue adapter/worker while timer callbacks are delayed. A later
+  // POST shares the same promise, not a new origin deadline.
+  vi.setSystemTime(started + 6_501);
+  const laterPost = authority.verifyFresh!();
+  finish!({ supported: true, publish, dispose });
+  const [first, later] = await Promise.all([firstPost, laterPost]);
+  expect(prepare).toHaveBeenCalledTimes(1); expect(later).toBe(first);
+  expect(later.supported).toBe(false); expect(later.reason).toContain("timed out");
+  expect(authority.accept(later).kind).toBe("refused");
+  expect(dispose).toHaveBeenCalledTimes(1); expect(publish).not.toHaveBeenCalled();
+  expect(latch.exitCode).toBe(0); expect(stop).not.toHaveBeenCalled();
+});
+
+it("expires a completed preparation at its input origin deadline even before the token TTL", async () => {
+  vi.useFakeTimers();
+  const started = Date.now(); const publish = vi.fn();
+  let finish: ((value: PreparedSupervisedRestartInputs) => void) | undefined;
+  const { authority, latch } = fixture(() => new Promise((resolve) => { finish = resolve; }));
+  const pending = authority.verifyFresh!(); await vi.advanceTimersByTimeAsync(0);
+  vi.setSystemTime(started + 4_900);
+  finish!({ supported: true, publish, dispose: async () => undefined });
+  const token = await pending; expect(token.supported).toBe(true);
+  vi.setSystemTime(started + 5_001);
+  expect(authority.accept(token).kind).toBe("refused");
+  expect(publish).not.toHaveBeenCalled(); expect(latch.exitCode).toBe(0);
+});

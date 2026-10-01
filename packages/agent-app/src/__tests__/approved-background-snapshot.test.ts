@@ -130,3 +130,26 @@ it("updates repeated console approvals without changing the anchor or revisiting
   }
   expect((await readdir(join(binding.managedRoot, "approved-startup", binding.label))).filter((name) => name.endsWith(".json"))).toHaveLength(1);
 });
+
+it.each(["public-mode", "symlink", "file", "unreadable"])("quarantines or repairs %s approval state during lifecycle invalidation", async (corruption) => {
+  const prepared = await stageApprovedBackgroundSnapshot(binding, await capture());
+  prepared.publish(); await prepared.dispose();
+  const store = join(binding.managedRoot, "approved-startup");
+  const outside = join(dir, "untouched");
+  if (corruption === "public-mode") await chmod(store, 0o755);
+  else if (corruption === "unreadable") await chmod(store, 0o000);
+  else {
+    await rm(store, { recursive: true });
+    if (corruption === "file") await writeFile(store, "invalid store", { mode: 0o600 });
+    else { await mkdir(outside, { mode: 0o700 }); await writeFile(join(outside, "keep"), "untouched"); await symlink(outside, store); }
+  }
+  expect(() => resolveApprovedBackgroundSnapshot(binding)).toThrow();
+  await invalidateApprovedBackgroundSnapshots(binding);
+  expect(encodeBackgroundSnapshot(resolveApprovedBackgroundSnapshot(binding))).toBe(binding.encodedSnapshot);
+  if (corruption === "symlink") expect(await readFile(join(outside, "keep"), "utf8")).toBe("untouched");
+  if (corruption === "unreadable") {
+    for (const name of await readdir(binding.managedRoot)) {
+      if (name.startsWith("approved-startup.quarantined-")) await chmod(join(binding.managedRoot, name), 0o700);
+    }
+  }
+});

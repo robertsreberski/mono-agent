@@ -145,18 +145,23 @@ describe("systemd structural startup rule", () => {
   });
 });
 
-async function preparedRequest(edit: () => Promise<void>) {
+async function preparedRequest(edit: () => Promise<void>, afterPrepare?: () => Promise<void>) {
   const args = await approved();
   await edit();
+  let cleanup: Promise<void> | undefined;
   let releaseLock: (() => Promise<void>) | undefined;
   const stop = vi.fn(); const latch = createSupervisedRestartLatch(); latch.onStop(stop);
   const authority = createSupervisedRestartAuthority({ configPath, startedAt: "fixture-boot", platform: "darwin", pid: 4321,
     getuid: () => 501, launchdRunner: async () => ({ code: 0, stdout: launchctlPrint(4321, configPath, args), stderr: "" }),
-    prepareStartupInputs: (signal) => prepareSupervisedRestartInputs({ args, cwd: dir, configPath, env, signal,
+    prepareStartupInputs: async (signal) => {
+      const prepared = await prepareSupervisedRestartInputs({ args, cwd: dir, configPath, env, signal,
       runtime: { installRoot: state.root, provenanceDetail: "fixture", packageVersion: "0.25.1", cliSha256: "fixture" },
       runner: async () => ({ code: 0, stdout: launchctlPrint(4321, configPath, args), stderr: "" }), pid: 4321, uid: 501,
       retainLifecycle: (release) => { releaseLock = release; },
-    }),
+      });
+      if (prepared.supported) await afterPrepare?.();
+      return { ...prepared, dispose: () => cleanup ??= prepared.dispose() };
+    },
   }, latch);
   const adapter = await startTuiAdapter({ apiKey: "fictional-owner", responder: { respond: async () => ({ text: "unused" }) }, restart: authority });
   try {
@@ -165,7 +170,7 @@ async function preparedRequest(edit: () => Promise<void>) {
     const body = await response.json() as { error: { message: string } };
     const snapshot = resolveApprovedBackgroundSnapshot(workerApprovalBinding({ args, configPath }));
     return { status: response.status, body, stop, exitCode: latch.exitCode, snapshot, original: args.expectedBackgroundSnapshot };
-  } finally { await adapter.stop(); await releaseLock?.(); }
+  } finally { await adapter.stop(); await cleanup; await releaseLock?.(); }
 }
 
 it.each([
@@ -212,4 +217,14 @@ it("refuses lifecycle contention without publication", async () => {
     expect(result.exitCode).toBe(0); expect(result.stop).not.toHaveBeenCalled();
     expect(encodeBackgroundSnapshot(result.snapshot)).toBe(result.original);
   } finally { await unlock?.(); }
+});
+
+it.each(["mono-agent.config.json", ".env", "IDENTITY.md", "SOUL.md", ".mcp.json"])("refuses %s edited after final preparation and before synchronous acceptance", async (file) => {
+  const result = await preparedRequest(async () => undefined, async () => {
+    await writeFile(join(dir, file), `${await readFile(join(dir, file), "utf8")}\n`);
+  });
+  expect(result.status).toBe(409);
+  expect(result.body.error.message).toContain("inputs changed while preparing the restart");
+  expect(result.exitCode).toBe(0); expect(result.stop).not.toHaveBeenCalled();
+  expect(encodeBackgroundSnapshot(result.snapshot)).toBe(result.original);
 });

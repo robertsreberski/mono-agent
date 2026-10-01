@@ -3,9 +3,10 @@ import {
   constants, closeSync, fstatSync, fsyncSync, lstatSync, openSync, readSync,
   renameSync, unlinkSync, type Stats,
 } from "node:fs";
-import { mkdir, open, rm } from "node:fs/promises";
+import { lstat, mkdir, open, rename, rm } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 
+import { ensureOwnerPrivateLaunchdDirectory } from "./launchd-private-files.js";
 import { decodeBackgroundSnapshot, encodeBackgroundSnapshot, type BackgroundSnapshot } from "./background-snapshot.js";
 
 const SCHEMA = "mono-agent.approved-startup.v1";
@@ -232,13 +233,35 @@ export async function invalidateApprovedBackgroundSnapshots(
   if (!isAbsolute(input.managedRoot) || !/^com\.mono-agent\.[A-Za-z0-9_-]+$/u.test(input.label)) {
     throw new Error("The startup approval invalidation binding is invalid.");
   }
-  for (const path of directories(input).slice(0, 2)) {
-    try { assertPrivate(lstatSync(path), true); } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-      throw error;
-    }
+  // The trusted managed root owns directory entries, even when an entry is
+  // foreign-owned, unreadable or a symlink. Never follow a link target.
+  try { assertPrivate(await lstat(input.managedRoot), true); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
   }
-  // Remove the label entry itself, not a symlink target. This also recovers malformed state.
-  await rm(join(input.managedRoot, "approved-startup", input.label), { recursive: true, force: true });
-  syncDirectory(join(input.managedRoot, "approved-startup"));
+  const store = join(input.managedRoot, "approved-startup");
+  let details: Stats;
+  try { details = await lstat(store); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (details.isDirectory() && !details.isSymbolicLink() && (details.mode & 0o500) === 0o500
+    && (typeof process.getuid !== "function" || details.uid === process.getuid())) {
+    // Startup still rejects wrong modes; a lifecycle owner may repair them.
+    await ensureOwnerPrivateLaunchdDirectory(store);
+    const entry = join(store, input.label);
+    const quarantined = `${entry}.quarantined-${randomUUID()}`;
+    try { await rename(entry, quarantined); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    syncDirectory(store);
+    // Revocation is committed already; unreadable remnants cannot block restart.
+    await rm(quarantined, { recursive: true, force: true }).catch(() => undefined);
+  } else {
+    // Renaming a foreign entry or a link needs only the private parent's
+    // ownership. The link target and foreign descendants are never touched.
+    await rename(store, `${store}.quarantined-${randomUUID()}`);
+    await ensureOwnerPrivateLaunchdDirectory(store);
+    syncDirectory(input.managedRoot);
+  }
 }

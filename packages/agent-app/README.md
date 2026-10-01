@@ -249,12 +249,17 @@ A `202` means accepted, not replacement readiness. Invalid inputs, validation
 timeouts, lifecycle contention, approval failures or packages unavailable in the
 pinned runtime leave the old worker serving with a cause-specific `409`. Run
 `mono-agent restart` from a terminal for runtime package changes. Terminal
-start/restart/stop and maintenance definition replacement clear approvals even
-when runtime and input identities are reused. Edits after acceptance or malformed
-approval state fail closed with the existing `snapshot-refused` status; terminal
+start/restart/stop and maintenance definition replacement clear approvals only
+at successful stop/replacement commit points, even when runtime and input
+identities are reused. Failed early lifecycle checks preserve active approvals.
+A lifecycle owner repairs or quarantines insecure approval state without
+following links, so terminal restart and maintenance can recover. Edits after
+acceptance or malformed approval state fail closed with the existing `snapshot-refused` status; terminal
 restart is recovery. If publication restoration also fails, the refusal explicitly
 notes that a fully validated approval may remain active, without stopping the
-worker.
+worker. An abandoned preparation may hold the lifecycle lock until its bounded
+validation/materialization/runtime-verification steps finish; timeout prevents
+publication but does not interrupt those steps.
 
 These readers must already be installed in the worker's pinned runtime; changing
 a checkout does not upgrade an installed runtime. Authentication and owner-private
