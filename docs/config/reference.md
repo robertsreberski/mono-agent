@@ -91,6 +91,8 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `memory.maxBytes` | `integer` | `--` | 64000 | `64000` | Configures maxBytes for the memory section. |
 | `memory.mode` | `string` | `--` | lite | `journal` | Configures mode for the memory section. |
 | `memory.path` | `string` | `--` | unset | `./.mono-agent/memory` | Configures path for the memory section. |
+| `memory.profile.enabled` | `boolean` | `--` | false | `true` | BuJo-only, default-off deterministic owner-stated label profile, at most 600 Unicode code points. Independent of embeddings. Warm provider context suppresses unchanged profile/served lines using invocation receipts; receipt loss conservatively suppresses automatic reinjection until a cold reseed. |
+| `memory.recall.contextWindow` | `boolean` | `--` | false | `true` | BuJo-only, default-off preceding-owner-query window for automatic recall. Volatile, redacted, 30-minute TTL; prior at most 512 and total at most 1536 Unicode code points. Explicit MemoryRecall keeps the current query. |
 | `memory.recallTool.enabled` | `boolean` | `--` | true | `true` | Enables explicit memory reads: targeted MemoryRecall for every backend and chronological MemoryJournal when a local store supports it. Automatic recall is unchanged. |
 | `memory.rememberTool.enabled` | `boolean` | `--` | true | `true` | Enables the memory capability. |
 | `memory.writeMode` | `string` | `--` | disabled | `disabled` | Configures writeMode for the memory section. |

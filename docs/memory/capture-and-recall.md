@@ -547,3 +547,66 @@ Journal and BuJo require an explicit, non-empty `memory.embeddings` **block**, b
 - [Embeddings](/memory/embeddings/) — the provider/model behind vector recall
 - [Consolidation](/memory/rituals/) — scheduled projection refresh and duplicate-group counting, without canonical-memory mutation
 - [Validation & CLI](/memory/validation-and-cli/) — `mono-agent validate` checks and `mono-agent memory` maintenance
+
+## Optional BuJo owner context
+
+Two independent flags default to `false` and require `memory.mode: "bujo"`:
+
+```json
+{
+  "memory": {
+    "recall": { "contextWindow": true },
+    "profile": { "enabled": true }
+  }
+}
+```
+
+Add these blocks to an otherwise valid BuJo configuration. Automatic context is
+still restricted to host-verified owner web, TUI and ACP turns; Telegram, other
+speakers and triggers receive no automatic profile or recall block.
+
+`memory.recall.contextWindow` adds the immediately preceding redacted owner query
+to automatic retrieval, including short follow-ups normally suppressed at 16
+code points. The predecessor contains only original owner-authored text, not
+attachment-expanded text or attachment metadata. It keeps no assistant/tool text:
+the previous query is capped at 512 Unicode code points and the combined query
+at 1,536, measured after normalization and case expansion. Adjacency expires
+after 30 minutes or a non-owner/trigger turn; host continuations and standalone
+process-job wakes also break it. There is no language-specific topic
+classifier; a new query replaces the predecessor for the next turn, rather than
+accumulating a transcript. Explicit `MemoryRecall` original-query mode still
+uses only the current query and embeds that query only if requested.
+
+A process-job wake applied as live steering inside an owner turn stays within
+that logical invocation. The following owner turn may still use that
+invocation's original owner query as its predecessor.
+
+`memory.profile.enabled` derives a profile from active owner-stated owner facts
+and agent-scope preferences in the existing label projection. It uses current,
+open notes only, omits conflicting/ended sources, dated intentions and episodes,
+and selects whole entries in newest-date then stable source-ID order. Timestamp
+expiry uses the host observation instant; civil end dates remain inclusive
+through the host's local day. The read-only profile CLI uses the same rule. The entire
+payload, including its heading, is at most 600 Unicode code points and also
+respects `memory.maxBytes`. Missing labels produce no profile. No model call,
+new file, store, version or history field is involved. Embedding failures do not
+erase the profile and emit only `memory_recall_unavailable`.
+
+With either flag on, a confirmed retained provider session excludes unchanged
+already-served recall/background lines. A profile enters a cold reseed or when
+its supported contents change. Preparation alone does not count: only a
+successful retained provider invocation establishes receipts. Isolated turns
+do not replace shared-session receipts, and Remember writes invalidate searches
+without discarding pending receipts. Host continuations break adjacency without
+loading memory. The bounded
+volatile cache keeps at most 256 conversations and 256 served-line fingerprints
+per conversation. Query context and receipts disappear on reset, disposal or
+restart. If receipt knowledge is lost while the host still confirms retained
+provider context, automatic reinjection is conservatively suppressed until a
+cold reseed; deliberate memory tools remain available. A full receipt set also
+suppresses further automatic warm injection rather than forgetting served lines.
+
+Opt-in automatic blocks are omitted from content-bearing `turn_context` traces;
+only their byte count is recorded. The model/provider still receives the block.
+Disabling both flags restores the existing automatic retrieval path, but cannot
+erase blocks already retained by a provider session.

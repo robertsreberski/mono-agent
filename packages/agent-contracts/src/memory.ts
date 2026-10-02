@@ -3,6 +3,8 @@ export interface MemoryBlock {
   readonly content: string;
   readonly source: string;
   readonly truncated: boolean;
+  /** Opt out of content-bearing host traces; the model still receives the block. */
+  readonly traceContent?: false;
 }
 
 /**
@@ -74,6 +76,14 @@ export interface MemoryLoadOptions {
    * the same rule capture uses for `ownerTurn`. Never model text.
    */
   readonly ownerTurn?: true;
+  /** Host-confirmed live provider context, never inferred from history length. */
+  readonly retainedContext?: boolean;
+  /** Host-confirmed one-shot invocation; never replaces the shared provider epoch. */
+  readonly isolated?: boolean;
+  /** Original owner-authored text only, without attachment text or host metadata. */
+  readonly ownerQuery?: string;
+  /** Closed, content-free degradation diagnostic; no exception text crosses this hook. */
+  readonly onWarning?: (code: "memory_recall_unavailable" | "memory_profile_unavailable") => void;
 }
 
 export interface MemoryStore {
@@ -94,4 +104,10 @@ export interface MemoryStore {
   flush?(): Promise<void>;
   /** Optional host lifecycle hook for dropping per-turn read caches. */
   releaseTurn?(turnId: string): void | Promise<void>;
+  /** Receipt for the exact prepared turn after successful invocation or certified retained recovery. */
+  recordInvocation?(turnId: string): void;
+  /** Drop volatile context on a host-confirmed reset; does not mutate memory sources. */
+  resetRecallContext?(conversationId?: string): void;
+  /** Observe a host-synthesized turn without recalling memory or discarding receipts. */
+  breakQueryAdjacency?(conversationId: string): void;
 }

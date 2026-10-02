@@ -1,5 +1,6 @@
 import type { MemoryLoadOptions } from "@mono-agent/agent-contracts";
 import { createHash } from "node:crypto";
+import { recallLineStatus } from "@mono-agent/memory/bujo";
 import type { EntityRecord, MemoryDb } from "@mono-agent/memory/store";
 import type { MemoryRecallHit } from "./memory-recall.js";
 
@@ -193,4 +194,43 @@ export function formatMemoryBackground(
   addSection("Working preferences & lessons:", guidance.slice(0, 3).map((hit) => safeLine(hit.text)));
   addSection("Person card:", cards);
   return selected.length > 1 ? { content: selected.join("\n"), truncated } : truncated ? { content: "", truncated } : undefined;
+}
+
+/** The profile is a read-only projection; source ids are for private inspection only. */
+export interface MemoryProfile {
+  readonly content: string;
+  readonly entries: readonly { readonly id: string; readonly text: string }[];
+  readonly fingerprint: string;
+  readonly truncated: boolean;
+}
+
+/** Whole supported entries, deterministic byte ordering, including the heading in the budget. */
+export function formatMemoryProfile(store: LabelRecallStore, date: string, byteBudget = Infinity, now?: string): MemoryProfile {
+  const supported = [...(store.guidanceForScope?.("agent") ?? []), ...(store.labelsForEntity?.("person:owner", date) ?? [])]
+    .filter((hit) => hit.active && !hit.conflict && hit.type === "note" && hit.status === "open"
+      && hit.dueAt === undefined && hit.supersededBy === undefined
+      && recallLineStatus(hit, date, now) === "current"
+      && ((hit.label.kind === "preference" && hit.label.scope === "agent" && hit.label.attribution === "user-stated")
+        || (hit.label.kind === "fact" && hit.label.entityId === "person:owner" && hit.label.attribution === "user-stated"
+          && hit.currentAt === true)))
+    .sort((a, b) => Buffer.compare(Buffer.from(b.createdAt), Buffer.from(a.createdAt))
+      || Buffer.compare(Buffer.from(a.memoryId), Buffer.from(b.memoryId)) || a.ordinal - b.ordinal);
+  const heading = "## Owner profile (current owner-stated background)";
+  const entries: Array<{ id: string; text: string }> = [];
+  const lines = [heading];
+  let truncated = false;
+  for (const hit of supported) {
+    const text = safeLine(hit.text);
+    if (!text || entries.some((entry) => entry.text === text)) continue;
+    const next = [...lines, `- ${text}`].join("\n");
+    if (Array.from(next).length > 600 || Buffer.byteLength(next, "utf8") > byteBudget) {
+      truncated = true;
+      continue;
+    }
+    lines.push(`- ${text}`);
+    entries.push({ id: hit.memoryId, text });
+  }
+  const content = entries.length === 0 ? "" : lines.join("\n");
+  return { content, entries, truncated,
+    fingerprint: createHash("sha256").update(JSON.stringify(entries)).digest("hex") };
 }

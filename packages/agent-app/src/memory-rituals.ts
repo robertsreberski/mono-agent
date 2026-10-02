@@ -87,10 +87,8 @@ export function startMemoryRituals(input: StartMemoryRitualsInput): RunningRitua
       let delayMs: number;
       try {
         delayMs = nextCronDelayMs(cronExpr, current);
-      } catch (err) {
-        logger?.warn(
-          `Memory consolidation has an invalid cron expression "${cronExpr}": ${err instanceof Error ? err.message : String(err)}. Consolidation disabled.`,
-        );
+      } catch {
+        logger?.warn("memory_consolidation_schedule_invalid");
         return;
       }
 
@@ -122,10 +120,8 @@ export function startMemoryRituals(input: StartMemoryRitualsInput): RunningRitua
 
         inFlight = true;
         store.consolidate()
-          .catch((err: unknown) => {
-            logger?.warn(
-              `Memory consolidation failed: ${err instanceof Error ? err.message : String(err)}.`,
-            );
+          .catch(() => {
+            logger?.warn("memory_consolidation_unavailable");
           })
           .finally(() => {
             inFlight = false;

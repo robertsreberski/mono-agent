@@ -115,3 +115,12 @@ From the allowed Telegram chat, send a message; verify the typing indicator then
 - [Embeddings](/memory/embeddings/)
 - [Artifacts and traces](/observability/artifacts-and-traces/) — where the run JSONL lands
 - [mono-agent-composer skill](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-app/skills/mono-agent-composer/SKILL.md) — build this agent from one config
+
+## Optional owner-console context
+
+For the same agent's verified owner web, TUI or ACP turns, BuJo can opt in to
+`memory.recall.contextWindow` and `memory.profile.enabled`. Both default off;
+these flags do **not** add automatic memory injection on Telegram. Review the
+read-only `mono-agent memory profile show --json` output privately before
+turning on the profile. See [owner context](/memory/capture-and-recall/#optional-bujo-owner-context)
+for query TTL, Unicode budgets and retained-session suppression.

@@ -321,6 +321,13 @@ The normalized runtime map is an internal resolved form, not a JSON config field
 
 ## Architecture
 
+`memory.recall.contextWindow` and `memory.profile.enabled` are independently
+validated BuJo-only booleans, both default off. The former enables volatile
+preceding-owner-query context; the latter enables a deterministic owner label
+profile. See [owner context](../../docs/memory/capture-and-recall.md#optional-bujo-owner-context)
+for budgets, privacy boundaries and retained-session behavior.
+
+
 ### Data flow
 
 Configuration follows one deterministic pipeline:

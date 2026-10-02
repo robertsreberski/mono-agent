@@ -65,13 +65,15 @@ export function buildTurnContextEvent(
   speaker: SpeakerTurnContextFields = {},
 ): RuntimeEventLike {
   const mappedHistory = history.map(clampTurnContextMessage);
-  const mem = turnContextMemory(memory);
+  const privateMemory = typeof memory === "object" && memory !== null && "traceContent" in memory && memory.traceContent === false;
+  const mem = privateMemory ? undefined : turnContextMemory(memory);
   return {
     type: "turn_context",
     historyCount: history.length,
     historyOmitted,
     ...(mappedHistory.length === 0 ? {} : { history: mappedHistory }),
     ...(mem === undefined ? {} : { memory: mem }),
+    ...(privateMemory ? { memoryBytes: Buffer.byteLength(memoryBlockText(memory) ?? "", "utf8") } : {}),
     ...speaker,
     timestamp: new Date().toISOString(),
   };
