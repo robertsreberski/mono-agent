@@ -1955,6 +1955,10 @@ function supportsSessionResume(): boolean {
 const DEFAULT_EMBEDDINGS_TIMEOUT_MS = 10_000;
 
 interface ConfiguredMemoryDependencies {
+  /** Volatile source-clock seam for disposable chronological evaluation. */
+  readonly clock?: () => Date;
+  /** Optional transport seam; private evaluation disables embedding redirects. */
+  readonly embeddingsFetch?: typeof fetch;
   /** Canonical agent-root authority and folder used to resolve optional plugins. */
   readonly cwd?: string;
   /** Managed workers must use the plugin frozen into their app-side runtime closure. */
@@ -2044,7 +2048,7 @@ async function createConfiguredMemoryInternal(
         ...(embeddingsApiKey !== undefined && { apiKey: embeddingsApiKey }),
         timeoutMs: embeddingsConfig?.timeoutMs ?? DEFAULT_EMBEDDINGS_TIMEOUT_MS,
         ...(embeddingsConfig?.instructions === undefined ? {} : { instructions: embeddingsConfig.instructions }),
-      }),
+      }, deps.embeddingsFetch),
       {
         ...(embeddingsConfig?.circuitBreaker?.failureThreshold !== undefined && {
           failureThreshold: embeddingsConfig.circuitBreaker.failureThreshold,
@@ -2131,6 +2135,7 @@ async function createConfiguredMemoryInternal(
     ...(maxBytes !== undefined && { maxBytes }),
     llm: captureLlm,
     ...(config.memory.recall?.semanticOnly === true ? { recall: { semanticOnly: true } } : {}),
+    ...(deps.clock === undefined ? {} : { clock: deps.clock }),
     ...(config.memory.capture === undefined ? {} : { capture: { ...(focus === undefined ? {} : { focus }), ...(only === undefined ? {} : { only }) } }),
     ...(deps.logger !== undefined && { logger: deps.logger }),
   });
