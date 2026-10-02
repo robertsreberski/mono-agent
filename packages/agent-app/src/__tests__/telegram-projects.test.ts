@@ -269,6 +269,36 @@ describe("console project tools on Telegram turns", () => {
     expect(bound.runtimeOptions?.hostCapabilities).toMatchObject({ ListProjects: { available: true } });
   });
 
+  it.each([false, true])("keeps Telegram legacy search and refuses dated requests with opt-in=%s", async (enabled) => {
+    const call = vi.fn().mockResolvedValue({ conversations: [{ id: "fictional-thread", title: "Pottery", snippet: "Pottery class", messageMatches: 1, titleMatch: true }], truncated: false });
+    const { service, revoke } = fakeService({ call });
+    const input = telegramRequest();
+    bindTelegramProjectTurn(input.request.metadata!, { service, conversationId: "telegram:-1001:77", human: true });
+    const bound = await createConsoleProjectsRuntimeExtension({ sourceId: "agent-one", datedSnippets: enabled,
+      policy: { allowedTools: ["SearchConversations"] } })(input);
+    const client = new Client({ name: "telegram-search-test", version: "1" });
+    try {
+      const spec = (bound.runtimeOptions?.mcpServers as Record<string, { url: string }>)["mono-agent-console-projects"]!;
+      await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+      const legacy = await client.callTool({ name: "SearchConversations", arguments: { query: "pottery" } });
+      expect(legacy.structuredContent).toEqual(await call.mock.results[0]!.value);
+      for (const args of [{ dated: true }, { after: "2001-01-01" }, { role: "user" }, { before: "2001-01-01", role: "assistant" },
+        { dated: true, after: "2001-02-30" }, { dated: true, before: "fictional-calendar" },
+        { dated: true, role: "system" }, { dated: "true" }, { dated: true, after: 2001 },
+        { dated: true, role: ["user"] }, { dated: true, query: 7 }, { dated: true, limit: "ten" },
+      ]) {
+        const result = await client.callTool({ name: "SearchConversations", arguments: { query: "pottery", ...args } });
+        expect(result.isError).toBe(true);
+        expect(result.content).toEqual([{ type: "text", text: JSON.stringify({ error: "conversation_search_unavailable" }) }]);
+      }
+      const malformedLegacy = await client.callTool({ name: "SearchConversations", arguments: { query: "p" } });
+      expect(malformedLegacy.isError).toBe(true);
+      expect(malformedLegacy.content).toEqual([{ type: "text", text: expect.stringContaining("MCP error -32602: Input validation error:") }]);
+      expect(call).toHaveBeenCalledTimes(1);
+    } finally { await client.close(); await bound.cleanup?.(); }
+    expect(revoke).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps web turns and the ListProjects schema unchanged when the feature is off", async () => {
     const createClient = vi.fn().mockResolvedValue(vi.fn());
     const web: AgentHarnessRuntimeOptionsInput = {

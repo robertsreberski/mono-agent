@@ -152,14 +152,15 @@ export async function startWebNotificationIngress(
       if (body === undefined) throw new WebConsoleError("invalid_console_tool", "Invalid request.", 400);
       pruneCapabilities();
       if (res.locals.consoleScope === undefined) {
-        if (Object.keys(body).some((key) => !["sourceId", "threadId", "turnId"].includes(key))
+        if (Object.keys(body).some((key) => !["sourceId", "threadId", "turnId", "datedSnippets"].includes(key))
+          || (body.datedSnippets !== undefined && body.datedSnippets !== true)
           || [body.sourceId, body.threadId, body.turnId].some((item) => typeof item !== "string" || item.length === 0 || item.length > 128)) {
           throw new WebConsoleError("invalid_console_tool", "Invalid turn scope.", 400);
         }
         const scope = body as unknown as WebConsoleToolScope;
         service.assertConsoleToolTurn(scope);
         const existing = [...capabilities].find(([, { scope: item }]) => item.kind !== "external"
-          && item.sourceId === scope.sourceId && item.threadId === scope.threadId && item.turnId === scope.turnId);
+          && item.sourceId === scope.sourceId && item.threadId === scope.threadId && item.turnId === scope.turnId && item.datedSnippets === scope.datedSnippets);
         if (existing !== undefined) { res.json({ capability: existing[0] }); return; }
         res.json({ capability: mint(scope) }); return;
       }

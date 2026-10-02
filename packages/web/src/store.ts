@@ -2962,40 +2962,48 @@ export class WebStore {
     readonly query: string;
     readonly limit?: number;
     readonly scope?: WebThreadListScope;
+    /** Owner-capability model search only; the UI never supplies this block. */
+    readonly dated?: { readonly after?: string; readonly before?: string; readonly role?: "user" | "assistant" };
   }): WebThreadSearchPage {
     if (this.getAgent(input.sourceId) === undefined) {
       throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
     }
     const query = input.query.trim();
     const limit = boundedPageLimit(input.limit, WEB_THREAD_SEARCH_MAX);
-    const scopeSql = threadListScopeSql(input.scope ?? "all");
+    const scopeSql = input.dated === undefined ? threadListScopeSql(input.scope ?? "all") : "AND t.trigger_kind IS NULL";
+    const datedSql = input.dated === undefined ? "" : `AND ${datedMessageSql("m")}
+      ${input.dated.after === undefined ? "" : "AND substr(m.created_at, 1, 10) >= ?"}
+      ${input.dated.before === undefined ? "" : "AND substr(m.created_at, 1, 10) <= ?"}
+      ${input.dated.role === undefined ? "" : "AND m.role = ?"}`;
+    const datedValues = input.dated === undefined ? [] : [input.dated.after, input.dated.before, input.dated.role].filter((value) => value !== undefined);
     const match = query.length < WEB_THREAD_SEARCH_MIN_QUERY
       ? undefined
       : messageSearchMatchExpression(query);
     if (match === undefined) return { hits: [], truncated: false };
 
     const messageRows = this.database.prepare(`
-      SELECT m.thread_id AS thread_id,
+      SELECT m.thread_id AS thread_id, m.id AS message_id, m.role AS role, m.created_at AS created_at,
              snippet(message_search, 0, ?, ?, char(8230), 12) AS snippet,
              bm25(message_search) AS rank
         FROM message_search
         JOIN messages m ON m.rowid = message_search.rowid
         JOIN threads t ON t.id = m.thread_id
-       WHERE message_search MATCH ? AND t.source_id = ? AND ${visibleMessageSql("m")} ${scopeSql}
-       ORDER BY rank
+       WHERE message_search MATCH ? AND t.source_id = ? AND ${visibleMessageSql("m")} ${scopeSql} ${datedSql}
+       ORDER BY rank${input.dated === undefined ? "" : ", m.created_at DESC, m.id"}
        LIMIT ?
     `).all(
       WEB_SEARCH_HIGHLIGHT_OPEN,
       WEB_SEARCH_HIGHLIGHT_CLOSE,
       match,
       input.sourceId,
+      ...datedValues,
       MESSAGE_SEARCH_SCAN_LIMIT + 1,
-    ) as unknown as Array<{ thread_id: string; snippet: string | null; rank: number }>;
+    ) as unknown as Array<{ thread_id: string; message_id: string; role: "user" | "assistant"; created_at: string; snippet: string | null; rank: number }>;
 
     // Ranked rows arrive best-first, so the first row seen for a thread is that
     // thread's best snippet and its rank. The extra probe row exists only to
     // detect truncation and must not inflate a count or admit a thread.
-    const byThread = new Map<string, { snippet?: string; rank: number; matches: number }>();
+    const byThread = new Map<string, { snippet?: string; rank: number; matches: number; messageMatch?: NonNullable<WebThreadSearchHit["messageMatch"]> }>();
     for (const row of messageRows.slice(0, MESSAGE_SEARCH_SCAN_LIMIT)) {
       const existing = byThread.get(row.thread_id);
       if (existing === undefined) {
@@ -3003,6 +3011,7 @@ export class WebStore {
           ...(row.snippet === null || row.snippet.length === 0 ? {} : { snippet: row.snippet }),
           rank: row.rank,
           matches: 1,
+          ...(input.dated === undefined ? {} : { messageMatch: { messageId: row.message_id, role: row.role, createdAt: row.created_at } }),
         });
         continue;
       }
@@ -3012,9 +3021,12 @@ export class WebStore {
     // A conversation the user renamed after what it is about may not repeat that
     // word in any message, so titles are matched separately — as a substring,
     // because a title is short enough to scan and short enough to type part of.
-    const titleRows = this.database.prepare(`
+    // A title has no message date or role, so it cannot satisfy either filter.
+    const filteredMessages = input.dated !== undefined && datedValues.length > 0;
+    const titleRows = filteredMessages ? [] : this.database.prepare(`
       SELECT t.id AS id FROM threads t
        WHERE t.source_id = ? AND t.title LIKE '%' || ? || '%' ESCAPE '\\' ${scopeSql}
+         ${input.dated === undefined ? '' : `AND EXISTS (SELECT 1 FROM messages owner WHERE owner.thread_id = t.id AND ${ownerMessageSql('owner')})`}
        ORDER BY t.updated_at DESC, t.id DESC
        LIMIT ?
     `).all(input.sourceId, escapeLikeTerm(query), limit + 1) as unknown as Array<{ id: string }>;
@@ -3052,7 +3064,8 @@ export class WebStore {
         thread: this.mapThread(row),
         messageMatches: hit?.matches ?? 0,
         titleMatch: titleMatches.has(threadId),
-        ...(hit?.snippet === undefined ? {} : { snippet: hit.snippet }),
+        ...(hit?.snippet === undefined ? {} : { snippet: input.dated === undefined ? hit.snippet : Array.from(hit.snippet.replace(/[\u0002\u0003]/gu, "")).slice(0, 320).join("") }),
+        ...(hit?.messageMatch === undefined ? {} : { messageMatch: hit.messageMatch }),
       });
     }
     return {
@@ -3063,6 +3076,16 @@ export class WebStore {
         || titleRows.length > limit
         || ordering.length > hits.length,
     };
+  }
+
+  /** Existing host turn/message association is the provenance; role alone is not. */
+  isOwnerConsoleTurn(threadId: string, turnId: string): boolean {
+    try {
+      return this.database.prepare(`SELECT 1 FROM messages owner
+        JOIN threads t ON t.id = owner.thread_id
+        WHERE t.id = ? AND t.trigger_kind IS NULL AND owner.turn_id = ? AND ${ownerMessageSql("owner")} LIMIT 1`)
+        .get(threadId, turnId) !== undefined;
+    } catch { throw new WebConsoleError("conversation_search_failed", "conversation_search_failed", 500); }
   }
 
   /**
@@ -7949,6 +7972,27 @@ function isTerminalCronRun(status: WebCronRun["status"]): boolean {
 
 /** Presentation queries only; storage validation/recovery and retention stay raw. */
 function visibleMessageSql(alias: "m" | "messages"): string { return `${alias}.cron_suppressed = 0`; }
+
+/** Fail closed on legacy/imported user rows without an ordinary host turn. */
+function ownerMessageSql(alias: "m" | "owner"): string {
+  return `(${alias}.role = 'user' AND ${alias}.cron_suppressed = 0 AND ${alias}.status = 'complete'
+    AND EXISTS (SELECT 1 FROM turns provenance WHERE provenance.id = ${alias}.turn_id AND provenance.thread_id = ${alias}.thread_id)
+    AND NOT EXISTS (SELECT 1 FROM json_each(${alias}.parts_json) part
+      WHERE COALESCE(json_extract(part.value, '$.type'), '') NOT IN ('text', 'telemetry')
+        OR (json_extract(part.value, '$.type') = 'telemetry'
+          AND COALESCE(json_extract(part.value, '$.event'), '') NOT IN ('${QUOTE_TELEMETRY_EVENT}', '${LIVE_INPUT_TELEMETRY_EVENT}'))))`;
+}
+
+/** Only prose on an ordinary owner turn; no imported, scheduled or job-wake output. */
+function datedMessageSql(alias: "m"): string {
+  return `(${ownerMessageSql(alias)} OR (${alias}.role = 'assistant'
+    AND EXISTS (SELECT 1 FROM turns provenance WHERE provenance.id = ${alias}.turn_id
+      AND provenance.thread_id = ${alias}.thread_id AND provenance.assistant_message_id = ${alias}.id)
+    AND EXISTS (SELECT 1 FROM messages owner WHERE owner.thread_id = ${alias}.thread_id
+      AND owner.turn_id = ${alias}.turn_id AND ${ownerMessageSql("owner")})
+    AND NOT EXISTS (SELECT 1 FROM json_each(${alias}.parts_json) part
+      WHERE json_extract(part.value, '$.type') IN ('process-job-wake', 'scheduled-wake'))))`;
+}
 
 function withoutCronSilentFlag(data: unknown): Record<string, unknown> {
   const { silent: _silent, ...rest } = record(data) ?? {};

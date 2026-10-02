@@ -79,7 +79,10 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   and returned with highlighted snippets. Answers are indexed when their turn
   settles rather than on every streaming snapshot, with an open-time sweep for
   turns a restart cut short. Reasoning and tool payloads are deliberately not
-  indexed; archived conversations are.
+  indexed; archived conversations are. The existing `SearchConversations` tool
+  can separately opt in to owner-web dated message evidence, using the same index
+  with host-provenance, message-date and role filters before ranking. The UI path
+  stays unchanged; see [console tools](../../docs/tools/mcp.md#console-project-tools).
 - Serve the assistant-ui PWA and its versioned JSON/SSE API.
 - Accept explicit cron/webhook `web:new` notification delivery through an
   owner-private, bearer-authenticated loopback ingress. Webhooks retain one
