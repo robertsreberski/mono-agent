@@ -973,6 +973,12 @@ export interface WebThreadSearchHit {
    */
   readonly messageMatches: number;
   readonly titleMatch: boolean;
+  /** Opt-in model search only: identity and date of the actual best message. */
+  readonly messageMatch?: {
+    readonly messageId: string;
+    readonly role: "user" | "assistant";
+    readonly createdAt: string;
+  };
 }
 
 export interface WebThreadSearchPage {

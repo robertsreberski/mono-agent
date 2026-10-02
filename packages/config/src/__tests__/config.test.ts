@@ -4502,3 +4502,32 @@ describe("computer-use config", () => {
     expect(() => load(value)).toThrow(/tools\.computerUse.*docs\/tools\/computer-use\.md/u);
   });
 });
+
+
+describe("dated conversation evidence opt-in", () => {
+  const bujo = { ...baseJson, memory: { path: "memory", mode: "bujo" as const,
+    embeddings: { provider: "ollama" as const }, llm: { provider: "ollama" as const, model: "fixture" } } };
+  const resolve = (json: MonoAgentConfigJson) => resolveJsonMonoAgentConfig({ cwd: "/fixture", json });
+  it("is absent by default and with explicit false in every memory tier", () => {
+    for (const mode of ["lite", "journal", "bujo"] as const) {
+      const json = { ...baseJson, memory: mode === "bujo" ? bujo.memory : { path: "memory", mode, ...(mode === "journal" ? { embeddings: bujo.memory.embeddings } : {}) } };
+      const baseline = resolve(json);
+      expect(resolve({ ...json, tools: { conversationSearch: { datedSnippets: false } } })).toEqual(baseline);
+      expect(baseline.tools.conversationSearch).toBeUndefined();
+    }
+    expect(resolve(baseJson).tools.conversationSearch).toBeUndefined();
+  });
+  it("accepts true only in local BuJo and emits only stable failure codes", () => {
+    expect(resolve({ ...bujo, tools: { conversationSearch: { datedSnippets: true } } }).tools.conversationSearch)
+      .toEqual({ datedSnippets: true });
+    for (const json of [baseJson, { ...baseJson, memory: { path: "memory", mode: "lite" as const } },
+      { ...baseJson, memory: { path: "memory", mode: "journal" as const, embeddings: bujo.memory.embeddings } }]) {
+      expect(() => resolve({ ...json, tools: { conversationSearch: { datedSnippets: true } } }))
+        .toThrowError(expect.objectContaining({ code: "invalid_json", message: "conversation_search_requires_bujo" }));
+    }
+    for (const conversationSearch of [[], null, "fixture", { datedSnippets: "true" }, { datedSnippets: 1 }, { extra: "fixture" }]) {
+      expect(() => resolve({ ...bujo, tools: { conversationSearch } } as unknown as MonoAgentConfigJson))
+        .toThrowError(expect.objectContaining({ code: "invalid_json", message: "conversation_search_invalid_config" }));
+    }
+  });
+});

@@ -531,6 +531,14 @@ export function buildMonoAgentConfigSchema(): JsonSchema {
     title: "mono-agent.config.json",
     type: "object",
     required: ["runtime", "context"],
+    allOf: [{
+      if: { required: ["tools"], properties: { tools: { required: ["conversationSearch"], properties: {
+        conversationSearch: { required: ["datedSnippets"], properties: { datedSnippets: { const: true } } },
+      } } } },
+      then: { required: ["memory"], properties: { memory: { required: ["mode"], properties: {
+        mode: { const: "bujo" }, backend: { const: "bujo" },
+      } } } },
+    }],
     additionalProperties: false,
     properties: {
       $schema: { type: "string" },
@@ -1387,6 +1395,7 @@ function typeFromKind(kind: JsonEnvFieldSpec["kind"], id: string): ConfigReferen
 }
 
 function inferType(id: string): ConfigReferenceType {
+  if (id === "tools.conversationSearch.datedSnippets") return "boolean";
   if (id === "runtime.model") return "string | object";
   if (id === "artifacts.replyFiles.maxStorageBytes") return "integer | unlimited";
   if (id === "tools.web.search.backend" || id === "tools.web.fetch.provider") return "string | string[]";
@@ -1458,6 +1467,7 @@ function defaultLabelFor(id: string): string {
 
 function defaultValueFor(id: string): SettingsJsonValue | undefined {
   const defaults: Record<string, SettingsJsonValue> = {
+    "tools.conversationSearch.datedSnippets": false,
     "runtime.fallbacks": [],
     subagents: { enabled: false },
     "slack.resolveUserNames": true,
@@ -1671,6 +1681,7 @@ function exampleFor(id: string): SettingsJsonValue {
 }
 
 function descriptionFor(id: string): string {
+  if (id === "tools.conversationSearch.datedSnippets") return "Opt in to dated SearchConversations message evidence on verified owner web turns. Requires local BuJo memory; disabled by default. Telegram and the console UI keep legacy search. No new index or stored history fields.";
   if (id === "memory.capture.cron") return "Set false to skip automatic capture and raw audit for host-identified cron turns (including run-now); other turns and explicit Remember writes are unchanged. When Remember is enabled, this turn gets host-injected manual memory guidance. Unset preserves capture.";
   if (id === "memory.capture.webhook") return "Set false to skip automatic capture and raw audit for host-identified webhook turns; other turns and explicit Remember writes are unchanged. When Remember is enabled, this turn gets host-injected manual memory guidance. Unset preserves capture.";
   if (id === "memory.capture.focus") return "Operator guidance (at most 2048 UTF-8 bytes) narrows BuJo capture extraction and review; it cannot override host safety or the strict JSON contract. Requires mode bujo and writeMode capture.";

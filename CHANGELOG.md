@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add opt-in BuJo `tools.conversationSearch.datedSnippets` for owner-web
+  `SearchConversations` message-date and role filters, bounded dated evidence
+  and console links. Keep legacy search, the console UI and Telegram unchanged.
+
 - Fix Telegram native rich-message input, including forwarded and replied-to
   structured text, tables, lists, captions, and bounded background context.
 

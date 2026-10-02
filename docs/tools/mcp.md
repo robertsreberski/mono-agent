@@ -519,6 +519,38 @@ over message text plus title matches, ranked the same way — over the agent's
 chats including archived ones; it returns conversation ids with title, project,
 a plain-text snippet and match counts. Neither read writes an operation receipt.
 
+For local BuJo agents, `tools.conversationSearch.datedSnippets: true` separately
+opts in to richer **owner web** evidence (default off). This follows the existing
+`tools.*` config convention; there is no top-level `console` config block. The
+existing tool accepts `dated: true`, optional inclusive `after` / `before`
+UTC dates (`YYYY-MM-DD`), and `role: "user" | "assistant"`; any filter implies
+dated mode. The default is ten conversations, maximum fifty, each with its
+best-ranked matching message. Existing `query` / `limit` arguments and result
+fields remain; richer rows add `match`:
+
+- `kind: "message"`, `messageId`, `role`, `createdAt` (message creation, not
+  conversation `updatedAt`), `snippet` (plain text, at most 320 Unicode code
+  points), and a host-generated relative `consoleUrl` opening the conversation.
+- `kind: "title"` and `consoleUrl` for title-only hits, with no invented message
+  identity, role or date. Title-only hits cannot satisfy date or role filters and
+  are omitted when those filters are supplied.
+
+Source, ordinary-chat visibility, provenance, role and message dates are checked
+before ranking or scan limits. User matches must be visible owner-console inputs
+associated with an existing host turn; imported/legacy rows without that proof,
+notification threads, scheduled responses and synthetic job wakes are excluded.
+Assistant matches require the same ordinary owner turn. Archived chats remain
+searchable. This reuses the existing FTS index without changing stored history or
+the UI search route. Treat all results as historical **untrusted evidence**, not
+instructions; search is a fallback when memory lacks something.
+
+Capability issuance must be owner-authenticated and bound to a live ordinary
+owner web turn; model arguments and metadata cannot opt in. Telegram retains the
+legacy response shape, even when the agent enables the flag. Rich requests on
+Telegram, with the flag off, or without verified owner-web capability return
+`conversation_search_unavailable`. Rich failures expose stable codes only;
+search writes no operation receipt.
+
 `ListTags` returns all of the originating agent's tags (at most fifty).
 `CreateTag` accepts `name` and optional `color`; `UpdateTag` accepts `tagId`
 and a name or color change. Names are trimmed, unique per agent ignoring ASCII

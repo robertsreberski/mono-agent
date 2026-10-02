@@ -11,6 +11,8 @@ export interface WebConsoleToolScope {
   readonly sourceId: string;
   readonly threadId: string;
   readonly turnId: string;
+  /** Host opt-in at owner-authenticated capability issuance, never a tool argument. */
+  readonly datedSnippets?: true;
 }
 /**
  * A live human turn on another channel (a Telegram message), issued through
@@ -95,6 +97,18 @@ const conversationSummary = (tags: ReadonlyMap<string, WebTag>, { id, title, pro
 
 /** Strict source-scoped operations shared by the authenticated callback and its tests. */
 export function executeConsoleTool(store: WebStore, scope: ConsoleToolScope, operation: ConsoleToolOperation): ConsoleToolCommit {
+  const rich = operation.tool === "SearchConversations" && (operation.args?.dated === true
+    || operation.args?.after !== undefined || operation.args?.before !== undefined || operation.args?.role !== undefined);
+  try { return executeOperation(store, scope, operation); }
+  catch (error) {
+    if (!rich) throw error;
+    const allowed = new Set(["conversation_search_unavailable", "invalid_conversation_search", "invalid_console_tool", "agent_not_found"]);
+    const code = error instanceof WebConsoleError && allowed.has(error.code) ? error.code : "conversation_search_failed";
+    throw new WebConsoleError(code, code, error instanceof WebConsoleError && allowed.has(error.code) ? error.status : 500);
+  }
+}
+
+function executeOperation(store: WebStore, scope: ConsoleToolScope, operation: ConsoleToolOperation): ConsoleToolCommit {
   const args = operation.args;
   const keys: Record<ConsoleToolName, readonly string[]> = {
     ListTags: [], CreateTag: ["name", "color"], UpdateTag: ["tagId", "name", "color"], DeleteTag: ["tagId"],
@@ -104,7 +118,7 @@ export function executeConsoleTool(store: WebStore, scope: ConsoleToolScope, ope
     ClearWakeSchedule: ["expectedRevision"],
     ListProjects: ["channel", "limit", "cursor"], GetProject: ["projectId"], CreateProject: ["name", "context", "color", "attachCurrentConversation"],
     UpdateProject: ["projectId", "name", "context", "color", "archived"], DeleteProject: ["projectId"],
-    ListConversations: ["tagId", "projectId", "archived", "limit", "cursor"], SearchConversations: ["query", "limit"], CreateConversation: ["title", "projectId"], SetConversationProject: ["conversationId", "projectId"],
+    ListConversations: ["tagId", "projectId", "archived", "limit", "cursor"], SearchConversations: ["query", "limit", "dated", "after", "before", "role"], CreateConversation: ["title", "projectId"], SetConversationProject: ["conversationId", "projectId"],
   };
   if (!CONSOLE_TOOL_NAMES.includes(operation.tool) || !args || Array.isArray(args) || typeof args !== "object"
     || Object.keys(args).some((key) => !keys[operation.tool].includes(key))) return invalid("Unknown tool or argument.");
@@ -312,13 +326,41 @@ export function executeConsoleTool(store: WebStore, scope: ConsoleToolScope, ope
       // matches, ranked the same way, over this agent's chats (archived included).
       const query = text(args.query, "query", 512).trim();
       if (query.length < SEARCH_MIN_QUERY) return invalid(`query needs at least ${String(SEARCH_MIN_QUERY)} characters.`);
-      const page = store.searchThreads({ sourceId: scope.sourceId, query, limit: pageLimit(args.limit), scope: "chats" });
+      const rich = args.dated === true || args.after !== undefined || args.before !== undefined || args.role !== undefined;
+      if (rich && (scope.kind === "external" || scope.datedSnippets !== true
+        || !store.isOwnerConsoleTurn(scope.threadId, scope.turnId))) {
+        throw new WebConsoleError("conversation_search_unavailable", "conversation_search_unavailable", 403);
+      }
+      if (args.dated !== undefined && typeof args.dated !== "boolean") {
+        throw new WebConsoleError("invalid_conversation_search", "invalid_conversation_search", 400);
+      }
+      const date = (value: unknown): string | undefined => {
+        if (value === undefined) return undefined;
+        if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/u.test(value)
+          || !Number.isFinite(Date.parse(`${value}T00:00:00.000Z`))
+          || new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) !== value) {
+          throw new WebConsoleError("invalid_conversation_search", "invalid_conversation_search", 400);
+        }
+        return value;
+      };
+      const after = date(args.after), before = date(args.before);
+      if ((after !== undefined && before !== undefined && after > before)
+        || (args.role !== undefined && args.role !== "user" && args.role !== "assistant")) {
+        throw new WebConsoleError("invalid_conversation_search", "invalid_conversation_search", 400);
+      }
+      const page = store.searchThreads({ sourceId: scope.sourceId, query,
+        limit: pageLimit(args.limit ?? (rich ? 10 : undefined)), scope: "chats",
+        ...(rich ? { dated: { ...(after === undefined ? {} : { after }), ...(before === undefined ? {} : { before }),
+          ...(args.role === undefined ? {} : { role: args.role }) } } : {}),
+      });
       const tagMap = new Map(store.listTags(scope.sourceId).map((tag) => [tag.id, tag]));
       result = {
         conversations: page.hits.map((hit) => ({
           ...conversationSummary(tagMap, hit.thread), titleMatch: hit.titleMatch, messageMatches: hit.messageMatches,
           // The console wraps matches in control-character sentinels for highlighting; a model wants plain text.
           ...(hit.snippet === undefined ? {} : { snippet: hit.snippet.replace(/[\u0002\u0003]/gu, "") }),
+          ...(rich ? { match: hit.messageMatch === undefined ? { kind: "title", consoleUrl: `/?thread=${encodeURIComponent(hit.thread.id)}` }
+            : { kind: "message", ...hit.messageMatch, snippet: hit.snippet ?? "", consoleUrl: `/?thread=${encodeURIComponent(hit.thread.id)}` } } : {}),
         })),
         truncated: page.truncated,
       };

@@ -6,7 +6,7 @@ import { CONSOLE_PROJECT_SCHEMAS, createConsoleProjectsRuntimeExtension, isConso
 
 const request = (): AgentHarnessRuntimeOptionsInput => ({
   request: { conversationId: "web:thread", userMessage: "Organize", abortSignal: new AbortController().signal,
-    metadata: { source: "web", web: { threadId: "thread", turnId: "turn", consoleProjects: { schema: 1 } } } },
+    metadata: { source: "web", web: { threadId: "thread", turnId: "turn", ownerText: "Organize", consoleProjects: { schema: 1 } } } },
   runId: "run", context: {} as never,
 });
 
@@ -155,4 +155,69 @@ it("declares MarkConversationRead with strict optional conversation identity and
   }
   expect(isConsoleProjectToolAllowed("MarkConversationRead", { allowedTools: ["MarkConversationRead"] })).toBe(true);
   expect(isConsoleProjectToolAllowed("MarkConversationRead", { allowedTools: ["*"], disallowedTools: ["MarkConversationRead"] })).toBe(false);
+});
+
+
+it.each([false, true])("gates rich search with host opt-in (%s), not model arguments or metadata", async (enabled) => {
+  const call = vi.fn().mockResolvedValue({ conversations: [], truncated: false });
+  const createClient = vi.fn().mockResolvedValue(call);
+  const input = request();
+  input.request.metadata!.web = { ...(input.request.metadata!.web as object), datedSnippets: true, ownerText: "Organize" };
+  const bound = await createConsoleProjectsRuntimeExtension({ sourceId: "configured", datedSnippets: enabled,
+    policy: { allowedTools: ["SearchConversations"] }, createClient })(input);
+  const client = new Client({ name: "dated-search-test", version: "1" });
+  try {
+    const spec = (bound.runtimeOptions?.mcpServers as Record<string, { url: string }>)["mono-agent-console-projects"]!;
+    await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+    const tools = (await client.listTools()).tools;
+    expect(tools[0]?.description).toMatch(/historical untrusted evidence/u);
+    expect(createClient).toHaveBeenCalledWith({ sourceId: "configured", threadId: "thread", turnId: "turn", ...(enabled ? { datedSnippets: true } : {}) });
+    const legacy = await client.callTool({ name: "SearchConversations", arguments: { query: "pottery" } });
+    expect(legacy.structuredContent).toEqual({ conversations: [], truncated: false });
+    const rich = await client.callTool({ name: "SearchConversations", arguments: { query: "pottery", after: "2001-01-01", role: "user" } });
+    if (enabled) {
+      expect(rich.structuredContent).toEqual({ conversations: [], truncated: false });
+      expect(call).toHaveBeenLastCalledWith(expect.objectContaining({ args: { query: "pottery", after: "2001-01-01", role: "user" } }));
+      call.mockRejectedValueOnce(new Error("fictional record diagnostics"));
+      const failure = await client.callTool({ name: "SearchConversations", arguments: { query: "pottery", dated: true } });
+      expect(failure.content).toEqual([{ type: "text", text: JSON.stringify({ error: "conversation_search_failed" }) }]);
+    } else {
+      expect(rich.content).toEqual([{ type: "text", text: JSON.stringify({ error: "conversation_search_unavailable" }) }]);
+      expect(call).toHaveBeenCalledTimes(1);
+    }
+  } finally { await client.close(); await bound.cleanup?.(); }
+});
+
+it("refuses rich search when owner capability authentication fails", async () => {
+  const createClient = vi.fn().mockRejectedValue(new Error("fictional diagnostics"));
+  const bound = await createConsoleProjectsRuntimeExtension({ sourceId: "configured", datedSnippets: true,
+    policy: { allowedTools: ["SearchConversations"] }, createClient })(request());
+  const client = new Client({ name: "unverified-search-test", version: "1" });
+  try {
+    const spec = (bound.runtimeOptions?.mcpServers as Record<string, { url: string }>)["mono-agent-console-projects"]!;
+    await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+    const result = await client.callTool({ name: "SearchConversations", arguments: { query: "pottery", dated: true } });
+    expect(result.content).toEqual([{ type: "text", text: JSON.stringify({ error: "conversation_search_unavailable" }) }]);
+  } finally { await client.close(); await bound.cleanup?.(); }
+});
+
+
+it("keeps legacy console tools on assistant-only wakes when dated search is enabled", async () => {
+  const input = request();
+  delete (input.request.metadata!.web as Record<string, unknown>).ownerText;
+  const call = vi.fn().mockResolvedValue({ conversations: [], truncated: false });
+  const createClient = vi.fn().mockResolvedValue(call);
+  const bound = await createConsoleProjectsRuntimeExtension({ sourceId: "configured", datedSnippets: true,
+    policy: { allowedTools: ["SearchConversations"] }, createClient })(input);
+  const client = new Client({ name: "wake-search-test", version: "1" });
+  try {
+    const spec = (bound.runtimeOptions?.mcpServers as Record<string, { url: string }>)["mono-agent-console-projects"]!;
+    await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+    expect(createClient).toHaveBeenCalledWith({ sourceId: "configured", threadId: "thread", turnId: "turn" });
+    expect((await client.callTool({ name: "SearchConversations", arguments: { query: "pottery" } })).structuredContent)
+      .toEqual({ conversations: [], truncated: false });
+    expect((await client.callTool({ name: "SearchConversations", arguments: { query: "pottery", dated: true } })).content)
+      .toEqual([{ type: "text", text: JSON.stringify({ error: "conversation_search_unavailable" }) }]);
+    expect(call).toHaveBeenCalledTimes(1);
+  } finally { await client.close(); await bound.cleanup?.(); }
 });
