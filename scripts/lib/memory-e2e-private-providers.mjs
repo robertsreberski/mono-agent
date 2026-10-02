@@ -33,10 +33,30 @@ export function assertPrivateRuntimeOptions(options) {
     || (options.observers?.length ?? 0) !== 0 || (options.allowedTools?.length ?? 0) !== 0
     || Object.keys(options.mcpServers ?? {}).length !== 0) throw new PrivateError("private_isolation_required");
 }
-export function privatePiRuntime(modules, workspace, budget) {
+export function privatePiRuntime(modules, workspace, budget, { piAuthPath } = {}) {
   assertPrivateProviderEnvironment();
-  const raw = modules.runtime.createMonoRuntime({ workspace });
+  let raw, resolvePiApiKey;
+  try {
+    // Same lazy credential-store seam as production/real benchmarks. Selecting
+    // credentials is execution-only: no auth path or credential enters artifacts.
+    resolvePiApiKey = piAuthPath === undefined ? undefined : modules.runtime.createPiOAuthApiKeyResolver({ path: piAuthPath });
+    raw = modules.runtime.createMonoRuntime({ workspace, ...(resolvePiApiKey === undefined ? {} : { resolvePiApiKey }) });
+  } catch { throw new PrivateError("private_judge_unavailable"); }
   return {
+    async checkAuth(provider) {
+      assertPrivateProviderEnvironment();
+      budget.reserve({});
+      if (typeof modules.providerAuth?.checkPiProviderAuth !== "function") throw new PrivateError("private_judge_unavailable");
+      try {
+        // Pi checks credential/environment availability without a request or
+        // OAuth refresh. The actual run still owns entitlement/refresh failures.
+        const credential = await budget.wait(Promise.resolve().then(() => resolvePiApiKey?.readCredential(provider)));
+        const auth = await budget.wait(modules.providerAuth.checkPiProviderAuth(provider, credential, process.env, budget.controller.signal));
+        if (!auth) throw new PrivateError("private_provider_auth_failed");
+      } catch (error) {
+        throw new PrivateError(privateCode(error) === "private_budget_exhausted" ? "private_budget_exhausted" : "private_provider_auth_failed");
+      }
+    },
     async run(system, options) {
       assertPrivateProviderEnvironment();
       assertPrivateRuntimeOptions(options);
@@ -47,18 +67,19 @@ export function privatePiRuntime(modules, workspace, budget) {
         // No durable session root and no content event callbacks are forwarded.
         const result = await budget.wait(raw.run(system, { ...options, piMaxRetries: 0, piTransport: "sse", keepAlive: false, providerCheckMaxTokens: 4096,
           abortSignal: AbortSignal.any([options.abortSignal, budget.controller.signal, AbortSignal.timeout(60000)].filter(Boolean)) }));
+        if (result.failureKind === "provider_auth") throw new PrivateError("private_provider_auth_failed");
         if (result.failureKind || result.error) throw new PrivateError("private_provider_failed");
         return result;
-      } catch (error) { throw new PrivateError(privateCode(error) === "private_budget_exhausted" ? "private_budget_exhausted" : "private_provider_failed"); }
+      } catch (error) { throw new PrivateError(error instanceof PrivateError ? error.code : privateCode(error) === "private_budget_exhausted" ? "private_budget_exhausted" : "private_provider_failed"); }
     },
     async disposeAllSessions() { await raw.disposeAllSessions?.(); },
   };
 }
 /** Tool-less local completion through the app's existing memoryRuntime seam.
  * Unlike a generic HTTP adapter this refuses redirects and caps response bytes. */
-export function privateCompletionRuntime(modules, route, workspace, budget) {
+export function privateCompletionRuntime(modules, route, workspace, budget, auth = {}) {
   assertPrivateProviderEnvironment();
-  if (!route.startsWith("ollama:")) return privatePiRuntime(modules, workspace, budget);
+  if (!route.startsWith("ollama:")) return privatePiRuntime(modules, workspace, budget, auth);
   return {
     async run(system, options) {
       assertPrivateProviderEnvironment();

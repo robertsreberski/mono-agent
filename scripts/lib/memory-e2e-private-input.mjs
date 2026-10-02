@@ -10,7 +10,7 @@ export const PRIVATE_CODES = Object.freeze([
   "private_permissions", "private_unsafe_entry", "private_roots_overlap",
   "private_input_invalid", "private_preregistration_invalid", "private_preregistration_changed", "private_cleanup_failed", "private_output_exists",
   "private_arguments_invalid", "private_provider_route_refused", "private_isolation_required",
-  "private_provider_failed", "private_budget_exceeded", "private_budget_exhausted", "private_invocation_missing",
+  "private_provider_failed", "private_provider_auth_failed", "private_judge_unavailable", "private_judge_output_invalid", "private_embedding_failed", "private_snapshot_failed", "private_budget_exceeded", "private_budget_exhausted", "private_invocation_missing",
   "private_review_tty_required", "private_annotations_invalid", "private_operation_failed",
 ]);
 export class PrivateError extends Error {

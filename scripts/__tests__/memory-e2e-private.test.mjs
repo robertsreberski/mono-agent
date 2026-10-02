@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 import { PrivateError, privateCode, validatePrivateRoots, validateTurns, validateRegistration, validateAnnotations, reconstructClone, requirePrivateAncestor, createPrivateOutput, validatePrivateAclMetadata } from "../lib/memory-e2e-private-input.mjs";
 import { blindSheets, metrics, newReviewSeed, reviewId, pairedBootstrap, serializePrivateArtifact, summarizePrivate, writePrivateArtifact } from "../lib/memory-e2e-private-report.mjs";
 import { privateMain, resolvePrivateArm, privateReplaySnapshot } from "../lib/memory-e2e-private-runner.mjs";
-import { assertPrivateRuntimeOptions, validatePrivateRoute, assertPrivateProviderEnvironment, PRIVATE_LOGGING_ENV, privateCompletionRuntime } from "../lib/memory-e2e-private-providers.mjs";
+import { assertPrivateRuntimeOptions, validatePrivateRoute, assertPrivateProviderEnvironment, PRIVATE_LOGGING_ENV, privateCompletionRuntime, privatePiRuntime } from "../lib/memory-e2e-private-providers.mjs";
 import { invokedMemoryObservation, productionModules } from "../lib/memory-e2e-runner.mjs";
 import { Budget, BenchmarkError } from "../lib/memory-e2e-providers.mjs";
 import { privateEmbeddingCache } from "../lib/memory-e2e-private-cache.mjs";
@@ -330,12 +330,12 @@ describe("private replay performance contracts", () => {
     const embed = vi.fn(() => new Promise((resolve) => { complete = resolve; }));
     const provider = cache.wrap({ id: "fictional", embed }, { budget, model: "fictional", dimension: 3, tag: {} });
     try {
-      await expect(provider.embed([sentinel, null])).rejects.toThrow("private_provider_failed");
+      await expect(provider.embed([sentinel, null])).rejects.toThrow("private_embedding_failed");
       expect(embed).not.toHaveBeenCalled();
       const first = provider.embed([sentinel]), second = provider.embed([sentinel]); complete([[1, 0, 0]]);
       expect(await Promise.all([first, second])).toEqual([[[1, 0, 0]], [[1, 0, 0]]]); expect(embed).toHaveBeenCalledTimes(1);
       cache.clear(); embed.mockResolvedValueOnce([[1]]).mockResolvedValueOnce([[1, 0, 0]]);
-      await expect(provider.embed([sentinel])).rejects.toThrow("private_provider_failed");
+      await expect(provider.embed([sentinel])).rejects.toThrow("private_embedding_failed");
       expect(await provider.embed([sentinel])).toEqual([[1, 0, 0]]); expect(embed).toHaveBeenCalledTimes(3);
     } finally { cache.clear(); budget.close(); }
   });
@@ -393,6 +393,106 @@ describe("private replay performance contracts", () => {
     const progress = JSON.parse(await readFile(join(f.outputRoot, "progress.json"), "utf8")); expect(progress.turnsDone).toBe(selected.length);
     for (const name of await readdir(f.outputRoot)) expect(await readFile(join(f.outputRoot, name), "utf8")).not.toContain(sentinel);
   }, 60000);
+});
+
+describe("private hosted judge authentication and failure codes", () => {
+  it("threads the explicit lazy Pi auth resolver and retains typed runtime auth/budget failures", async () => {
+    const resolver = vi.fn(), run = vi.fn(async () => ({ text: "{\"label\":\"useful\"}" }));
+    const factory = vi.fn(() => resolver), create = vi.fn(() => ({ run, async disposeAllSessions() {} }));
+    const budget = new Budget({ limits: { runtimeMs: 60000, chatSteps: 10, estimatedInputTokens: 10000 }, perCall: {} });
+    const modules = { runtime: { createPiOAuthApiKeyResolver: factory, createMonoRuntime: create } };
+    try {
+      const runtime = privatePiRuntime(modules, root, budget, { piAuthPath: "/OWNER-ONLY/FICTIONAL-AUTH.json" });
+      expect(factory).toHaveBeenCalledWith({ path: "/OWNER-ONLY/FICTIONAL-AUTH.json" });
+      expect(create).toHaveBeenCalledWith({ workspace: root, resolvePiApiKey: resolver }); expect(resolver).not.toHaveBeenCalled();
+      const options = { messages: [{ role: "user", content: sentinel }], maxTurns: 1, allowedTools: [], mcpServers: {} };
+      await runtime.run("fictional system", options);
+      run.mockResolvedValueOnce({ failureKind: "provider_auth", error: sentinel });
+      await expect(runtime.run("fictional system", options)).rejects.toThrow("private_provider_auth_failed");
+      run.mockResolvedValueOnce({ failureKind: "provider_protocol", error: sentinel });
+      await expect(runtime.run("fictional system", options)).rejects.toThrow("private_provider_failed");
+      run.mockRejectedValueOnce(new BenchmarkError("runtime_budget_exhausted"));
+      await expect(runtime.run("fictional system", options)).rejects.toThrow("private_budget_exhausted");
+      expect(JSON.stringify(budget.events)).not.toContain(sentinel);
+    } finally { budget.close(); }
+  });
+  for (const scenario of ["missing-auth", "unreadable-auth", "auth", "setup", "runtime", "route", "invalid-json", "invalid-label", "empty", "budget", "success"]) it(`maps hosted judge ${scenario} through the real evaluator/app path without raw diagnostics`, async () => {
+    const f = await fixture(), route = "openai-codex:fictional-model", resolver = vi.fn();
+    resolver.readCredential = vi.fn(async () => { if (scenario === "unreadable-auth") throw new Error(sentinel); return { type: "api_key", key: "FICTIONAL_KEY" }; });
+    const checkAuth = vi.fn(async () => scenario === "missing-auth" ? undefined : { source: "stored", type: "api_key" });
+    const rebuild = vi.fn();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, options) => {
+      if (!url.endsWith("/api/embed")) throw new Error("fictional_unexpected_network");
+      const input = JSON.parse(options.body).input;
+      return new Response(JSON.stringify({ embeddings: input.map(() => Array(768).fill(0)) }));
+    });
+    const expected = { "missing-auth": "private_provider_auth_failed", "unreadable-auth": "private_provider_auth_failed", auth: "private_provider_auth_failed", setup: "private_judge_unavailable", runtime: "private_provider_failed", route: "private_provider_route_refused", "invalid-json": "private_judge_output_invalid", "invalid-label": "private_judge_output_invalid", empty: "private_judge_output_invalid", budget: "private_budget_exhausted" }[scenario];
+    const r = { ...registration(), productionRoutes: [route] };
+    const factory = vi.fn(() => resolver), run = vi.fn(async () => {
+      if (scenario === "budget") throw new BenchmarkError("runtime_budget_exhausted");
+      return scenario === "auth" ? { failureKind: "provider_auth", error: sentinel } : scenario === "runtime" ? { failureKind: "provider_unavailable", error: sentinel }
+        : { text: scenario === "invalid-json" ? sentinel : scenario === "empty" ? "" : JSON.stringify({ label: scenario === "invalid-label" ? sentinel : "partial", ignored: sentinel }) };
+    });
+    const create = vi.fn(() => ({ async run(system, options) {
+      expect((await lstat(options.cwd)).isDirectory()).toBe(true);
+      expect((await lstat(options.cwd)).mode & 0o777).toBe(0o700);
+      return run(system, options);
+    }, async disposeAllSessions() {} }));
+    const loadModules = async () => {
+      const modules = await productionModules({ privateEvaluation: true });
+      rebuild.mockImplementation(modules.bujo.safeRebuildMemoryIndex);
+      return { ...modules,
+        providerAuth: { checkPiProviderAuth: checkAuth },
+        bujo: { ...modules.bujo, safeRebuildMemoryIndex: rebuild },
+        runtime: { ...modules.runtime, createPiOAuthApiKeyResolver: factory, createMonoRuntime: create },
+        app: { ...modules.app, ...(scenario === "setup" ? { createConfiguredCurationLlm() { throw new Error(sentinel); } } : {}) },
+      };
+    };
+    const execution = privateMain({ private: true, "private-mode": "retrieval", "private-input-root": f.inputRoot, "private-output-root": f.outputRoot, "private-store-root": f.storeRoot,
+      "private-judge": route, "allow-private-provider-route": scenario === "route" ? [] : [route], "pi-auth-path": "/OWNER-ONLY/FICTIONAL-AUTH.json" },
+      { root, env: {}, repositories: f.repositories, stdout() {}, prepareBuild: async () => null, loadModules, loadInputs: async () => ({ turns: validateTurns(turns()), registration: r }) });
+    if (expected) {
+      await expect(execution).rejects.toThrow(expected);
+      expect(JSON.parse(await readFile(join(f.outputRoot, "error.json"), "utf8"))).toEqual({ code: expected });
+    } else {
+      await execution; expect(run).toHaveBeenCalledOnce(); expect(factory).toHaveBeenCalledWith({ path: "/OWNER-ONLY/FICTIONAL-AUTH.json" });
+      expect(JSON.parse(await readFile(join(f.outputRoot, "model-review.json"), "utf8"))).toHaveLength(1);
+    }
+    for (const name of await readdir(f.outputRoot)) expect(await readFile(join(f.outputRoot, name), "utf8")).not.toContain(sentinel);
+    if (["route", "setup", "missing-auth", "unreadable-auth"].includes(scenario)) { expect(rebuild).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled(); }
+    if (scenario === "route") expect(create).not.toHaveBeenCalled();
+    expect((await readdir(f.outputRoot)).some((name) => name.startsWith("clone-") || name.startsWith("judge-"))).toBe(false);
+  }, 30000);
+  it("uses Pi's real side-effect-free auth check, refuses absent auth before snapshots, and never invents a default credential store", async () => {
+    const f = await fixture(), modules = await productionModules({ privateEvaluation: true });
+    const route = "openai-codex:fictional-model", run = vi.fn(), factory = vi.fn(), rebuild = vi.fn();
+    const checkAuth = vi.fn((provider, credential, _environment, signal) => modules.providerAuth.checkPiProviderAuth(provider, credential, {}, signal));
+    await expect(privateMain({ private: true, "private-mode": "retrieval", "private-input-root": f.inputRoot, "private-output-root": f.outputRoot, "private-store-root": f.storeRoot,
+      "private-judge": route, "allow-private-provider-route": [route] }, { root, env: {}, repositories: f.repositories, prepareBuild: async () => null,
+      loadInputs: async () => ({ turns: validateTurns(turns()), registration: { ...registration(), productionRoutes: [route] } }),
+      loadModules: async () => ({ ...modules, providerAuth: { checkPiProviderAuth: checkAuth }, bujo: { ...modules.bujo, safeRebuildMemoryIndex: rebuild },
+        runtime: { ...modules.runtime, createPiOAuthApiKeyResolver: factory, createMonoRuntime: () => ({ run, async disposeAllSessions() {} }) } }) })).rejects.toThrow("private_provider_auth_failed");
+    expect(checkAuth).toHaveBeenCalledOnce(); expect(factory).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled(); expect(rebuild).not.toHaveBeenCalled();
+    expect(JSON.parse(await readFile(join(f.outputRoot, "error.json"), "utf8"))).toEqual({ code: "private_provider_auth_failed" });
+    expect((await readdir(f.outputRoot)).includes("progress.json")).toBe(false);
+  });
+  it("maps missing judge runtime/auth-check setup to unavailable and does not trust arbitrary runtime code properties", async () => {
+    const budget = new Budget({ limits: { runtimeMs: 60000, chatSteps: 10, estimatedInputTokens: 10000 }, perCall: {} });
+    try {
+      expect(() => privatePiRuntime({ runtime: { createMonoRuntime() { throw new Error(sentinel); } } }, root, budget)).toThrow("private_judge_unavailable");
+      const runtime = privatePiRuntime({ runtime: { createMonoRuntime: () => ({ async run() { throw Object.assign(new Error(sentinel), { code: "private_provider_auth_failed" }); } }) } }, root, budget);
+      await expect(runtime.checkAuth("openai-codex")).rejects.toThrow("private_judge_unavailable");
+      await expect(runtime.run("fictional system", { messages: [{ role: "user", content: sentinel }], maxTurns: 1, allowedTools: [], mcpServers: {} })).rejects.toThrow("private_provider_failed");
+    } finally { budget.close(); }
+  });
+  it("labels initial embedding failures separately from judge setup failures", async () => {
+    const budget = new Budget({ limits: { runtimeMs: 60000, embeddingCalls: 10, estimatedInputTokens: 10000 }, perCall: { embeddingTimeoutMs: 1000 } });
+    const cache = privateEmbeddingCache();
+    try {
+      const provider = cache.wrap({ id: "fictional", async embed() { throw new Error(sentinel); } }, { budget, model: "fictional", dimension: 3, tag: {} });
+      await expect(provider.embed([sentinel])).rejects.toThrow("private_embedding_failed");
+    } finally { cache.clear(); budget.close(); }
+  });
 });
 
 describe("private memory evaluation measurement", () => {

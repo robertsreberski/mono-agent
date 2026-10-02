@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix private memory judges to use an explicitly selected Pi auth store and
+  owner-private workspace; check hosted credential availability before snapshot
+  indexing and report distinct code-only setup, auth, runtime and output errors.
+
 - Keep private BuJo retrieval replay bounded by reusing conservative UTC-day
   snapshots and volatile shared embedding results; meter only real embedding
   calls, count cache hits separately, and expose content-free private progress

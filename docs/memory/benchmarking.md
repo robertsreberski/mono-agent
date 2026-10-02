@@ -294,7 +294,38 @@ for the same data; this is not permission to choose another hosted provider.
 Only built-in Pi routes are accepted. Recording/tracing callbacks, provider
 logs, tools, artifact sinks and durable session roots are forbidden; native
 sessions stay in `MemorySessionRepo`. Otherwise the route refuses execution.
-The local completion seam also refuses HTTP redirects. Model annotations go to
+The local completion seam also refuses HTTP redirects. Hosted judge setup and
+credential availability are checked before snapshot reconstruction/indexing;
+Pi's credential check sends no request and does not refresh OAuth. The actual
+completion still determines model entitlement and credential validity.
+
+Use `--pi-auth-path /OWNER-ONLY/PI-AUTH.json` to select the same Pi auth store as
+the real benchmark/production route. The path must be absolute and is
+execution-only: neither the path nor credentials enter artifacts. The existing
+lazy Pi resolver handles normal reads and OAuth refreshes on that store; do not
+copy rotating OAuth credentials to a second store. Without the flag, only the
+native provider's ambient authentication is used; no consumer config or default
+Pi credential file is discovered.
+
+```bash
+node scripts/memory-e2e-benchmark.mjs --private --private-mode retrieval \
+  --private-input-root /OWNER-ONLY/EVAL-INPUT \
+  --private-output-root /OWNER-ONLY/NEW-JUDGED-OUTPUT \
+  --private-store-root /OWNER-ONLY/STORE-SOURCE \
+  --private-judge PROVIDER:MODEL \
+  --allow-private-provider-route PROVIDER:MODEL \
+  --pi-auth-path /OWNER-ONLY/PI-AUTH.json
+```
+
+Failures remain codes only: `private_provider_route_refused` for route admission,
+`private_judge_unavailable` for judge construction,
+`private_provider_auth_failed` for missing/unreadable or rejected authentication,
+`private_provider_failed` for runtime/transport failures, and
+`private_judge_output_invalid` for malformed JSON or an unrecognized label.
+Initial embedding and other snapshot failures use `private_embedding_failed`
+and `private_snapshot_failed`; privacy and budget codes remain distinct.
+Preflight confirms availability, not a provider health or quality claim.
+Model annotations go to
 `model-review.json`, never silently replacing human judgments. Any adoption or
 provider-backed run remains the owner's explicit decision.
 
