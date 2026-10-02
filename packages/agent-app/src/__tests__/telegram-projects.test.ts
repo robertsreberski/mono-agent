@@ -291,11 +291,9 @@ describe("console project tools on Telegram turns", () => {
         expect(result.isError).toBe(true);
         expect(result.content).toEqual([{ type: "text", text: JSON.stringify({ error: "conversation_search_unavailable" }) }]);
       }
-      for (const args of [null, [], "fictional", 7, undefined]) {
-        const result = await client.callTool({ name: "SearchConversations", arguments: args as never });
-        expect(result.isError).toBe(true);
-        expect(result.content).toEqual([{ type: "text", text: JSON.stringify({ error: "conversation_search_unavailable" }) }]);
-      }
+      const malformedLegacy = await client.callTool({ name: "SearchConversations", arguments: { query: "p" } });
+      expect(malformedLegacy.isError).toBe(true);
+      expect(malformedLegacy.content).toEqual([{ type: "text", text: expect.stringContaining("MCP error -32602: Input validation error:") }]);
       expect(call).toHaveBeenCalledTimes(1);
     } finally { await client.close(); await bound.cleanup?.(); }
     expect(revoke).toHaveBeenCalledTimes(1);

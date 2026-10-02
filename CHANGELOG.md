@@ -5,8 +5,9 @@
 - Add opt-in BuJo `tools.conversationSearch.datedSnippets` for owner-web
   `SearchConversations` message-date and role filters, bounded dated evidence
   and console links. Keep legacy search, the console UI and Telegram unchanged.
-  Return stable search codes for malformed MCP arguments without validation
-  diagnostics, including unavailable Telegram and flag-off rich requests.
+  Return stable search codes for malformed rich MCP arguments without validation
+  diagnostics, including unavailable Telegram and flag-off requests, while
+  preserving legacy SDK validation responses when rich search is unavailable.
 
 - Fix Telegram native rich-message input, including forwarded and replied-to
   structured text, tables, lists, captions, and bounded background context.

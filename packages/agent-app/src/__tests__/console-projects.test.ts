@@ -1,5 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/agent-harness";
 import { describe, expect, it, vi } from "vitest";
 import { CONSOLE_PROJECT_SCHEMAS, createConsoleProjectsRuntimeExtension, isConsoleProjectToolAllowed } from "../console-projects.js";
@@ -248,11 +250,13 @@ it.each(["owner", "flag-off", "unverified"] as const)("sanitizes SearchConversat
       expect(result.structuredContent).toBeUndefined();
       expect(result.content).toEqual([{ type: "text", text: JSON.stringify({ error: surface === "owner" ? "invalid_conversation_search" : "conversation_search_unavailable" }) }]);
     }
-    // Exercise malformed argument containers through the MCP transport too.
-    for (const args of [null, [], "fictional", 7, undefined]) {
-      const result = await client.callTool({ name: "SearchConversations", arguments: args as never });
-      expect(result.isError).toBe(true);
-      expect(result.content).toEqual([{ type: "text", text: JSON.stringify({ error: surface === "owner" ? "invalid_conversation_search" : "conversation_search_unavailable" }) }]);
+    // Containers without rich fields are sanitized only on active owner rich scope.
+    if (surface === "owner") {
+      for (const args of [null, [], "fictional", 7, undefined]) {
+        const result = await client.callTool({ name: "SearchConversations", arguments: args as never });
+        expect(result.isError).toBe(true);
+        expect(result.content).toEqual([{ type: "text", text: JSON.stringify({ error: "invalid_conversation_search" }) }]);
+      }
     }
     expect(call).not.toHaveBeenCalled();
     if (surface !== "unverified") {
@@ -260,5 +264,50 @@ it.each(["owner", "flag-off", "unverified"] as const)("sanitizes SearchConversat
         .toEqual({ conversations: [], truncated: false });
       expect(call).toHaveBeenCalledTimes(1);
     }
+  } finally { await client.close(); await bound.cleanup?.(); }
+});
+
+
+it("preserves flag-off malformed legacy search results byte-for-byte with the SDK", async () => {
+  const call = vi.fn();
+  const bound = await createConsoleProjectsRuntimeExtension({ sourceId: "configured", datedSnippets: false,
+    policy: { allowedTools: ["SearchConversations"] }, createClient: vi.fn().mockResolvedValue(call) })(request());
+  const client = new Client({ name: "flag-off-legacy-test", version: "1" });
+  const controlClient = new Client({ name: "legacy-sdk-control", version: "1" });
+  const control = new McpServer({ name: "legacy-sdk-control", version: "1" });
+  const controlCall = vi.fn(async () => ({ content: [] }));
+  control.registerTool("SearchConversations", {
+    inputSchema: CONSOLE_PROJECT_SCHEMAS.SearchConversations.pick({ query: true, limit: true }),
+  }, controlCall);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  try {
+    const spec = (bound.runtimeOptions?.mcpServers as Record<string, { url: string }>)["mono-agent-console-projects"]!;
+    await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+    await control.connect(serverTransport);
+    await controlClient.connect(clientTransport);
+    const args = { query: "p" };
+    const expected = await controlClient.callTool({ name: "SearchConversations", arguments: args });
+    const actual = await client.callTool({ name: "SearchConversations", arguments: args });
+    expect(expected.isError).toBe(true);
+    expect(JSON.stringify(actual)).toBe(JSON.stringify(expected));
+    expect(call).not.toHaveBeenCalled();
+    expect(controlCall).not.toHaveBeenCalled();
+  } finally { await client.close(); await controlClient.close(); await control.close(); await bound.cleanup?.(); }
+});
+
+it("returns unavailable for flag-off malformed search only when a rich field is present", async () => {
+  const call = vi.fn();
+  const bound = await createConsoleProjectsRuntimeExtension({ sourceId: "configured", datedSnippets: false,
+    policy: { allowedTools: ["SearchConversations"] }, createClient: vi.fn().mockResolvedValue(call) })(request());
+  const client = new Client({ name: "flag-off-rich-test", version: "1" });
+  try {
+    const spec = (bound.runtimeOptions?.mcpServers as Record<string, { url: string }>)["mono-agent-console-projects"]!;
+    await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+    for (const rich of [{ dated: false }, { after: "2001-01-01" }, { before: "2001-01-01" }, { role: "user" }]) {
+      const result = await client.callTool({ name: "SearchConversations", arguments: { query: "p", ...rich } });
+      expect(result.isError).toBe(true);
+      expect(result.content).toEqual([{ type: "text", text: JSON.stringify({ error: "conversation_search_unavailable" }) }]);
+    }
+    expect(call).not.toHaveBeenCalled();
   } finally { await client.close(); await bound.cleanup?.(); }
 });

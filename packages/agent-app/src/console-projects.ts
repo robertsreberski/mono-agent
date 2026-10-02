@@ -162,7 +162,10 @@ export function createConsoleProjectsRuntimeExtension(options: {
       serverName: SERVER, startingMessage: "Console tools are starting",
       toolCallError: (tool, args) => {
         if (tool !== "SearchConversations" || !names.includes(tool) || CONSOLE_PROJECT_SCHEMAS.SearchConversations.safeParse(args).success) return undefined;
-        return richSearch ? "invalid_conversation_search" : "conversation_search_unavailable";
+        if (richSearch) return "invalid_conversation_search";
+        const hasRichFields = typeof args === "object" && args !== null
+          && ["dated", "after", "before", "role"].some((key) => Object.hasOwn(args, key));
+        return hasRichFields ? "conversation_search_unavailable" : undefined;
       },
       createServer: () => {
         const server = new McpServer({ name: SERVER, version: "1.0.0" });
