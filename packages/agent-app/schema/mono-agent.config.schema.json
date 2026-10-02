@@ -7,6 +7,54 @@
     "runtime",
     "context"
   ],
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "tools"
+        ],
+        "properties": {
+          "tools": {
+            "required": [
+              "conversationSearch"
+            ],
+            "properties": {
+              "conversationSearch": {
+                "required": [
+                  "datedSnippets"
+                ],
+                "properties": {
+                  "datedSnippets": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "memory"
+        ],
+        "properties": {
+          "memory": {
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "mode": {
+                "const": "bujo"
+              },
+              "backend": {
+                "const": "bujo"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "additionalProperties": false,
   "properties": {
     "$schema": {
@@ -1223,6 +1271,20 @@
               "items": {
                 "type": "string"
               }
+            }
+          }
+        },
+        "conversationSearch": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "datedSnippets": {
+              "description": "Opt in to dated SearchConversations message evidence on verified owner web turns. Requires local BuJo memory; disabled by default. Telegram and the console UI keep legacy search. No new index or stored history fields.",
+              "examples": [
+                true
+              ],
+              "type": "boolean",
+              "default": false
             }
           }
         },

@@ -91,6 +91,15 @@ Use the exact `nomic-embed-text:v1.5` tag; the bare `nomic-embed-text` tag resol
 5. Run `mono-agent start` and confirm telegram reports running.
 6. Send a fact from an allowed chat (e.g. "My dog is named Pixel"), then in a later turn ask a paraphrased question and confirm recall.
 
+## Optional owner-web historical lookup
+
+When also using the owner web console, local BuJo agents can separately enable
+`tools.conversationSearch.datedSnippets: true` for dated `SearchConversations`
+evidence when memory lacks something. Use inclusive UTC message dates and a
+role filter; the results are bounded historical untrusted evidence. This is not
+an expansion of Telegram access: its search remains legacy and rich requests
+return `conversation_search_unavailable`. See [console tools](/tools/mcp/#console-project-tools).
+
 ## Smoke test
 
 :::tip

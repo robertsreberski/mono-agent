@@ -7591,6 +7591,39 @@ describe("authenticated console wake callback", () => {
 });
 
 describe("authenticated console project callback", () => {
+  it("binds dated search opt-in to the owner-issued web capability and revokes it at settlement", async () => {
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const service = await createService({ fetchImpl: operatorFetch({
+      turns: () => new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }),
+    }) });
+    const ingress = await startWebNotificationIngress(service);
+    try {
+      const thread = service.createThread("agent-one");
+      await service.startTurn(thread.id, { text: "Morgan requests pottery notes" });
+      await waitFor(() => stream !== undefined);
+      const scope = { sourceId: "agent-one", threadId: thread.id, turnId: service.store.activeTurn(thread.id)!.id };
+      const options = { stateDir: service.store.paths.root };
+      const legacy = await createWebConsoleToolClient(scope, options);
+      const rich = await createWebConsoleToolClient({ ...scope, datedSnippets: true }, options);
+      const operation = { operationId: randomUUID(), tool: "SearchConversations" as const, args: { query: "pottery", dated: true, role: "user" } };
+      await expect(legacy(operation)).rejects.toMatchObject({ code: "conversation_search_unavailable" });
+      const found = await rich(operation);
+      expect(found).toMatchObject({ conversations: [{ id: thread.id, match: { kind: "message", role: "user", messageId: expect.any(String), createdAt: expect.any(String), consoleUrl: `/?thread=${thread.id}` } }], truncated: false });
+      // Issuing the rich capability must not upgrade the existing legacy token.
+      await expect(legacy(operation)).rejects.toMatchObject({ code: "conversation_search_unavailable" });
+      await expect(rich({ ...operation, args: { query: "pottery", datedSnippets: true } })).rejects.toMatchObject({ code: "invalid_console_tool" });
+      const database = new DatabaseSync(service.store.paths.database, { readOnly: true });
+      try { expect(database.prepare("SELECT count(*) AS n FROM console_tool_operations").get()).toEqual({ n: 0 }); }
+      finally { database.close(); }
+      const endpoint = new URL("/internal/v1/console-tools", ingress.url);
+      expect((await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...scope, datedSnippets: true }) })).status).toBe(401);
+      stream?.enqueue(new TextEncoder().encode(`${JSON.stringify({ kind: "finish", finalText: "Notes found" })}\n`));
+      stream?.close();
+      await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+      await expect(rich(operation)).rejects.toMatchObject({ code: "console_tool_revoked" });
+    } finally { try { stream?.close(); } catch { /* already settled */ } await ingress.stop(); await service.stop(); }
+  });
+
   it("commits create-and-attach once, binds source and turn, then rejects late calls", async () => {
     let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
     const service = await createService({ fetchImpl: operatorFetch({
@@ -7694,6 +7727,8 @@ describe("authenticated console project callback", () => {
         { sourceId: "agent-one", threadId: thread.id, turnId },
         { stateDir: service.store.paths.root },
       );
+      await expect(createWebConsoleToolClient({ sourceId: "agent-one", threadId: thread.id, turnId, datedSnippets: true },
+        { stateDir: service.store.paths.root })).rejects.toMatchObject({ code: "console_tool_revoked" });
       const created = await call({ operationId: randomUUID(), tool: "CreateProject", args: { name: "Woken by a job", attachCurrentConversation: true } });
       expect(created).toMatchObject({ projectId: expect.any(String), attachment: { conversationId: thread.id, disposition: "pending" } });
 

@@ -442,6 +442,19 @@ export function resolveJsonMonoAgentConfig(input: ResolveJsonMonoAgentConfigInpu
     ? undefined
     : jsonChoice<SkillDisclosureMode>(contextJson.skillDisclosure, "context.skillDisclosure", ["index", "full"], "full");
   const memory = readMemoryConfig(json.memory, cwd);
+  const conversationSearchJson = toolsJson?.conversationSearch;
+  if (conversationSearchJson !== undefined && (typeof conversationSearchJson !== "object" || conversationSearchJson === null
+    || Array.isArray(conversationSearchJson) || Object.keys(conversationSearchJson).some((key) => key !== "datedSnippets"))) {
+    throw new MonoAgentConfigError("invalid_json", "conversation_search_invalid_config");
+  }
+  const rawDatedSnippets = (conversationSearchJson as Record<string, unknown> | undefined)?.datedSnippets;
+  if (rawDatedSnippets !== undefined && typeof rawDatedSnippets !== "boolean") {
+    throw new MonoAgentConfigError("invalid_json", "conversation_search_invalid_config");
+  }
+  const datedSnippets = rawDatedSnippets === true;
+  if (datedSnippets && (memory?.mode !== "bujo" || memory.backend !== "bujo")) {
+    throw new MonoAgentConfigError("invalid_json", "conversation_search_requires_bujo");
+  }
   const computerUse = readComputerUseConfig(toolsJson?.computerUse, cwd);
   const mcpConfigPath = readOptionalPath(jsonString(toolsJson?.mcpConfigPath, "tools.mcpConfigPath"), cwd);
   const mcpRequestContextServers = jsonStringArray(toolsJson?.mcpRequestContextServers, "tools.mcpRequestContextServers");
@@ -583,6 +596,7 @@ export function resolveJsonMonoAgentConfig(input: ResolveJsonMonoAgentConfigInpu
             writableRoots: fileToolWritableRoots,
           },
         }),
+    ...(datedSnippets ? { conversationSearch: { datedSnippets: true } } : {}),
     ...(computerUse === undefined ? {} : { computerUse }),
     ...(mcpConfigPath === undefined ? {} : { mcpConfigPath }),
     ...(mcpRequestContextServers.length === 0 ? {} : { mcpRequestContextServers }),
