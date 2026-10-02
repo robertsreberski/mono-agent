@@ -160,6 +160,10 @@ export function createConsoleProjectsRuntimeExtension(options: {
     let closed = false;
     const extension = createRequestScopedMcpRuntimeExtension({
       serverName: SERVER, startingMessage: "Console tools are starting",
+      toolCallError: (tool, args) => {
+        if (tool !== "SearchConversations" || !names.includes(tool) || CONSOLE_PROJECT_SCHEMAS.SearchConversations.safeParse(args).success) return undefined;
+        return richSearch ? "invalid_conversation_search" : "conversation_search_unavailable";
+      },
       createServer: () => {
         const server = new McpServer({ name: SERVER, version: "1.0.0" });
         for (const tool of names) server.registerTool(tool, { description: tool === "SearchConversations" && richSearch

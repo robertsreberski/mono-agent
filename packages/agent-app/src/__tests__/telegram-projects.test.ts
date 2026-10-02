@@ -282,8 +282,17 @@ describe("console project tools on Telegram turns", () => {
       await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
       const legacy = await client.callTool({ name: "SearchConversations", arguments: { query: "pottery" } });
       expect(legacy.structuredContent).toEqual(await call.mock.results[0]!.value);
-      for (const args of [{ dated: true }, { after: "2001-01-01" }, { role: "user" }, { before: "2001-01-01", role: "assistant" }]) {
+      for (const args of [{ dated: true }, { after: "2001-01-01" }, { role: "user" }, { before: "2001-01-01", role: "assistant" },
+        { dated: true, after: "2001-02-30" }, { dated: true, before: "fictional-calendar" },
+        { dated: true, role: "system" }, { dated: "true" }, { dated: true, after: 2001 },
+        { dated: true, role: ["user"] }, { dated: true, query: 7 }, { dated: true, limit: "ten" },
+      ]) {
         const result = await client.callTool({ name: "SearchConversations", arguments: { query: "pottery", ...args } });
+        expect(result.isError).toBe(true);
+        expect(result.content).toEqual([{ type: "text", text: JSON.stringify({ error: "conversation_search_unavailable" }) }]);
+      }
+      for (const args of [null, [], "fictional", 7, undefined]) {
+        const result = await client.callTool({ name: "SearchConversations", arguments: args as never });
         expect(result.isError).toBe(true);
         expect(result.content).toEqual([{ type: "text", text: JSON.stringify({ error: "conversation_search_unavailable" }) }]);
       }

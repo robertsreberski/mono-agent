@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { JSONRPCRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 
 import type { RuntimeOptionsExtension } from "./runtime-option-extensions.js";
@@ -16,16 +17,18 @@ export const REQUEST_SCOPED_MCP_NESTED_RESULT_OMISSION =
 export interface RequestScopedMcpEndpointOptions {
   readonly serverName: string;
   readonly startingMessage: string;
-  /** A fresh server is required for every stateless HTTP request. */
+  /** A fresh server is required for every SDK-dispatched stateless HTTP request. */
   readonly createServer: (input: Parameters<RuntimeOptionsExtension>[0]) => McpServer;
   readonly onUnavailable?: (error: unknown) => void;
+  /** Optional code-only refusal before SDK input diagnostics; advertised schemas stay strict. */
+  readonly toolCallError?: (tool: string, args: unknown) => string | undefined;
   /** Test seam for simulating loopback startup failure. */
   readonly listen?: (server: Server) => Promise<void>;
 }
 
 /**
  * Create one capability-path loopback endpoint per model request. Each HTTP
- * request gets a fresh MCP server and stateless transport so model failover may
+ * dispatch gets a fresh MCP server and stateless transport so model failover may
  * initialize again without inheriting transport state.
  */
 export function createRequestScopedMcpRuntimeExtension(
@@ -48,6 +51,19 @@ export function createRequestScopedMcpRuntimeExtension(
       const boundPort = port;
       void (async () => {
         const parsedBody = incoming.method === "POST" ? await readJsonBody(incoming) : undefined;
+        if (options.toolCallError !== undefined) {
+          const request = JSONRPCRequestSchema.safeParse(parsedBody);
+          if (request.success && request.data.method === "tools/call" && typeof request.data.params?.name === "string") {
+            const refusal = options.toolCallError(request.data.params.name, request.data.params.arguments);
+            if (refusal !== undefined) {
+              const code = /^[a-z_]{1,64}$/u.test(refusal) ? refusal : "invalid_tool_call";
+              await writeWebResponse(response, new Response(JSON.stringify({ jsonrpc: "2.0", id: request.data.id,
+                result: { isError: true, content: [{ type: "text", text: JSON.stringify({ error: code }) }] },
+              }), { headers: { "content-type": "application/json" } }));
+              return;
+            }
+          }
+        }
         const webRequest = nodeRequestAsWebRequest(incoming);
         const requestMcp = options.createServer(input);
         const transport = new WebStandardStreamableHTTPServerTransport({

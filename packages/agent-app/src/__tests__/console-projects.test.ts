@@ -221,3 +221,44 @@ it("keeps legacy console tools on assistant-only wakes when dated search is enab
     expect(call).toHaveBeenCalledTimes(1);
   } finally { await client.close(); await bound.cleanup?.(); }
 });
+
+
+it.each(["owner", "flag-off", "unverified"] as const)("sanitizes SearchConversations input failures at MCP dispatch (%s)", async (surface) => {
+  const call = vi.fn().mockResolvedValue({ conversations: [], truncated: false });
+  const createClient = surface === "unverified" ? vi.fn().mockRejectedValue(new Error("fictional diagnostics")) : vi.fn().mockResolvedValue(call);
+  const bound = await createConsoleProjectsRuntimeExtension({ sourceId: "configured", datedSnippets: surface !== "flag-off",
+    policy: { allowedTools: ["SearchConversations"] }, createClient })(request());
+  const client = new Client({ name: "search-validation-test", version: "1" });
+  try {
+    const spec = (bound.runtimeOptions?.mcpServers as Record<string, { url: string }>)["mono-agent-console-projects"]!;
+    await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+    const listed = (await client.listTools()).tools;
+    expect(listed[0]?.inputSchema).toMatchObject({ type: "object", additionalProperties: false, required: ["query"],
+      properties: { dated: { type: "boolean" }, after: { type: "string", format: "date" }, before: { type: "string", format: "date" }, role: { enum: ["user", "assistant"] } },
+    });
+    for (const args of [
+      { query: "pottery", dated: true, after: "2001-02-30" }, { query: "pottery", dated: true, before: "fictional-calendar" },
+      { query: "pottery", dated: true, role: "system" }, { query: "pottery", dated: "true" },
+      { query: "pottery", dated: true, after: 2001 }, { query: 7, dated: true },
+      { query: "pottery", dated: true, role: ["user"] }, { query: "pottery", dated: true, limit: "ten" },
+      { query: "pottery", dated: true, extra: "fictional" },
+    ]) {
+      const result = await client.callTool({ name: "SearchConversations", arguments: args });
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toBeUndefined();
+      expect(result.content).toEqual([{ type: "text", text: JSON.stringify({ error: surface === "owner" ? "invalid_conversation_search" : "conversation_search_unavailable" }) }]);
+    }
+    // Exercise malformed argument containers through the MCP transport too.
+    for (const args of [null, [], "fictional", 7, undefined]) {
+      const result = await client.callTool({ name: "SearchConversations", arguments: args as never });
+      expect(result.isError).toBe(true);
+      expect(result.content).toEqual([{ type: "text", text: JSON.stringify({ error: surface === "owner" ? "invalid_conversation_search" : "conversation_search_unavailable" }) }]);
+    }
+    expect(call).not.toHaveBeenCalled();
+    if (surface !== "unverified") {
+      expect((await client.callTool({ name: "SearchConversations", arguments: { query: "pottery" } })).structuredContent)
+        .toEqual({ conversations: [], truncated: false });
+      expect(call).toHaveBeenCalledTimes(1);
+    }
+  } finally { await client.close(); await bound.cleanup?.(); }
+});

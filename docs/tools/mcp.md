@@ -548,8 +548,11 @@ Capability issuance must be owner-authenticated and bound to a live ordinary
 owner web turn; model arguments and metadata cannot opt in. Telegram retains the
 legacy response shape, even when the agent enables the flag. Rich requests on
 Telegram, with the flag off, or without verified owner-web capability return
-`conversation_search_unavailable`. Rich failures expose stable codes only;
-search writes no operation receipt.
+`conversation_search_unavailable`. Malformed MCP search arguments return
+`invalid_conversation_search` on enabled, verified owner-web turns, or
+`conversation_search_unavailable` on unavailable surfaces, without SDK validation
+diagnostics. The advertised schema remains strict and valid legacy calls remain
+unchanged. Rich failures expose stable codes only; search writes no operation receipt.
 
 `ListTags` returns all of the originating agent's tags (at most fifty).
 `CreateTag` accepts `name` and optional `color`; `UpdateTag` accepts `tagId`
