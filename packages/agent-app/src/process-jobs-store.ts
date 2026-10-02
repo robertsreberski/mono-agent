@@ -1016,6 +1016,9 @@ async function recoverReplacement(directory: string, target: string, residue: Re
     && residue.previous.slice(0, -"previous".length) !== residue.failed.slice(0, -"failed".length)) throw invalid();
   if (same(previous, temporary) || same(previous, failed) || same(current, failed)) throw invalid();
   if (failed !== undefined && temporary !== undefined && !same(failed, temporary)) throw invalid();
+  // Without a target or previous claim, failed may be the sole published value
+  // after rollback lost its already-unlinked claim, not a rejected first write.
+  if (failed !== undefined && current === undefined && previous === undefined) throw invalid();
   const restoring = same(current, previous);
   if (current !== undefined && !restoring) {
     if (failed !== undefined) {
@@ -1030,7 +1033,8 @@ async function recoverReplacement(directory: string, target: string, residue: Re
   // Phase table (also restart-safe if recovery itself is killed):
   // staging only -> keep old/absent; claim without target -> restore previous;
   // target+temporary exact pair -> keep new, remove claim then temporary;
-  // failed[+temporary] -> rollback: restore/keep previous, discard failed new;
+  // failed[+temporary] with target/claim -> keep previous, discard failed new;
+  // failed without target/claim -> ambiguous, retain everything and fail closed;
   // target+previous exact pair -> finish interrupted previous restoration.
   if (current === undefined && previous !== undefined) {
     await prove();

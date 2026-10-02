@@ -109,6 +109,12 @@ it.each(["staging", "claimed", "published", "claim-removed", "complete", "rollba
   const f = await fixture(); const path = join(f.state, PROCESS_JOB_TRANSACTION_FILE);
   const next = JSON.stringify({ schemaVersion: 1, generation: f.record.generation, createdAt: f.record.admittedAt, write: { ...f.record, summary: "published" }, delete: null });
   await residue(path, next, phase, false);
+  if (phase.startsWith("rollback-")) {
+    const before = await directorySnapshot(dirname(path));
+    await expect(openProcessJobStore(f.root, f.state)).rejects.toThrow("cannot prove a safe publication phase");
+    expect(await directorySnapshot(dirname(path))).toEqual(before);
+    return;
+  }
   const store = await openProcessJobStore(f.root, f.state);
   expect((await store.get(f.id))?.summary).toBe(["published", "claim-removed", "complete"].includes(phase) ? "published" : "previous");
   expect((await readdir(f.state)).filter((name) => name.includes(".mono-agent") || name.endsWith(".tmp"))).toEqual([]);
@@ -161,6 +167,12 @@ it.each(["staging", "claimed", "published", "claim-removed", "complete", "rollba
   const manifest = join(f.state, PROCESS_JOB_MANIFEST_FILE);
   await residue(guard, await readFile(guard, "utf8"), phase, false);
   await residue(manifest, await readFile(manifest, "utf8"), phase, false);
+  if (phase.startsWith("rollback-")) {
+    const before = await directorySnapshot(f.state);
+    await expect(openProcessJobStore(f.root, f.state)).rejects.toThrow("cannot prove a safe publication phase");
+    expect(await directorySnapshot(f.state)).toEqual(before);
+    return;
+  }
   expect((await openProcessJobStore(f.root, f.state)).health.state).toBe("ok");
   expect((await readdir(f.state)).filter((name) => name.includes(".mono-agent") || name.endsWith(".tmp"))).toEqual([]);
 });
@@ -171,4 +183,37 @@ it.each(["root", "output"])("refuses unknown replacement names in the %s directo
   await writeFile(path, "foreign", { mode: 0o600 });
   await expect(openProcessJobStore(f.root, f.state)).rejects.toThrow(/unsupported/u);
   expect(await readFile(path, "utf8")).toBe("foreign");
+});
+
+async function directorySnapshot(directory: string) {
+  return await Promise.all((await readdir(directory)).sort().map(async (name) => {
+    const path = join(directory, name);
+    const info = await lstat(path);
+    return { name, dev: info.dev, ino: info.ino, nlink: info.nlink, mode: info.mode,
+      size: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs,
+      contents: info.isFile() ? await readFile(path) : null };
+  }));
+}
+
+it.each([
+  ["record", false], ["record", true], ["root", false], ["root", true],
+  ["artifact", false], ["artifact", true],
+] as const)("preserves ambiguous failed %s publication (temporary retained: %s)", async (kind, retainTemporary) => {
+  const f = await fixture();
+  const path = kind === "record" ? join(f.store.recordsDir, `${f.id}.json`)
+    : kind === "root" ? join(f.state, PROCESS_JOB_MANIFEST_FILE)
+    : join(f.store.artifactsDir, f.id, "stdout.log");
+  const next = kind === "record" ? JSON.stringify({ ...f.record, summary: "published" })
+    : kind === "root" ? await readFile(path, "utf8") : "sole published output";
+  // The previous claim has already been unlinked when a directory-sync error
+  // triggers rollback: the rejected new value can be the only remaining copy.
+  const paths = await residue(path, next, "claim-removed");
+  await rename(path, paths.failed);
+  if (!retainTemporary) await unlink(paths.temporary);
+  const before = await directorySnapshot(dirname(path));
+  for (let reopen = 0; reopen < 2; reopen++) {
+    await expect(openProcessJobStore(f.root, f.state)).rejects.toThrow("cannot prove a safe publication phase");
+    expect(await directorySnapshot(dirname(path))).toEqual(before);
+    expect(await readFile(paths.failed, "utf8")).toBe(next);
+  }
 });
