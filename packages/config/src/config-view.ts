@@ -108,6 +108,9 @@ export const CORE_CONFIG_FIELD_IDS = {
   "memory.recallTool.enabled": true,
   "memory.recall.contextWindow": true,
   "memory.recall.semanticOnly": true,
+  "memory.recall.intentExpiry": true,
+  "memory.recall.recency": true,
+  "memory.capture.intentLifecycle": true,
   "memory.profile.enabled": true,
   "memory.rememberTool.enabled": true,
   "memory.consolidation.enabled": true,
@@ -554,6 +557,11 @@ function buildMemorySection(input: BuildMonoAgentConfigViewInput): ConfigViewSec
     }),
     toField({ id: "memory.recall.semanticOnly", label: "Semantic notes only",
       value: memory.recall?.semanticOnly === true ? "on" : "off", jsonPresent: json.memory?.recall?.semanticOnly !== undefined }),
+    ...([ ["intentExpiry", "Exclude dated/closed intention notes"], ["recency", "Deliberate transient recency"] ] as const).map(([key, label]) => toField({
+      id: `memory.recall.${key}`, label, value: memory.recall?.[key] === true ? "on" : "off", jsonPresent: json.memory?.recall?.[key] !== undefined,
+    })),
+    toField({ id: "memory.capture.intentLifecycle", label: "Capture supported intentions",
+      value: memory.capture?.intentLifecycle === true ? "on" : "off", jsonPresent: json.memory?.capture?.intentLifecycle !== undefined }),
     ...(memory.capture?.cron === undefined ? [] : [toField({
       id: "memory.capture.cron",
       label: "Capture cron",

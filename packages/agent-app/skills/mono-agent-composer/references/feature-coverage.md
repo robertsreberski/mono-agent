@@ -218,3 +218,18 @@ a projected run-out with its lead time before the reset only when ahead of
 pace, a neutral unused-share note when clearly under pace, and
 `ahead`/`unsustainable` (1.5x and above) warnings — an extrapolation, not a
 forecast. Meters add an on-track tick and a pace chip.
+
+
+### BuJo intentions and deliberate recency
+
+Default-off, independent `memory.capture.intentLifecycle` keeps only supported
+owner intentions as notes, mapping planned/pending/done/abandoned to existing
+statuses and inclusive ends to `due=`; state changes supersede, never infer
+completion from dates. Tasks remain authoritative in the task app.
+`memory.recall.intentExpiry` excludes all dated and done/dropped notes from
+automatic context, including unexpired and ambiguous legacy dates. Review legacy
+dates with private curate before enabling deliberate inclusive-end currentness;
+there is no backfill or persisted marker. `memory.recall.recency` ranks qualified
+deliberate transient hits with a bounded 30-day half-life term, never decaying
+facts/preferences or changing automatic scores. All require BuJo; capture also
+requires `writeMode: "capture"`. Do not enable without reviewed coverage/usefulness.

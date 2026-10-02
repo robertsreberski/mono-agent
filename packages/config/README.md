@@ -328,6 +328,20 @@ profile. See [owner context](../../docs/memory/capture-and-recall.md#optional-bu
 for budgets, privacy boundaries and retained-session behavior.
 
 
+### Optional supported intentions and recency
+
+BuJo-only `memory.capture.intentLifecycle`, `memory.recall.intentExpiry` and
+`memory.recall.recency` independently default off. Owner-supported intention
+proposals reuse note statuses and `due=`, with superseded history for changes;
+generic terminal/supersession validity is unchanged. Expiry excludes all dated
+and done/dropped notes automatically (including future/ambiguous legacy dates),
+and reviewed deliberate reads use inclusive ends. Recency reorders qualified
+deliberate event/unlabelled-note hits only, at most 0.02 with a 30-day half-life;
+facts/preferences and automatic scores do not decay. Review legacy dates through
+curate before enablement. No new persisted field, date backfill or task list.
+See [intention lifecycle and recency](../../docs/memory/capture-and-recall.md#optional-intention-lifecycle-and-deliberate-recency).
+
+
 ### Data flow
 
 Configuration follows one deterministic pipeline:

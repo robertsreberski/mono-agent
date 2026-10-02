@@ -220,12 +220,12 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly path?: string;
     readonly maxBytes?: number;
     readonly writeMode?: MemoryWriteMode;
-    readonly capture?: { readonly focus?: string; readonly only?: readonly string[]; readonly reconcileModel?: string; readonly cron?: boolean; readonly webhook?: boolean };
+    readonly capture?: { readonly focus?: string; readonly only?: readonly string[]; readonly reconcileModel?: string; readonly cron?: boolean; readonly webhook?: boolean; readonly intentLifecycle?: boolean };
     readonly supermemory?: MonoAgentMemorySupermemoryJson;
     readonly embeddings?: MonoAgentMemoryEmbeddingsJson;
     readonly llm?: MonoAgentMemoryLlmJson;
     readonly recallTool?: { readonly enabled?: boolean };
-    readonly recall?: { readonly contextWindow?: boolean; readonly semanticOnly?: boolean };
+    readonly recall?: { readonly contextWindow?: boolean; readonly semanticOnly?: boolean; readonly intentExpiry?: boolean; readonly recency?: boolean };
     readonly profile?: { readonly enabled?: boolean };
     readonly rememberTool?: { readonly enabled?: boolean };
     readonly consolidation?: MonoAgentMemoryConsolidationJson;
