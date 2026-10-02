@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix devalue serialization vulnerabilities in documentation and marketing site
+  dependencies.
+
 - Fix Telegram native rich-message input, including forwarded and replied-to
   structured text, tables, lists, captions, and bounded background context.
 
