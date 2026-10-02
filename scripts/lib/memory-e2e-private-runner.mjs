@@ -12,10 +12,10 @@ import { validatePrivateRoute, privateCompletionRuntime, assertPrivateProviderEn
 
 import { judgePrivateItems, privateJudgeConcurrency } from "./memory-e2e-private-judge.mjs";
 
-const switchPaths = ["recall.contextWindow", "profile.enabled", "recall.semanticOnly"];
+const switchPaths = ["recall.contextWindow", "profile.enabled", "recall.semanticOnly", "recall.intentExpiry"];
 const armSwitches = {
   "current-only": [], "length-only-abstention": [], "follow-up-window": ["recall.contextWindow"],
-  "profile-on": ["profile.enabled"], "window-profile-on": ["recall.contextWindow", "profile.enabled"], "semantic-only": ["recall.semanticOnly"],
+  "profile-on": ["profile.enabled"], "window-profile-on": ["recall.contextWindow", "profile.enabled"], "semantic-only": ["recall.semanticOnly"], "intent-expiry": ["recall.intentExpiry"],
 };
 function put(memory, path, value) { const [section, key] = path.split("."); memory[section] ??= {}; memory[section][key] = value; }
 function carried(config, path) { const [section, key] = path.split("."); return config?.memory?.[section]?.[key]; }

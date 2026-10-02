@@ -796,6 +796,14 @@
               ],
               "type": "string",
               "minLength": 1
+            },
+            "intentLifecycle": {
+              "description": "BuJo capture-only, default-off owner-supported intention state and inclusive civil end proposals. Reuses note status and due=; state changes supersede, never infer completion from a date. Tasks stay authoritative in the task app.",
+              "examples": [
+                true
+              ],
+              "type": "boolean",
+              "default": false
             }
           }
         },
@@ -964,6 +972,30 @@
           "properties": {
             "contextWindow": {
               "description": "BuJo-only, default-off preceding-owner-query window for automatic recall. Volatile, redacted, 30-minute TTL; prior at most 512 and total at most 1536 Unicode code points. Explicit MemoryRecall keeps the current query.",
+              "examples": [
+                true
+              ],
+              "type": "boolean",
+              "default": false
+            },
+            "semanticOnly": {
+              "description": "BuJo-only, default-off automatic eligibility and capture policy: current labelled notes only, user-stated authority first within unchanged relevance budgets. Events and unknown lines stay deliberately searchable; review legacy types and labels before enabling.",
+              "examples": [
+                true
+              ],
+              "type": "boolean",
+              "default": false
+            },
+            "intentExpiry": {
+              "description": "BuJo-only, default-off: exclude all dated notes and done/dropped notes from automatic sections, including unexpired/ambiguous legacy dates. Deliberate recall interprets reviewed note due= as an inclusive civil end. Requires reviewed curate audit before enablement; independent of intentLifecycle; no backfill.",
+              "examples": [
+                true
+              ],
+              "type": "boolean",
+              "default": false
+            },
+            "recency": {
+              "description": "BuJo-only, default-off bounded secondary recency ranking for relevance-qualified deliberate event/unlabelled-note hits: at most 0.02, 30-day half-life. Facts/preferences never decay; base scores, floors and automatic retrieval are unchanged.",
               "examples": [
                 true
               ],
@@ -1199,6 +1231,122 @@
                 ],
                 "properties": {
                   "contextWindow": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "mode": {
+                "const": "bujo"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "recall"
+            ],
+            "properties": {
+              "recall": {
+                "required": [
+                  "semanticOnly"
+                ],
+                "properties": {
+                  "semanticOnly": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "mode": {
+                "const": "bujo"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "recall"
+            ],
+            "properties": {
+              "recall": {
+                "required": [
+                  "intentExpiry"
+                ],
+                "properties": {
+                  "intentExpiry": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "mode": {
+                "const": "bujo"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "recall"
+            ],
+            "properties": {
+              "recall": {
+                "required": [
+                  "recency"
+                ],
+                "properties": {
+                  "recency": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "mode": {
+                "const": "bujo"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "capture"
+            ],
+            "properties": {
+              "capture": {
+                "required": [
+                  "intentLifecycle"
+                ],
+                "properties": {
+                  "intentLifecycle": {
                     "const": true
                   }
                 }

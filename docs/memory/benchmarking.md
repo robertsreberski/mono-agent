@@ -224,10 +224,16 @@ historical quality.
 #### Arms, observation and blinded review
 
 Arms are current-only/profile-off, follow-up window, pre-registered length-only
-abstention, profile-on, window+profile-on, and later semantic-only. Switches go
+abstention, profile-on, window+profile-on, semantic-only, and intent-expiry. The semantic-only
+arm uses the supported BuJo policy for current, accepted labelled notes; events
+and unlabelled sources remain deliberately searchable, not injected. Switches go
 through production config normalization and app memory composition:
 `memory.recall.contextWindow`, `memory.profile.enabled`, and
-`memory.recall.semanticOnly`. A rejected or dropped flag yields `unsupported`,
+`memory.recall.semanticOnly`, and `memory.recall.intentExpiry`. The expiry arm
+uses conservative automatic exclusion of all dated/closed intention notes,
+without mutating legacy source. Recency has no automatic-retrieval arm because
+it applies only to deliberate search; intention capture quality requires a
+separately reviewed capture workload. A rejected or dropped flag yields `unsupported`,
 not simulated results. Optional transcript lines form a separate historical
 baseline. No reader chat-model call is needed for retrieval replay.
 

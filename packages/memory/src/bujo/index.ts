@@ -22,6 +22,7 @@ export {
   selectPossiblyRelevantRecallHits,
 } from "./recall.js";
 export type { FormattedRecallRecord, PossiblyRelevantRecord } from "./recall.js";
+export { semanticRecallAuthorities } from "./semantic.js";
 export {
   rebuildFromMarkdown,
   rollbackMemoryIndex,
@@ -212,3 +213,6 @@ export type {
 } from "./migrate.js";
 export { readBujoCanonicalSourceFingerprint } from "./replay-projection.js";
 export { writeFutureLog, writeIndex } from "./projections.js";
+
+export { rankDeliberateRecallHits } from "./recency.js";
+export { automaticIntentEligible } from "./recall.js";

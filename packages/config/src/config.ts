@@ -1680,7 +1680,7 @@ function readMemoryConfig(value: unknown, cwd: string): MonoAgentConfig["memory"
     if (breaker !== undefined) assertJsonScalarFields(breaker, "memory.embeddings.circuitBreaker", { failureThreshold: "number", cooldownMs: "number" });
   }
   if (llmJson !== undefined) assertJsonScalarFields(llmJson, "memory.llm", { provider: "string", model: "string", endpoint: "string", trace: "boolean", timeoutMs: "number" });
-  if (recallJson !== undefined) assertJsonScalarFields(recallJson, "memory.recall", { contextWindow: "boolean" });
+  if (recallJson !== undefined) assertJsonScalarFields(recallJson, "memory.recall", { contextWindow: "boolean", semanticOnly: "boolean", intentExpiry: "boolean", recency: "boolean" });
   if (profileJson !== undefined) assertJsonScalarFields(profileJson, "memory.profile", { enabled: "boolean" });
   if (recallToolJson !== undefined) assertJsonScalarFields(recallToolJson, "memory.recallTool", { enabled: "boolean" });
   if (rememberToolJson !== undefined) assertJsonScalarFields(rememberToolJson, "memory.rememberTool", { enabled: "boolean" });
@@ -1750,15 +1750,21 @@ function readMemoryConfig(value: unknown, cwd: string): MonoAgentConfig["memory"
     "disabled",
   );
   const contextWindow = jsonBoolean(recallJson?.contextWindow, "memory.recall.contextWindow", false);
+  const semanticOnly = jsonBoolean(recallJson?.semanticOnly, "memory.recall.semanticOnly", false);
+  const intentExpiry = jsonBoolean(recallJson?.intentExpiry, "memory.recall.intentExpiry", false);
+  const recency = jsonBoolean(recallJson?.recency, "memory.recall.recency", false);
   const profileEnabled = jsonBoolean(profileJson?.enabled, "memory.profile.enabled", false);
   for (const [block, key, enabled] of [[recallJson, "recall", contextWindow], [profileJson, "profile", profileEnabled]] as const) {
     const field = key === "recall" ? "contextWindow" : "enabled";
-    if (block !== undefined && Object.keys(block).some((name) => name !== field)) {
+    if (block !== undefined && Object.keys(block).some((name) => name !== field && !(key === "recall" && ["semanticOnly", "intentExpiry", "recency"].includes(name)))) {
       throw new MonoAgentConfigError("invalid_json", "memory_option_unknown", { path: `memory.${key}` });
     }
     if (enabled && mode !== "bujo") {
       throw new MonoAgentConfigError("invalid_json", "memory_option_requires_bujo", { path: `memory.${key}.${field}` });
     }
+  }
+  for (const [name, enabled] of [["semanticOnly", semanticOnly], ["intentExpiry", intentExpiry], ["recency", recency]] as const) {
+    if (enabled && mode !== "bujo") throw new MonoAgentConfigError("invalid_json", "memory_option_requires_bujo", { path: `memory.recall.${name}` });
   }
   // Capture requires the local BuJo tier and its chat LLM.
   if (writeMode === "capture" && mode !== "bujo") {
@@ -1812,7 +1818,10 @@ function readMemoryConfig(value: unknown, cwd: string): MonoAgentConfig["memory"
       throw new MonoAgentConfigError("invalid_json", "memory.capture.webhook must be a boolean.",
         { path: "memory.capture.webhook" });
     }
+    assertJsonScalarFields(captureJson, "memory.capture", { intentLifecycle: "boolean" });
+    const intentLifecycle = jsonBoolean(captureJson.intentLifecycle, "memory.capture.intentLifecycle", false);
     capture = {
+      ...(captureJson.intentLifecycle === undefined ? {} : { intentLifecycle }),
       ...(captureJson.cron === undefined ? {} : { cron: captureJson.cron }),
       ...(captureJson.webhook === undefined ? {} : { webhook: captureJson.webhook }),
       ...(rawFocus === undefined ? {} : { focus: rawFocus as string }),
@@ -1907,7 +1916,7 @@ function readMemoryConfig(value: unknown, cwd: string): MonoAgentConfig["memory"
     ...(embeddings === undefined ? {} : { embeddings }),
     ...(llm === undefined ? {} : { llm }),
     recallTool: { enabled: recallToolEnabled },
-    ...(recallJson === undefined ? {} : { recall: { contextWindow } }),
+    ...(recallJson === undefined ? {} : { recall: { contextWindow, ...(recallJson.semanticOnly === undefined ? {} : { semanticOnly }), ...(recallJson.intentExpiry === undefined ? {} : { intentExpiry }), ...(recallJson.recency === undefined ? {} : { recency }) } }),
     ...(profileJson === undefined ? {} : { profile: { enabled: profileEnabled } }),
     rememberTool: { enabled: rememberToolEnabled },
     ...(consolidation === undefined ? {} : { consolidation }),

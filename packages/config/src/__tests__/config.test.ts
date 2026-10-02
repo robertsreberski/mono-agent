@@ -38,6 +38,53 @@ const bujoMemoryPrerequisites = {
 };
 
 describe("resolveJsonMonoAgentConfig", () => {
+  it("validates independent default-off lifecycle/expiry/recency flags, requiring BuJo", () => {
+    const read = (recall: unknown = {}, capture?: unknown, mode = "bujo", writeMode = "disabled") => resolveJsonMonoAgentConfig({ cwd: "/fictional/repo", json: {
+      ...baseJson, memory: { path: "memory", mode, writeMode, embeddings: { provider: "ollama" },
+        llm: { provider: "ollama", model: "fictional-model" }, recall, ...(capture === undefined ? {} : { capture }) },
+    } as MonoAgentConfigJson });
+    expect(read({ intentExpiry: true }).memory?.recall?.intentExpiry).toBe(true);
+    expect(read({ recency: true }).memory?.recall?.recency).toBe(true);
+    expect(read({}, { intentLifecycle: true }, "bujo", "capture").memory?.capture?.intentLifecycle).toBe(true);
+    expect(read().memory?.capture?.intentLifecycle).toBeUndefined();
+    expect(read({}, { intentLifecycle: false }, "bujo", "capture").memory?.capture?.intentLifecycle).toBe(false);
+    for (const flag of ["intentExpiry", "recency"]) {
+      for (const mode of ["lite", "journal"]) expect(() => read({ [flag]: true }, undefined, mode)).toThrow("memory_option_requires_bujo");
+      expect(() => read({ [flag]: "fictional-sensitive-value" })).toThrow();
+    }
+    expect(() => read({}, { intentLifecycle: true })).toThrow("memory.capture requires");
+    expect(() => read({}, { intentLifecycle: "fictional-sensitive-value" }, "bujo", "capture")).toThrow();
+  });
+
+  it.each(["true", "false", "FICTIONAL_REJECTED_VALUE", 1, null, { fictional: true }])("rejects non-boolean intention config without exposing values: %s", (value) => {
+    let caught: unknown;
+    try { resolveJsonMonoAgentConfig({ cwd: "/fictional/repo", json: { ...baseJson, memory: {
+      path: "memory", mode: "bujo", writeMode: "capture", embeddings: { provider: "ollama" },
+      llm: { provider: "ollama", model: "fictional-model" }, capture: { intentLifecycle: value },
+    } } as unknown as MonoAgentConfigJson }); } catch (error) { caught = error; }
+    expect(caught).toBeInstanceOf(MonoAgentConfigError);
+    const error = caught as MonoAgentConfigError;
+    expect(error.details).toEqual({ code: "invalid_json", path: "memory.capture.intentLifecycle" });
+    expect(error.message).toBe("memory.capture.intentLifecycle must be a boolean.");
+    expect(JSON.stringify(error.details)).not.toContain("FICTIONAL_REJECTED_VALUE");
+  });
+
+  it("validates default-off semanticOnly independently of the owner query window", () => {
+    const read = (recall?: unknown, mode = "bujo") => resolveJsonMonoAgentConfig({ cwd: "/fictional/repo", json: {
+      ...baseJson, memory: { path: "memory", mode, embeddings: { provider: "ollama" },
+        llm: { provider: "ollama", model: "fictional-model" }, ...(recall === undefined ? {} : { recall }) },
+    } as MonoAgentConfigJson });
+    expect(read().memory?.recall?.semanticOnly ?? false).toBe(false);
+    expect(read({ semanticOnly: true }).memory?.recall).toEqual({ contextWindow: false, semanticOnly: true });
+    expect(read({ contextWindow: true, semanticOnly: true }).memory?.recall).toEqual({ contextWindow: true, semanticOnly: true });
+    expect(read({ semanticOnly: false }).memory?.recall?.semanticOnly).toBe(false);
+    for (const mode of ["lite", "journal"]) expect(() => read({ semanticOnly: true }, mode)).toThrow("memory_option_requires_bujo");
+    for (const recall of [{ semanticOnly: "fictional-sensitive-value" }, { semanticOnly: true, unexpected: true }]) {
+      try { read(recall); } catch (error) { expect(String(error)).not.toContain("fictional-sensitive-value"); continue; }
+      throw new Error("invalid semantic flag accepted");
+    }
+  });
+
   it("validates independent, default-off BuJo recall/profile flags without echoing offending values", () => {
     const base = { ...baseJson, memory: { path: "memory", mode: "bujo" as const,
       embeddings: { provider: "ollama" as const }, llm: { provider: "ollama" as const, model: "fictional-model" } } };

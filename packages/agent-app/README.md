@@ -1296,6 +1296,20 @@ The controller wraps its shared Pi-store-scoped `provider-usage.ts` service in a
 
 Configured continuous sessions persist the requested primary model with their durable epoch. Per-model runtime factories are cached for the harness lifetime, and history retirement resolves the owning runtime. A model switch cold-seeds one new epoch; repeated overrides stay warm. Existing fallback and proactive-isolation policies continue to apply. See [session boundaries](../../docs/runtime/sessions-concurrency.md).
 
+### Optional supported intentions and recency
+
+BuJo-only `memory.capture.intentLifecycle`, `memory.recall.intentExpiry` and
+`memory.recall.recency` independently default off. Owner-supported intention
+proposals reuse note statuses and `due=`, with superseded history for changes;
+generic terminal/supersession validity is unchanged. Expiry excludes all dated
+and done/dropped notes automatically (including future/ambiguous legacy dates),
+and reviewed deliberate reads use inclusive ends. Recency reorders qualified
+deliberate event/unlabelled-note hits only, at most 0.02 with a 30-day half-life;
+facts/preferences and automatic scores do not decay. Review legacy dates through
+curate before enablement. No new persisted field, date backfill or task list.
+See [intention lifecycle and recency](../../docs/memory/capture-and-recall.md#optional-intention-lifecycle-and-deliberate-recency).
+
+
 ### Data flow
 
 `@mono-agent/agent-app` is the composition root. A running host follows this

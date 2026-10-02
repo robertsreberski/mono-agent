@@ -17,6 +17,23 @@
   with a specific budget-exhaustion code. Preserve cold replay service state
   across store rebuilds and leave present diagnostics/capture chronology intact.
 
+- Fix intention-policy boundary validation, dated profile competitors and
+  deliberate fact-sheet currentness; preserve supported ends when omitted and
+  deny recency to invalid recording instants.
+
+- Add independent default-off BuJo intention capture, conservative automatic
+  expiry, and bounded deliberate recency flags. Keep supported state changes
+  as superseded history; exclude all dated and completed/abandoned notes from
+  automatic context after reviewed enablement, without a schema migration.
+
+- Add default-off BuJo `memory.recall.semanticOnly` to restrict automatic memory
+  to current labelled knowledge notes, prefer user-stated evidence and protect
+  it from inferred overwrites; keep events searchable through deliberate tools.
+  Reuse reviewed curate retyping for legacy note/event and label review, with
+  backup/restore and no invented attribution or dates. Preserve newer user
+  refinements against delayed older capture retries using dated supersession;
+  keep profile inspection aligned with automatic whole-source eligibility.
+
 - Add an opt-in private BuJo evaluation mode with external owner-only inputs
   and disposable replay stores, blinded label-only review, aggregate paired
   confidence intervals, and code-only failures; keep fictional benchmarks

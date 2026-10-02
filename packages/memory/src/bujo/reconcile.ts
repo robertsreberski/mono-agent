@@ -16,6 +16,7 @@ import {
   type CandidateMemory,
 } from "./distill.js";
 import { parseJsonExact, parseJsonLoose } from "./json.js";
+import { assertIntentionProposal } from "./lifecycle-validation.js";
 import type { LlmComplete } from "./llm.js";
 import type { CanonicalGraphRepairGuard } from "./graph.js";
 import { MemoryModelError, MemoryModelOutputError } from "./model-error.js";
@@ -33,6 +34,8 @@ export type ReconcileAction =
 
 export interface ReconcileDeps {
   readonly db: MemoryDb;
+  /** BuJo-only opt-in eligibility/authority policy; absent preserves legacy writes. */
+  readonly semanticOnly?: boolean;
   readonly root: string;
   readonly llm: LlmComplete;
   readonly nextId: () => string;
@@ -63,7 +66,7 @@ export interface ReconcileDeps {
   readonly captureSpeakerKind?: MemoryCaptureSpeakerKind;
   readonly captureEvidence?: MemoryCaptureEvidence;
   readonly conversationId?: string;
-  readonly captureSettings?: { readonly focus?: string; readonly only?: readonly ("fact" | "preference" | "lesson")[] };
+  readonly captureSettings?: { readonly focus?: string; readonly only?: readonly ("fact" | "preference" | "lesson")[]; readonly intentLifecycle?: boolean };
   /** Capture-only final gate after model reconciliation has possibly changed the memory text. */
   readonly keepCaptureAction?: (action: CaptureIntentAction) => boolean;
   /** Internal, host-validated label decision; undefined uses L1 retention defaults. */
@@ -92,6 +95,7 @@ export async function reconcile(
   candidates: readonly CandidateMemory[],
   deps: ReconcileDeps,
 ): Promise<ReconcileAction[]> {
+  candidates.forEach(assertIntentionProposal);
   return await withSerializedBujoMutation(deps, async () => await reconcileUnlocked(candidates, deps));
 }
 
@@ -157,6 +161,7 @@ export async function reconcileBatch(
   candidates: readonly CandidateMemory[],
   deps: ReconcileDeps,
 ): Promise<Array<ReconcileAction | undefined>> {
+  candidates.forEach(assertIntentionProposal);
   return await withSerializedBujoMutation(deps, async () => await reconcileBatchUnlocked(candidates, deps));
 }
 
@@ -183,6 +188,7 @@ async function reconcileBatchUnlocked(
     return similar.some((hit) => hit.sameEntity !== undefined || hit.distance <= dupThreshold) ? [index] : [];
   });
   const reconcileIndexSet = new Set(reconcileIndexes);
+  let classifierFallback = false;
   let decisions: Map<number, Classification>;
   try {
     decisions = reconcileIndexes.length === 0
@@ -195,16 +201,30 @@ async function reconcileBatchUnlocked(
       || (error instanceof MemoryModelError && error.kind === "llm"))) throw error;
     // Extraction already succeeded. A failed classifier must not erase it;
     // avoid exact duplicate lines while preserving every novel candidate.
+    classifierFallback = true;
     decisions = new Map(reconcileIndexes.map((index) => {
       const duplicate = (neighbours[index] ?? []).find((hit) => hit.record.text === candidates[index]?.text);
       return [index, duplicate === undefined ? { action: "add" as const }
         : { action: "noop" as const, targetId: duplicate.record.id }];
     }));
   }
+  const authorityBlocked = new Set<number>();
+  if (deps.semanticOnly === true) {
+    for (const [index, decision] of decisions) {
+      if (authorityBlocks(candidates[index]!, decision, deps)) {
+        decisions.set(index, { action: "add" });
+        authorityBlocked.add(index);
+      }
+    }
+  }
   resolveConflictingTargets(decisions, neighbours);
   deps.abortSignal?.throwIfAborted();
   const plans: Array<BatchActionPlan | undefined> = candidates.map(() => undefined);
-  for (const [index, candidate] of candidates.entries()) {
+  for (const [index, extracted] of candidates.entries()) {
+    // Failed classification never makes an inferred ADD an automatic assertion.
+    const candidate = deps.semanticOnly === true && (authorityBlocked.has(index)
+      || (classifierFallback && reconcileIndexSet.has(index) && !userCandidate(extracted, deps)))
+      ? { ...extracted, labels: [] } : extracted;
     const similar = neighbours[index] ?? [];
     try {
       if (!reconcileIndexSet.has(index)) {
@@ -425,12 +445,32 @@ function planBatchAction(
   deps: ReconcileDeps,
   threadThreshold: number,
 ): Omit<BatchActionPlan, "index"> {
+  if (deps.semanticOnly === true && authorityBlocks(candidate, decision, deps)) {
+    return planAddWithoutIndex({ ...candidate, labels: [] }, similar, deps, threadThreshold);
+  }
+  // A delayed owner intention observation cannot retire a later admitted state,
+  // even when the independent semantic-only policy is off.
+  if (supportedIntent(candidate, deps) && decision.action !== "add") {
+    const target = deps.db.get(decision.targetId ?? "");
+    if (target !== undefined && deps.now().getTime() < Date.parse(target.createdAt)) {
+      return planAddWithoutIndex(candidate, similar, deps, threadThreshold);
+    }
+  }
   switch (decision.action) {
     case "add":
       return planAddWithoutIndex(candidate, similar, deps, threadThreshold);
-    case "noop":
+    case "noop": {
+      const old = candidate.intentState === undefined ? undefined : deps.db.get(decision.targetId ?? "");
+      if (old !== undefined && supportedIntent(candidate, deps) && (old.status !== intentionStatus(candidate)
+        || (candidate.validTo !== undefined && old.dueAt !== candidate.validTo))) {
+        return planBatchAction(candidate, { ...decision, action: "supersede", text: candidate.text }, similar, deps, threadThreshold);
+      }
       return planNoop(decision, deps);
-    case "update":
+    }
+    case "update": {
+      if (deps.semanticOnly === true && deps.db.get(decision.targetId ?? "")?.type !== candidate.type) {
+        return planAddWithoutIndex(candidate, similar, deps, threadThreshold);
+      }
       // An explicitly remembered bullet is content-addressed: its id is
       // `RM-<sha256(text)>` and `isRememberedMemoryId` treats that pairing as a
       // self-verifying provenance claim. Merging new wording into it in place
@@ -454,10 +494,18 @@ function planBatchAction(
         || (decision.text !== undefined && [...decision.text].length > MAX_RECONCILIATION_TEXT_CODE_POINTS)) {
         return planAddWithoutIndex(candidate, similar, deps, threadThreshold);
       }
-      if (isNewTimeSensitiveSnapshot(candidate, decision, deps)) {
-        return planBatchAction(candidate, { ...decision, action: "supersede", text: decision.text ?? candidate.text }, similar, deps, threadThreshold);
+      const target = deps.semanticOnly === true ? deps.db.get(decision.targetId ?? "") : undefined;
+      const mergedText = decision.text ?? candidate.text;
+      // In-place UPDATE preserves createdAt. A changed owner claim must instead
+      // carry its own admission timestamp, or an older delayed retry could erase
+      // this refinement. Reuse durable supersession, including its existing guards.
+      const changedUserClaim = deps.semanticOnly === true && target !== undefined && mergedText !== target.text
+        && (userRecord(target, deps) || userCandidate(candidate, deps, mergedText));
+      if (supportedIntent(candidate, deps) || changedUserClaim || isNewTimeSensitiveSnapshot(candidate, decision, deps)) {
+        return planBatchAction(candidate, { ...decision, action: "supersede", text: mergedText }, similar, deps, threadThreshold);
       }
       return planUpdate(candidate, decision, deps);
+    }
     case "supersede": {
       const old = deps.db.get(decision.targetId ?? "");
       // Standing guidance is not replaced on a model decision alone. The owner
@@ -479,10 +527,65 @@ function planBatchAction(
   }
 }
 
+/** Host-accepted attribution, not a salience or Remember priority. */
+function userCandidate(candidate: CandidateMemory, deps: ReconcileDeps, finalText = candidate.text): boolean {
+  return candidate.source === "user" && deps.captureSpeakerKind === "human-turn"
+    && (deps.captureEvidence?.userText.trim().length ?? 0) > 0
+    && (deps.labelsForAction?.("add", candidate, undefined, finalText) ?? candidate.labels ?? [])
+      .some((label) => label.kind !== "lesson" && label.attribution === "user-stated");
+}
+
+function authorityLabels(record: MemoryRecord, deps: ReconcileDeps): readonly MemoryLabel[] {
+  if (record.source.file === undefined) return [];
+  try { return labelsOf(requireCanonicalTarget(deps.root, record.source.file, record.id)); }
+  catch { throw new Error("memory_authority_source_unavailable"); }
+}
+
+function userRecord(record: MemoryRecord, deps: ReconcileDeps): boolean {
+  return authorityLabels(record, deps).some((label) => label.kind !== "lesson" && label.attribution === "user-stated");
+}
+
+function authorityBlocks(candidate: CandidateMemory, decision: Classification, deps: ReconcileDeps): boolean {
+  if (decision.action !== "update" && decision.action !== "supersede") return false;
+  const old = deps.db.get(decision.targetId ?? "");
+  if (old === undefined || !userRecord(old, deps)) return false;
+  // A later retry of an older admitted turn cannot replace newer owner evidence.
+  return !userCandidate(candidate, deps, decision.text ?? candidate.text)
+    || deps.now().getTime() <= Date.parse(old.createdAt);
+}
+
+const AUTHORITY_RULES = `
+- Use host-accepted labels and capture evidence as authority, not retention priority or the mere fact a memory exists. An assistant/tool/document/inferred or unknown candidate must not UPDATE or SUPERSEDE user-stated content; ADD separate attributed evidence instead.
+- A supported newer user statement may supersede an older user statement when it really corrects or replaces that state. Do not replace a newer statement with an older admitted turn. If equal-authority statements conflict without a supported correction or ordering, ADD, do not guess a winner.
+- Events describe what happened, not lasting knowledge. Do not refine an existing knowledge note with an execution report.
+`;
+
+function authorityEvidence(deps: ReconcileDeps): Readonly<Record<string, unknown>> {
+  return { speakerKind: deps.captureSpeakerKind ?? "unknown", ownerTurn: deps.captureEvidence?.ownerTurn === true,
+    userText: deps.captureEvidence?.userText ?? "", observedAt: deps.now().toISOString() };
+}
+
 /** A memory the model sourced to the user on a host-verified owner turn with user text. */
 function ownerCorrection(candidate: CandidateMemory, deps: ReconcileDeps): boolean {
   return candidate.source === "user" && deps.captureSpeakerKind === "human-turn"
     && deps.captureEvidence?.ownerTurn === true && deps.captureEvidence.userText.trim().length > 0;
+}
+
+/** Lifecycle proposals require host-verified owner evidence, including retained plans. */
+function supportedIntent(candidate: CandidateMemory, deps: ReconcileDeps): boolean {
+  return candidate.intentState !== undefined && ownerCorrection(candidate, deps);
+}
+
+function intentionStatus(candidate: CandidateMemory): Bullet["status"] {
+  return candidate.intentState === "planned" ? "scheduled" : candidate.intentState === "done" ? "done"
+    : candidate.intentState === "abandoned" ? "dropped" : "open";
+}
+
+function intentionFields(candidate: CandidateMemory, deps: ReconcileDeps, inheritedEnd?: string): Pick<Bullet, "status"> & { dueAt?: string } {
+  // Omission is not withdrawal; supported replacements retain an existing note end.
+  const end = candidate.validTo ?? inheritedEnd;
+  return supportedIntent(candidate, deps) ? { status: intentionStatus(candidate),
+    ...(end === undefined ? {} : { dueAt: end }) } : { status: "open" };
 }
 
 /** The owner's own preference scopes: `agent`, or this owner turn's own sender scope. */
@@ -500,16 +603,19 @@ function planAddWithoutIndex(
 ): Omit<BatchActionPlan, "index"> {
   const now = deps.now();
   const id = deps.nextId();
+  const suppressLabels = deps.semanticOnly === true && !userCandidate(candidate, deps)
+    && similar.some((hit) => (hit.sameEntity !== undefined || hit.distance <= (deps.dupThreshold ?? 0.5))
+      && userRecord(hit.record, deps));
   const bullet: Bullet = withMemoryLabels({
     id,
     type: candidate.type,
-    status: "open",
+    ...intentionFields(candidate, deps),
     text: candidate.text,
     salience: candidate.salience,
     isInsight: candidate.isInsight,
     createdAt: now.toISOString(),
     refs: [],
-  }, deps.labelsForAction?.("add", candidate, undefined, candidate.text) ?? []);
+  }, suppressLabels ? [] : deps.labelsForAction?.("add", candidate, undefined, candidate.text) ?? []);
   const record = recordFor(bullet, deps.root, now);
   const file = record.source.file!;
   const threads = similar.flatMap((hit) => {
@@ -663,7 +769,7 @@ function planSupersede(
   const bullet: Bullet = withMemoryLabels({
     id,
     type: candidate.type,
-    status: "open",
+    ...intentionFields(candidate, deps, old.type === "note" ? old.dueAt : undefined),
     text: replacement,
     salience: candidate.salience,
     isInsight: candidate.isInsight,
@@ -778,7 +884,11 @@ async function classifyBatch(
       ...(hit.sameEntity === undefined ? { distance: Number(hit.distance.toFixed(6)) }
         : { sameEntity: hit.sameEntity }),
       text: hit.record.text,
+      ...(deps.captureSettings?.intentLifecycle === true ? { type: hit.record.type, status: hit.record.status, dueAt: hit.record.dueAt } : {}),
+      ...(deps.semanticOnly === true ? { type: hit.record.type, createdAt: hit.record.createdAt,
+        labels: authorityLabels(hit.record, deps) } : {}),
     })),
+    ...(deps.semanticOnly === true || deps.captureSettings?.intentLifecycle === true ? { captureEvidence: authorityEvidence(deps) } : {}),
   }));
   const strictOutput = deps.strictModelOutput === true;
   let raw: string;
@@ -811,7 +921,9 @@ Rules:
 - add and noop MUST omit text. update and supersede REQUIRE one complete, non-empty replacement text with no leading/trailing whitespace, no control, formatting, surrogate, line-separator, or paragraph-separator characters, and no reserved <!--mem delimiter.
 - Every object contains exactly the keys shown for its action. Do not emit duplicate object keys, nulls, extra keys, comments, or prose.
 
-INPUT:
+${deps.semanticOnly === true ? AUTHORITY_RULES : ""}${deps.captureSettings?.intentLifecycle === true ? `
+- A supported owner intention state/end change is SUPERSEDE, never UPDATE or NOOP: preserve its old statement as history. Use only candidate intentState/validTo proposals and the supplied owner turn evidence. Never infer completion from a passed due date. Different intentions about the same topic remain ADD. Preserve the intention state, end and stated timezone in replacement text.
+` : ""}INPUT:
 ${JSON.stringify(input)}`,
       {
         label: "capture:reconcile-batch",
@@ -953,7 +1065,7 @@ async function classify(
 ): Promise<Classification | undefined> {
   let raw: string;
   try {
-    raw = await deps.llm.complete(classifyPrompt(candidate, similar), {
+    raw = await deps.llm.complete(classifyPrompt(candidate, similar, deps), {
       label: "capture:reconcile",
       ...(deps.abortSignal === undefined ? {} : { abortSignal: deps.abortSignal }),
     });
@@ -980,7 +1092,7 @@ async function classify(
   };
 }
 
-const classifyPrompt = (candidate: CandidateMemory, similar: readonly ReconcileNeighbour[]): string => {
+const classifyPrompt = (candidate: CandidateMemory, similar: readonly ReconcileNeighbour[], deps: ReconcileDeps): string => {
   const neighbours = similar
     .map((h) => `- id=${h.record.id} ${h.sameEntity === undefined
       ? `distance=${h.distance.toFixed(3)}` : `sameEntity=${h.sameEntity} (no vector score)`} text="${h.record.text}"`)
@@ -1000,7 +1112,7 @@ a duplicate, a refinement, or a contradiction. Return ONLY JSON:
 CANDIDATE: type=${candidate.type} text="${candidate.text}"
 
 EXISTING:
-${neighbours}`;
+${neighbours}${deps.semanticOnly === true ? `${AUTHORITY_RULES}\nAUTHORITY EVIDENCE:\n${JSON.stringify({ candidate, captureEvidence: authorityEvidence(deps), existing: similar.map((hit) => ({ id: hit.record.id, createdAt: hit.record.createdAt, labels: authorityLabels(hit.record, deps) })) })}` : ""}`;
 };
 
 function closestNoop(similar: readonly ReconcileNeighbour[]): Classification | undefined {
@@ -1020,6 +1132,7 @@ function recordFor(bullet: Bullet, root: string, now: Date): MemoryRecord {
     createdAt: bullet.createdAt,
     accessCount: 0,
     tags: [],
+    ...(bullet.dueAt === undefined ? {} : { dueAt: bullet.dueAt }),
     source: { file: relative(root, dailyFilePath(root, now)) },
   };
 }

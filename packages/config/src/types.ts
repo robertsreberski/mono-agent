@@ -345,7 +345,7 @@ export interface MonoAgentConfig {
     readonly maxBytes: number;
     readonly writeMode: MemoryWriteMode;
     /** Optional capture controls; reconcileModel selects only the classifier's agent-host model. */
-    readonly capture?: { readonly focus?: string; readonly only?: readonly ("fact" | "preference" | "lesson")[]; readonly reconcileModel?: string; readonly cron?: boolean; readonly webhook?: boolean };
+    readonly capture?: { readonly focus?: string; readonly only?: readonly ("fact" | "preference" | "lesson")[]; readonly reconcileModel?: string; readonly cron?: boolean; readonly webhook?: boolean; readonly intentLifecycle?: boolean };
     /** Embedding provider for semantic memory recall; keyword fallback when unset. */
     readonly embeddings?: MemoryEmbeddingsConfig;
     /** LLM for bujo capture and effective tier selection. */
@@ -360,7 +360,7 @@ export interface MonoAgentConfig {
      */
     readonly recallTool?: { readonly enabled: boolean };
     /** BuJo-only volatile preceding-owner-query window; default off. */
-    readonly recall?: { readonly contextWindow: boolean };
+    readonly recall?: { readonly contextWindow?: boolean; readonly semanticOnly?: boolean; readonly intentExpiry?: boolean; readonly recency?: boolean };
     /** BuJo-only deterministic owner label profile; default off. */
     readonly profile?: { readonly enabled: boolean };
     /**

@@ -30,6 +30,7 @@ export interface MemoryRecallBujoSettings {
   readonly root: string;
   /** Configured strict tier; required to retain BuJo graph capability in read-only recall. */
   readonly tier?: MemoryMode;
+  readonly recall?: { readonly intentExpiry?: boolean; readonly recency?: boolean };
   /**
    * Optional exact managed-generation database path. Command paths resolve this once so a semantic
    * attempt and its FTS fallback cannot observe different active generations.
@@ -70,6 +71,7 @@ export function resolveMemoryRecallSettings(
   return {
     root: memory.path,
     tier: memory.mode,
+    ...(memory.recall === undefined ? {} : { recall: memory.recall }),
     embeddings: {
       provider: embeddings.provider,
       model: embeddings.model,

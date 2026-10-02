@@ -93,6 +93,20 @@ The profile remains a deterministic app-owned projection of canonical labels,
 not a separate memory store; Lite/Journal behavior and stored bytes are unchanged.
 
 
+### Optional supported intentions and recency
+
+BuJo-only `memory.capture.intentLifecycle`, `memory.recall.intentExpiry` and
+`memory.recall.recency` independently default off. Owner-supported intention
+proposals reuse note statuses and `due=`, with superseded history for changes;
+generic terminal/supersession validity is unchanged. Expiry excludes all dated
+and done/dropped notes automatically (including future/ambiguous legacy dates),
+and reviewed deliberate reads use inclusive ends. Recency reorders qualified
+deliberate event/unlabelled-note hits only, at most 0.02 with a 30-day half-life;
+facts/preferences and automatic scores do not decay. Review legacy dates through
+curate before enablement. No new persisted field, date backfill or task list.
+See [intention lifecycle and recency](../../docs/memory/capture-and-recall.md#optional-intention-lifecycle-and-deliberate-recency).
+
+
 ### Data flow
 
 The normal write and read paths are:
@@ -152,6 +166,21 @@ its history. Capture and reconcile use a 160-code-point bound; multi-sentence
 memories are split into separate candidates up to the eight-memory plan limit
 rather than silently discarding later sentences. Overlong individual sentences
 still clamp at a word or clause boundary.
+
+### Optional semantic eligibility
+
+BuJo `recall: { semanticOnly: true }` is default-off and applies to standalone
+`load()` and capture. Automatic context requires current open notes with accepted
+fact/preference/verified-lesson labels; events and unknown lines remain
+explicitly searchable. User-stated authority reorders only relevance-qualified
+candidates, without changing scores or the fifty-hit bound. Reconciliation
+protects user-stated sources and keeps unclassified inferred ADDs unlabelled.
+Structured built-in fact conflicts omit equal-authority assertions; coarse facts
+and preferences cannot represent comparable values and retain that limitation.
+The same flag changes capture's model guidance to notes versus useful episodes;
+flags-off prompts and canonical writes, including Lite/Journal, stay unchanged.
+Existing reviewed curate retype proposals can change note/event types and review
+labels with backup/restore, without inventing attribution or backfilling dates.
 
 ### Standalone automatic recall
 
@@ -687,6 +716,7 @@ applyMemoryBundleImport
 auditBujoMemoryHealth
 auditCanonicalGraphParity
 auditCompletedTurnIntake
+automaticIntentEligible
 captureTurnStrict
 createBujoMemoryStore
 createIdFactory
@@ -718,6 +748,7 @@ proposeOwnerAssociations
 proposePersonAssociations
 proposeTasksToNotes
 pruneExplicitMemoryForgetBackups
+rankDeliberateRecallHits
 readBujoCanonicalSourceFingerprint
 readBujoRuntimeSnapshot
 readGraph
@@ -740,6 +771,7 @@ rollbackMemoryIndex
 safeRebuildMemoryIndex
 selectKnownEntityHints
 selectPossiblyRelevantRecallHits
+semanticRecallAuthorities
 serializeBullet
 serializeDailyFile
 validateCurateOperatorMerge

@@ -177,6 +177,8 @@ export interface ParsedCliArgs {
   readonly linkPeople?: boolean;
   /** memory curate prepare: propose open task lines as history notes (rule-based). */
   readonly tasksToNotes?: boolean;
+  /** Explicit reviewed note/event and label pass before semantic-only enablement. */
+  readonly semanticReview?: boolean;
   /** memory curate prepare --tasks-to-notes: only tasks created before this ISO date or instant. */
   readonly tasksBefore?: string;
   /** memory curate prepare --tasks-to-notes: only lines minted by automatic capture. */
@@ -292,6 +294,7 @@ const CLI_BOOLEAN_FLAGS = new Set([
   "--owner-backfill",
   "--link-people",
   "--tasks-to-notes",
+  "--semantic-review",
   "--capture-only",
   "--duplicates",
   "--accept-derived-association-drift",
@@ -444,6 +447,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let ownerBackfill = false;
   let linkPeople = false;
   let tasksToNotes = false;
+  let semanticReview = false;
   let tasksBefore: string | undefined;
   let captureOnly = false;
   let duplicates = false;
@@ -601,6 +605,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         break;
       case "--link-people":
         linkPeople = true;
+        break;
+      case "--semantic-review":
+        semanticReview = true;
         break;
       case "--tasks-to-notes":
         tasksToNotes = true;
@@ -1000,6 +1007,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (linkPeople && (cmd !== "memory" || positionals[0] !== "curate" || positionals[1] !== "prepare" || limit !== 0)) {
     throw new Error("--link-people requires `mono-agent memory curate prepare --limit 0`.");
   }
+  if (semanticReview && (cmd !== "memory" || positionals[0] !== "curate" || positionals[1] !== "prepare" || tasksToNotes || limit === 0)) {
+    throw new Error("memory_semantic_review_requires_model_prepare");
+  }
   if (tasksToNotes && (cmd !== "memory" || positionals[0] !== "curate" || positionals[1] !== "prepare")) {
     throw new Error("--tasks-to-notes requires `mono-agent memory curate prepare`.");
   }
@@ -1118,6 +1128,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(ownerBackfill ? { ownerBackfill } : {}),
     ...(linkPeople ? { linkPeople } : {}),
     ...(tasksToNotes ? { tasksToNotes } : {}),
+    ...(semanticReview ? { semanticReview } : {}),
     ...(tasksBefore === undefined ? {} : { tasksBefore }),
     ...(captureOnly ? { captureOnly } : {}),
     ...(duplicates ? { duplicates } : {}),

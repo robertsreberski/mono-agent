@@ -12,6 +12,10 @@ export interface CandidateMemory {
   readonly labels?: readonly MemoryLabel[];
   /** Host-bounded origin of the claim in its captured turn, when known. */
   readonly source?: CaptureSource;
+  /** Extraction-only owner-supported intention proposals; never generic lifecycle validTo. */
+  readonly intentState?: "planned" | "pending" | "done" | "abandoned";
+  /** Inclusive civil end, mapped to canonical due= (not memories.valid_to). */
+  readonly validTo?: string;
 }
 
 export const MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS = 160;

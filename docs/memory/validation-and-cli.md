@@ -748,3 +748,53 @@ before enabling automatic injection. JSON includes supporting memory IDs for
 private inspection; the model payload does not include IDs. The view has no
 independent edit/restore authority: change supporting canonical memories through
 reviewed `memory curate` operations. Profile failures return stable codes only.
+
+## Reviewed semantic types and labels
+
+Before enabling `memory.recall.semanticOnly`, use BuJo's existing private curate
+prepare/review/apply flow to inspect legacy note/event types and labels:
+
+```bash
+mono-agent memory curate prepare --plan semantic-review.json --semantic-review --limit 60 --dry-run
+mono-agent memory curate prepare --plan semantic-review.json --semantic-review --limit 60
+mono-agent memory curate review --plan semantic-review.json
+```
+
+This explicit model pass works before the read flag is enabled; it is not
+combined with the model-free `--tasks-to-notes` or `--limit 0` passes. It proposes
+`retype` with `type: "note"` or `"event"`, and optionally a complete reviewed
+`labels` list. Absent labels retain current refs; `labels: []` removes labels
+only after operator acceptance. Existing attribution can be retained exactly,
+never invented or upgraded; new retrospective labels remain supported
+assistant-inferred person facts. There is no text rewrite or date backfill in
+this pass. Inspect the source, proposed type and labels in the owner-private
+plan and accept only supported proposals through the existing review selectors
+(for example `--accept id:<memory-id>`). Do not export plan contents.
+
+Apply accepted proposals using the existing stopped-store
+`memory curate apply --plan semantic-review.json` command. The fingerprint-bound
+root-swap transaction creates the same backup and rebuilds the index; existing
+`memory curate restore --backup <backup-directory>` restores canonical bytes.
+Validate useful labelled-note coverage before enabling the flag. Retyping alone
+does not label an unknown note or prove its original speaker.
+
+
+## Review intention dates before enabling expiry
+
+Before enabling `memory.recall.intentExpiry`, stop the configured agent and drain
+its pending capture under the old policy first. Inspect existing note `due=`
+values privately using `memory today`, `memory show <date>` and `memory search`.
+Use the existing bounded
+`memory curate prepare --semantic-review --plan <private-file> --limit 60`, review and stopped-store apply/restore flow to remove unsupported lines or retype
+actual dated episodes, accepting only supported proposals. Review the whole dated
+note inventory in bounded passes; a sample is not an audit of unexamined dates.
+Do not infer intention completion from a passed date, manufacture missing dates,
+upgrade attribution or rewrite generic supersession validity. This introduces no
+new curate command and performs no automatic audit, reinterpretation or backfill.
+
+An ambiguous old note date may have been a deadline, not an inclusive validity
+end. The new policy excludes every dated note from automatic sections, including
+future dates, but deliberate currentness assumes reviewed inclusive-end meaning.
+Keep the flag off until that meaning has been checked and ambiguous sources
+removed/retyped through accepted curate proposals. Plans and backups contain
+memory text and must stay private; rollback uses the existing exact backup flow.
