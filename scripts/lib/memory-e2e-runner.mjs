@@ -15,12 +15,12 @@ export async function productionModules({ privateEvaluation = false } = {}) {
     import("../../packages/agent-app/dist/runtime-option-extensions.js"),
   ]);
   if (!privateEvaluation) return { harness, bujo, captureIntake, store, search, runtime, retrieval, journal, extensions };
-  const [config, app, controllerMemory, grammar, graph, providerAuth] = await Promise.all([
+  const [config, app, controllerMemory, grammar, graph, providerAuth, providerFailures] = await Promise.all([
     import("../../packages/config/dist/index.js"), import("../../packages/agent-app/dist/configured-agent.js"),
     import("../../packages/agent-app/dist/app-controller-memory.js"), import("../../packages/memory/dist/bujo/grammar.js"), import("../../packages/memory/dist/bujo/graph.js"),
-    import("../../packages/agent-runtime/src/ai/pi-interop.js"),
+    import("../../packages/agent-runtime/src/ai/pi-interop.js"), import("../../packages/agent-runtime/src/ai/failure.js"),
   ]);
-  return { harness, bujo, captureIntake, store, search, runtime, retrieval, journal, extensions, config, app, controllerMemory, grammar, graph, providerAuth };
+  return { harness, bujo, captureIntake, store, search, runtime, retrieval, journal, extensions, config, app, controllerMemory, grammar, graph, providerAuth, providerFailures };
 }
 
 export function automaticRecallObservation({ block, outcome, query, selectHits, failure }) {

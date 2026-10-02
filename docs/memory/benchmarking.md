@@ -254,12 +254,17 @@ per-turn aggregate rates are diagnostic. Failed/invalid batches are not cached.
 Global cache warming means latency/request comparisons are order-dependent
 pipeline diagnostics, not cold-provider performance comparisons.
 
-A private, atomically replaced `progress.json` contains only a fixed arm enum,
-`turnsDone`, `turnsTotal` and `elapsedMs`, checkpointed at day/snapshot boundaries
-and arm completion (not every turn). It contains no snapshot dates, source IDs,
-paths, text, cache keys, model responses or judge content. It reports replay
-progress, not judge completion. Budget exhaustion reports the stable code
-`private_budget_exhausted`; progress is not proof of a completed/evaluable run.
+A private, atomically replaced `progress.json` contains a fixed arm enum and
+numeric `turnsDone`, `turnsTotal`, `elapsedMs`, `phase`, `judgedDone`,
+`judgedTotal` and `retries`. Phase `0` is replay; phase `1` is judging.
+Replay checkpoints remain at day/snapshot boundaries and arm completion (not
+every turn). Judging checkpoints count successful **unique turn/line pairs** and
+additional completion attempts, with serialized writes even under concurrency.
+They contain no snapshot dates, source IDs, paths, text, cache keys or model
+responses. A complete judging count is not proof that the whole evaluation
+finished. Budget exhaustion reports `private_budget_exhausted`, including
+reservation exhaustion swallowed by production recall wrappers; progress is not
+proof of a completed/evaluable run.
 
 Every replay writes a blinded `review.json`: opaque IDs plus empty labels, no
 arm identities or text. To review content without writing it into sheets, add
@@ -300,8 +305,15 @@ Pi's credential check sends no request and does not refresh OAuth. The actual
 completion still determines model entitlement and credential validity.
 
 Use `--pi-auth-path /OWNER-ONLY/PI-AUTH.json` to select the same Pi auth store as
-the real benchmark/production route. The path must be absolute and is
-execution-only: neither the path nor credentials enter artifacts. The existing
+the real benchmark/production route. The path must be absolute, outside the
+repository, and a regular, non-symlink,
+single-link file owned by the current uid with no group/other permission bits.
+Its immediate parent must belong to that uid and not be group/other-writable;
+read/execute bits are allowed (0755 passes; 0775/0777 refuse). Auth file/parent
+ACLs are refused, and existing trusted-ancestry checks still apply. Unsafe or
+missing paths report `private_auth_path_refused` before credential loading.
+The selection is execution-only: neither the path nor credentials enter
+artifacts. The existing
 lazy Pi resolver handles normal reads and OAuth refreshes on that store; do not
 copy rotating OAuth credentials to a second store. Without the flag, only the
 native provider's ambient authentication is used; no consumer config or default
@@ -314,8 +326,25 @@ node scripts/memory-e2e-benchmark.mjs --private --private-mode retrieval \
   --private-store-root /OWNER-ONLY/STORE-SOURCE \
   --private-judge PROVIDER:MODEL \
   --allow-private-provider-route PROVIDER:MODEL \
-  --pi-auth-path /OWNER-ONLY/PI-AUTH.json
+  --pi-auth-path /OWNER-ONLY/PI-AUTH.json \
+  --private-judge-concurrency 4
 ```
+
+Judging uses `--private-judge-concurrency N` (integer 1–8, default 4) and reuses
+one successful label for identical **turn ID + exact rendered line** pairs
+across arms. Different turns remain distinct, even when their text matches.
+Keys, prompts and deduplication state remain volatile; only each original opaque
+review ID and its label enter `model-review.json`.
+
+The judge pool makes at most three attempts for a trusted transient transport
+failure, with bounded exponential jitter. Auth/route/setup failures, permanent
+provider rejection and invalid JSON/labels are not retried. Native SDK retries
+and fallback routing remain disabled: each pool attempt is separately metered.
+Both backoff and concurrent calls respect the run's global deadline and
+reservations. A terminal failure stops new pool admissions and cancels/settles
+siblings before cleanup. This is bounded retry, **not** resume/checkpointed model
+annotations: exhausting retries still fails the run rather than reporting fake
+success or silently substituting missing labels.
 
 Failures remain codes only: `private_provider_route_refused` for route admission,
 `private_judge_unavailable` for judge construction,

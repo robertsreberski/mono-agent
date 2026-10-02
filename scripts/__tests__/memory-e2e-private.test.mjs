@@ -1,17 +1,19 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, rename, symlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rm, rename, symlink, utimes, writeFile } from "node:fs/promises";
 import { renameSync, symlinkSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { PrivateError, privateCode, validatePrivateRoots, validateTurns, validateRegistration, validateAnnotations, reconstructClone, requirePrivateAncestor, createPrivateOutput, validatePrivateAclMetadata } from "../lib/memory-e2e-private-input.mjs";
+import { PrivateError, privateCode, validatePrivateRoots, validatePrivateAuthPath, requirePrivateAuthParent, validateTurns, validateRegistration, validateAnnotations, reconstructClone, requirePrivateAncestor, createPrivateOutput, validatePrivateAclMetadata } from "../lib/memory-e2e-private-input.mjs";
 import { blindSheets, metrics, newReviewSeed, reviewId, pairedBootstrap, serializePrivateArtifact, summarizePrivate, writePrivateArtifact } from "../lib/memory-e2e-private-report.mjs";
 import { privateMain, resolvePrivateArm, privateReplaySnapshot } from "../lib/memory-e2e-private-runner.mjs";
-import { assertPrivateRuntimeOptions, validatePrivateRoute, assertPrivateProviderEnvironment, PRIVATE_LOGGING_ENV, privateCompletionRuntime, privatePiRuntime } from "../lib/memory-e2e-private-providers.mjs";
+import { assertPrivateRuntimeOptions, validatePrivateRoute, assertPrivateProviderEnvironment, PRIVATE_LOGGING_ENV, privateCompletionRuntime, privatePiRuntime, PrivateProviderError } from "../lib/memory-e2e-private-providers.mjs";
 import { invokedMemoryObservation, productionModules } from "../lib/memory-e2e-runner.mjs";
 import { Budget, BenchmarkError } from "../lib/memory-e2e-providers.mjs";
 import { privateEmbeddingCache } from "../lib/memory-e2e-private-cache.mjs";
+import { judgePrivateItems, privateJudgeConcurrency } from "../lib/memory-e2e-private-judge.mjs";
 import { parseArguments } from "../memory-e2e-benchmark.mjs";
 import * as graph from "../../packages/memory/dist/bujo/graph.js";
 import * as grammar from "../../packages/memory/dist/bujo/grammar.js";
@@ -50,7 +52,8 @@ async function fixture() {
   const inputRoot = join(dir, "input"), storeRoot = join(dir, "source"), outputRoot = join(dir, "output");
   await mkdir(inputRoot, { mode: 0o700 }); await mkdir(join(storeRoot, "daily"), { recursive: true, mode: 0o700 });
   const repository = join(dir, "repository"); await mkdir(repository, { mode: 0o700 });
-  return { dir, inputRoot, storeRoot, outputRoot, repositories: [repository], env: {} };
+  const authPath = join(dir, "fictional-auth.json"); await writeFile(authPath, "{}", { mode: 0o600 });
+  return { dir, inputRoot, storeRoot, outputRoot, authPath, repositories: [repository], env: {} };
 }
 const bullet = (id, createdAt, status = "open") => ({ id, type: "note", status, text: sentinel, salience: 0.9, isInsight: false, createdAt, refs: [] });
 const row = (n, arm, label = "useful") => ({ dayId: opaque(900000), id: opaque(n + 1), conversationId: opaque(10000 + Math.floor(n / 10)), arm, followUp: n < 50, directQuestion: n >= 50,
@@ -345,7 +348,7 @@ describe("private replay performance contracts", () => {
     await writePrivateArtifact({ ...f }, "progress.json", "progress", progress);
     await writePrivateArtifact({ ...f }, "progress.json", "progress", { ...progress, turnsDone: 2, elapsedMs: 5 });
     const saved = JSON.parse(await readFile(join(f.outputRoot, "progress.json"), "utf8"));
-    expect(saved).toEqual({ arm: "current-only", turnsDone: 2, turnsTotal: 3, elapsedMs: 5 });
+    expect(saved).toEqual({ arm: "current-only", turnsDone: 2, turnsTotal: 3, elapsedMs: 5, phase: 0, judgedDone: 0, judgedTotal: 0, retries: 0 });
     expect((await lstat(join(f.outputRoot, "progress.json"))).mode & 0o077).toBe(0);
     expect(await readdir(f.outputRoot)).toEqual(["progress.json"]);
     expect(() => serializePrivateArtifact("progress", { ...progress, turnsDone: 4 })).toThrow("private_input_invalid");
@@ -449,13 +452,13 @@ describe("private hosted judge authentication and failure codes", () => {
       };
     };
     const execution = privateMain({ private: true, "private-mode": "retrieval", "private-input-root": f.inputRoot, "private-output-root": f.outputRoot, "private-store-root": f.storeRoot,
-      "private-judge": route, "allow-private-provider-route": scenario === "route" ? [] : [route], "pi-auth-path": "/OWNER-ONLY/FICTIONAL-AUTH.json" },
+      "private-judge": route, "allow-private-provider-route": scenario === "route" ? [] : [route], "pi-auth-path": f.authPath },
       { root, env: {}, repositories: f.repositories, stdout() {}, prepareBuild: async () => null, loadModules, loadInputs: async () => ({ turns: validateTurns(turns()), registration: r }) });
     if (expected) {
       await expect(execution).rejects.toThrow(expected);
       expect(JSON.parse(await readFile(join(f.outputRoot, "error.json"), "utf8"))).toEqual({ code: expected });
     } else {
-      await execution; expect(run).toHaveBeenCalledOnce(); expect(factory).toHaveBeenCalledWith({ path: "/OWNER-ONLY/FICTIONAL-AUTH.json" });
+      await execution; expect(run).toHaveBeenCalledOnce(); expect(factory).toHaveBeenCalledWith({ path: f.authPath });
       expect(JSON.parse(await readFile(join(f.outputRoot, "model-review.json"), "utf8"))).toHaveLength(1);
     }
     for (const name of await readdir(f.outputRoot)) expect(await readFile(join(f.outputRoot, name), "utf8")).not.toContain(sentinel);
@@ -492,6 +495,160 @@ describe("private hosted judge authentication and failure codes", () => {
       const provider = cache.wrap({ id: "fictional", async embed() { throw new Error(sentinel); } }, { budget, model: "fictional", dimension: 3, tag: {} });
       await expect(provider.embed([sentinel])).rejects.toThrow("private_embedding_failed");
     } finally { cache.clear(); budget.close(); }
+  });
+});
+
+describe("private judge reliability and review fixes", () => {
+  const items = () => [
+    { id: opaque(101), turnId: opaque(1), ownerText: "Fictional pottery question", text: sentinel },
+    { id: opaque(102), turnId: opaque(1), ownerText: "Fictional pottery question", text: sentinel },
+    { id: opaque(103), turnId: opaque(2), ownerText: "Another fictional question", text: sentinel },
+    { id: opaque(104), turnId: opaque(1), ownerText: "Fictional pottery question", text: "Fictional second line" },
+  ];
+  const budgetForJudge = () => new Budget({ limits: { runtimeMs: 60000, chatSteps: 100, estimatedInputTokens: 10000 }, perCall: {} });
+  it("validates concurrency flags as integers 1–8, defaulting to four", () => {
+    expect(privateJudgeConcurrency()).toBe(4);
+    for (const value of [1, 2, 4, 8]) expect(privateJudgeConcurrency(String(value))).toBe(value);
+    for (const value of [0, 9, "2.5", "2.0", "", "-1", sentinel, true, null]) expect(() => privateJudgeConcurrency(value)).toThrow("private_arguments_invalid");
+    expect(parseArguments(["--private", "--private-judge-concurrency", "2"])["private-judge-concurrency"]).toBe("2");
+  });
+  it("bounds in-flight calls, reuses exact turn/line labels across arms, and serializes progress", async () => {
+    const budget = budgetForJudge(), progress = []; let active = 0, maximum = 0, writing = 0;
+    const complete = vi.fn(async () => { active += 1; maximum = Math.max(maximum, active); await new Promise((resolve) => setTimeout(resolve, 5)); active -= 1; return '{"label":"useful"}'; });
+    try {
+      const labels = await judgePrivateItems({ items: items(), definitions: registration().definitions, judge: { complete }, budget, concurrency: 2,
+        onProgress: async (value) => { expect(writing++).toBe(0); await new Promise((resolve) => setTimeout(resolve, 1)); progress.push(value); writing -= 1; } });
+      expect(maximum).toBe(2); expect(complete).toHaveBeenCalledTimes(3); expect(labels).toEqual(items().map(({ id }) => ({ id, label: "useful" })));
+      expect(progress.map((value) => value.judgedDone)).toEqual([0, 1, 2, 3]);
+      expect(progress.at(-1)).toEqual({ phase: 1, judgedDone: 3, judgedTotal: 3, retries: 0 });
+      expect(JSON.stringify(progress)).not.toContain(sentinel);
+    } finally { budget.close(); }
+  });
+  it("retries only trusted transient failures, at most three attempts with bounded exponential jitter", async () => {
+    const budget = budgetForJudge(), sleep = vi.fn(async () => {}), progress = [];
+    const complete = vi.fn().mockRejectedValueOnce(new PrivateProviderError(true)).mockRejectedValueOnce(new PrivateProviderError(true)).mockResolvedValueOnce('{"label":"partial"}');
+    try {
+      const labels = await judgePrivateItems({ items: items().slice(0, 2), definitions: {}, judge: { complete }, budget, concurrency: 1, sleep, random: () => 0.5, onProgress: async (value) => progress.push(value) });
+      expect(complete).toHaveBeenCalledTimes(3); expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([1000, 2000]);
+      expect(labels).toEqual(items().slice(0, 2).map(({ id }) => ({ id, label: "partial" })));
+      expect(progress.at(-1)).toEqual({ phase: 1, judgedDone: 1, judgedTotal: 1, retries: 2 });
+      complete.mockReset().mockRejectedValue(new PrivateProviderError(true)); sleep.mockClear();
+      await expect(judgePrivateItems({ items: items().slice(0, 1), definitions: {}, judge: { complete }, budget, sleep })).rejects.toThrow("private_provider_failed");
+      expect(complete).toHaveBeenCalledTimes(3); expect(sleep).toHaveBeenCalledTimes(2);
+    } finally { budget.close(); }
+  });
+  for (const code of ["private_provider_auth_failed", "private_provider_route_refused", "private_judge_output_invalid", "private_budget_exhausted"]) it(`never retries ${code}`, async () => {
+    const budget = budgetForJudge(), sleep = vi.fn(), complete = vi.fn(async () => { throw new PrivateError(code); });
+    try {
+      await expect(judgePrivateItems({ items: items(), definitions: {}, judge: { complete }, budget, concurrency: 1, sleep })).rejects.toThrow(code);
+      expect(complete).toHaveBeenCalledOnce(); expect(sleep).not.toHaveBeenCalled();
+    } finally { budget.close(); }
+  });
+  it("does not retry malformed judge output or arbitrary provider retryability properties", async () => {
+    const budget = budgetForJudge(), sleep = vi.fn();
+    try {
+      for (const text of [sentinel, "null", "{}", '{"label":"invalid"}']) {
+        const complete = vi.fn(async () => text);
+        await expect(judgePrivateItems({ items: items(), definitions: {}, judge: { complete }, budget, concurrency: 1, sleep })).rejects.toThrow("private_judge_output_invalid");
+        expect(complete).toHaveBeenCalledOnce();
+      }
+      const complete = vi.fn(async () => { throw Object.assign(new Error(sentinel), { retryable: true, code: "private_provider_failed" }); });
+      await expect(judgePrivateItems({ items: items(), definitions: {}, judge: { complete }, budget, concurrency: 1, sleep })).rejects.toThrow("private_provider_failed");
+      expect(complete).toHaveBeenCalledOnce(); expect(sleep).not.toHaveBeenCalled();
+    } finally { budget.close(); }
+  });
+  it("respects reservation exhaustion and the global deadline during retry backoff", async () => {
+    for (const scenario of ["quota", "deadline"]) {
+      const budget = budgetForJudge(), sleep = vi.fn(async () => { if (scenario === "deadline") { budget.exhausted = true; budget.controller.abort(); } });
+      budget.plan.limits.chatSteps = 1; let providerCalls = 0;
+      const complete = vi.fn(async () => { budget.reserve({ chatSteps: 1 }); providerCalls += 1; throw new PrivateProviderError(true); });
+      try {
+        await expect(judgePrivateItems({ items: items(), definitions: {}, judge: { complete }, budget, concurrency: 1, sleep })).rejects.toThrow("private_budget_exhausted");
+        expect(providerCalls).toBe(1); expect(budget.exhausted).toBe(true);
+      } finally { budget.close(); }
+    }
+  });
+  it("stops new admissions and cancels/settles siblings after a terminal pool failure", async () => {
+    const budget = budgetForJudge(); let active = 0;
+    const complete = vi.fn(async (_prompt, { abortSignal }) => {
+      active += 1;
+      try {
+        if (complete.mock.calls.length === 1) { await new Promise((resolve) => setTimeout(resolve, 5)); throw new PrivateError("private_provider_auth_failed"); }
+        await new Promise((resolve) => abortSignal.addEventListener("abort", resolve, { once: true }));
+        throw new PrivateError("private_provider_failed");
+      } finally { active -= 1; }
+    });
+    try {
+      await expect(judgePrivateItems({ items: items(), definitions: {}, judge: { complete }, budget, concurrency: 2 })).rejects.toThrow("private_provider_auth_failed");
+      expect(complete).toHaveBeenCalledTimes(2); expect(active).toBe(0); expect(budget.pending.size).toBe(0);
+    } finally { budget.close(); }
+  });
+  it("maps trusted native transient transport results without retaining raw failure text", async () => {
+    const modules = await productionModules({ privateEvaluation: true }), budget = budgetForJudge();
+    const run = vi.fn(async () => ({ failureKind: "provider_unavailable", error: `Connection error. ${sentinel}` }));
+    try {
+      const runtime = privatePiRuntime({ ...modules, runtime: { ...modules.runtime, createMonoRuntime: () => ({ run }) } }, root, budget);
+      const options = { messages: [{ role: "user", content: sentinel }], maxTurns: 1, allowedTools: [], mcpServers: {} };
+      const failure = await runtime.run("fictional system", options).catch((error) => error);
+      expect(failure).toBeInstanceOf(PrivateProviderError); expect(failure.retryable).toBe(true); expect(failure.message).toBe("private_provider_failed");
+      run.mockResolvedValueOnce({ failureKind: "provider_unavailable", error: `Model not found. ${sentinel}` });
+      const permanent = await runtime.run("fictional system", options).catch((error) => error); expect(permanent.retryable).toBe(false);
+      expect(run.mock.calls[0][1].sessionKeepAlive).toBe(false); expect(JSON.stringify(budget.events)).not.toContain(sentinel);
+    } finally { budget.close(); }
+  });
+  it("keeps numeric judge checkpoints closed and rejects invalid progress fields", async () => {
+    const f = await fixture(); await mkdir(f.outputRoot, { mode: 0o700 });
+    const value = { arm: "current-only", turnsDone: 3, turnsTotal: 3, elapsedMs: 5, phase: 1, judgedDone: 2, judgedTotal: 4, retries: 1 };
+    await writePrivateArtifact(f, "progress.json", "progress", { ...value, text: sentinel, path: sentinel, key: sentinel });
+    expect(JSON.parse(await readFile(join(f.outputRoot, "progress.json"), "utf8"))).toEqual(value);
+    for (const extra of [{ phase: "judge" }, { phase: 2 }, { judgedDone: 5 }, { judgedTotal: -1 }, { retries: 9 }, { retries: 0.5 }]) expect(() => serializePrivateArtifact("progress", { ...value, ...extra })).toThrow("private_input_invalid");
+  });
+  it("refuses unsafe auth metadata with real external files, never reading credential content", async () => {
+    const rootInfo = await lstat("/");
+    const dir = await mkdtemp(join(homedir(), "fictional-auth-test-")); dirs.push(dir);
+    const path = join(dir, "auth.json"); await writeFile(path, "{}", { mode: 0o600 });
+    expect(await validatePrivateAuthPath(path, [root])).toBe(path);
+    await chmod(path, 0o640); await expect(validatePrivateAuthPath(path, [root])).rejects.toThrow("private_auth_path_refused"); await chmod(path, 0o600);
+    await symlink(path, join(dir, "alias.json")); await expect(validatePrivateAuthPath(join(dir, "alias.json"), [root])).rejects.toThrow("private_auth_path_refused");
+    await symlink(dir, join(dir, "parent-alias")); await expect(validatePrivateAuthPath(join(dir, "parent-alias", "auth.json"), [root])).rejects.toThrow("private_auth_path_refused");
+    const hardlink = join(dir, "linked-auth.json"); await link(path, hardlink);
+    await expect(validatePrivateAuthPath(path, [root])).rejects.toThrow("private_auth_path_refused"); await rm(hardlink);
+    await expect(validatePrivateAuthPath(dir, [root])).rejects.toThrow("private_auth_path_refused");
+    await expect(validatePrivateAuthPath(join(dir, "absent.json"), [root])).rejects.toThrow("private_auth_path_refused");
+    await expect(validatePrivateAuthPath("relative.json", [root])).rejects.toThrow("private_auth_path_refused");
+    await chmod(dir, 0o755); expect(await validatePrivateAuthPath(path, [root])).toBe(path);
+    for (const mode of [0o775, 0o777]) { await chmod(dir, mode); await expect(validatePrivateAuthPath(path, [root])).rejects.toThrow("private_auth_path_refused"); }
+    await chmod(dir, 0o700);
+    // Foreign ownership cannot be manufactured without privilege. Exercise the
+    // actual parent guard with real root-owned metadata instead of mocking fs.
+    if (process.getuid() !== 0) expect(() => requirePrivateAuthParent(rootInfo)).toThrow("private_auth_path_refused");
+    const f = await fixture(); await expect(validatePrivateAuthPath(f.authPath, [root])).rejects.toThrow("private_auth_path_refused");
+    const loadInputs = vi.fn(), loadModules = vi.fn(), prepareBuild = vi.fn();
+    await expect(privateMain({ private: true, "private-mode": "retrieval", "private-input-root": f.inputRoot, "private-output-root": f.outputRoot, "private-store-root": f.storeRoot, "pi-auth-path": join(dir, "alias.json") },
+      { root, env: {}, repositories: f.repositories, loadInputs, loadModules, prepareBuild })).rejects.toThrow("private_auth_path_refused");
+    expect(loadInputs).not.toHaveBeenCalled(); expect(loadModules).not.toHaveBeenCalled(); expect(prepareBuild).not.toHaveBeenCalled(); expect((await readdir(f.dir)).includes("output")).toBe(false);
+  });
+  it("retains trusted query-quota exhaustion swallowed by the real recall/harness wrappers", async () => {
+    const f = await fixture(), modules = await productionModules({ privateEvaluation: true }), budgets = new Set();
+    await writeFile(join(f.storeRoot, "daily", "2029-01-01.md"), grammar.serializeBullet(bullet("fictional", "2029-01-01T00:00:00.000Z")), { mode: 0o600 });
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, options) => { const input = JSON.parse(options.body).input; return new Response(JSON.stringify({ embeddings: input.map(() => [1, 0, 0]) })); });
+    const reserve = Budget.prototype.reserve;
+    vi.spyOn(Budget.prototype, "reserve").mockImplementation(function(cost) {
+      budgets.add(this);
+      // Let the real initial index call consume its one request, then have the
+      // real query embedding reservation (not a fake throw) exhaust admission.
+      if (cost.embeddingCalls) this.plan.limits.embeddingCalls = 1;
+      return reserve.call(this, cost);
+    });
+    const create = vi.fn(modules.app.createConfiguredMemory);
+    await expect(privateMain({ private: true, "private-mode": "retrieval", "private-input-root": f.inputRoot, "private-output-root": f.outputRoot, "private-store-root": f.storeRoot, "private-dimension": "3" },
+      { root, env: {}, repositories: f.repositories, stdout() {}, prepareBuild: async () => null,
+        loadInputs: async () => ({ turns: validateTurns(turns().slice(0, 1)), registration: registration() }),
+        loadModules: async () => ({ ...modules, app: { ...modules.app, createConfiguredMemory: create } }) })).rejects.toThrow("private_budget_exhausted");
+    expect(create).toHaveBeenCalledOnce(); expect(fetch).toHaveBeenCalledOnce(); expect([...budgets].some((budget) => budget.exhausted && budget.used.embeddingCalls === 1)).toBe(true);
+    expect(JSON.parse(await readFile(join(f.outputRoot, "error.json"), "utf8"))).toEqual({ code: "private_budget_exhausted" });
+    expect(JSON.parse(await readFile(join(f.outputRoot, "progress.json"), "utf8")).turnsDone).toBe(0);
+    for (const name of await readdir(f.outputRoot)) expect(await readFile(join(f.outputRoot, name), "utf8")).not.toContain(sentinel);
   });
 });
 

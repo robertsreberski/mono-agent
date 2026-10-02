@@ -9,7 +9,7 @@ export const PRIVATE_CODES = Object.freeze([
   "private_ci_refused", "private_absolute_roots_required", "private_repository_path",
   "private_permissions", "private_unsafe_entry", "private_roots_overlap",
   "private_input_invalid", "private_preregistration_invalid", "private_preregistration_changed", "private_cleanup_failed", "private_output_exists",
-  "private_arguments_invalid", "private_provider_route_refused", "private_isolation_required",
+  "private_arguments_invalid", "private_auth_path_refused", "private_provider_route_refused", "private_isolation_required",
   "private_provider_failed", "private_provider_auth_failed", "private_judge_unavailable", "private_judge_output_invalid", "private_embedding_failed", "private_snapshot_failed", "private_budget_exceeded", "private_budget_exhausted", "private_invocation_missing",
   "private_review_tty_required", "private_annotations_invalid", "private_operation_failed",
 ]);
@@ -110,6 +110,27 @@ export async function validateTree(path) {
   requireNoAcl(path);
   if (info.isDirectory()) for (const name of await readdir(path)) await validateTree(join(path, name));
 }
+/** SSH-style auth parent: readable/searchable is safe; replacement authority
+ * belongs only to the current uid, never group/other writers or a foreign uid. */
+export function requirePrivateAuthParent(info, uid = process.getuid?.()) {
+  if (uid === undefined || !info.isDirectory() || info.uid !== uid || (info.mode & 0o022) !== 0) throw new PrivateError("private_auth_path_refused");
+}
+
+/** Metadata-only auth admission. Never read credentials during path validation. */
+export async function validatePrivateAuthPath(path, repositories) {
+  try {
+    if (typeof path !== "string" || !isAbsolute(path) || /[\0-\x1f\x7f]/u.test(path)) throw new PrivateError("private_auth_path_refused");
+    const info = await lstat(path);
+    if (info.isSymbolicLink() || !info.isFile()) throw new PrivateError("private_auth_path_refused");
+    requireOwned(info); requireNoAcl(path);
+    const canonical = await privatePath(path, repositories);
+    if (canonical !== resolve(path)) throw new PrivateError("private_auth_path_refused");
+    const parent = dirname(canonical);
+    requirePrivateAuthParent(await lstat(parent)); requireNoAcl(parent);
+    return canonical;
+  } catch { throw new PrivateError("private_auth_path_refused"); }
+}
+
 export async function validatePrivateRoots({ inputRoot, outputRoot, storeRoot, repositories, env = process.env }) {
   if (Object.hasOwn(env, "CI")) throw new PrivateError("private_ci_refused");
   try {

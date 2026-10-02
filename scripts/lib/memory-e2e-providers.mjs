@@ -57,22 +57,26 @@ export class Budget {
     this.events = [];
     this.pending = new Set();
     this.admissionStopped = false;
+    // Sticky trusted evidence, set before production wrappers can swallow a
+    // reservation/deadline exception. Never inferred from provider error text.
+    this.exhausted = false;
     // Terminal provider stop ({ code, failureKind } or null). Set only by
     // stopProviders on fatal auth/quota evidence; unlike admissionStopped it is
     // never cleared by cleanup gating, so cleanup cannot reopen a dead route.
     this.providerStop = null;
     this.generation = 0;
     this.controller = new AbortController();
-    this.timer = setTimeout(() => this.controller.abort(), plan.limits.runtimeMs - 10000);
+    this.timer = setTimeout(() => { this.exhausted = true; this.controller.abort(); }, plan.limits.runtimeMs - 10000);
   }
   reserve(cost) {
     if (this.providerStop !== null || this.admissionStopped) throw new BenchmarkError("provider_admission_stopped");
-    if (this.controller.signal.aborted || performance.now() - this.started >= this.plan.limits.runtimeMs - 10000) throw new BenchmarkError("runtime_budget_exhausted");
+    if (this.controller.signal.aborted || performance.now() - this.started >= this.plan.limits.runtimeMs - 10000) throw this.exhaust("runtime_budget_exhausted");
     for (const [key, amount] of Object.entries(cost)) {
-      if (!Number.isFinite(amount) || amount < 0 || this.used[key] + amount > this.plan.limits[key]) throw new BenchmarkError("budget_exhausted");
+      if (!Number.isFinite(amount) || amount < 0 || this.used[key] + amount > this.plan.limits[key]) throw this.exhaust("budget_exhausted");
     }
     for (const [key, amount] of Object.entries(cost)) this.used[key] += amount;
   }
+  exhaust(code) { this.exhausted = true; return new BenchmarkError(code); }
   track(promise) {
     promise = Promise.resolve(promise);
     this.generation += 1;
@@ -94,6 +98,7 @@ export class Budget {
   /** Track the original operation, never the raced wrapper: abort is not settlement. */
   wait(promise, { timeoutMs, signal = this.controller.signal, code = "runtime_budget_exhausted" } = {}) {
     return bounded(this.track(promise), { timeoutMs, signal, code: () => this.controller.signal.reason instanceof BenchmarkError ? this.controller.signal.reason.code : code, onCancel: () => {
+      if (["runtime_budget_exhausted", "budget_exhausted"].includes(code)) this.exhausted = true;
       this.stopAdmission();
       this.controller.abort(new BenchmarkError(code));
     } });

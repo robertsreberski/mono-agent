@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Keep private memory judging bounded with concurrent, deduplicated calls,
+  transient-only retries and numeric judging progress. Refuse unsafe Pi auth
+  files and writable/foreign auth parents, and preserve budget-exhaustion codes
+  when recall wrappers swallow reservation failures.
+
 - Fix private memory judges to use an explicitly selected Pi auth store and
   owner-private workspace; check hosted credential availability before snapshot
   indexing and report distinct code-only setup, auth, runtime and output errors.

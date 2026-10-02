@@ -17,6 +17,20 @@ export function privateEmbeddingFetch(input, options = {}) {
   return fetch(input, { ...options, redirect: "error" });
 }
 
+// Retry authority is a trusted instance, never an arbitrary provider property.
+export class PrivateProviderError extends PrivateError {
+  constructor(retryable = false) { super("private_provider_failed"); this.retryable = retryable === true; }
+}
+export function assertPrivateBudget(budget) {
+  if (budget.exhausted) throw new PrivateError("private_budget_exhausted");
+  try { budget.reserve({}); }
+  catch (error) { if (privateCode(error) === "private_budget_exhausted") throw new PrivateError("private_budget_exhausted"); throw error; }
+}
+function transientFailure(modules, errorText, failureKind) {
+  return ["timeout", "stall"].includes(failureKind)
+    || modules.providerFailures?.retryableProviderFailureInfo({ errorText, failureKind }).retryable === true;
+}
+
 const routePattern = /^[a-z0-9-]+:[A-Za-z0-9:._/-]{1,160}$/u;
 export function validatePrivateRoute(route, allowed, registration, runtime) {
   if (typeof route !== "string" || !routePattern.test(route) || route.includes("..")) throw new PrivateError("private_provider_route_refused");
@@ -60,17 +74,23 @@ export function privatePiRuntime(modules, workspace, budget, { piAuthPath } = {}
     async run(system, options) {
       assertPrivateProviderEnvironment();
       assertPrivateRuntimeOptions(options);
+      assertPrivateBudget(budget);
       budget.privateChatCalls = (budget.privateChatCalls ?? 0) + 1;
       const inputTokens = Math.ceil(Buffer.byteLength(system + JSON.stringify(options.messages), "utf8") / 3);
       budget.reserve({ chatSteps: options.maxTurns ?? 1, estimatedInputTokens: inputTokens * (options.maxTurns ?? 1) });
       try {
         // No durable session root and no content event callbacks are forwarded.
-        const result = await budget.wait(raw.run(system, { ...options, piMaxRetries: 0, piTransport: "sse", keepAlive: false, providerCheckMaxTokens: 4096,
+        const result = await budget.wait(raw.run(system, { ...options, piMaxRetries: 0, piTransport: "sse", keepAlive: false, sessionKeepAlive: false, providerCheckMaxTokens: 4096,
           abortSignal: AbortSignal.any([options.abortSignal, budget.controller.signal, AbortSignal.timeout(60000)].filter(Boolean)) }));
         if (result.failureKind === "provider_auth") throw new PrivateError("private_provider_auth_failed");
-        if (result.failureKind || result.error) throw new PrivateError("private_provider_failed");
+        if (result.failureKind || result.error) throw new PrivateProviderError(transientFailure(modules, typeof result.error === "string" ? result.error : "", result.failureKind));
         return result;
-      } catch (error) { throw new PrivateError(error instanceof PrivateError ? error.code : privateCode(error) === "private_budget_exhausted" ? "private_budget_exhausted" : "private_provider_failed"); }
+      } catch (error) {
+        assertPrivateBudget(budget);
+        if (error instanceof PrivateError) throw error;
+        if (privateCode(error) === "private_budget_exhausted") throw new PrivateError("private_budget_exhausted");
+        throw new PrivateProviderError(transientFailure(modules, error instanceof Error ? error.message : "", null));
+      }
     },
     async disposeAllSessions() { await raw.disposeAllSessions?.(); },
   };
@@ -84,6 +104,7 @@ export function privateCompletionRuntime(modules, route, workspace, budget, auth
     async run(system, options) {
       assertPrivateProviderEnvironment();
       assertPrivateRuntimeOptions(options);
+      assertPrivateBudget(budget);
       budget.privateChatCalls = (budget.privateChatCalls ?? 0) + 1;
       const prompt = options.messages.map((message) => message.content).join("\n\n");
       budget.reserve({ chatSteps: 1, estimatedInputTokens: Math.ceil(Buffer.byteLength(system + prompt) / 3) });
@@ -94,7 +115,7 @@ export function privateCompletionRuntime(modules, route, workspace, budget, auth
             format: options.outputSchema ?? "json", options: { num_predict: 4096 } }),
           signal: AbortSignal.any([options.abortSignal, budget.controller.signal, AbortSignal.timeout(60000)].filter(Boolean)),
         }));
-        if (!response.ok || !response.body) throw new PrivateError("private_provider_failed");
+        if (!response.ok || !response.body) throw new PrivateProviderError(response.status === 429 || response.status >= 500);
         const reader = response.body.getReader(); const chunks = []; let bytes = 0;
         try {
           for (;;) { const { done, value } = await reader.read(); if (done) break; bytes += value.byteLength;
@@ -104,7 +125,12 @@ export function privateCompletionRuntime(modules, route, workspace, budget, auth
         if (typeof data.response !== "string") throw new PrivateError("private_provider_failed");
         budget.reserve({ outputTokens: Math.ceil(Buffer.byteLength(data.response) / 3) });
         return { text: data.response, ...(options.outputSchema === undefined ? {} : { structuredResult: JSON.parse(data.response) }) };
-      } catch (error) { throw new PrivateError(error instanceof PrivateError || privateCode(error) === "private_budget_exhausted" ? privateCode(error) : "private_provider_failed"); }
+      } catch (error) {
+        assertPrivateBudget(budget);
+        if (error instanceof PrivateError) throw error;
+        if (privateCode(error) === "private_budget_exhausted") throw new PrivateError("private_budget_exhausted");
+        throw new PrivateProviderError(transientFailure(modules, error instanceof Error ? error.message : "", null));
+      }
     },
     async disposeAllSessions() {},
   };

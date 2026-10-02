@@ -66,7 +66,10 @@ export function serializePrivateArtifact(kind, value) {
   else if (kind === "progress") {
     const turnsDone = num(value.turnsDone), turnsTotal = num(value.turnsTotal), elapsedMs = num(value.elapsedMs);
     if (!Number.isSafeInteger(turnsDone) || !Number.isSafeInteger(turnsTotal) || turnsDone < 0 || turnsDone > turnsTotal || turnsTotal > 10000 || elapsedMs < 0) throw new PrivateError("private_input_invalid");
-    safe = { arm: enumValue(value.arm, PRIVATE_ARMS), turnsDone, turnsTotal, elapsedMs };
+    const phase = value.phase ?? 0, judgedDone = value.judgedDone ?? 0, judgedTotal = value.judgedTotal ?? 0, retries = value.retries ?? 0;
+    if (![0, 1].includes(phase) || [judgedDone, judgedTotal, retries].some((number) => !Number.isSafeInteger(number) || number < 0)
+      || judgedDone > judgedTotal || retries > judgedTotal * 2) throw new PrivateError("private_input_invalid");
+    safe = { arm: enumValue(value.arm, PRIVATE_ARMS), turnsDone, turnsTotal, elapsedMs, phase, judgedDone, judgedTotal, retries };
   }
   else if (kind === "error") safe = { code: enumValue(value.code, PRIVATE_CODES) };
   else throw new PrivateError("private_input_invalid");
