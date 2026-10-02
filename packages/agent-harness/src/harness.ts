@@ -465,6 +465,7 @@ export class MonoAgentHarness implements AgentHarness {
     if (logicalConversationId === normalized) await historyStore?.reset?.(normalized);
     else await historyStore?.resetLogicalConversation?.(logicalConversationId);
     await this.options.toolHistory?.writer.resetConversation(logicalConversationId);
+    this.options.memory?.resetRecallContext?.(normalized);
     // The reset discarded every store the unpublished account could resume on
     // top of, so the rejected barrier is cleared. Any earlier throw skips this
     // and the barrier stays installed.
@@ -859,6 +860,11 @@ export class MonoAgentHarness implements AgentHarness {
       terminalRecovered = recovered;
       if (!recovered && this.sessionsEnabled()) this.pendingTerminalReseeds.set(request.conversationId, claim.outcome);
       if (recovered) {
+        // A certified native recovery retained the exact invocation's user
+        // message even though the turn did not produce a successful answer.
+        try { this.options.memory?.recordInvocation?.(runId); }
+        catch { emitShutdownWarning({ type: "runtime_warning", warning_kind: "memory_degraded",
+          error_code: "memory_receipt_unavailable", message: "memory_receipt_unavailable" }); }
         this.saveSession(request.conversationId, coordinatedProviderSessionId, sessionRecord,
           (coordinatedProviderSessionRevision as number) + 1, undefined, requestedModelKey,
           { failureUsed: claim.outcome === "failed" || epochRecovery?.failureUsed === true, nextOutcome: claim.outcome });
@@ -2056,6 +2062,7 @@ export class MonoAgentHarness implements AgentHarness {
     void liveSessionDisposal?.catch(() => undefined);
     const drained = await this.waitForActiveRuns();
     this.pendingTerminalReseeds.clear();
+    this.options.memory?.resetRecallContext?.();
     const cleanupErrors: unknown[] = [];
     if (drained) {
       try {

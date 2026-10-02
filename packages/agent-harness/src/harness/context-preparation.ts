@@ -16,7 +16,6 @@ import { representedContinuityToolRecordIds } from "./turn-continuity.js";
 import { sessionContextBlock } from "./session-context.js";
 import { memorySenderToken, memoryUserText } from "./memory-persistence.js";
 import { isCronRequest, runSourceFromRequest } from "./request-routing.js";
-import { errorMessageText } from "./value-utils.js";
 import { buildToolHistoryProjection } from "../tool-history-projection.js";
 
 export async function prepareHarnessContext(
@@ -47,7 +46,7 @@ export async function prepareHarnessContext(
     // Recall rides on the current user message on every turn. It remains outside
     // stable system instructions and never enters canonical history replay.
     const memory = request.continuation === undefined
-      ? await loadHarnessMemory(options, request, contextOptions.turnId, contextOptions.originalUserMessage, emit)
+      ? await loadHarnessMemory(options, request, contextOptions.turnId, contextOptions.originalUserMessage, emit, contextOptions.historyMode === "omitted")
       : undefined;
     const selectedSkills = await loadHarnessSkills(options, skillsCache);
     const peerCaller = await options.verifiedPeerCallerFor?.({ request });
@@ -251,6 +250,7 @@ async function loadHarnessMemory(
   turnId: string,
   originalUserMessage?: string,
   emit?: (event: RuntimeEventLike) => void,
+  retainedContext = false,
 ): Promise<ContextBlockInput | undefined> {
     let block;
     try {
@@ -270,20 +270,23 @@ async function loadHarnessMemory(
         : request.userMessage;
       block = await options.memory?.load(request.conversationId, query, {
         turnId,
+        retainedContext,
+        onWarning: (code) => emit?.({ type: "runtime_warning", warning_kind: "memory_degraded", error_code: code, message: code }),
         hostDate: observedAt.toISOString().slice(0, 10),
         hostLocalDate: localDate,
         hostInstant: observedAt.toISOString(),
         ...(senderToken === undefined ? {} : { senderToken }),
         ...(ownerTurn ? { ownerTurn: true as const } : {}),
       });
-    } catch (error) {
+    } catch {
       // A slow or failing memory backend (e.g. embeddings timeout / circuit
       // breaker open) must never block or fail the turn — degrade to empty
       // memory and surface a warning so the turn proceeds.
       emit?.({
         type: "runtime_warning",
         warning_kind: "memory_degraded",
-        message: `Memory recall failed; continuing without memory. ${errorMessageText(error)}`,
+        error_code: "memory_recall_unavailable",
+        message: "memory_recall_unavailable",
       });
       return undefined;
     }
@@ -302,6 +305,7 @@ async function loadHarnessMemory(
       kind: "markdown",
       content: block.content,
       source: block.source,
+      ...(block.traceContent === false ? { traceContent: false as const } : {}),
     };
 }
 

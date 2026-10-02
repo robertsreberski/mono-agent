@@ -38,6 +38,26 @@ const bujoMemoryPrerequisites = {
 };
 
 describe("resolveJsonMonoAgentConfig", () => {
+  it("validates independent, default-off BuJo recall/profile flags without echoing offending values", () => {
+    const base = { ...baseJson, memory: { path: "memory", mode: "bujo" as const,
+      embeddings: { provider: "ollama" as const }, llm: { provider: "ollama" as const, model: "fictional-model" } } };
+    const resolve = (memory: Record<string, unknown>) => resolveJsonMonoAgentConfig({ cwd: "/fictional/repo",
+      json: { ...base, memory: { ...base.memory, ...memory } } as MonoAgentConfigJson });
+    expect(resolve({}).memory?.recall?.contextWindow ?? false).toBe(false);
+    expect(resolve({}).memory?.profile?.enabled ?? false).toBe(false);
+    for (const key of ["recall", "profile"] as const) {
+      const field = key === "recall" ? "contextWindow" : "enabled";
+      const enabled = resolve({ [key]: { [field]: true } });
+      expect(key === "recall" ? enabled.memory?.recall?.contextWindow : enabled.memory?.profile?.enabled).toBe(true);
+      for (const mode of ["lite", "journal"]) expect(() => resolve({ mode, [key]: { [field]: true } })).toThrow("memory_option_requires_bujo");
+      for (const block of [[], { [field]: "FICTIONAL_PRIVATE_RECORD" }, { unrelated: true }]) {
+        try { resolve({ [key]: block }); }
+        catch (error) { expect(error).toBeInstanceOf(MonoAgentConfigError); expect(String(error)).not.toContain("FICTIONAL_PRIVATE_RECORD"); continue; }
+        throw new Error("invalid fictional flag accepted");
+      }
+    }
+  });
+
   it.each(["embeddings", "llm", "recallTool", "rememberTool", "consolidation", "embeddings.circuitBreaker"])(
     "rejects malformed memory.%s blocks, including without memory.path", (path) => {
       const parts = path.split(".");

@@ -359,6 +359,10 @@ export interface MonoAgentConfig {
      * disabling automatic memory context.
      */
     readonly recallTool?: { readonly enabled: boolean };
+    /** BuJo-only volatile preceding-owner-query window; default off. */
+    readonly recall?: { readonly contextWindow: boolean };
+    /** BuJo-only deterministic owner label profile; default off. */
+    readonly profile?: { readonly enabled: boolean };
     /**
      * Agent-callable `Remember` tool that durably stores one explicitly stated
      * fact. Deterministic and append-only; it takes no chat LLM. Defaults on for

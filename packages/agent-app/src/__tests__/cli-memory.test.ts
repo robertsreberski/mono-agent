@@ -39,6 +39,31 @@ afterEach(async () => {
 });
 
 describe("memory label CLI flags", () => {
+  it("shows the deterministic profile read-only without calling embeddings or models", async () => {
+    const root = join(await tempDir(), "memory");
+    const memory = createBujoMemoryStore({ root });
+    await memory.remember("fictional", "Morgan enjoys geometric sketches.");
+    await memory.close();
+    const path = await resolveActiveMemoryDbPath(root);
+    const db = openMemoryDb({ path });
+    const id = db.topSalient(1)[0]!.id;
+    db.replaceMemoryLabels(id, [{ v: 1, kind: "fact", entityId: "person:owner", attribution: "user-stated" }]);
+    db.close();
+    const before = await readFile(path);
+    const dir = await agentDir({ memory: { path: root, mode: "bujo", writeMode: "disabled",
+      embeddings: { provider: "ollama" }, llm: { provider: "ollama", model: "fictional-model" } } });
+    const fetch = vi.fn(() => { throw new Error("FICTIONAL_PRIVATE_RECORD /fictional/private/record.md"); });
+    vi.stubGlobal("fetch", fetch);
+    const result = await captureCli(() => runMemoryCommand({ cwd: dir, env: {}, positionals: ["profile", "show"], json: true, strict: false }));
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ content: expect.stringContaining("Morgan enjoys geometric sketches."), sources: [id], truncated: false });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(await readFile(path)).toEqual(before);
+    expect((await captureCli(() => runCli(["memory", "profile", "show", "--help"]))).stdout).toContain("Usage: mono-agent memory profile show");
+    const invalid = await captureCli(() => runMemoryCommand({ cwd: dir, env: {}, positionals: ["profile", "edit"], json: true, strict: false }));
+    expect(invalid.code).toBe(2);
+  });
+
   it("parses only the two read-only label verbs", () => {
     expect(parseCliArgs(["memory", "labels", "--kind", "fact", "--about", "Morgan", "--scope", "agent", "--json"]))
       .toMatchObject({ positionals: ["labels"], labelKind: "fact", labelAbout: "Morgan", labelScope: "agent", json: true });

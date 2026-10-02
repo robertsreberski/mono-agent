@@ -122,10 +122,8 @@ export function startMemoryRituals(input: StartMemoryRitualsInput): RunningRitua
 
         inFlight = true;
         store.consolidate()
-          .catch((err: unknown) => {
-            logger?.warn(
-              `Memory consolidation failed: ${err instanceof Error ? err.message : String(err)}.`,
-            );
+          .catch(() => {
+            logger?.warn("memory_consolidation_unavailable");
           })
           .finally(() => {
             inFlight = false;

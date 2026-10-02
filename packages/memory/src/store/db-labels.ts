@@ -10,6 +10,10 @@ export interface IndexedMemoryLabel {
 export interface MemoryLabelHit extends IndexedMemoryLabel {
   readonly text: string;
   readonly status: string;
+  readonly type?: "task" | "event" | "note";
+  readonly dueAt?: string;
+  readonly validTo?: string;
+  readonly supersededBy?: string;
   readonly sourceFile?: string;
   readonly sourceLine?: number;
   readonly createdAt: string;
@@ -117,16 +121,21 @@ export class MemoryDbLabels extends MemoryDbGraph {
   private labelHits(predicate: string, args: readonly string[], limit?: number): MemoryLabelHit[] {
     if (!this.tableExists("memory_labels")) return [];
     const rows = this.db.prepare(`SELECT l.memory_id AS memoryId, l.ordinal, l.payload,
-      m.text, m.status, m.source_file AS sourceFile, m.source_line AS sourceLine, m.created_at AS createdAt
+      m.text, m.status, m.type, m.due_at AS dueAt, m.valid_to AS validTo, m.superseded_by AS supersededBy, m.source_file AS sourceFile, m.source_line AS sourceLine, m.created_at AS createdAt
       FROM memory_labels l JOIN memories m ON m.id = l.memory_id WHERE l.${predicate}
       ORDER BY l.memory_id COLLATE BINARY, l.ordinal ${limit === undefined ? "" : "LIMIT ?"}`)
       .all(...args, ...(limit === undefined ? [] : [limit])) as Array<{
         memoryId: string; ordinal: number; payload: string; text: string; status: string;
+        type: "task" | "event" | "note"; dueAt: string | null; validTo: string | null; supersededBy: string | null;
         sourceFile: string | null; sourceLine: number | null; createdAt: string;
       }>;
     return rows.map((row) => ({ memoryId: row.memoryId, ordinal: row.ordinal,
       label: validateMemoryLabel(JSON.parse(row.payload) as unknown), text: row.text,
-      status: row.status, ...(row.sourceFile === null ? {} : { sourceFile: row.sourceFile }),
+      status: row.status, type: row.type,
+      ...(row.dueAt === null ? {} : { dueAt: row.dueAt }),
+      ...(row.validTo === null ? {} : { validTo: row.validTo }),
+      ...(row.supersededBy === null ? {} : { supersededBy: row.supersededBy }),
+      ...(row.sourceFile === null ? {} : { sourceFile: row.sourceFile }),
       ...(row.sourceLine === null ? {} : { sourceLine: row.sourceLine }),
       createdAt: row.createdAt, active: row.status !== "invalidated" && row.status !== "dropped", conflict: false }))
       .sort((a, b) => byteOrder(a.memoryId, b.memoryId) || a.ordinal - b.ordinal);

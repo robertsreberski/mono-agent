@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add default-off BuJo `memory.recall.contextWindow` and
+  `memory.profile.enabled` for bounded owner follow-up recall and an
+  embedding-independent, 600-code-point owner profile. Suppress unchanged
+  automatic context on retained sessions using invocation receipts; add the
+  read-only `memory profile show` inspection view.
+- Keep memory recall and consolidation failure warnings content-free with
+  stable codes instead of exception text.
+
 - Fix Telegram native rich-message input, including forwarded and replied-to
   structured text, tables, lists, captions, and bounded background context.
 

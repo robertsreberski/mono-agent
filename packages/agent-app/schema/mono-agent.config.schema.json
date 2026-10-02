@@ -910,6 +910,34 @@
             }
           }
         },
+        "recall": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "contextWindow": {
+              "description": "BuJo-only, default-off preceding-owner-query window for automatic recall. Volatile, redacted, 30-minute TTL; prior at most 512 and total at most 1536 Unicode code points. Explicit MemoryRecall keeps the current query.",
+              "examples": [
+                true
+              ],
+              "type": "boolean",
+              "default": false
+            }
+          }
+        },
+        "profile": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "description": "BuJo-only, default-off deterministic owner-stated label profile, at most 600 Unicode code points. Independent of embeddings. Warm provider context suppresses unchanged profile/served lines using invocation receipts; receipt loss conservatively suppresses automatic reinjection until a cold reseed.",
+              "examples": [
+                true
+              ],
+              "type": "boolean",
+              "default": false
+            }
+          }
+        },
         "rememberTool": {
           "type": "object",
           "additionalProperties": false,
@@ -1107,6 +1135,64 @@
                 "required": [
                   "model"
                 ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "recall"
+            ],
+            "properties": {
+              "recall": {
+                "required": [
+                  "contextWindow"
+                ],
+                "properties": {
+                  "contextWindow": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "mode": {
+                "const": "bujo"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "profile"
+            ],
+            "properties": {
+              "profile": {
+                "required": [
+                  "enabled"
+                ],
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "mode": {
+                "const": "bujo"
               }
             }
           }

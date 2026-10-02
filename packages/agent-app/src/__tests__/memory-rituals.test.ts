@@ -169,7 +169,7 @@ describe("startMemoryRituals", () => {
       store: {
         tier: () => "bujo",
         consolidate: async (): Promise<void> => {
-          throw new Error("consolidation exploded");
+          throw new Error("FICTIONAL_PRIVATE_RECORD /fictional/private/record.md");
         },
       },
       logger: { info: () => undefined, warn: (m) => { warns.push(m); } },
@@ -181,7 +181,8 @@ describe("startMemoryRituals", () => {
     fakeTimers.fireAll();
     await vi.runAllTimersAsync();
 
-    expect(warns.some((warning) => warning.includes("consolidation exploded"))).toBe(true);
+    expect(warns).toEqual(["memory_consolidation_unavailable"]);
+    expect(JSON.stringify(warns)).not.toMatch(/FICTIONAL_PRIVATE_RECORD|\/fictional\/private/u);
     expect(fakeTimers.pendingCount()).toBeGreaterThan(0);
     result.stop();
   });

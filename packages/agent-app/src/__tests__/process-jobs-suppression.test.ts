@@ -60,10 +60,10 @@ describe("exact process-job wake silence", () => {
     expect(consumeSilentProcessJobWake(key)).toBe(false);
   });
 
-  it("suppresses recall only for privately bound host wakes, leaving capture and explicit recall intact", async () => {
+  it.each([false, true])("suppresses recall only for privately bound host wakes with opt-ins %s, leaving capture and explicit recall intact", async (enabled) => {
     const hit = { score: 0.95, record: { id: "tea", text: "Morgan likes tea.", type: "note" as const, status: "open" as const } };
     const memory = new MemoryRetrievalService({ load: async () => undefined, recall: async () => [hit],
-      close: async () => undefined } as SharedRecallStore);
+      tier: () => "bujo", close: async () => undefined } as SharedRecallStore, { contextWindow: enabled, profileEnabled: enabled });
     const observed: Array<{ capture: string | undefined; automatic: boolean }> = [];
     let ordinal = 0;
     const responder = bindProcessJobWakeContextToResponder({ respond: async (input) => {
