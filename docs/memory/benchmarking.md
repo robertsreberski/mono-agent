@@ -107,11 +107,17 @@ checkout and its main Git toplevel. Existing ancestors and symlinks are resolved
 before any input content, build, or provider is loaded. Input/store trees and
 output roots must be owner-owned and have no group/other permissions (typically
 0700 directories and 0600 files); symlink entries, multiply linked files, and
-macOS ACLs are refused. A missing output's nearest existing ancestor must also
-be owner-private. Every ancestor must belong to the current user or root and
-not be group/other-writable; only root-owned sticky system directories are an
-exception. Containment is rechecked after output creation and before clone or
-artifact writes; a replaced ancestor alias refuses instead of becoming trusted.
+macOS ACL grants and unrecognized ACL metadata are refused throughout canonical
+ancestry; private tree entries and the nearest private root/ancestor must have
+no ACL at all, while higher ancestors may have verified deny-only ACLs.
+A missing output's nearest existing ancestor must also be owner-private.
+Every ancestor must belong to the current user or root and not be
+group/other-writable; only root-owned sticky system directories are an exception.
+Containment is rechecked after output creation and before clone or artifact
+writes; a replaced ancestor alias refuses instead of becoming trusted.
+Without directory-identity anchoring, the check-to-open boundary assumes root
+and the current user do not replace verified components after ownership, mode
+and ACL checks.
 Replay requires a **new** output directory, never a fallback
 under `.worklab-tmp`. The source store is read-only to this evaluator.
 

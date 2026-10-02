@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { PrivateError, privateCode, validatePrivateRoots, validateTurns, validateRegistration, validateAnnotations, reconstructClone, requirePrivateAncestor, createPrivateOutput } from "../lib/memory-e2e-private-input.mjs";
+import { PrivateError, privateCode, validatePrivateRoots, validateTurns, validateRegistration, validateAnnotations, reconstructClone, requirePrivateAncestor, createPrivateOutput, validatePrivateAclMetadata } from "../lib/memory-e2e-private-input.mjs";
 import { blindSheets, metrics, newReviewSeed, reviewId, pairedBootstrap, serializePrivateArtifact, summarizePrivate } from "../lib/memory-e2e-private-report.mjs";
 import { privateMain, resolvePrivateArm } from "../lib/memory-e2e-private-runner.mjs";
 import { assertPrivateRuntimeOptions, validatePrivateRoute, assertPrivateProviderEnvironment, PRIVATE_LOGGING_ENV, privateCompletionRuntime } from "../lib/memory-e2e-private-providers.mjs";
@@ -16,8 +16,20 @@ import * as grammar from "../../packages/memory/dist/bujo/grammar.js";
 
 // Fictional-only tests: never discover a consumer, config, transcript or store.
 const root = fileURLToPath(new URL("../../", import.meta.url));
-const dirs = [];
-afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); });
+const dirs = [], aclPaths = [];
+afterEach(async () => {
+  vi.restoreAllMocks(); vi.unstubAllEnvs();
+  for (const path of aclPaths.splice(0)) {
+    const cleared = spawnSync("/bin/chmod", ["-N", path], { cwd: root, stdio: "ignore", timeout: 5000 });
+    if (cleared.status !== 0) throw new Error("private_acl_test_cleanup_failed");
+  }
+  for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
+});
+function setFictionalAcl(path, entry, context) {
+  const changed = spawnSync("/bin/chmod", ["+a", entry, path], { cwd: root, stdio: "ignore", timeout: 5000 });
+  if (changed.status !== 0) context.skip(true, "private_acl_test_unavailable");
+  aclPaths.push(path);
+}
 const opaque = (n) => n.toString(16).padStart(32, "0");
 const sentinel = "FICTIONAL_PRIVATE_SENTINEL pottery wheel";
 const registration = () => ({ version: 1, definitions: { useful: "Helps the turn", partial: "Incomplete help", noise: "Not useful", stale: "No longer current" },
@@ -77,11 +89,64 @@ describe("private memory evaluation privacy boundary", () => {
     await expect(validatePrivateRoots({ ...f, outputRoot: join(shared, "output") })).rejects.toThrow("private_permissions");
     expect(await validatePrivateRoots(f)).toMatchObject({ inputRoot: f.inputRoot, storeRoot: f.storeRoot });
   });
-  it.runIf(process.platform === "darwin")("rejects macOS ACL grants even with 0700 mode bits", async () => {
+  it("rejects macOS ACL grants even with 0700 mode bits", async (context) => {
+    if (process.platform !== "darwin") context.skip(true, "private_acl_test_unsupported_platform");
     const f = await fixture();
-    const changed = spawnSync("chmod", ["+a", "everyone allow read", f.inputRoot], { cwd: root, encoding: "utf8" });
-    expect(changed.status).toBe(0);
+    setFictionalAcl(f.inputRoot, "everyone allow read", context);
     await expect(validatePrivateRoots(f)).rejects.toThrow("private_permissions");
+  });
+  it("verifies fictional macOS ACL metadata, including deny-only, xattrs and unrecognized rows", () => {
+    // Mock metadata, not host identities; this parser contract runs everywhere.
+    const header = "drwxr-xr-x+ 3 fictional fictional 96 Jan 1 00:00 fictional-directory\n";
+    const deny = " 0: group:everyone deny delete\n";
+    expect(() => validatePrivateAclMetadata(header + deny, true)).not.toThrow();
+    expect(() => validatePrivateAclMetadata(header.replace("+", "@") + deny, true)).not.toThrow();
+    expect(() => validatePrivateAclMetadata(header + " 0: group:everyone inherited deny delete,file_inherit\n", true)).not.toThrow();
+    expect(() => validatePrivateAclMetadata(header + deny)).toThrow("private_permissions");
+    expect(() => validatePrivateAclMetadata(header.replace("+", "@"))).not.toThrow();
+    for (const metadata of [
+      header,
+      header + " 0: group:everyone allow delete_child\n",
+      header.replace("+", "@") + " 0: group:everyone allow delete_child\n",
+      header + " 0: group:everyone grant delete_child\n",
+      header + " 0: group:everyone deny unknown_permission\n",
+      header + " 0: group:everyone deny delete,unknown_flag\n",
+      header + "unrecognized ACL metadata\n",
+      header + " 1: group:everyone deny delete\n",
+      header + deny + " 1: user:fictional allow add_file\n",
+      header + deny + deny,
+      "unknown_mode 3 fictional fictional\n" + deny,
+      null,
+    ]) expect(() => validatePrivateAclMetadata(metadata, true)).toThrow("private_permissions");
+  });
+  it("accepts a verified deny-only higher ancestor ACL but still refuses ACLs on the nearest private root", async (context) => {
+    if (process.platform !== "darwin") context.skip(true, "private_acl_test_unsupported_platform");
+    const f = await fixture(); const ancestor = join(f.dir, "fictional-deny-ancestor"), nearest = join(ancestor, "private-nearest");
+    const inputRoot = join(nearest, "input"), outputRoot = join(nearest, "output");
+    await mkdir(inputRoot, { recursive: true, mode: 0o700 }); await chmod(ancestor, 0o755);
+    setFictionalAcl(ancestor, "everyone deny delete", context);
+    expect(await validatePrivateRoots({ ...f, inputRoot, outputRoot })).toMatchObject({ inputRoot, outputRoot });
+    setFictionalAcl(inputRoot, "everyone deny delete", context);
+    await expect(validatePrivateRoots({ ...f, inputRoot, outputRoot })).rejects.toThrow("private_permissions");
+  });
+  for (const kind of ["input", "output"]) it(`refuses a non-inheriting ancestor ACL above the ${kind} root before input loading`, async (context) => {
+    if (process.platform !== "darwin") context.skip(true, "private_acl_test_unsupported_platform");
+    const f = await fixture(); const ancestor = join(f.dir, "fictional-acl-ancestor"), nearest = join(ancestor, "private-nearest");
+    await mkdir(nearest, { recursive: true, mode: 0o700 }); await chmod(ancestor, 0o755);
+    const inputRoot = kind === "input" ? join(nearest, "input") : f.inputRoot;
+    const outputRoot = kind === "output" ? join(nearest, "output") : f.outputRoot;
+    if (kind === "input") await mkdir(inputRoot, { mode: 0o700 });
+    expect(await validatePrivateRoots({ ...f, inputRoot, outputRoot })).toMatchObject({ inputRoot, outputRoot });
+    // No inheritance flags: the root/nearest directory stays ACL-free. A named
+    // mutation grant on this higher ancestor bypasses its non-writable mode.
+    setFictionalAcl(ancestor, "everyone allow add_file,add_subdirectory,delete_child", context);
+    expect((await lstat(ancestor)).mode & 0o777).toBe(0o755);
+    const loadInputs = vi.fn(), loadModules = vi.fn(), prepareBuild = vi.fn();
+    await expect(privateMain({ private: true, "private-mode": "retrieval", "private-input-root": inputRoot, "private-output-root": outputRoot, "private-store-root": f.storeRoot },
+      { root, env: {}, repositories: f.repositories, loadInputs, loadModules, prepareBuild })).rejects.toThrow("private_permissions");
+    expect(loadInputs).not.toHaveBeenCalled(); expect(loadModules).not.toHaveBeenCalled(); expect(prepareBuild).not.toHaveBeenCalled();
+    expect(await readdir(f.repositories[0])).toEqual([]);
+    await expect(lstat(outputRoot)).rejects.toMatchObject({ code: "ENOENT" });
   });
   it("refuses SDK logging variables of any value before inputs or any admitted Pi runtime construction", async () => {
     const loadInputs = vi.fn(), loadModules = vi.fn(), prepareBuild = vi.fn();

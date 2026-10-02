@@ -52,23 +52,50 @@ export async function privatePath(path, repositories) {
   requireOwned(await lstat(await realpath(ancestor))); requireNoAcl(await realpath(ancestor));
   let parent = dirname(await realpath(ancestor));
   for (;;) {
-    requirePrivateAncestor(await lstat(parent));
+    requirePrivateAncestor(await lstat(parent)); requireNoAcl(parent, true);
     if (dirname(parent) === parent) break;
     parent = dirname(parent);
   }
   return canonical;
 }
 
-/** Metadata-only preflight: all permission/symlink checks precede content reads. */
-function requireNoAcl(path) {
+// Darwin ACL names/permissions are fixed tokens, not translated prose. Reject
+// unknown rows, flags and permissions, including truncated/nonsequential output.
+const denyAclTokens = new Set([
+  "read", "write", "execute", "delete", "append", "readattr", "writeattr",
+  "readextattr", "writeextattr", "readsecurity", "writesecurity", "chown", "synchronize",
+  "list", "search", "add_file", "add_subdirectory", "delete_child",
+  "file_inherit", "directory_inherit", "limit_inherit", "only_inherit", "inherited",
+]);
+/** Pure metadata parser: only higher ancestors may carry verified deny-only
+ * ACLs. Private roots/tree entries remain strict, including harmless denials. */
+export function validatePrivateAclMetadata(metadata, allowDenyOnly = false) {
+  if (typeof metadata !== "string") throw new PrivateError("private_permissions");
+  const [header, ...tail] = metadata.split(/\r?\n/u);
+  const mode = header.split(/\s/u, 1)[0];
+  if (!/^[bcdlps-][rwxStTs-]{9}[+@]?$/u.test(mode)) throw new PrivateError("private_permissions");
+  const rows = tail.filter((line) => line.trim() !== "");
+  if (!rows.length) {
+    if (mode.includes("+")) throw new PrivateError("private_permissions");
+    return;
+  }
+  if (!allowDenyOnly) throw new PrivateError("private_permissions");
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i].match(/^\s*(\d+):\s+(?:user|group):\S+\s+(?:inherited\s+)?deny\s+([a-z_,]+)\s*$/u);
+    if (!row || row[1] !== String(i) || row[2].split(",").some((token) => !denyAclTokens.has(token))) throw new PrivateError("private_permissions");
+  }
+}
+/** Metadata-only preflight; never expose command output or exception text. */
+function requireNoAcl(path, allowDenyOnly = false) {
   if (process.platform === "darwin") {
-    // macOS ACL grants are independent of the POSIX mode bits. Capture only
-    // metadata in memory and reject any ACL; never expose ls output/errors.
     let metadata;
-    try { metadata = execFileSync("/bin/ls", ["-lde", path], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000 }); }
+    try { metadata = execFileSync("/bin/ls", ["-lde", path], {
+      encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000,
+      env: { ...process.env, LC_ALL: "C" },
+    }); }
     catch { throw new PrivateError("private_permissions"); }
-    // An xattr '@' can replace the '+' indicator even when ACL entries exist.
-    if (metadata.split(/\s/u, 1)[0].includes("+") || metadata.split("\n").slice(1).some((line) => /^\s*\d+:/u.test(line))) throw new PrivateError("private_permissions");
+    // An xattr '@' may hide '+', so validate all additional rows too.
+    validatePrivateAclMetadata(metadata, allowDenyOnly);
   }
 }
 export async function validateTree(path) {
