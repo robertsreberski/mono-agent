@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
@@ -21,7 +21,9 @@ import {
   type JournalBrowseSnapshot,
 } from "@mono-agent/memory/bujo";
 
-import { formatMemoryBackground, type LabelRecallStore } from "./memory-guidance.js";
+import { redactJsonValue } from "@mono-agent/observability";
+
+import { formatMemoryBackground, formatMemoryProfile, type LabelRecallStore } from "./memory-guidance.js";
 import { isHostProcessJobWakeRecall } from "./process-jobs-context.js";
 import { readLabelSections, type LabelSectionRequest } from "./memory-label-sections.js";
 import {
@@ -71,6 +73,8 @@ const SHORT_OWNER_QUERY_MAX_CODEPOINTS = 16;
 export interface MemoryRetrievalServiceOptions {
   readonly maxBytes?: number;
   readonly source?: string;
+  readonly contextWindow?: boolean;
+  readonly profileEnabled?: boolean;
 }
 
 export interface SharedMemoryRecallRuntimeExtensionOptions {
@@ -88,19 +92,71 @@ type OriginalRecallSelection =
   | {
       readonly available: true;
       readonly query: string;
-      readonly outcome: Promise<MemoryRecallOutcome>;
     }
   | {
       readonly available: false;
       readonly reason: OriginalRecallUnavailableReason;
     };
 
-interface TurnCache {
+interface SearchCache {
   readonly queries: Map<string, Promise<MemoryRecallOutcome>>;
   readonly expansions: Map<string, Promise<MemoryRecallOutcome>>;
+}
+
+interface TurnCache {
+  search: SearchCache;
   readonly accessedIds: Set<string>;
+  automaticQuery?: string;
+  hasPrior?: boolean;
+  receipt?: { readonly conversationId: string; readonly state: ConversationRecallState;
+    readonly profileFingerprint?: string; readonly lines: readonly string[] };
   original?: OriginalRecallSelection;
   context?: MemoryLoadOptions & { readonly conversationId: string };
+}
+
+const WINDOW_TTL_MS = 30 * 60 * 1000;
+const MAX_CONVERSATIONS = 256;
+const MAX_SERVED_LINES = 256;
+interface ConversationRecallState {
+  previous?: { readonly query: string; readonly at: number };
+  profileFingerprint?: string;
+  readonly served: Set<string>;
+  receiptsKnown: boolean;
+  saturated: boolean;
+}
+const fingerprint = (text: string): string => createHash("sha256").update(text).digest("hex");
+
+/** Keep evidence casing, but measure the exact normalized backend query budget. */
+function boundedAutomaticQuery(text: string, limit: number): string {
+  const points = Array.from(text.normalize("NFKC").trim().replace(/\s+/gu, " ")).slice(0, limit);
+  let low = 0;
+  let high = points.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (Array.from(normalizeQuery(points.slice(0, mid).join(""))).length <= limit) low = mid;
+    else high = mid - 1;
+  }
+  return points.slice(0, low).join("");
+}
+
+/** Remove empty section headers as well as unchanged visible bullet lines. */
+function freshMemoryLines(content: string, exclude: (line: string) => boolean): string {
+  return content.split(/(?=^## )/mu).flatMap((block) => {
+    const lines = block.split("\n");
+    const fresh = new Set(lines.filter((line) => line.startsWith("- ") && !exclude(line)));
+    if (fresh.size === 0) return [];
+    return [lines.filter((line, index) => {
+      if (line.startsWith("- ")) return fresh.has(line);
+      if (line.startsWith("## ")) return true;
+      if (!line.trim()) return false;
+      // A subsection label survives only when its own following bullets survive.
+      for (const next of lines.slice(index + 1)) {
+        if (next.startsWith("- ")) { if (fresh.has(next)) return true; }
+        else if (next.trim()) break;
+      }
+      return false;
+    }).join("\n")];
+  }).join("\n\n");
 }
 
 interface SharedRecallHit {
@@ -131,6 +187,9 @@ export class MemoryRetrievalService implements MemoryStore {
   private readonly maxBytes: number;
   private readonly source: string;
   private readonly turns = new Map<string, TurnCache>();
+  private readonly conversations = new Map<string, ConversationRecallState>();
+  private readonly contextWindow: boolean;
+  private readonly profileEnabled: boolean;
   readonly persistCompletedTurn?: (turn: MemoryCompletedTurn) => Promise<MemoryCompletedTurnResult>;
 
   constructor(
@@ -139,6 +198,8 @@ export class MemoryRetrievalService implements MemoryStore {
   ) {
     this.maxBytes = Math.max(1, Math.min(options.maxBytes ?? AUTO_RECALL_MAX_BYTES, AUTO_RECALL_MAX_BYTES));
     this.source = options.source ?? "memory";
+    this.contextWindow = options.contextWindow === true && store.tier?.() === "bujo";
+    this.profileEnabled = options.profileEnabled === true && store.tier?.() === "bujo";
     const persistCompletedTurn = store.persistCompletedTurn;
     if (persistCompletedTurn !== undefined) {
       // Preserve capability detection: stores without the strong method leave
@@ -147,15 +208,129 @@ export class MemoryRetrievalService implements MemoryStore {
     }
   }
 
-  async load(
+  async load(conversationId: string, query?: string, options: MemoryLoadOptions = {}): Promise<MemoryBlock | undefined> {
+    if (!this.contextWindow && !this.profileEnabled) return await this.loadLegacy(conversationId, query, options);
+    const ephemeral = options.turnId === undefined;
+    const turnId = options.turnId ?? `uncached:${randomUUID()}`;
+    const turn = this.turnCache(turnId);
+    const conversationKey = fingerprint(conversationId);
+    const isolated = options.isolated === true;
+    if (isolated) this.breakQueryAdjacency(conversationId);
+    let state = isolated ? undefined : this.conversations.get(conversationKey);
+    if (state === undefined) {
+      state = { served: new Set(), receiptsKnown: false, saturated: false };
+    }
+    if (!isolated) {
+      this.conversations.delete(conversationKey);
+      this.conversations.set(conversationKey, state);
+      while (this.conversations.size > MAX_CONVERSATIONS) this.conversations.delete(this.conversations.keys().next().value!);
+    }
+    const owner = options.ownerTurn === true && !isHostProcessJobWakeRecall();
+    if (!owner) delete state.previous; // Any verified non-owner/trigger interrupts adjacency.
+    const current = this.contextWindow
+      ? boundedAutomaticQuery(query ?? "", 1536)
+      : normalizeEvidenceQuery(query ?? "");
+    const ownerQuery = (options.ownerQuery ?? query ?? "").normalize("NFKC").trim().replace(/\s+/gu, " ");
+    if (turn.automaticQuery === undefined) {
+      const at = options.hostInstant === undefined ? Date.now() : Date.parse(options.hostInstant);
+      // Lazy expiry also drops stale predecessor text from other bounded entries.
+      for (const cached of this.conversations.values()) {
+        if (cached.previous !== undefined && Number.isFinite(at)
+          && at - cached.previous.at >= WINDOW_TTL_MS) delete cached.previous;
+      }
+      const previous = state.previous;
+      const qualifies = this.contextWindow && owner && ownerQuery.length > 0 && current.length > 0 && previous !== undefined
+        && Number.isFinite(at) && at >= previous.at && at - previous.at < WINDOW_TTL_MS;
+      // No transcript or assistant/tool content; only the preceding redacted owner query.
+      turn.hasPrior = qualifies;
+      turn.automaticQuery = qualifies
+        ? `${boundedAutomaticQuery(current, 1023)}\n${boundedAutomaticQuery(previous.query, 512)}` : current;
+      if (this.contextWindow && owner && ownerQuery && !isolated && Number.isFinite(at)) {
+        const redacted = redactJsonValue(ownerQuery, 32_000, { contentPatternRedaction: true });
+        state.previous = { query: boundedAutomaticQuery(typeof redacted === "string" ? redacted : "", 512), at };
+      } else delete state.previous;
+    }
+    if (options.retainedContext !== true && !isolated) {
+      // A distinct epoch object fences late receipts from an abandoned reseed.
+      state = { served: new Set(), receiptsKnown: false, saturated: false,
+        ...(state.previous === undefined ? {} : { previous: state.previous }) };
+      this.conversations.set(conversationKey, state);
+    }
+    // Empty/non-owner cold invocations still establish that the cache observed
+    // this provider epoch, without claiming any lines were delivered.
+    if (options.retainedContext !== true && !isolated) turn.receipt = { conversationId, state, lines: [] };
+    const suppress = options.retainedContext === true && (!state.receiptsKnown || state.saturated);
+    try {
+      let profile: ReturnType<typeof formatMemoryProfile> | undefined;
+      if (owner && this.profileEnabled) {
+        try {
+          profile = formatMemoryProfile(this.store, options.hostLocalDate ?? options.hostDate ?? new Date().toISOString().slice(0, 10), this.maxBytes, options.hostInstant);
+        } catch { options.onWarning?.("memory_profile_unavailable"); }
+      }
+      let recall: MemoryBlock | undefined;
+      try {
+        recall = await this.loadLegacy(conversationId, query, { ...options, turnId }, turn.automaticQuery, turn.hasPrior, new Set(profile?.entries.map((entry) => entry.id)));
+      } catch (error) {
+        if (!this.profileEnabled || !owner) throw error;
+        options.onWarning?.("memory_recall_unavailable");
+      }
+      if (!owner || suppress) return undefined;
+      const profileChanged = profile !== undefined && profile.fingerprint !== state.profileFingerprint;
+      const emptyReplacement = profileChanged && profile!.content.length === 0 && state.profileFingerprint !== undefined
+        ? "## Owner profile (current owner-stated background)\n- No active supported profile entries." : "";
+      const profileContent = profileChanged ? profile!.content || (Buffer.byteLength(emptyReplacement, "utf8") <= this.maxBytes ? emptyReplacement : "") : undefined;
+      // Even a changed profile excludes identical lines from the similarity/background block.
+      const profileLines = new Set(profile?.entries.map((entry) => `- ${entry.text}`));
+      const recallContent = recall === undefined ? "" : freshMemoryLines(recall.content,
+        (line) => profileLines.has(line) || (options.retainedContext === true && state!.served.has(fingerprint(line))));
+      let content = [profileContent, recallContent].filter(Boolean).join("\n\n");
+      // Whole-entry byte budget; the Unicode profile budget is enforced separately.
+      const omittedRecall = Buffer.byteLength(content, "utf8") > this.maxBytes;
+      if (omittedRecall) content = profileContent || recallContent;
+      if (!isolated) turn.receipt = { conversationId, state, ...(profileChanged ? { profileFingerprint: profile!.fingerprint } : {}),
+        lines: content.split("\n").filter((line) => line.startsWith("- ")).map(fingerprint) };
+      return content ? { kind: "markdown", source: this.source, content, traceContent: false,
+        truncated: omittedRecall || (profile?.truncated ?? false) || (recall?.truncated ?? false) } : undefined;
+    } finally { if (ephemeral) this.releaseTurn(turnId); }
+  }
+
+  recordInvocation(turnId: string): void {
+    const receipt = this.turns.get(turnId)?.receipt;
+    if (receipt === undefined || this.conversations.get(fingerprint(receipt.conversationId)) !== receipt.state) return;
+    const state = receipt.state;
+    state.receiptsKnown = true;
+    if (receipt.profileFingerprint !== undefined) state.profileFingerprint = receipt.profileFingerprint;
+    for (const line of receipt.lines) {
+      if (state.served.size >= MAX_SERVED_LINES && !state.served.has(line)) { state.saturated = true; break; }
+      state.served.add(line);
+    }
+  }
+
+  breakQueryAdjacency(conversationId: string): void {
+    const state = this.conversations.get(fingerprint(conversationId));
+    if (state !== undefined) delete state.previous;
+  }
+
+  resetRecallContext(conversationId?: string): void {
+    if (conversationId === undefined) { this.conversations.clear(); this.turns.clear(); }
+    else {
+      this.conversations.delete(fingerprint(conversationId));
+      for (const [id, turn] of this.turns) if (turn.context?.conversationId === conversationId) this.turns.delete(id);
+    }
+  }
+
+  private async loadLegacy(
     conversationId: string,
     query?: string,
     options: MemoryLoadOptions = {},
+    automaticQuery?: string,
+    hasPrior = false,
+    profileIds: ReadonlySet<string> = new Set(),
   ): Promise<MemoryBlock | undefined> {
     // Host-issued wake identity is bound to the exact responder invocation,
     // not inferred from the query or an untrusted client-supplied JSON field.
     const hostWake = isHostProcessJobWakeRecall();
-    const evidenceQuery = normalizeEvidenceQuery(query ?? conversationId);
+    const evidenceQuery = normalizeEvidenceQuery(automaticQuery ?? query ?? conversationId);
     const originalQuestion = query === undefined ? "" : normalizeEvidenceQuery(query);
     const ephemeral = options.turnId === undefined;
     const turnId = options.turnId ?? `uncached:${randomUUID()}`;
@@ -180,16 +355,13 @@ export class MemoryRetrievalService implements MemoryStore {
         const selection: OriginalRecallSelection = {
           available: true,
           query: originalQuestion,
-          outcome: this.recallOutcomeInTurn(turn, evidenceQuery, {
-            topK: AUTO_RECALL_BACKEND_HITS,
-          }),
         };
         // The latest load owns the selection. Explicit tool calls never replace it.
         turn.original = selection;
         try {
-          outcome = await selection.outcome;
+          outcome = await this.recallOutcomeInTurn(turn, evidenceQuery, { topK: AUTO_RECALL_BACKEND_HITS });
         } catch (error) {
-          if (this.turns.get(turnId) === turn && turn.original === selection) {
+          if (evidenceQuery === originalQuestion && this.turns.get(turnId) === turn && turn.original === selection) {
             turn.original = { available: false, reason: "lookup_failed" };
           }
           throw error;
@@ -212,11 +384,11 @@ export class MemoryRetrievalService implements MemoryStore {
         ? options.hostInstant : undefined;
       // Preserve exact-name cards and labelled background on short owner turns;
       // suppress only unsolicited similarity-selected lines.
-      const shortOwnerQuery = query !== undefined
+      const shortOwnerQuery = !hasPrior && query !== undefined
         && Array.from(query.normalize("NFC").trim()).length <= SHORT_OWNER_QUERY_MAX_CODEPOINTS;
       const hits = shortOwnerQuery ? [] : selectPossiblyRelevantRecallHits(outcome.hits, {
         ...(asOf === undefined ? {} : { asOf }), ...(now === undefined ? {} : { now }),
-      });
+      }).filter((hit) => !profileIds.has(hit.record.id));
       const budget = Math.min(this.maxBytes, POSSIBLY_RELEVANT_MAX_BYTES);
       const block = hits.length > 0
         ? formatPossiblyRelevantBlock(hits, recallAttributions(this.store, hits), budget, asOf, now) : undefined;
@@ -224,7 +396,7 @@ export class MemoryRetrievalService implements MemoryStore {
       try {
         const available = this.maxBytes - (block === undefined ? 0 : Buffer.byteLength(block.content, "utf8") + 2);
         background = formatMemoryBackground(this.store, evidenceQuery, conversationId, options, outcome.hits, available,
-          new Set(block?.shown.map((hit) => hit.record.id) ?? []));
+          new Set([...profileIds, ...block?.shown.map((hit) => hit.record.id) ?? []]));
       } catch {
         // Corrupt or temporarily unavailable labels must not erase ordinary recall.
         background = undefined;
@@ -309,6 +481,18 @@ export class MemoryRetrievalService implements MemoryStore {
     this.turns.clear();
   }
 
+  private invalidateRecallQueries(): void {
+    if (!this.contextWindow && !this.profileEnabled) { this.releaseAllTurns(); return; }
+    // Writes invalidate search results, not pending or already-prepared delivery
+    // receipts. Keep the turn object, but replace its search generation so work
+    // already in flight cannot populate the current expansion cache.
+    for (const turn of this.turns.values()) {
+      turn.search = { queries: new Map(), expansions: new Map() };
+      turn.accessedIds.clear();
+      delete turn.original;
+    }
+  }
+
   supportsGraphExpansion(): boolean {
     return this.store.expandGraph !== undefined && this.store.supportsGraphExpansion?.() !== false;
   }
@@ -374,14 +558,14 @@ export class MemoryRetrievalService implements MemoryStore {
     if (!this.supportsRememberDetails()) throw new Error("memory: Remember details require writable BuJo memory.");
     try {
       const result = await this.store.rememberDetails!(conversationId, text, details);
-      if (!result.duplicate || result.supersededId !== undefined) this.releaseAllTurns();
+      if (!result.duplicate || result.supersededId !== undefined) this.invalidateRecallQueries();
       return result;
     } catch (error) {
       // A published outbox intent can already have invalidated the old note
       // before replay reports a partial projection failure.
       if (typeof error === "object" && error !== null
         && ((error as { rememberIntentWritten?: unknown }).rememberIntentWritten === true
-          || (error as { canonicalWritten?: unknown }).canonicalWritten === true)) this.releaseAllTurns();
+          || (error as { canonicalWritten?: unknown }).canonicalWritten === true)) this.invalidateRecallQueries();
       throw error;
     }
   }
@@ -409,7 +593,7 @@ export class MemoryRetrievalService implements MemoryStore {
     // An already-stored fact changed nothing durable, so leave the caches
     // alone: clearing them there would make concurrent turns repeat identical
     // backend searches and re-record access telemetry.
-    if (!result.duplicate) this.releaseAllTurns();
+    if (!result.duplicate) this.invalidateRecallQueries();
     return result;
   }
 
@@ -428,7 +612,10 @@ export class MemoryRetrievalService implements MemoryStore {
     // Raw backend lookup remains normalized/shared, while graph expansion has
     // its own evidence-preserving key below. Capitalization is a precision
     // signal for query-local entity references and must reach graph policy.
-    let lookup = turn.queries.get(backendQuery);
+    // Capture this generation before awaiting the lookup. A write can replace
+    // turn.search while this call is pending; its late expansion stays here.
+    const search = turn.search;
+    let lookup = search.queries.get(backendQuery);
     if (lookup === undefined) {
       lookup = this.store.recallWithOutcome === undefined
         ? Promise.resolve(
@@ -440,13 +627,13 @@ export class MemoryRetrievalService implements MemoryStore {
               trackAccess: false,
             }),
           );
-      turn.queries.set(backendQuery, lookup);
+      search.queries.set(backendQuery, lookup);
     }
     const limit = clampLimit(options.topK, 8);
     const direct = await lookup;
     if (options.expandHops === 1 && this.supportsGraphExpansion() && this.store.expandGraph !== undefined) {
       const expansionKey = `${evidenceQuery}\0${limit}`;
-      let expanded = turn.expansions.get(expansionKey);
+      let expanded = search.expansions.get(expansionKey);
       if (expanded === undefined) {
         expanded = Promise.resolve(this.store.expandGraph(evidenceQuery, direct.hits, { topK: limit }))
           .then((hits) => ({
@@ -454,7 +641,7 @@ export class MemoryRetrievalService implements MemoryStore {
             retrievalMode: direct.retrievalMode,
             ...(direct.degradation === undefined ? {} : { degradation: direct.degradation }),
           }));
-        turn.expansions.set(expansionKey, expanded);
+        search.expansions.set(expansionKey, expanded);
       }
       return await expanded;
     }
@@ -472,7 +659,7 @@ export class MemoryRetrievalService implements MemoryStore {
   private turnCache(turnId: string): TurnCache {
     let cache = this.turns.get(turnId);
     if (cache !== undefined) return cache;
-    cache = { queries: new Map(), expansions: new Map(), accessedIds: new Set() };
+    cache = { search: { queries: new Map(), expansions: new Map() }, accessedIds: new Set() };
     this.turns.set(turnId, cache);
     return cache;
   }

@@ -44,7 +44,7 @@ import {
 } from "./app-config.js";
 import { legacyEmbeddingModelOption } from "./memory-embedding-identity.js";
 import { resolveMemoryRecallSettings } from "./memory-recall-settings.js";
-import { resolveMemoryEntities, safeLine } from "./memory-guidance.js";
+import { formatMemoryProfile, resolveMemoryEntities, safeLine } from "./memory-guidance.js";
 import type {
   MemoryRecallBujoSettings,
   MemoryRecallSettings,
@@ -183,6 +183,10 @@ interface PreviewRecallHit {
 export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<number> {
   const usageError = memoryCommandUsageError(input);
   if (usageError !== undefined) {
+    if (input.positionals[0] === "profile") {
+      write(input.json, { code: "memory_profile_usage" }, () => "memory_profile_usage\n");
+      return 2;
+    }
     if (input.positionals[0] === "adopt-replay") {
       writeReplayAdoptionCliFailure(input.json, "replay_adoption_usage");
       return 2;
@@ -215,6 +219,10 @@ export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<nu
   const [rawSubcommand, ...rest] = input.positionals;
   const subcommand = rawSubcommand ?? "stats";
   if (context.config.memory === undefined) {
+    if (subcommand === "profile") {
+      write(input.json, { code: "memory_profile_requires_bujo" }, () => "memory_profile_requires_bujo\n");
+      return 1;
+    }
     if (subcommand === "audit" && input.strict) {
       const result = notConfiguredHealthReport();
       write(input.json, result, () => renderStrictAudit(result));
@@ -268,6 +276,8 @@ export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<nu
     }
     case "top":
       return await runTop(context, input);
+    case "profile":
+      return await runProfileShow(context, input);
     case "labels":
       return await runLabelInventory(context, input);
     case "entities":
@@ -300,7 +310,7 @@ export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<nu
       return await runMemoryBundleImport(context, rest, input);
     default:
       process.stderr.write(ui.errorLine(`Unknown memory subcommand \`${subcommand}\`.`));
-      process.stderr.write(ui.hint("Expected stats, today, show <date>, search <query>, top, labels, entities --duplicates, lessons --propose, audit, inspect [id], retry [id], resolve <id> <reason>, rebuild, rollback, adopt-replay, forget prepare|apply|restore, export, or import prepare|apply|restore."));
+      process.stderr.write(ui.hint("Expected stats, today, show <date>, search <query>, top, labels, profile show, entities --duplicates, lessons --propose, audit, inspect [id], retry [id], resolve <id> <reason>, rebuild, rollback, adopt-replay, forget prepare|apply|restore, export, or import prepare|apply|restore."));
       return 2;
   }
 }
@@ -350,6 +360,8 @@ function memoryCommandUsageError(input: RunMemoryCommandInput): string | undefin
   }
   if (input.duplicates === true && subcommand !== "entities") return "--duplicates requires `mono-agent memory entities`.";
   switch (subcommand) {
+    case "profile":
+      return rest.length === 1 && rest[0] === "show" ? undefined : "memory_profile_usage";
     case "labels":
       return rest.length === 0 ? undefined : "Usage: mono-agent memory labels [--kind k] [--about entity] [--scope s] [--limit N] [--json].";
     case "entities":
@@ -1804,6 +1816,33 @@ async function runLessonProposal(context: MemoryCommandContext, input: RunMemory
 }
 
 /** Reads the active SQLite projection only; never acquires the writer lease. */
+async function runProfileShow(context: MemoryCommandContext, input: RunMemoryCommandInput): Promise<number> {
+  const memory = context.config.memory;
+  if (memory?.mode !== "bujo") {
+    write(input.json, { code: "memory_profile_requires_bujo" }, () => "memory_profile_requires_bujo\n");
+    return 1;
+  }
+  try {
+    const { resolveActiveMemoryDbPath } = await loadBujoModule();
+    const { openMemoryDb } = await loadMemoryStoreModule();
+    const path = await resolveActiveMemoryDbPath(memory.path);
+    const db = await exists(path) ? openMemoryDb({ path, readOnly: true }) : undefined;
+    try {
+      const now = new Date();
+      const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+      const profile = formatMemoryProfile(db === undefined ? {} : {
+        guidanceForScope: (scope) => db.guidanceForScope(scope), labelsForEntity: (id, asOf) => db.labelsForEntity(id, asOf),
+      }, date, memory.maxBytes, now.toISOString());
+      write(input.json, { content: profile.content, sources: profile.entries.map((entry) => entry.id), truncated: profile.truncated },
+        () => `${profile.content || "No active supported profile entries."}\n`);
+      return 0;
+    } finally { db?.close(); }
+  } catch {
+    write(input.json, { code: "memory_profile_unavailable" }, () => "memory_profile_unavailable\n");
+    return 1;
+  }
+}
+
 async function readLabelIndex(context: MemoryCommandContext, input: RunMemoryCommandInput, operation: "labels" | "lessons"): Promise<number> {
   const memory = context.config.memory;
   if (memory === undefined) { writeNoMemory(context.configPath, input.json); return 0; }
@@ -1983,6 +2022,10 @@ async function loadMemoryCommandContext(
       config: await loadAppCoreConfig({ env: input.env, cwd, configPath }),
     };
   } catch (error) {
+    if (input.positionals[0] === "profile") {
+      write(input.json, { code: "memory_profile_config_invalid" }, () => "memory_profile_config_invalid\n");
+      return { code: 1 };
+    }
     if (input.positionals[0] === "adopt-replay") {
       // Config/native failures can contain the config path or invalid private
       // values. Adoption always exposes the same closed error contract.

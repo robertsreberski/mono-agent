@@ -734,3 +734,17 @@ The config-aware `mono-agent memory rebuild` / `rollback` read the tier, embeddi
 - [Config blueprint](/config/blueprint/) — the full annotated `memory` block.
 - [Operational environment variables](/config/env-vars/) — secret references and process plumbing.
 - [CLI reference](/observability/cli-reference/) — the broader `mono-agent` command surface.
+
+## Inspect the derived owner profile
+
+```bash
+mono-agent memory profile show
+mono-agent memory profile show --json
+```
+
+This BuJo-only read-only view uses the same deterministic selection and budgets
+as `memory.profile.enabled`, without embeddings or a model. It is available
+before enabling automatic injection. JSON includes supporting memory IDs for
+private inspection; the model payload does not include IDs. The view has no
+independent edit/restore authority: change supporting canonical memories through
+reviewed `memory curate` operations. Profile failures return stable codes only.

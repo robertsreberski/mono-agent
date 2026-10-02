@@ -11,6 +11,22 @@
   verified deny-only ACLs on higher ancestors and report daily yields as point
   estimates without confidence intervals.
 
+- Keep graph-expanded recall fresh after memory writes, even when a pre-write
+  search finishes afterward, without discarding pending invocation receipts.
+
+- Add default-off BuJo `memory.recall.contextWindow` and
+  `memory.profile.enabled` for bounded owner follow-up recall and an
+  embedding-independent, 600-code-point owner profile. Suppress unchanged
+  automatic context on retained sessions using invocation receipts; add the
+  read-only `memory profile show` inspection view.
+- Keep memory recall and consolidation failure warnings content-free with
+  stable codes instead of exception text, including when both recall flags are
+  off.
+- Fix owner recall bookkeeping across isolated triggers, continuations and
+  Remember writes; exclude attachment evidence from follow-up query context,
+  enforce case-expanded query budgets, honor instant-aware profile expiry and
+  finish shutdown when a memory reset hook fails.
+
 - Add opt-in BuJo `tools.conversationSearch.datedSnippets` for owner-web
   `SearchConversations` message-date and role filters, bounded dated evidence
   and console links. Keep legacy search, the console UI and Telegram unchanged.

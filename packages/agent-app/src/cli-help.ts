@@ -263,6 +263,7 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
       "mono-agent memory [stats|today|show <date>|search <query>|top|audit|inspect [id]|retry [id]|resolve <id> <reason>|rebuild|rollback|adopt-replay]\n" +
       "mono-agent memory labels [--kind fact|preference|lesson] [--about entity] [--scope scope] [--limit 1..1000] [--json]\n" +
       "mono-agent memory lessons --propose [--json]\n" +
+      "mono-agent memory profile show [--json]\n" +
       "mono-agent memory entities --duplicates [--limit N] [--json]\n" +
       "mono-agent memory curate prepare --plan <file> [--model provider:model] [--limit N] [--select recent,repeated,risky,oldest] [--owner-backfill] [--link-people] [--dry-run]\n" +
       "mono-agent memory curate prepare --plan <file> --tasks-to-notes [--before <date>] [--capture-only] [--dry-run]\n" +
@@ -438,6 +439,7 @@ export function renderMemorySubcommandHelp(positionals: readonly string[]): stri
     "adopt-replay": "adopt-replay", export: "export --bundle <dir> [--include-extras] [--allow-pending]",
   };
   const nested: Readonly<Record<string, string>> = {
+    "profile show": "profile show",
     "curate prepare": "curate prepare --plan <file> [--limit N] [--model provider:model] [--dry-run]",
     "curate review": "curate review --plan <file> [--accept category,...] [--reject category,...]",
     "curate apply": "curate apply --plan <file>", "curate restore": "curate restore --backup <dir>",

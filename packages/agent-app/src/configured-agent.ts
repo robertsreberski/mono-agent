@@ -1903,6 +1903,8 @@ function configuredMemoryForHarness(
   return new MemoryRetrievalService(memory, {
     maxBytes: config.memory.maxBytes,
     source: "memory-bujo",
+    contextWindow: config.memory.mode === "bujo" && config.memory.recall?.contextWindow === true,
+    profileEnabled: config.memory.mode === "bujo" && config.memory.profile?.enabled === true,
   });
 }
 

@@ -6,6 +6,8 @@ export interface MarkdownContextBlock {
   readonly kind: 'markdown';
   readonly content: string;
   readonly source?: string;
+  /** Host trace projection only; never affects model-visible content. */
+  readonly traceContent?: false;
 }
 
 export interface JsonContextBlock {

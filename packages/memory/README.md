@@ -87,6 +87,12 @@ The config-first guided wizard and provider-native model discovery/probe live in
 
 ## Architecture
 
+Label readers also expose source type and lifecycle fields so the app's optional
+BuJo profile can select active open owner-stated notes without semantic lookup.
+The profile remains a deterministic app-owned projection of canonical labels,
+not a separate memory store; Lite/Journal behavior and stored bytes are unchanged.
+
+
 ### Data flow
 
 The normal write and read paths are:

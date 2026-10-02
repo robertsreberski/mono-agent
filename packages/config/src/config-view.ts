@@ -106,6 +106,8 @@ export const CORE_CONFIG_FIELD_IDS = {
   "memory.llm.timeoutMs": true,
   "memory.llm.endpoint": true,
   "memory.recallTool.enabled": true,
+  "memory.recall.contextWindow": true,
+  "memory.profile.enabled": true,
   "memory.rememberTool.enabled": true,
   "memory.consolidation.enabled": true,
   "memory.consolidation.cron": true,
@@ -542,6 +544,12 @@ function buildMemorySection(input: BuildMonoAgentConfigViewInput): ConfigViewSec
       label: "Write mode",
       value: memory.writeMode,
       jsonPresent: json.memory?.writeMode !== undefined,
+    }),
+    ...(["recall", "profile"] as const).flatMap((key) => {
+      const id = key === "recall" ? "memory.recall.contextWindow" : "memory.profile.enabled";
+      const enabled = key === "recall" ? memory.recall?.contextWindow : memory.profile?.enabled;
+      return [toField({ id, label: key === "recall" ? "Owner query window" : "Owner profile",
+        value: enabled === true ? "on" : "off", jsonPresent: json.memory?.[key] !== undefined })];
     }),
     ...(memory.capture?.cron === undefined ? [] : [toField({
       id: "memory.capture.cron",

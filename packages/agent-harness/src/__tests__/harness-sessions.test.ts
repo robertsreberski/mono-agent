@@ -2117,6 +2117,7 @@ describe("coordinated terminal recovery", () => {
     const native = new Map<string, string[]>();
     const prefixes: string[][] = [];
     const receipts: RuntimeResult["providerSessionRecovery"][] = [];
+    const memoryInvocationReceipts: string[] = [];
     let selectedModel: RuntimeRunOptions["model"] = model;
     let outcome: "success" | "cancelled" | "provider_unavailable" | "context_limit" = "success";
     let controller = new AbortController();
@@ -2156,9 +2157,9 @@ describe("coordinated terminal recovery", () => {
     const sidecar = toolHistoryStatusSpy(identityPath, []);
     const finishRun = sidecar.writer.finishRun;
     sidecar.writer.finishRun = async (...args) => { if (failSidecar) throw new Error("injected sidecar failure"); await finishRun(...args); };
-    const makeHarness = () => createAgentHarness({ identityPath, model, runtime, runtimeOptionsForRequest: () => ({ runtimeOptions: { model: selectedModel } }), historyStore, session: { ...session, ...sessionOverrides }, toolHistory: sidecar, piSessionsRoot: join(root, "pi") });
+    const makeHarness = () => createAgentHarness({ identityPath, model, runtime, memory: { load: async () => undefined, recordInvocation: (turnId) => memoryInvocationReceipts.push(turnId) }, runtimeOptionsForRequest: () => ({ runtimeOptions: { model: selectedModel } }), historyStore, session: { ...session, ...sessionOverrides }, toolHistory: sidecar, piSessionsRoot: join(root, "pi") });
     let harness = makeHarness();
-    return { fake, retired, native, prefixes, receipts, historyStore, events, runtime,
+    return { fake, retired, native, prefixes, receipts, memoryInvocationReceipts, historyStore, events, runtime,
       cancel() { controller.abort(new Error("injected cancel")); },
       rejectCommit() { failCommit = true; },
       healCommit() { failCommit = false; },
@@ -2192,6 +2193,7 @@ describe("coordinated terminal recovery", () => {
       await f.run(outcome, "interrupted");
       await f.run("success", "next");
       expect(f.receipts).toHaveLength(1);
+      expect(f.memoryInvocationReceipts).toHaveLength(3); // success, certified recovery, success
       expect(new Set(f.fake.calls.map((call) => call.options.sessionId)).size).toBe(1);
       expect(f.prefixes[2]!.slice(0, f.prefixes[1]!.length)).toEqual(f.prefixes[1]);
       expect(f.prefixes[2]).toHaveLength(f.prefixes[1]!.length + 1); // no host note

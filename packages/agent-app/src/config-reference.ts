@@ -933,6 +933,11 @@ function setMemoryTierSchema(root: Record<string, JsonSchema>): void {
         },
       },
     }),
+    ...(["recall", "profile"] as const).map((key): JsonSchema => ({
+      if: { required: [key], properties: { [key]: { required: [key === "recall" ? "contextWindow" : "enabled"],
+        properties: { [key === "recall" ? "contextWindow" : "enabled"]: { const: true } } } } },
+      then: { required: ["mode"], properties: { mode: { const: "bujo" } } },
+    })),
     {
       if: propertyPresentSchema("capture"),
       then: { properties: { mode: { const: "bujo" }, writeMode: { const: "capture" } }, required: ["mode", "writeMode"] },
@@ -1422,6 +1427,7 @@ function inferType(id: string): ConfigReferenceType {
   ].includes(id)) {
     return "integer";
   }
+  if (id === "memory.recall.contextWindow" || id === "memory.profile.enabled") return "boolean";
   if (id === "memory.capture.cron" || id === "memory.capture.webhook") return "boolean";
   if (id === "providers.piNative.promptCacheDiagnostics") return "boolean";
   if (id === "runtime.compaction.fixedOverheadEnabled") {
@@ -1503,6 +1509,8 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "memory.llm.trace": true,
     "memory.llm.timeoutMs": 60_000,
     "memory.recallTool.enabled": true,
+    "memory.recall.contextWindow": false,
+    "memory.profile.enabled": false,
   "memory.rememberTool.enabled": true,
     "memory.consolidation.enabled": true,
     "memory.consolidation.cron": "0 */2 * * *",
@@ -1684,6 +1692,8 @@ function descriptionFor(id: string): string {
   if (id === "tools.conversationSearch.datedSnippets") return "Opt in to dated SearchConversations message evidence on verified owner web turns. Requires local BuJo memory; disabled by default. Telegram and the console UI keep legacy search. No new index or stored history fields.";
   if (id === "memory.capture.cron") return "Set false to skip automatic capture and raw audit for host-identified cron turns (including run-now); other turns and explicit Remember writes are unchanged. When Remember is enabled, this turn gets host-injected manual memory guidance. Unset preserves capture.";
   if (id === "memory.capture.webhook") return "Set false to skip automatic capture and raw audit for host-identified webhook turns; other turns and explicit Remember writes are unchanged. When Remember is enabled, this turn gets host-injected manual memory guidance. Unset preserves capture.";
+  if (id === "memory.recall.contextWindow") return "BuJo-only, default-off preceding-owner-query window for automatic recall. Volatile, redacted, 30-minute TTL; prior at most 512 and total at most 1536 Unicode code points. Explicit MemoryRecall keeps the current query.";
+  if (id === "memory.profile.enabled") return "BuJo-only, default-off deterministic owner-stated label profile, at most 600 Unicode code points. Independent of embeddings. Warm provider context suppresses unchanged profile/served lines using invocation receipts; receipt loss conservatively suppresses automatic reinjection until a cold reseed.";
   if (id === "memory.capture.focus") return "Operator guidance (at most 2048 UTF-8 bytes) narrows BuJo capture extraction and review; it cannot override host safety or the strict JSON contract. Requires mode bujo and writeMode capture.";
   if (id === "memory.capture.only") return "Keep automatic capture memories only when a host-accepted label matches one of these kinds. An empty array drops all automatic captures; unset preserves current behavior. Remember writes are unaffected. Requires mode bujo and writeMode capture.";
   if (id === "memory.capture.reconcileModel") return "Optional validated agent-host runtime model reference for the capture reconciliation classifier only. Unset uses memory.llm for extraction, review and reconciliation. Requires mode bujo and writeMode capture; failures do not fall back to the capture model.";

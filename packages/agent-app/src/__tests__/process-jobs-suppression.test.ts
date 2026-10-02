@@ -11,6 +11,27 @@ const request = (key?: string) => ({
 });
 
 describe("exact process-job wake silence", () => {
+  it("breaks the preceding owner query on an exact host-bound process-job wake", async () => {
+    const queries: string[] = [];
+    const memory = new MemoryRetrievalService({ tier: () => "bujo", async load() { return undefined; }, async close() {},
+      async recall(query) { queries.push(query); return []; } } as SharedRecallStore, { contextWindow: true });
+    let turn = 0;
+    const responder = bindProcessJobWakeContextToResponder({ async respond(input) {
+      await memory.load(input.conversationId, input.text, { turnId: `fictional-${++turn}`, ownerTurn: true,
+        hostInstant: "2026-04-03T10:00:00.000Z" });
+      return { text: "Fictional response." };
+    } });
+    await responder.respond({ ...request(), text: "Describe the ceramic glaze materials" }, stream);
+    const key = "process-job:fictional-adjacency";
+    await runWithProcessJobWakeContext({ jobId: "fictional-adjacency", chainDepth: 1 }, async () => {
+      await responder.respond({ ...request(key), text: "FICTIONAL_SYNTHESIS_PAYLOAD" }, stream);
+    }, key);
+    await responder.respond({ ...request(), text: "And now?" }, stream);
+    expect(queries.at(-1)).toBe("and now?");
+    expect(queries.at(-1)).not.toContain("ceramic");
+    expect(queries.at(-1)).not.toContain("fictional_synthesis");
+  });
+
   it.each(["slack:C1:1.1", "telegram:42", "web:thread", "whatsapp:123@s.whatsapp.net"])("suppresses only the exact active delivery in %s", async (conversationId) => {
     const key = "process-job:silent";
     const responder = bindProcessJobWakeContextToResponder({ respond: async () => ({ text: "NOTHING_TO_REPORT" }) });
@@ -60,10 +81,10 @@ describe("exact process-job wake silence", () => {
     expect(consumeSilentProcessJobWake(key)).toBe(false);
   });
 
-  it("suppresses recall only for privately bound host wakes, leaving capture and explicit recall intact", async () => {
+  it.each([false, true])("suppresses recall only for privately bound host wakes with opt-ins %s, leaving capture and explicit recall intact", async (enabled) => {
     const hit = { score: 0.95, record: { id: "tea", text: "Morgan likes tea.", type: "note" as const, status: "open" as const } };
     const memory = new MemoryRetrievalService({ load: async () => undefined, recall: async () => [hit],
-      close: async () => undefined } as SharedRecallStore);
+      tier: () => "bujo", close: async () => undefined } as SharedRecallStore, { contextWindow: enabled, profileEnabled: enabled });
     const observed: Array<{ capture: string | undefined; automatic: boolean }> = [];
     let ordinal = 0;
     const responder = bindProcessJobWakeContextToResponder({ respond: async (input) => {

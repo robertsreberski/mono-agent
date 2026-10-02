@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import type { MemoryLoadOptions } from "@mono-agent/agent-contracts";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
 
 import { createAgentHarness, createInMemoryHistoryStore } from "../index.js";
@@ -62,6 +63,31 @@ function request(conversationId: string, userMessage = "hello") {
 }
 
 describe("AgentHarness proactive session isolation", () => {
+  it("distinguishes a warm owner epoch from an isolated cron and preserves subsequent warm memory receipts", async () => {
+    const identityPath = await identityFixture();
+    const loads: MemoryLoadOptions[] = [];
+    const receipts: string[] = [];
+    const fake = createSessionFakeRuntime(async (_prompt, options) => ({ text: "Fictional response.",
+      providerSessionId: options.sessionKeepAlive ? "shared-fictional-session" : "isolated-fictional-session" }));
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session: isolatingSession,
+      memory: { async load(_id, _query, options) { loads.push(options ?? {}); return undefined; },
+        recordInvocation: (turnId) => receipts.push(turnId) },
+    });
+    const owner = () => ({ ...request("owner-isolation", "Describe fictional ceramic glazes."),
+      captureSpeakerKind: "human-turn" as const, metadata: { source: "web" } });
+    try {
+      await harness.run(owner());
+      await harness.run(owner());
+      await harness.run(cronRequest("owner-isolation"));
+      await harness.run(owner());
+      expect(loads.map((load) => load.retainedContext)).toEqual([false, true, false, true]);
+      expect(loads.map((load) => load.isolated)).toEqual([false, false, true, false]);
+      expect(receipts).toEqual([loads[0]!.turnId, loads[1]!.turnId, loads[3]!.turnId]);
+      expect(fake.calls[2]!.options.sessionId).toBeUndefined();
+      expect(fake.calls[3]!.options.sessionId).toBe("shared-fictional-session");
+    } finally { await harness.dispose!(); }
+  });
+
   it("keeps a cancelled isolated cron turn out of canonical continuity history", async () => {
     const identityPath = await identityFixture();
     const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });

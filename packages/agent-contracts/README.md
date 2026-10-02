@@ -142,6 +142,17 @@ field does not introduce a new capability or change conversation history.
 
 ## Architecture
 
+Optional memory context fields carry host-confirmed retained-provider context and
+closed degradation codes. `MemoryStore.recordInvocation` acknowledges a
+successful retained invocation or certified recovery, and `resetRecallContext` clears volatile recall
+state. `MemoryBlock.traceContent: false` requests a content-free host trace;
+model-visible content is unchanged. `MemoryLoadOptions.isolated` distinguishes
+one-shot invocations from shared cold reseeds; `ownerQuery` carries only original
+owner-authored text for predecessor capture. `breakQueryAdjacency` observes
+host-synthesized continuations without reading memory or dropping receipts.
+These hooks add no durable history fields.
+
+
 `provider-usage.ts` defines the strict `mono-agent.provider-usage.v1` subscription projection, at most four providers (Claude, Codex, OpenCode Go and GitHub Copilot), at most three core percent windows per provider, fixed errors and read-only `ProviderUsageOperator`. Copilot alone admits Credits/Chat/Completions window kinds; existing provider rules stay unchanged. It carries no credentials or vendor account identifiers. Dependency-free burn-projection helpers (`projectProviderUsageWindow`, `projectProviderUsage`) derive constant-rate pace, run-out and ok/ahead/unsustainable severity from fields already present, anchored at the measurement. A projected run-out carries `leadMs`, the millisecond gap to its reset, with the shared `formatProviderUsageLead()` compact shape (`3d 2h` / `5h 20m` / `12m`). Windows under 1x pace at normal confidence instead carry `projectedUnusedPercent`, the share of the window expected to go unused. Provider-auth status distinguishes additive `verified_by_account_request` (vendor account API accepted the credential, not inference or model entitlement) from stronger `verified_by_live_request`; `lastFailure.model` is optional for account-level rejection.
 
 ### Data flow

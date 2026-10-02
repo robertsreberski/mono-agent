@@ -125,6 +125,18 @@ history format. Ordinary turn options receive the same validated policy.
 
 ## Architecture
 
+Memory reads receive the host-confirmed `retainedContext` signal from history
+mode. Optional `recordInvocation` and `resetRecallContext` store hooks maintain
+volatile automatic-recall receipts only after successful retained provider
+invocations or certified terminal recovery and clear them on reset/disposal. `MemoryBlock.traceContent: false`
+keeps opted-in private blocks out of `turn_context` content while retaining byte
+counts and model delivery. Memory read failures emit stable codes, never raw
+exception text; no canonical history format changes. Isolated turns keep shared
+provider receipts intact while breaking query adjacency. Continuation synthesis
+breaks adjacency without a memory load. A failing memory-reset hook reports only
+`memory_context_reset_unavailable` after the other shutdown cleanup has run.
+
+
 Continuous provider sessions bind to the requested primary model. Repeated overrides stay warm; a model change retires the old owner's session and reseeds a new epoch from canonical history. `createSessionRuntimeResolver`, `SessionRuntimeResolver`, and `ProviderSessionHandle` preserve runtime ownership across cleanup paths; `ProviderSessionTurnBinding` is the durable coordinator's input. Without a runtime factory, all keys use the shared runtime with the effective per-run model.
 
 The built-in history store persists `providerSession.modelKey` and a strict version-4 recovery fence. Legacy unbound records load but take one cold reseed; older binaries reject newly bound records. Custom coordinators must advertise `providerSessionModelBinding: "v1"` to enable durable override sessions. See [session boundaries](../../docs/runtime/sessions-concurrency.md).
