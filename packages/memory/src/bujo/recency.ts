@@ -1,5 +1,6 @@
 import type { MemoryLabelHit } from "../store/db-labels.js";
 import { AUTO_RECALL_MIN_SCORE } from "./recall.js";
+import { parseRecordingInstant } from "./lifecycle-validation.js";
 
 const HALF_LIFE_MS = 30 * 86_400_000;
 const MAX_RECENCY_TERM = 0.02;
@@ -9,9 +10,9 @@ const RELEVANCE_MARGIN = 0.15;
 export function rankDeliberateRecallHits<T extends { readonly score: number; readonly record: {
   readonly id: string; readonly type?: string; readonly createdAt?: string;
 } }>(hits: readonly T[], labels: readonly MemoryLabelHit[], now: string): readonly T[] {
-  const observed = Date.parse(now);
+  const observed = parseRecordingInstant(now);
   const top = Math.max(...hits.map((hit) => hit.score));
-  if (!Number.isFinite(observed) || top < AUTO_RECALL_MIN_SCORE) return hits;
+  if (observed === undefined || top < AUTO_RECALL_MIN_SCORE) return hits;
   const floor = Math.max(AUTO_RECALL_MIN_SCORE, top - RELEVANCE_MARGIN);
   // Any fact/preference is durable, even a coarse fact on an event. Labelled
   // notes also stay outside this transient policy; labels are canonical.
@@ -20,9 +21,9 @@ export function rankDeliberateRecallHits<T extends { readonly score: number; rea
   const term = (hit: T): number => {
     if (durable.has(hit.record.id) || (hit.record.type !== "event"
       && !(hit.record.type === "note" && !labelled.has(hit.record.id)))) return 0;
-    const created = Date.parse(hit.record.createdAt ?? "");
+    const created = parseRecordingInstant(hit.record.createdAt);
     // Future/invalid recording dates are not recency evidence.
-    if (!Number.isFinite(created) || created > observed) return 0;
+    if (created === undefined || created > observed) return 0;
     return MAX_RECENCY_TERM * 2 ** (-(observed - created) / HALF_LIFE_MS);
   };
   const qualified = hits.filter((hit) => Number.isFinite(hit.score) && hit.score >= floor)

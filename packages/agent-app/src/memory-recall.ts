@@ -8,7 +8,7 @@ import type { MemoryStatus, MemoryType } from "@mono-agent/memory/store";
 import { AUTO_RECALL_MIN_SCORE, recallLineStatus } from "@mono-agent/memory/bujo";
 import { normalizeOptionalString } from "@mono-agent/agent-contracts";
 import * as z from "zod/v4";
-import { readLabelSections, type LabelKind, type LabelSectionRequest, type LabelSections } from "./memory-label-sections.js";
+import { readLabelSections, type LabelKind, type LabelContext, type LabelSectionRequest, type LabelSections } from "./memory-label-sections.js";
 import type { LabelRecallStore } from "./memory-guidance.js";
 
 import type {
@@ -67,7 +67,7 @@ export interface RecallCapableStore extends LabelRecallStore {
   intentExpiryEnabled?(): boolean;
   recencyEnabled?(): boolean;
   rankDeliberateRecall?(hits: readonly MemoryRecallHit[]): readonly MemoryRecallHit[];
-  labelSections?(request: LabelSectionRequest, candidates: readonly MemoryRecallHit[]): LabelSections | undefined;
+  labelSections?(request: LabelSectionRequest, candidates: readonly MemoryRecallHit[], observation?: LabelContext): LabelSections | undefined;
   recall(
     query: string,
     options?: { readonly topK?: number; readonly trackAccess?: boolean },
@@ -373,14 +373,15 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
     }
     const observedAt = new Date();
     const today = `${observedAt.getFullYear()}-${String(observedAt.getMonth() + 1).padStart(2, "0")}-${String(observedAt.getDate()).padStart(2, "0")}`;
+    const labelObservation = { hostLocalDate: today, hostInstant: observedAt.toISOString() };
     let sections: LabelSections | undefined;
     try {
-      sections = store.labelSections?.({ query: effectiveQuery,
+      const request: LabelSectionRequest = { query: effectiveQuery,
         ...(args.kind === undefined ? {} : { kind: args.kind }),
-        ...(args.about === undefined ? {} : { about: args.about }) }, candidates)
-        ?? readLabelSections(store, { query: effectiveQuery,
-          ...(args.kind === undefined ? {} : { kind: args.kind }),
-          ...(args.about === undefined ? {} : { about: args.about }) }, { hostLocalDate: today }, candidates);
+        ...(args.about === undefined ? {} : { about: args.about }) };
+      sections = (intentExpiry ? store.labelSections?.(request, candidates, labelObservation)
+        : store.labelSections?.(request, candidates))
+        ?? readLabelSections(store, request, intentExpiry ? labelObservation : { hostLocalDate: today }, candidates, intentExpiry);
     } catch { /* A bad label cannot discard the normal dated hits. */ }
     const sectionPrefix = sections?.text ? `${sections.text}\n\n` : "";
     const sectionFields = sections === undefined ? {} : {

@@ -784,8 +784,8 @@ does not label an unknown note or prove its original speaker.
 Before enabling `memory.recall.intentExpiry`, stop the configured agent and drain
 its pending capture under the old policy first. Inspect existing note `due=`
 values privately using `memory today`, `memory show <date>` and `memory search`.
-Use the existing bounded `memory curate prepare --plan <private-file> --limit 60`,
-review and stopped-store apply/restore flow to remove unsupported lines or retype
+Use the existing bounded
+`memory curate prepare --semantic-review --plan <private-file> --limit 60`, review and stopped-store apply/restore flow to remove unsupported lines or retype
 actual dated episodes, accepting only supported proposals. Review the whole dated
 note inventory in bounded passes; a sample is not an audit of unexamined dates.
 Do not infer intention completion from a passed date, manufacture missing dates,

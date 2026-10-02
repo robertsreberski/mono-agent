@@ -26,7 +26,7 @@ import { redactJsonValue } from "@mono-agent/observability";
 
 import { formatMemoryBackground, formatMemoryProfile, type LabelRecallStore } from "./memory-guidance.js";
 import { isHostProcessJobWakeRecall } from "./process-jobs-context.js";
-import { readLabelSections, type LabelSectionRequest } from "./memory-label-sections.js";
+import { readLabelSections, type LabelContext, type LabelSectionRequest } from "./memory-label-sections.js";
 import {
   createMemoryRecallServer,
   MEMORY_RECALL_MCP_SERVER_NAME,
@@ -271,7 +271,7 @@ export class MemoryRetrievalService implements MemoryStore {
       let profile: ReturnType<typeof formatMemoryProfile> | undefined;
       if (owner && this.profileEnabled) {
         try {
-          profile = formatMemoryProfile(this.store, options.hostLocalDate ?? options.hostDate ?? new Date().toISOString().slice(0, 10), this.maxBytes, options.hostInstant, this.semanticOnly);
+          profile = formatMemoryProfile(this.store, options.hostLocalDate ?? options.hostDate ?? new Date().toISOString().slice(0, 10), this.maxBytes, options.hostInstant, this.semanticOnly, this.intentExpiry);
         } catch { options.onWarning?.("memory_profile_unavailable"); }
       }
       let recall: MemoryBlock | undefined;
@@ -529,8 +529,9 @@ export class MemoryRetrievalService implements MemoryStore {
     return this.store.labelsForEntity !== undefined && this.store.guidanceForScope !== undefined;
   }
 
-  labelSectionsForTurn(turnId: string, request: LabelSectionRequest, candidates: readonly SharedRecallHit[] = []) {
-    return readLabelSections(this.store, request, this.turns.get(turnId)?.context, candidates);
+  labelSectionsForTurn(turnId: string, request: LabelSectionRequest, candidates: readonly SharedRecallHit[] = [], observation?: LabelContext) {
+    const context = { ...this.turns.get(turnId)?.context, ...observation };
+    return readLabelSections(this.store, request, context, candidates, this.intentExpiry);
   }
 
   supportsJournalBrowse(): boolean {
@@ -711,7 +712,7 @@ export function createSharedMemoryRecallRuntimeExtension(
       rankDeliberateRecall: (hits) => service.rankDeliberateRecall(hits),
       recall: (query, options) => service.recallForTurn(runId, query, options),
       ...(service.supportsLabelSections() ? {
-        labelSections: (request: LabelSectionRequest, candidates: readonly SharedRecallHit[]) => service.labelSectionsForTurn(runId, request, candidates),
+        labelSections: (request: LabelSectionRequest, candidates: readonly SharedRecallHit[], observation?: LabelContext) => service.labelSectionsForTurn(runId, request, candidates, observation),
       } : {}),
       recallWithOutcome: (query, options) => service.recallOutcomeForTurn(runId, query, options),
       recallOriginalWithOutcome: (originalOptions) => service.recallOriginalOutcomeForTurn(runId, {

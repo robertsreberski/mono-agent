@@ -16,6 +16,7 @@ import {
   type CandidateMemory,
 } from "./distill.js";
 import { parseJsonExact, parseJsonLoose } from "./json.js";
+import { assertIntentionProposal } from "./lifecycle-validation.js";
 import type { LlmComplete } from "./llm.js";
 import type { CanonicalGraphRepairGuard } from "./graph.js";
 import { MemoryModelError, MemoryModelOutputError } from "./model-error.js";
@@ -94,6 +95,7 @@ export async function reconcile(
   candidates: readonly CandidateMemory[],
   deps: ReconcileDeps,
 ): Promise<ReconcileAction[]> {
+  candidates.forEach(assertIntentionProposal);
   return await withSerializedBujoMutation(deps, async () => await reconcileUnlocked(candidates, deps));
 }
 
@@ -159,6 +161,7 @@ export async function reconcileBatch(
   candidates: readonly CandidateMemory[],
   deps: ReconcileDeps,
 ): Promise<Array<ReconcileAction | undefined>> {
+  candidates.forEach(assertIntentionProposal);
   return await withSerializedBujoMutation(deps, async () => await reconcileBatchUnlocked(candidates, deps));
 }
 
@@ -459,7 +462,7 @@ function planBatchAction(
     case "noop": {
       const old = candidate.intentState === undefined ? undefined : deps.db.get(decision.targetId ?? "");
       if (old !== undefined && supportedIntent(candidate, deps) && (old.status !== intentionStatus(candidate)
-        || old.dueAt !== candidate.validTo)) {
+        || (candidate.validTo !== undefined && old.dueAt !== candidate.validTo))) {
         return planBatchAction(candidate, { ...decision, action: "supersede", text: candidate.text }, similar, deps, threadThreshold);
       }
       return planNoop(decision, deps);
@@ -578,9 +581,11 @@ function intentionStatus(candidate: CandidateMemory): Bullet["status"] {
     : candidate.intentState === "abandoned" ? "dropped" : "open";
 }
 
-function intentionFields(candidate: CandidateMemory, deps: ReconcileDeps): Pick<Bullet, "status"> & { dueAt?: string } {
+function intentionFields(candidate: CandidateMemory, deps: ReconcileDeps, inheritedEnd?: string): Pick<Bullet, "status"> & { dueAt?: string } {
+  // Omission is not withdrawal; supported replacements retain an existing note end.
+  const end = candidate.validTo ?? inheritedEnd;
   return supportedIntent(candidate, deps) ? { status: intentionStatus(candidate),
-    ...(candidate.validTo === undefined ? {} : { dueAt: candidate.validTo }) } : { status: "open" };
+    ...(end === undefined ? {} : { dueAt: end }) } : { status: "open" };
 }
 
 /** The owner's own preference scopes: `agent`, or this owner turn's own sender scope. */
@@ -764,7 +769,7 @@ function planSupersede(
   const bullet: Bullet = withMemoryLabels({
     id,
     type: candidate.type,
-    ...intentionFields(candidate, deps),
+    ...intentionFields(candidate, deps, old.type === "note" ? old.dueAt : undefined),
     text: replacement,
     salience: candidate.salience,
     isInsight: candidate.isInsight,

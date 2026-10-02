@@ -714,7 +714,11 @@ proposal. Without a stated zone, keep the civil date only. Split or clamped
 sentences lose lifecycle proposals rather than transferring them to unsupported
 siblings. Supported intention changes use reconcile `SUPERSEDE`, including a
 classifier `UPDATE` or a `NOOP` whose state/end changes: the old sentence remains
-history. A passed end never implies completion and never mutates a status.
+history. Repeating an intention without its end is not withdrawal: a NOOP
+retains the existing end, and replacements inherit it unless a supported new end
+is supplied. Deliberate fact-sheet currentness combines label validity with the
+source note's currentness, retaining expired rows as historical. A passed end
+never implies completion and never mutates a status.
 
 `memory.recall.intentExpiry` is a **conservative automatic read policy**:
 exclude **all dated notes**, even before their end, plus done/dropped notes,

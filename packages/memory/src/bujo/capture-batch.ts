@@ -14,7 +14,7 @@ import {
   type CaptureLabelContext, type CaptureSource,
 } from "./capture-labels.js";
 import { MemoryModelError, MemoryModelOutputError } from "./model-error.js";
-import { assertMemoryLabelDate } from "./labels.js";
+import { assertIntentionProposal } from "./lifecycle-validation.js";
 import { unsafeCaptureContent } from "./text-safety.js";
 
 export const MAX_CAPTURE_MEMORIES = 8;
@@ -424,16 +424,9 @@ function strictCandidate(
   if (value.labels !== undefined && (!Array.isArray(value.labels) || value.labels.length > 32)) {
     throw outputError("capture-extract", `memory ${index} labels structure is invalid`);
   }
-  if (value.intentState !== undefined && (typeof value.intentState !== "string" || !["planned", "pending", "done", "abandoned"].includes(value.intentState)
-    || value.type !== "note")) throw outputError("capture-extract", "intent_proposal_invalid");
-  if (value.validTo !== undefined) {
-    if (value.intentState === undefined || typeof value.validTo !== "string") throw outputError("capture-extract", "intent_end_invalid");
-    try {
-      assertMemoryLabelDate(value.validTo.slice(0, 10));
-      if (value.validTo.length !== 10 && (!/^\d{4}-\d{2}-\d{2}T23:59:59\.999(?:Z|[+-]\d{2}:\d{2})$/u.test(value.validTo)
-        || !Number.isFinite(Date.parse(value.validTo)))) throw new Error("intent_end_invalid");
-    } catch { throw outputError("capture-extract", "intent_end_invalid"); }
-  }
+  try { assertIntentionProposal(value); }
+  catch (error) { throw outputError("capture-extract", error instanceof Error && error.message === "intent_proposal_invalid"
+    ? "intent_proposal_invalid" : "intent_end_invalid"); }
   // Structured owner provenance gates proposals; model judgment establishes turn support.
   const supportedIntent = value.intentState !== undefined && source === "user"
     && context.captureSpeakerKind === "human-turn" && context.captureEvidence?.ownerTurn === true

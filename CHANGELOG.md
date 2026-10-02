@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix intention-policy boundary validation, dated profile competitors and
+  deliberate fact-sheet currentness; preserve supported ends when omitted and
+  deny recency to invalid recording instants.
+
 - Add independent default-off BuJo intention capture, conservative automatic
   expiry, and bounded deliberate recency flags. Keep supported state changes
   as superseded history; exclude all dated and completed/abandoned notes from

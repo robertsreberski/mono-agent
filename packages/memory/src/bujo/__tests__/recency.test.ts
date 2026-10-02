@@ -35,6 +35,16 @@ describe("bounded deliberate recency", () => {
     expect(rankDeliberateRecallHits(hits, [], now)).toEqual(hits);
     expect(rankDeliberateRecallHits([hit("old", 0.64, 1000), hit("fresh", 0.63, 0)], [], now).map((hit) => hit.record.id)).toEqual(["old", "fresh"]);
   });
+  it.each(["2032-06-31T12:00:00.000Z", "2032-02-30T12:00:00.000+02:00", "2032-07-01T24:00:00Z",
+    "2032-07-01T12:00:00", "2032-07-01", "fictional-invalid-instant"])("gives no recency to invalid or unzoned instants: %s", (createdAt) => {
+    const hits = [hit("old", 0.8, 1000), { ...hit("invalid", 0.79, 0), record: { ...hit("invalid", 0.79, 0).record, createdAt } }];
+    expect(rankDeliberateRecallHits(hits, [], now)).toEqual(hits);
+  });
+  it("accepts valid offset recording instants without changing their civil calendar", () => {
+    const recent = hit("offset", 0.79, 0);
+    recent.record.createdAt = "2032-07-01T14:00:00.000+02:00";
+    expect(rankDeliberateRecallHits([hit("old", 0.8, 1000), recent], [], now)[0]).toBe(recent);
+  });
   it("also ranks unlabelled notes, not just events", () => {
     expect(rankDeliberateRecallHits([hit("old", 0.8, 1000, "note"), hit("fresh", 0.79, 0, "note")], [], now)[0]!.record.id).toBe("fresh");
   });

@@ -108,6 +108,32 @@ describe("memory label CLI flags", () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it("profile inspection ignores dated structured competitors under independent expiry", async () => {
+    const root = join(await tempDir(), "memory");
+    const memory = createBujoMemoryStore({ root });
+    await memory.remember("fictional", "Owner enjoys imaginary sculpture."); await memory.close();
+    const path = await resolveActiveMemoryDbPath(root); const db = openMemoryDb({ path });
+    const base = db.topSalient(1)[0]!; db.replaceMemoryLabels(base.id, []);
+    for (const [id, value, dueAt] of [["undated-atelier", "Cedar atelier", undefined], ["dated-atelier", "Maple atelier", "2032-06-12"]] as const) {
+      db.upsertLexical({ ...base, id, text: `Owner uses the fictional ${value}.`, status: "open", createdAt: "2032-06-01T12:00:00.000Z",
+        ...(dueAt === undefined ? {} : { dueAt }) });
+      db.replaceMemoryLabels(id, [{ v: 1, kind: "fact", entityId: "person:owner", key: "work_location",
+        value: { type: "text", text: value }, attribution: "user-stated" }]);
+    }
+    db.close(); const before = await readFile(path);
+    const dir = await agentDir({ memory: { path: root, mode: "bujo", writeMode: "disabled",
+      recall: { semanticOnly: true, intentExpiry: true }, embeddings: { provider: "ollama" }, llm: { provider: "ollama", model: "fictional-model" } } });
+    const result = await captureCli(() => runMemoryCommand({ cwd: dir, env: {}, positionals: ["profile", "show"], json: true, strict: false }));
+    expect(result.code).toBe(0); expect(JSON.parse(result.stdout).sources).toEqual(["undated-atelier"]);
+    expect(await readFile(path)).toEqual(before);
+  });
+
+  it("the reviewed intention audit uses the curate mode that allows retyping", async () => {
+    const doc = await readFile(new URL("../../../../docs/memory/validation-and-cli.md", import.meta.url), "utf8");
+    expect(doc.split("## Review intention dates before enabling expiry")[1]).toContain("memory curate prepare --semantic-review --plan <private-file> --limit 60");
+    expect(parseCliArgs(["memory", "curate", "prepare", "--semantic-review", "--plan", "fictional-plan.json", "--limit", "60"]).semanticReview).toBe(true);
+  });
+
   it("shows the deterministic profile read-only without calling embeddings or models", async () => {
     const root = join(await tempDir(), "memory");
     const memory = createBujoMemoryStore({ root });

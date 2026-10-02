@@ -1,8 +1,11 @@
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { findRetainedCaptureIntent, replayCaptureIntent } from "../capture-outbox.js";
+import { appendBullet } from "../daily.js";
+import { capturePlanInputHash, retainCapturePlan } from "../capture-plan-cache.js";
+import { reconcile, reconcileBatch } from "../reconcile.js";
 import { captureTurnStrict } from "../capture.js";
 import { openMemoryDb } from "../../store/index.js";
 import { assertCanonicalGraphRepairBaseParity } from "../rebuild.js";
@@ -147,6 +150,66 @@ describe("supported intention lifecycle", () => {
       if (state !== "abandoned") expect((await reader.recallWithOutcome(text, { trackAccess: false })).hits[0]!.record).toMatchObject({ status, dueAt: "2032-06-09" });
       await reader.close();
     });
+
+  it.each([reconcile, reconcileBatch])("validates public lifecycle proposals before publication: %s", async (run) => {
+    const root = mkdtempSync(join(tmpdir(), "intent-invalid-api-")); roots.push(root);
+    const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(16), dim: 16 });
+    try {
+      for (const validTo of ["tomorrow", "2032-06-31", "2032-06-10T24:00:00Z"]) {
+        await expect(run([{ type: "note", text: texts[0]!, salience: 0.8, isInsight: false,
+          source: "user", intentState: "pending", validTo }], { root, db, nextId: () => "invalid-api",
+          now: () => new Date(observedAt), captureSpeakerKind: "human-turn", captureEvidence: observation(texts[0]!).captureEvidence,
+          llm: { id: "unused", complete: async () => { throw new Error("fictional model must not run"); } } })).rejects.toThrow("intent_end_invalid");
+      }
+      expect(db.topSalient(10)).toEqual([]); expect(existsSync(join(root, "daily"))).toBe(false);
+      expect(existsSync(join(root, ".capture-outbox"))).toBe(false);
+    } finally { db.close(); }
+  });
+
+  it("rejects a malformed retained lifecycle plan before any canonical/outbox publication", async () => {
+    const root = mkdtempSync(join(tmpdir(), "intent-invalid-retained-")); roots.push(root);
+    const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(16), dim: 16 });
+    const key = "b".repeat(64);
+    retainCapturePlan(root, key, capturePlanInputHash(texts[0]!), { entities: [], relations: [], candidates: [{
+      type: "note", text: texts[0]!, salience: 0.8, isInsight: false, source: "user", intentState: "pending", validTo: "tomorrow",
+    }] });
+    try {
+      await expect(captureTurnStrict(texts[0]!, { root, db, captureRetentionKey: key,
+        nextId: () => "invalid-retained", now: () => new Date(observedAt), captureSettings: { intentLifecycle: true },
+        captureSpeakerKind: "human-turn", captureEvidence: observation(texts[0]!).captureEvidence,
+        llm: { id: "unused", complete: async () => { throw new Error("fictional model must not run"); } } })).rejects.toThrow("intent_end_invalid");
+      expect(findRetainedCaptureIntent(root, key)).toBeUndefined();
+      expect(db.topSalient(10)).toEqual([]); expect(existsSync(join(root, "daily"))).toBe(false);
+    } finally { db.close(); }
+  });
+
+  it.each([
+    ["noop", "pending", undefined, "noop"], ["update", "pending", undefined, "supersede"],
+    ["supersede", "pending", undefined, "supersede"], ["noop", "done", undefined, "supersede"],
+    ["noop", "pending", "2032-06-12", "supersede"],
+  ] as const)("preserves an omitted supported end during %s/%s (new end %s)", async (action, intentState, validTo, expected) => {
+    const root = mkdtempSync(join(tmpdir(), "intent-repeat-")); roots.push(root);
+    const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(16), dim: 16 });
+    const createdAt = "2032-06-01T12:00:00.000Z", oldText = "Owner awaits a canoe lesson through June 9.";
+    appendBullet(root, { id: "earlier-intention", type: "note", status: "open", text: oldText, createdAt,
+      dueAt: "2032-06-09", salience: 0.8, isInsight: false, refs: [] }, new Date(createdAt));
+    try {
+      await db.upsert({ id: "earlier-intention", type: "note", status: "open", text: oldText, createdAt,
+        dueAt: "2032-06-09", salience: 0.8, isInsight: false, accessCount: 0, tags: [], source: { file: "daily/2032-06-01.md" } });
+      db.findSimilarMany = async () => [[{ record: db.get("earlier-intention")!, distance: 0.1 }]];
+      const text = stateText(intentState);
+      const result = await reconcileBatch([{ type: "note", text, salience: 0.8, isInsight: false, source: "user", intentState,
+        ...(validTo === undefined ? {} : { validTo }) }], { root, db, nextId: () => "repeated-intention", now: () => new Date(observedAt),
+        captureSettings: { intentLifecycle: true }, captureSpeakerKind: "human-turn", captureEvidence: observation(text).captureEvidence,
+        canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity, strictModelOutput: true,
+        llm: { id: "repeat", complete: async () => JSON.stringify([{ index: 0, action, targetId: "earlier-intention",
+          ...(action === "noop" ? {} : { text }) }]) } });
+      expect(result[0]?.kind).toBe(expected);
+      const record = db.get(expected === "noop" ? "earlier-intention" : "repeated-intention")!;
+      expect(record.dueAt).toBe(validTo ?? "2032-06-09");
+      expect(selectPossiblyRelevantRecallHits([{ score: 0.9, record }], { intentExpiry: true, asOf: "2032-06-10" })).toEqual([]);
+    } finally { db.close(); }
+  });
 
   it("UPDATE of a supported intention uses SUPERSEDE and preserves the old sentence and date", async () => {
     const root = mkdtempSync(join(tmpdir(), "intent-supersede-")); roots.push(root);

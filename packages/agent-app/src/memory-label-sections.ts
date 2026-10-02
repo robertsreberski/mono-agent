@@ -1,5 +1,6 @@
 import type { MemoryLoadOptions } from "@mono-agent/agent-contracts";
 import type { MemoryDb } from "@mono-agent/memory/store";
+import { recallLineStatus } from "@mono-agent/memory/bujo";
 import { factKeyLabel, factValueText, guidanceScoreFloor, GUIDANCE_MAX_RANK, memoryGuidanceScopes, resolveMemoryEntities, safeLine, type LabelRecallStore } from "./memory-guidance.js";
 import type { MemoryRecallHit } from "./memory-recall.js";
 
@@ -42,9 +43,11 @@ export interface LabelSections {
 }
 
 /** Deliberate views retain history and conflicts; guidance uses the effective query's retrieved candidates, with no extra lookup. */
-export function readLabelSections(store: LabelRecallStore, request: LabelSectionRequest, context: LabelContext = {}, candidates: readonly MemoryRecallHit[] = []): LabelSections | undefined {
+export function readLabelSections(store: LabelRecallStore, request: LabelSectionRequest, context: LabelContext = {}, candidates: readonly MemoryRecallHit[] = [], intentExpiry = false): LabelSections | undefined {
   if (store.labelsForEntity === undefined || store.guidanceForScope === undefined) return undefined;
   const date = context.hostLocalDate ?? context.hostDate ?? new Date().toISOString().slice(0, 10);
+  const current = (hit: LabelHit): boolean => hit.currentAt === true && (!intentExpiry
+    || (hit.active && recallLineStatus(hit, date, context.hostInstant, true) === "current" && (hit.type !== "note" || hit.status !== "done")));
   const lines: string[] = [];
   const result: Omit<LabelSections, "text"> = {};
   if (request.kind === undefined || request.kind === "fact") {
@@ -58,7 +61,7 @@ export function readLabelSections(store: LabelRecallStore, request: LabelSection
     // structured value or conflict past the cut; then current/active first so
     // a long historical ledger cannot hide today's values.
     rows.sort((a, b) => Number(b.hit.label.key !== undefined) - Number(a.hit.label.key !== undefined)
-      || Number(b.hit.active && b.hit.currentAt) - Number(a.hit.active && a.hit.currentAt)
+      || Number(b.hit.active && current(b.hit)) - Number(a.hit.active && current(a.hit))
       || Number(b.hit.active) - Number(a.hit.active)
       || b.hit.createdAt.localeCompare(a.hit.createdAt)
       || a.hit.memoryId.localeCompare(b.hit.memoryId));
@@ -67,7 +70,7 @@ export function readLabelSections(store: LabelRecallStore, request: LabelSection
       ...(hit.label.key === undefined ? { text: safeLine(hit.text).slice(0, 240) }
         : { key: hit.label.key, value: hit.label.value }),
       attribution: hit.label.attribution, recordedAt: hit.createdAt.slice(0, 10),
-      current: hit.currentAt === true, conflict: hit.conflict,
+      current: current(hit), conflict: hit.conflict,
       ...(hit.sourceFile === undefined ? {} : { sourceFile: hit.sourceFile }),
       ...(hit.sourceLine === undefined ? {} : { sourceLine: hit.sourceLine }),
     }));

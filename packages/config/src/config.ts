@@ -1818,6 +1818,7 @@ function readMemoryConfig(value: unknown, cwd: string): MonoAgentConfig["memory"
       throw new MonoAgentConfigError("invalid_json", "memory.capture.webhook must be a boolean.",
         { path: "memory.capture.webhook" });
     }
+    assertJsonScalarFields(captureJson, "memory.capture", { intentLifecycle: "boolean" });
     const intentLifecycle = jsonBoolean(captureJson.intentLifecycle, "memory.capture.intentLifecycle", false);
     capture = {
       ...(captureJson.intentLifecycle === undefined ? {} : { intentLifecycle }),

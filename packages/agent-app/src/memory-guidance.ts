@@ -224,9 +224,9 @@ export interface MemoryProfile {
 }
 
 /** Whole supported entries, deterministic byte ordering, including the heading in the budget. */
-export function formatMemoryProfile(store: LabelRecallStore, date: string, byteBudget = Infinity, now?: string, semanticOnly = false): MemoryProfile {
+export function formatMemoryProfile(store: LabelRecallStore, date: string, byteBudget = Infinity, now?: string, semanticOnly = false, intentExpiry = false): MemoryProfile {
   const sources = [...(store.guidanceForScope?.("agent") ?? []), ...(store.labelsForEntity?.("person:owner", date) ?? [])];
-  const semantic = semanticOnly ? semanticAuthorities(store, sources, date, now) : undefined;
+  const semantic = semanticOnly ? semanticAuthorities(store, sources, date, now, intentExpiry) : undefined;
   const supported = sources
     .filter((hit) => semantic === undefined || semantic.has(hit.memoryId))
     .filter((hit) => hit.active && (semanticOnly || !hit.conflict) && hit.type === "note" && hit.status === "open"
