@@ -218,7 +218,9 @@ historical quality.
 #### Arms, observation and blinded review
 
 Arms are current-only/profile-off, follow-up window, pre-registered length-only
-abstention, profile-on, window+profile-on, and later semantic-only. Switches go
+abstention, profile-on, window+profile-on, and semantic-only. The semantic-only
+arm uses the supported BuJo policy for current, accepted labelled notes; events
+and unlabelled sources remain deliberately searchable, not injected. Switches go
 through production config normalization and app memory composition:
 `memory.recall.contextWindow`, `memory.profile.enabled`, and
 `memory.recall.semanticOnly`. A rejected or dropped flag yields `unsupported`,
