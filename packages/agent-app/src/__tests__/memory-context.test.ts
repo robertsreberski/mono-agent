@@ -92,6 +92,47 @@ describe("opt-in volatile memory context", () => {
     expect(await service.load("conversation", query, owner("next", 2, true))).toBeUndefined();
   });
 
+  it.each([[true, false], [false, true], [true, true]])("fences pre-write graph lookups from fresh expansion caches with window=%s/profile=%s", async (contextWindow, profileEnabled) => {
+    const f = storeFixture();
+    const hit = (id: string) => ({ score: 0.9, record: { id, text: `Fictional ceramic glaze evidence ${id}.` } });
+    const before = [hit("glaze-before-write")];
+    const after = [hit("glaze-after-write")];
+    let start!: () => void;
+    let release!: (hits: typeof before) => void;
+    const started = new Promise<void>((resolve) => { start = resolve; });
+    const held = new Promise<typeof before>((resolve) => { release = resolve; });
+    let written = false;
+    f.store.recall = async (query) => {
+      f.queries.push(query);
+      if (!written) { start(); return await held; }
+      return after;
+    };
+    f.store.remember = async (_id, text) => {
+      written = true;
+      return { id: "written", source: "memory", text, duplicate: false };
+    };
+    f.store.supportsGraphExpansion = () => true;
+    const expandedSeeds: string[] = [];
+    f.store.expandGraph = async (_query, direct) => {
+      const seed = direct[0]!.record.id;
+      expandedSeeds.push(seed);
+      return [...direct, hit(`${seed}-related`)];
+    };
+    const service = new MemoryRetrievalService(f.store, { contextWindow, profileEnabled });
+    const query = "Which fictional ceramic glaze is current?";
+    const options = { expandHops: 1 as const, trackAccess: false };
+    const pending = service.recallOutcomeForTurn("graph-turn", query, options);
+    await started;
+    await service.remember("conversation", "Morgan uses a fictional ochre glaze.");
+    release(before);
+    expect((await pending).hits.map((item) => item.record.id)).toEqual(["glaze-before-write", "glaze-before-write-related"]);
+    const fresh = await service.recallOutcomeForTurn("graph-turn", query, options);
+    expect(fresh.hits.map((item) => item.record.id)).toEqual(["glaze-after-write", "glaze-after-write-related"]);
+    expect(await service.recallOutcomeForTurn("graph-turn", query, options)).toEqual(fresh);
+    expect(f.queries).toHaveLength(2);
+    expect(expandedSeeds).toEqual(["glaze-before-write", "glaze-after-write"]);
+  });
+
   it("caps normalized automatic queries and predecessors after Unicode case expansion without capping explicit originals", async () => {
     const f = storeFixture();
     const service = new MemoryRetrievalService(f.store, { contextWindow: true });

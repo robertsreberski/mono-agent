@@ -1275,7 +1275,8 @@ redacted owner query, 30-minute TTL) and `memory.profile.enabled` (deterministic
 owner-stated label profile, at most 600 Unicode code points). Both default off
 and apply only to verified owner web/TUI/ACP turns. The configured harness and
 app controller wire them from resolved config; retained-session suppression uses
-actual invocation receipts. Search invalidation preserves pending receipts;
+actual invocation receipts. Search invalidation replaces query/expansion caches
+without discarding pending receipts, fencing pre-write lookups from fresh recall;
 isolated turns and host continuations only break owner-query adjacency.
 `mono-agent memory profile show [--json]` is a
 read-only, provider-free inspection view. See [owner context](../../docs/memory/capture-and-recall.md#optional-bujo-owner-context).

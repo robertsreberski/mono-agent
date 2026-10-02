@@ -571,11 +571,15 @@ code points. The predecessor contains only original owner-authored text, not
 attachment-expanded text or attachment metadata. It keeps no assistant/tool text:
 the previous query is capped at 512 Unicode code points and the combined query
 at 1,536, measured after normalization and case expansion. Adjacency expires
-after 30 minutes or a non-owner/trigger turn; host continuations and process-job
-wakes also break it. There is no language-specific topic
+after 30 minutes or a non-owner/trigger turn; host continuations and standalone
+process-job wakes also break it. There is no language-specific topic
 classifier; a new query replaces the predecessor for the next turn, rather than
 accumulating a transcript. Explicit `MemoryRecall` original-query mode still
 uses only the current query and embeds that query only if requested.
+
+A process-job wake applied as live steering inside an owner turn stays within
+that logical invocation. The following owner turn may still use that
+invocation's original owner query as its predecessor.
 
 `memory.profile.enabled` derives a profile from active owner-stated owner facts
 and agent-scope preferences in the existing label projection. It uses current,

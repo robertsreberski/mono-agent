@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep graph-expanded recall fresh after memory writes, even when a pre-write
+  search finishes afterward, without discarding pending invocation receipts.
+
 - Add default-off BuJo `memory.recall.contextWindow` and
   `memory.profile.enabled` for bounded owner follow-up recall and an
   embedding-independent, 600-code-point owner profile. Suppress unchanged

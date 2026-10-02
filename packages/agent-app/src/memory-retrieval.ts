@@ -98,9 +98,13 @@ type OriginalRecallSelection =
       readonly reason: OriginalRecallUnavailableReason;
     };
 
-interface TurnCache {
+interface SearchCache {
   readonly queries: Map<string, Promise<MemoryRecallOutcome>>;
   readonly expansions: Map<string, Promise<MemoryRecallOutcome>>;
+}
+
+interface TurnCache {
+  search: SearchCache;
   readonly accessedIds: Set<string>;
   automaticQuery?: string;
   hasPrior?: boolean;
@@ -480,10 +484,10 @@ export class MemoryRetrievalService implements MemoryStore {
   private invalidateRecallQueries(): void {
     if (!this.contextWindow && !this.profileEnabled) { this.releaseAllTurns(); return; }
     // Writes invalidate search results, not pending or already-prepared delivery
-    // receipts. Keep the same turn object so a concurrent preparation can finish.
+    // receipts. Keep the turn object, but replace its search generation so work
+    // already in flight cannot populate the current expansion cache.
     for (const turn of this.turns.values()) {
-      turn.queries.clear();
-      turn.expansions.clear();
+      turn.search = { queries: new Map(), expansions: new Map() };
       turn.accessedIds.clear();
       delete turn.original;
     }
@@ -608,7 +612,10 @@ export class MemoryRetrievalService implements MemoryStore {
     // Raw backend lookup remains normalized/shared, while graph expansion has
     // its own evidence-preserving key below. Capitalization is a precision
     // signal for query-local entity references and must reach graph policy.
-    let lookup = turn.queries.get(backendQuery);
+    // Capture this generation before awaiting the lookup. A write can replace
+    // turn.search while this call is pending; its late expansion stays here.
+    const search = turn.search;
+    let lookup = search.queries.get(backendQuery);
     if (lookup === undefined) {
       lookup = this.store.recallWithOutcome === undefined
         ? Promise.resolve(
@@ -620,13 +627,13 @@ export class MemoryRetrievalService implements MemoryStore {
               trackAccess: false,
             }),
           );
-      turn.queries.set(backendQuery, lookup);
+      search.queries.set(backendQuery, lookup);
     }
     const limit = clampLimit(options.topK, 8);
     const direct = await lookup;
     if (options.expandHops === 1 && this.supportsGraphExpansion() && this.store.expandGraph !== undefined) {
       const expansionKey = `${evidenceQuery}\0${limit}`;
-      let expanded = turn.expansions.get(expansionKey);
+      let expanded = search.expansions.get(expansionKey);
       if (expanded === undefined) {
         expanded = Promise.resolve(this.store.expandGraph(evidenceQuery, direct.hits, { topK: limit }))
           .then((hits) => ({
@@ -634,7 +641,7 @@ export class MemoryRetrievalService implements MemoryStore {
             retrievalMode: direct.retrievalMode,
             ...(direct.degradation === undefined ? {} : { degradation: direct.degradation }),
           }));
-        turn.expansions.set(expansionKey, expanded);
+        search.expansions.set(expansionKey, expanded);
       }
       return await expanded;
     }
@@ -652,7 +659,7 @@ export class MemoryRetrievalService implements MemoryStore {
   private turnCache(turnId: string): TurnCache {
     let cache = this.turns.get(turnId);
     if (cache !== undefined) return cache;
-    cache = { queries: new Map(), expansions: new Map(), accessedIds: new Set() };
+    cache = { search: { queries: new Map(), expansions: new Map() }, accessedIds: new Set() };
     this.turns.set(turnId, cache);
     return cache;
   }
