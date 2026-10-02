@@ -18,6 +18,9 @@
   enforce case-expanded query budgets, honor instant-aware profile expiry and
   finish shutdown when a memory reset hook fails.
 
+- Fix devalue serialization vulnerabilities in documentation and marketing site
+  dependencies.
+
 - Fix Telegram native rich-message input, including forwarded and replied-to
   structured text, tables, lists, captions, and bounded background context.
 
