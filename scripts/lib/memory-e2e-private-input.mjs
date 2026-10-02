@@ -22,6 +22,13 @@ function requireOwned(info) {
     || (!info.isDirectory() && (!info.isFile() || info.nlink !== 1))) throw new PrivateError("private_permissions");
 }
 
+/** Root/current-user ancestry only. Sticky is safe solely for root-owned
+ * system directories; another directory owner could replace private children. */
+export function requirePrivateAncestor(info, uid = process.getuid?.()) {
+  if (uid === undefined || !info.isDirectory() || (info.uid !== uid && info.uid !== 0)
+    || ((info.mode & 0o022) !== 0 && !(info.uid === 0 && (info.mode & 0o1000) !== 0))) throw new PrivateError("private_permissions");
+}
+
 /** Resolve existing ancestors even for an output directory that does not exist yet. */
 export async function privatePath(path, repositories) {
   if (typeof path !== "string" || !isAbsolute(path) || path.includes("\0")) throw new PrivateError("private_absolute_roots_required");
@@ -44,9 +51,9 @@ export async function privatePath(path, repositories) {
   // not be 0700, but a writable untrusted ancestor can replace a private root.
   requireOwned(await lstat(await realpath(ancestor))); requireNoAcl(await realpath(ancestor));
   let parent = dirname(await realpath(ancestor));
-  while (dirname(parent) !== parent) {
-    const info = await lstat(parent);
-    if ((info.mode & 0o022) !== 0 && (info.mode & 0o1000) === 0) throw new PrivateError("private_permissions");
+  for (;;) {
+    requirePrivateAncestor(await lstat(parent));
+    if (dirname(parent) === parent) break;
     parent = dirname(parent);
   }
   return canonical;
@@ -81,13 +88,21 @@ export async function validatePrivateRoots({ inputRoot, outputRoot, storeRoot, r
     await validateTree(roots[0]); await validateTree(roots[2]);
     if (!(await lstat(roots[0])).isDirectory() || !(await lstat(roots[2])).isDirectory()) throw new PrivateError("private_unsafe_entry");
     try { await validateTree(roots[1]); if (!(await lstat(roots[1])).isDirectory()) throw new PrivateError("private_unsafe_entry"); } catch (error) { if (error?.code !== "ENOENT") throw error; }
-    return { inputRoot: roots[0], outputRoot: roots[1], storeRoot: roots[2] };
+    return { inputRoot: roots[0], outputRoot: roots[1], storeRoot: roots[2], repositories };
   } catch (error) { throw new PrivateError(privateCode(error)); }
 }
-export async function createPrivateOutput(root) {
+/** Re-check canonical containment immediately at each logical write boundary.
+ * A changed ancestor alias is a refusal, never a newly trusted destination. */
+export async function assertPrivateLocation(path, repositories) {
+  const canonical = await privatePath(path, repositories);
+  if (canonical !== resolve(path)) throw new PrivateError("private_unsafe_entry");
+}
+export async function createPrivateOutput(root, repositories) {
+  await assertPrivateLocation(root, repositories);
   try { await lstat(root); throw new PrivateError("private_output_exists"); }
   catch (error) { if (error?.code !== "ENOENT") throw new PrivateError(privateCode(error)); }
   await mkdir(root, { mode: 0o700, recursive: true });
+  await assertPrivateLocation(root, repositories);
   await validateTree(root);
 }
 export async function readPrivateJson(path) {
@@ -158,8 +173,10 @@ export async function loadPrivateInputs(root) {
 
 /** Reconstruct canonical daily source only, never copy indexes, audit, intake,
  * transcripts, or projections containing information from the future. */
-export async function reconstructClone({ source, destination, asOf, grammar, graph, present = false }) {
+export async function reconstructClone({ source, destination, asOf, grammar, graph, present = false, repositories }) {
+  await assertPrivateLocation(destination, repositories);
   await mkdir(join(destination, "daily"), { recursive: true, mode: 0o700 });
+  await assertPrivateLocation(destination, repositories);
   const flags = new Set(present ? ["diagnostic_present_store"] : ["approximate_as_of"]);
   let count = 0; const keptIds = new Set();
   let names;
@@ -185,6 +202,7 @@ export async function reconstructClone({ source, destination, asOf, grammar, gra
     }
     for (const bullet of kept) keptIds.add(bullet.id);
     if (kept.length > 0) {
+      await assertPrivateLocation(destination, repositories);
       const output = await open(join(destination, "daily", name), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
       try { await output.writeFile(kept.map(grammar.serializeBullet).join("\n") + "\n"); } finally { await output.close(); }
       count += kept.length;
@@ -205,6 +223,7 @@ export async function reconstructClone({ source, destination, asOf, grammar, gra
       ...records.associations.filter((association) => before(association) && keptIds.has(association.memoryId) && entityIds.has(association.entityId)).map((association) => ({ ...association, kind: "association" })),
     ];
     if (lines.length > 0) {
+      await assertPrivateLocation(destination, repositories);
       const output = await open(join(destination, "graph.jsonl"), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
       try { await output.writeFile(lines.map((line) => JSON.stringify(line)).join("\n") + "\n"); } finally { await output.close(); }
     }

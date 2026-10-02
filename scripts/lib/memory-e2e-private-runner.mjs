@@ -5,9 +5,9 @@ import { performance } from "node:perf_hooks";
 import { prepareRealBuild, sourceState, verifyRealBuild } from "./memory-e2e-build.mjs";
 import { Budget, meteredEmbeddings } from "./memory-e2e-providers.mjs";
 import { productionModules, invokedMemoryObservation, awaitReady } from "./memory-e2e-runner.mjs";
-import { PrivateError, privateCode, validatePrivateRoots, createPrivateOutput, loadPrivateInputs, readPrivateJson, validateRegistration, validateAnnotations, reconstructClone, LABELS } from "./memory-e2e-private-input.mjs";
+import { PrivateError, privateCode, validatePrivateRoots, createPrivateOutput, loadPrivateInputs, readPrivateJson, validateRegistration, validateAnnotations, reconstructClone, LABELS, assertPrivateLocation } from "./memory-e2e-private-input.mjs";
 import { PRIVATE_ARMS, newReviewSeed, reviewId, blindSheets, safeObservation, writePrivateArtifact, summarizePrivate } from "./memory-e2e-private-report.mjs";
-import { validatePrivateRoute, privateCompletionRuntime } from "./memory-e2e-private-providers.mjs";
+import { validatePrivateRoute, privateCompletionRuntime, assertPrivateProviderEnvironment, privateEmbeddingFetch } from "./memory-e2e-private-providers.mjs";
 
 const switchPaths = ["recall.contextWindow", "profile.enabled", "recall.semanticOnly"];
 const armSwitches = {
@@ -104,8 +104,11 @@ async function runPrivateReplay({ roots, flags, turns, registration, modules, re
   let judge, judgeRuntime;
   try {
     for (const arm of PRIVATE_ARMS.filter((name) => name !== "historical-baseline")) {
+      await assertPrivateLocation(roots.outputRoot, roots.repositories);
       const work = await mkdtemp(join(roots.outputRoot, "clone-"));
+      await assertPrivateLocation(work, roots.repositories);
       const workspace = join(work, "workspace"); await mkdir(workspace, { mode: 0o700 });
+      await assertPrivateLocation(work, roots.repositories);
       await writeFile(join(workspace, "IDENTITY.md"), "Replay a completed owner turn. Do not invoke tools.\n", { mode: 0o600 });
       const memoryRoot = join(work, "memory");
       const json = baseConfig(work, memoryRoot, flags, llm);
@@ -113,6 +116,7 @@ async function runPrivateReplay({ roots, flags, turns, registration, modules, re
       const resolved = resolvePrivateArm(modules, json, work, arm);
       if (resolved.status === "unsupported") {
         rows.push(...turns.map((turn) => emptyRow(turn, arm, [], true, "unsupported", seed)));
+        await assertPrivateLocation(work, roots.repositories);
         await rm(work, { recursive: true, force: true }); continue;
       }
       const config = resolved.config;
@@ -124,12 +128,14 @@ async function runPrivateReplay({ roots, flags, turns, registration, modules, re
         memoryRuntime = privateCompletionRuntime(modules, flags["private-capture-route"] ?? "ollama:private-unused", workspace, budget);
         const prepareStore = async (turn) => {
           evidence = await reconstructClone({ source: roots.storeRoot, destination: memoryRoot, asOf: turn.timestamp,
-            grammar: modules.grammar, graph: modules.graph, present: registration.snapshot === "present_diagnostic" });
+            grammar: modules.grammar, graph: modules.graph, repositories: roots.repositories, present: registration.snapshot === "present_diagnostic" });
           const indexingStart = budget.used.embeddingCalls;
-          const embeddings = meteredEmbeddings(modules.search.createEmbeddingProvider({ ...config.memory.embeddings }), { budget, tag: { arm }, dimension: config.memory.embeddings.dim });
+          const embeddings = meteredEmbeddings(modules.search.createEmbeddingProvider({ ...config.memory.embeddings }, privateEmbeddingFetch), { budget, tag: { arm }, dimension: config.memory.embeddings.dim });
+          await assertPrivateLocation(memoryRoot, roots.repositories);
           await budget.wait(modules.bujo.safeRebuildMemoryIndex({ root: memoryRoot, tier: "bujo", embeddings, dim: config.memory.embeddings.dim }));
           indexingEmbeddingRequests = budget.used.embeddingCalls - indexingStart;
-          store = await modules.app.createConfiguredMemory(config, { cwd: work, clock: () => new Date(currentTurn.timestamp), logger: { warn() {} },
+          await assertPrivateLocation(memoryRoot, roots.repositories);
+          store = await modules.app.createConfiguredMemory(config, { cwd: work, clock: () => new Date(currentTurn.timestamp), embeddingsFetch: privateEmbeddingFetch, logger: { warn() {} },
             ...(memoryRuntime ? { memoryRuntime } : {}) });
           store.db.embeddings = meteredEmbeddings(store.db.embeddings, { budget, tag: { arm }, dimension: config.memory.embeddings.dim });
         };
@@ -146,7 +152,7 @@ async function runPrivateReplay({ roots, flags, turns, registration, modules, re
             return pendingBlock;
           },
           releaseTurn: (...args) => service.releaseTurn(...args),
-          ...(flags["private-mode"] === "capture" ? { persistCompletedTurn: (...args) => store.persistCompletedTurn(...args) } : {}),
+          ...(flags["private-mode"] === "capture" ? { async persistCompletedTurn(...args) { await assertPrivateLocation(memoryRoot, roots.repositories); return store.persistCompletedTurn(...args); } } : {}),
         }, { get(target, key) { if (Object.hasOwn(target, key)) return target[key]; const value = service[key]; return typeof value === "function" ? value.bind(service) : value; } });
         harness = modules.harness.createAgentHarness({ identityPath: json.context.identityPath, cwd: workspace,
           model: config.runtime.model, now: () => new Date(currentTurn.timestamp),
@@ -169,11 +175,13 @@ async function runPrivateReplay({ roots, flags, turns, registration, modules, re
           budget.reserve({}); currentTurn = turn; pendingBlock = undefined; invocation = undefined; memoryWarning = false;
           if (index > 0) indexingEmbeddingRequests = 0;
           if (index > 0 && flags["private-mode"] === "retrieval") {
-            if (store) { await store.close(); store = undefined; await rm(memoryRoot, { recursive: true, force: true }); }
+            if (store) { await assertPrivateLocation(memoryRoot, roots.repositories); await store.close(); store = undefined;
+              await assertPrivateLocation(memoryRoot, roots.repositories); await rm(memoryRoot, { recursive: true, force: true }); }
             await prepareStore(turn);
           }
           const before = flags["private-mode"] === "capture" ? await snapshotBullets(memoryRoot, modules.grammar) : null;
           const start = performance.now(); const chatStart = budget.privateChatCalls, embeddingStart = budget.used.embeddingCalls;
+          await assertPrivateLocation(memoryRoot, roots.repositories);
           const response = await budget.wait(harness.run({ conversationId: turn.conversationId, userMessage: turn.ownerText,
             captureSpeakerKind: "human-turn", metadata: { source: "web" }, abortSignal: budget.controller.signal }));
           if (response.failure || memoryWarning) throw new PrivateError("private_provider_failed");
@@ -195,6 +203,7 @@ async function runPrivateReplay({ roots, flags, turns, registration, modules, re
           rows.push(row);
         }
       } finally {
+        try { await assertPrivateLocation(work, roots.repositories); } catch (error) { budget.controller.abort(); throw error; }
         const cleanup = [];
         for (const close of [() => harness?.dispose?.(), () => store?.close(), () => memoryRuntime?.disposeAllSessions()]) cleanup.push(...await Promise.allSettled([Promise.resolve().then(close)]));
         service?.releaseAllTurns();
@@ -202,6 +211,7 @@ async function runPrivateReplay({ roots, flags, turns, registration, modules, re
         // Do not delete while a provider operation still has access to it.
         await Promise.allSettled([...budget.pending]);
         if (cleanup.some((result) => result.status === "rejected")) throw new PrivateError("private_cleanup_failed");
+        await assertPrivateLocation(work, roots.repositories);
         await rm(work, { recursive: true, force: true });
       }
     }
@@ -219,12 +229,14 @@ async function runPrivateReplay({ roots, flags, turns, registration, modules, re
     }
     if (flags["private-review"]) {
       const annotations = validateAnnotations(await review(reviewItems));
-      await writePrivateArtifact(roots.outputRoot, "human-review.json", "review", annotations);
+      await writePrivateArtifact(roots, "human-review.json", "review", annotations);
       const labels = new Map(annotations.map((row) => [row.id, row.label]));
       for (const row of rows) for (const line of row.lines) line.label = labels.get(line.id) ?? null;
     }
     if (judgeRoute !== undefined) {
+      await assertPrivateLocation(roots.outputRoot, roots.repositories);
       const work = await mkdtemp(join(roots.outputRoot, "judge-"));
+      await assertPrivateLocation(work, roots.repositories);
       try {
         const llmConfig = validatePrivateRoute(judgeRoute, allowed, registration, modules.runtime);
         const json = baseConfig(work, join(work, "memory"), flags, llmConfig);
@@ -240,8 +252,8 @@ async function runPrivateReplay({ roots, flags, turns, registration, modules, re
           annotations.push({ id: item.id, label });
         }
         // Model annotations are separate and NEVER silently substitute for humans.
-        await writePrivateArtifact(roots.outputRoot, "model-review.json", "review", annotations);
-      } finally { await judgeRuntime?.disposeAllSessions(); await rm(work, { recursive: true, force: true }); }
+        await writePrivateArtifact(roots, "model-review.json", "review", annotations);
+      } finally { await judgeRuntime?.disposeAllSessions(); await assertPrivateLocation(work, roots.repositories); await rm(work, { recursive: true, force: true }); }
     }
     return rows;
   } finally { budget.close(); }
@@ -252,6 +264,7 @@ export async function privateMain(flags, { root, stdout = console.log, env = pro
   prepareBuild = prepareRealBuild, verifyBuild = verifyRealBuild } = {}) {
   // CI refusal precedes git inspection, input loading, builds and providers.
   if (Object.hasOwn(env, "CI")) throw new PrivateError("private_ci_refused");
+  assertPrivateProviderEnvironment(env);
   let roots, outputCreated = false;
   try {
     if (!["retrieval", "capture", "analyze"].includes(flags["private-mode"])) throw new PrivateError("private_arguments_invalid");
@@ -269,30 +282,31 @@ export async function privateMain(flags, { root, stdout = console.log, env = pro
       if (annotations.some((row) => !knownIds.has(row.id))) throw new PrivateError("private_annotations_invalid");
       const labels = new Map(annotations.map((row) => [row.id, row.label]));
       for (const row of rows) for (const line of row.lines) line.label = labels.get(line.id) ?? null;
-      await writePrivateArtifact(roots.outputRoot, "summary.json", "summary", [summarizePrivate(rows, registration, "strict"), summarizePrivate(rows, registration)]);
+      await writePrivateArtifact(roots, "summary.json", "summary", [summarizePrivate(rows, registration, "strict"), summarizePrivate(rows, registration)]);
     } else {
-      await createPrivateOutput(roots.outputRoot); outputCreated = true;
+      await createPrivateOutput(roots.outputRoot, roots.repositories); outputCreated = true;
       const { head } = sourceState(root);
       const build = await prepareBuild(root, head);
       if (build) await verifyBuild(root, build);
+      for (const path of [roots.inputRoot, roots.storeRoot, roots.outputRoot]) await assertPrivateLocation(path, roots.repositories);
       const { turns, registration } = await loadInputs(roots.inputRoot);
       if (flags["private-review"] && review === reviewOnTty && (!process.stdin.isTTY || !process.stdout.isTTY)) throw new PrivateError("private_review_tty_required");
       // Everything above is provider-free; imports cannot load consumer config.
       const modules = await loadModules();
       if (build) await verifyBuild(root, build);
       const seed = newReviewSeed();
-      await writePrivateArtifact(roots.outputRoot, "review-seed.json", "seed", { seed });
-      await writePrivateArtifact(roots.outputRoot, "protocol.json", "protocol", { id: reviewId(seed, "registration", registration) });
+      await writePrivateArtifact(roots, "review-seed.json", "seed", { seed });
+      await writePrivateArtifact(roots, "protocol.json", "protocol", { id: reviewId(seed, "registration", registration) });
       const rows = await runPrivateReplay({ roots, flags, turns, registration, modules, review, seed });
-      if (build) { await verifyBuild(root, build); await writePrivateArtifact(roots.outputRoot, "code.json", "code", { head, buildDigest: build.outputSha256 }); }
-      await writePrivateArtifact(roots.outputRoot, "observations.json", "observations", rows);
-      await writePrivateArtifact(roots.outputRoot, "review.json", "review", blindSheets(rows));
-      await writePrivateArtifact(roots.outputRoot, "summary-unjudged.json", "summary", [summarizePrivate(rows, registration, "strict"), summarizePrivate(rows, registration)]);
+      if (build) { await verifyBuild(root, build); await writePrivateArtifact(roots, "code.json", "code", { head, buildDigest: build.outputSha256 }); }
+      await writePrivateArtifact(roots, "observations.json", "observations", rows);
+      await writePrivateArtifact(roots, "review.json", "review", blindSheets(rows));
+      await writePrivateArtifact(roots, "summary-unjudged.json", "summary", [summarizePrivate(rows, registration, "strict"), summarizePrivate(rows, registration)]);
     }
     stdout("private_completed"); return 0;
   } catch (error) {
     const code = privateCode(error);
-    if (outputCreated) await writePrivateArtifact(roots.outputRoot, "error.json", "error", { code }).catch(() => {});
+    if (outputCreated) await writePrivateArtifact(roots, "error.json", "error", { code }).catch(() => {});
     throw new PrivateError(code);
   }
 }

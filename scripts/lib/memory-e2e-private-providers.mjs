@@ -1,5 +1,22 @@
 import { PrivateError } from "./memory-e2e-private-input.mjs";
 
+// Refuse presence, not just recognized values: SDK parsers can themselves warn
+// for invalid levels. The shared guard covers every admitted native Pi route,
+// including OpenAI-compatible/Azure routes and Google/AWS transitive logging.
+export const PRIVATE_LOGGING_ENV = Object.freeze([
+  "ANTHROPIC_LOG", "OPENAI_LOG", "GOOGLE_SDK_NODE_LOGGING", "AZURE_LOG_LEVEL",
+  "AWS_SDK_LOG_LEVEL", "AWS_SDK_JS_LOG_LEVEL", "DEBUG", "NODE_DEBUG", "NODE_DEBUG_NATIVE",
+]);
+export function assertPrivateProviderEnvironment(env = process.env) {
+  if (PRIVATE_LOGGING_ENV.some((key) => Object.hasOwn(env, key))) throw new PrivateError("private_isolation_required");
+}
+/** Existing production embedding transport seam; never alter global fetch or
+ * ordinary providers. All private indexing/store requests refuse redirects. */
+export function privateEmbeddingFetch(input, options = {}) {
+  assertPrivateProviderEnvironment();
+  return fetch(input, { ...options, redirect: "error" });
+}
+
 const routePattern = /^[a-z0-9-]+:[A-Za-z0-9:._/-]{1,160}$/u;
 export function validatePrivateRoute(route, allowed, registration, runtime) {
   if (typeof route !== "string" || !routePattern.test(route) || route.includes("..")) throw new PrivateError("private_provider_route_refused");
@@ -17,9 +34,11 @@ export function assertPrivateRuntimeOptions(options) {
     || Object.keys(options.mcpServers ?? {}).length !== 0) throw new PrivateError("private_isolation_required");
 }
 export function privatePiRuntime(modules, workspace, budget) {
+  assertPrivateProviderEnvironment();
   const raw = modules.runtime.createMonoRuntime({ workspace });
   return {
     async run(system, options) {
+      assertPrivateProviderEnvironment();
       assertPrivateRuntimeOptions(options);
       budget.privateChatCalls = (budget.privateChatCalls ?? 0) + 1;
       const inputTokens = Math.ceil(Buffer.byteLength(system + JSON.stringify(options.messages), "utf8") / 3);
@@ -38,9 +57,11 @@ export function privatePiRuntime(modules, workspace, budget) {
 /** Tool-less local completion through the app's existing memoryRuntime seam.
  * Unlike a generic HTTP adapter this refuses redirects and caps response bytes. */
 export function privateCompletionRuntime(modules, route, workspace, budget) {
+  assertPrivateProviderEnvironment();
   if (!route.startsWith("ollama:")) return privatePiRuntime(modules, workspace, budget);
   return {
     async run(system, options) {
+      assertPrivateProviderEnvironment();
       assertPrivateRuntimeOptions(options);
       budget.privateChatCalls = (budget.privateChatCalls ?? 0) + 1;
       const prompt = options.messages.map((message) => message.content).join("\n\n");

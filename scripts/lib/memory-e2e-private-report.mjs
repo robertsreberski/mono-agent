@@ -2,7 +2,7 @@ import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import { join } from "node:path";
 import { createHmac, randomBytes } from "node:crypto";
-import { LABELS, PRIVATE_CODES, PrivateError, opaqueId } from "./memory-e2e-private-input.mjs";
+import { LABELS, PRIVATE_CODES, PrivateError, opaqueId, assertPrivateLocation } from "./memory-e2e-private-input.mjs";
 
 export const PRIVATE_ARMS = Object.freeze(["current-only", "follow-up-window", "length-only-abstention", "profile-on", "window-profile-on", "semantic-only", "historical-baseline"]);
 export const LINE_KINDS = Object.freeze(["profile", "guidance", "similarity", "unclassified", "capture"]);
@@ -14,6 +14,12 @@ const bool = (value) => { if (typeof value !== "boolean") throw new PrivateError
 const nullableNumber = (value) => value === null ? null : num(value);
 const interval = (value) => value === null ? null : { difference: num(value.difference), low: num(value.low), high: num(value.high) };
 const metricNames = Object.freeze(["usefulPrecision", "partialRate", "noiseRate", "staleRate", "usefulCoverage", "followUpUsefulCoverage", "directUsefulCoverage", "followUpNoiseRate", "usefulLines", "bytesPerTurn", "repeatedBytesPerTurn", "latencyMsPerTurn", "capturedLinesPerTurn", "captureUsefulPrecision", "capturePartialRate", "captureNoiseRate", "captureStaleRate", "chatCallsPerTurn", "embeddingRequestsPerTurn", "indexingEmbeddingRequestsPerTurn", "capturedLinesPerDay", "captureUsefulLinesPerDay", "captureNoiseLinesPerDay"]);
+const dayMetricNames = Object.freeze(["capturedLinesPerDay", "captureUsefulLinesPerDay", "captureNoiseLinesPerDay"]);
+const intervalMetricNames = metricNames.filter((key) => !dayMetricNames.includes(key));
+function pointOnly(value) {
+  if (value?.interval !== "no interval") throw new PrivateError("private_input_invalid");
+  return { difference: nullableNumber(value.difference), interval: "no interval" };
+}
 export const newReviewSeed = () => randomBytes(32).toString("hex");
 export function reviewId(seed, ...coordinates) { return createHmac("sha256", seed).update(JSON.stringify(coordinates)).digest("hex").slice(0, 32); }
 export function blindSheets(rows) {
@@ -39,7 +45,7 @@ function safeSummary(summary) {
       metrics: Object.fromEntries(metricNames.map((key) => [key, nullableNumber(arm.metrics[key])])) })),
     comparisons: summary.comparisons.map((pair) => ({ baseline: enumValue(pair.baseline, PRIVATE_ARMS), candidate: enumValue(pair.candidate, PRIVATE_ARMS),
       status: enumValue(pair.status, ["inconclusive", "measured", "unsupported"]), conversations: num(pair.conversations),
-      metrics: Object.fromEntries(metricNames.map((key) => [key, interval(pair.metrics[key])])) })) };
+      metrics: Object.fromEntries(metricNames.map((key) => [key, dayMetricNames.includes(key) ? pointOnly(pair.metrics[key]) : interval(pair.metrics[key])])) })) };
 }
 /** The ONLY private artifact serializer. No recursive pass-through, redaction,
  * spread of provider objects, exception messages, paths or private manifests. */
@@ -60,7 +66,8 @@ export function serializePrivateArtifact(kind, value) {
   else throw new PrivateError("private_input_invalid");
   return JSON.stringify(safe, null, 2) + "\n";
 }
-export async function writePrivateArtifact(root, filename, kind, value) {
+export async function writePrivateArtifact({ outputRoot: root, repositories }, filename, kind, value) {
+  await assertPrivateLocation(root, repositories);
   if (!new Set(["observations.json", "review.json", "review-seed.json", "summary.json", "error.json", "model-review.json", "human-review.json", "summary-unjudged.json", "protocol.json", "code.json"]).has(filename)) throw new PrivateError("private_input_invalid");
   const content = serializePrivateArtifact(kind, value);
   const handle = await open(join(root, filename), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
@@ -119,13 +126,16 @@ export function pairedBootstrap(baseline, candidate, { iterations = 2000, seed =
   const conversations = [...groups.values()];
   const pointA = metrics(conversations.flatMap((group) => group.baseline));
   const pointB = metrics(conversations.flatMap((group) => group.candidate));
-  const samples = Object.fromEntries(metricNames.map((key) => [key, []])); const random = randomGenerator(seed);
+  const samples = Object.fromEntries(intervalMetricNames.map((key) => [key, []])); const random = randomGenerator(seed);
   if (conversations.length >= 2) for (let iteration = 0; iteration < iterations; iteration += 1) {
     const selected = Array.from({ length: conversations.length }, () => conversations[Math.floor(random() * conversations.length)]);
     const a = metrics(selected.flatMap((group) => group.baseline)), b = metrics(selected.flatMap((group) => group.candidate));
-    for (const key of metricNames) if (a[key] !== null && b[key] !== null) samples[key].push(b[key] - a[key]);
+    for (const key of intervalMetricNames) if (a[key] !== null && b[key] !== null) samples[key].push(b[key] - a[key]);
   }
   return { conversations: conversations.length, metrics: Object.fromEntries(metricNames.map((key) => {
+    // Conversation resampling does not preserve day exposure multiplicity.
+    // Report the original paired point only, never a biased per-day interval.
+    if (dayMetricNames.includes(key)) return [key, { difference: pointA[key] === null || pointB[key] === null ? null : pointB[key] - pointA[key], interval: "no interval" }];
     const values = samples[key].sort((a, b) => a - b);
     // Undefined precision in many bootstrap samples is not a confident estimate.
     return [key, pointA[key] === null || pointB[key] === null || values.length < iterations * 0.95 ? null : {

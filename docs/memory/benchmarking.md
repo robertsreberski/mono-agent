@@ -108,11 +108,16 @@ before any input content, build, or provider is loaded. Input/store trees and
 output roots must be owner-owned and have no group/other permissions (typically
 0700 directories and 0600 files); symlink entries, multiply linked files, and
 macOS ACLs are refused. A missing output's nearest existing ancestor must also
-be owner-private. Replay requires a **new** output directory, never a fallback
+be owner-private. Every ancestor must belong to the current user or root and
+not be group/other-writable; only root-owned sticky system directories are an
+exception. Containment is rechecked after output creation and before clone or
+artifact writes; a replaced ancestor alias refuses instead of becoming trusted.
+Replay requires a **new** output directory, never a fallback
 under `.worklab-tmp`. The source store is read-only to this evaluator.
 
 Use a non-recorded local shell and a network-isolated, non-logging local Ollama
-service. Only loopback Ollama embeddings are used (default
+service. Both indexing and configured-store embedding transports refuse HTTP redirects.
+Only loopback Ollama embeddings are used (default
 `nomic-embed-text:v1.5`, dimension 768). No consumer configuration is discovered.
 The replay builds and verifies the clean, exact-HEAD app dependency closure
 before production imports; its captured build output never includes inputs.
@@ -240,6 +245,13 @@ node scripts/memory-e2e-benchmark.mjs --private --private-mode analyze \
   --private-store-root /OWNER-ONLY/STORE-SOURCE
 ```
 
+Before any provider is constructed, private mode refuses the presence of SDK
+logging controls (`ANTHROPIC_LOG`, `OPENAI_LOG`, `GOOGLE_SDK_NODE_LOGGING`,
+`AZURE_LOG_LEVEL`, `AWS_SDK_LOG_LEVEL`, `AWS_SDK_JS_LOG_LEVEL`) or process debug
+controls (`DEBUG`, `NODE_DEBUG`, `NODE_DEBUG_NATIVE`). Empty, off, and invalid
+values also refuse: SDKs may log warnings while parsing them. The shared guard
+applies to all admitted native Pi SDK routes, not only one provider family.
+
 The model judge is **off by default**. Explicit `--private-judge
 ollama:LOCAL-JUDGE-MODEL` enables a local hook. For a Pi-native capture or judge
 route, additionally repeat `--allow-private-provider-route provider:model` for
@@ -264,6 +276,8 @@ Pairs match turn IDs and resample **whole conversations together** on both arms
 (2,000 paired bootstrap draws, percentile 95% intervals), not independent lines.
 Fewer than 400 turns, 50 follow-ups, 100 judged follow-up current-only baseline lines, two
 paired conversations, or incomplete judging makes a comparison `inconclusive`.
+Per-day capture yield is a point estimate only, explicitly labelled **no
+interval**: conversation resampling does not preserve day exposure multiplicity.
 Diagnostic intervals cannot establish historical truth. Missing arms are not
 quality successes.
 

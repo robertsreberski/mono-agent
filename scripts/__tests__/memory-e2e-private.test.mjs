@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, rename, symlink, utimes, writeFile } from "node:fs/promises";
+import { renameSync, symlinkSync } from "node:fs";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { PrivateError, privateCode, validatePrivateRoots, validateTurns, validateRegistration, validateAnnotations, reconstructClone } from "../lib/memory-e2e-private-input.mjs";
+import { PrivateError, privateCode, validatePrivateRoots, validateTurns, validateRegistration, validateAnnotations, reconstructClone, requirePrivateAncestor, createPrivateOutput } from "../lib/memory-e2e-private-input.mjs";
 import { blindSheets, metrics, newReviewSeed, reviewId, pairedBootstrap, serializePrivateArtifact, summarizePrivate } from "../lib/memory-e2e-private-report.mjs";
 import { privateMain, resolvePrivateArm } from "../lib/memory-e2e-private-runner.mjs";
-import { assertPrivateRuntimeOptions, validatePrivateRoute } from "../lib/memory-e2e-private-providers.mjs";
+import { assertPrivateRuntimeOptions, validatePrivateRoute, assertPrivateProviderEnvironment, PRIVATE_LOGGING_ENV, privateCompletionRuntime } from "../lib/memory-e2e-private-providers.mjs";
 import { invokedMemoryObservation, productionModules } from "../lib/memory-e2e-runner.mjs";
 import { parseArguments } from "../memory-e2e-benchmark.mjs";
 import * as graph from "../../packages/memory/dist/bujo/graph.js";
@@ -15,7 +17,7 @@ import * as grammar from "../../packages/memory/dist/bujo/grammar.js";
 // Fictional-only tests: never discover a consumer, config, transcript or store.
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const dirs = [];
-afterEach(async () => { vi.restoreAllMocks(); for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); });
+afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); });
 const opaque = (n) => n.toString(16).padStart(32, "0");
 const sentinel = "FICTIONAL_PRIVATE_SENTINEL pottery wheel";
 const registration = () => ({ version: 1, definitions: { useful: "Helps the turn", partial: "Incomplete help", noise: "Not useful", stale: "No longer current" },
@@ -81,6 +83,58 @@ describe("private memory evaluation privacy boundary", () => {
     expect(changed.status).toBe(0);
     await expect(validatePrivateRoots(f)).rejects.toThrow("private_permissions");
   });
+  it("refuses SDK logging variables of any value before inputs or any admitted Pi runtime construction", async () => {
+    const loadInputs = vi.fn(), loadModules = vi.fn(), prepareBuild = vi.fn();
+    const createMonoRuntime = vi.fn(() => { console.debug(sentinel); throw new Error(sentinel); });
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    for (const key of PRIVATE_LOGGING_ENV) for (const value of ["", "off", "debug", "fictional-invalid-level"]) {
+      const env = { [key]: value };
+      expect(() => assertPrivateProviderEnvironment(env)).toThrow("private_isolation_required");
+      await expect(privateMain({ private: true, "private-mode": "capture" }, { root, env, loadInputs, loadModules, prepareBuild })).rejects.toThrow("private_isolation_required");
+      vi.stubEnv(key, value);
+      // One shared guard protects every built-in SDK route, including all
+      // OpenAI-compatible providers; no real SDK/auth/provider is constructed.
+      for (const provider of ["anthropic", "openai", "openai-codex", "azure-openai-responses", "google", "google-vertex", "amazon-bedrock", "openrouter", "groq", "xai"]) {
+        expect(() => privateCompletionRuntime({ runtime: { createMonoRuntime } }, `${provider}:fictional-model`, root, {})).toThrow("private_isolation_required");
+      }
+      vi.unstubAllEnvs();
+    }
+    expect(loadInputs).not.toHaveBeenCalled(); expect(loadModules).not.toHaveBeenCalled(); expect(prepareBuild).not.toHaveBeenCalled();
+    expect(createMonoRuntime).not.toHaveBeenCalled(); expect(debug).not.toHaveBeenCalled(); expect(warn).not.toHaveBeenCalled();
+  });
+  it("accepts writable sticky ancestry only for root, never a different directory owner", () => {
+    const uid = process.getuid(); const foreign = uid + 1;
+    const info = (owner, mode) => ({ uid: owner, mode, isDirectory: () => true });
+    expect(() => requirePrivateAncestor(info(foreign, 0o1777), uid)).toThrow("private_permissions");
+    expect(() => requirePrivateAncestor(info(foreign, 0o755), uid)).toThrow("private_permissions");
+    if (uid !== 0) expect(() => requirePrivateAncestor(info(uid, 0o1777), uid)).toThrow("private_permissions");
+    expect(() => requirePrivateAncestor(info(0, 0o777), uid)).toThrow("private_permissions");
+    expect(() => requirePrivateAncestor(info(0, 0o1777), uid)).not.toThrow();
+    expect(() => requirePrivateAncestor(info(uid, 0o755), uid)).not.toThrow();
+  });
+  it("rechecks output ancestry after creation/build and refuses a repository alias before reading inputs", async () => {
+    const f = await fixture(); const parent = join(f.dir, "private-parent"); await mkdir(parent, { mode: 0o700 });
+    const outputRoot = join(parent, "output"), loadInputs = vi.fn(), loadModules = vi.fn();
+    const prepareBuild = async () => {
+      await rename(parent, join(f.dir, "moved-parent")); await symlink(f.repositories[0], parent); return null;
+    };
+    await expect(privateMain({ private: true, "private-mode": "retrieval", "private-input-root": f.inputRoot, "private-output-root": outputRoot, "private-store-root": f.storeRoot },
+      { root, env: {}, repositories: f.repositories, stdout() {}, prepareBuild, loadInputs, loadModules })).rejects.toThrow("private_repository_path");
+    expect(loadInputs).not.toHaveBeenCalled(); expect(loadModules).not.toHaveBeenCalled();
+    expect(await readdir(f.repositories[0])).toEqual([]);
+    await expect(createPrivateOutput(outputRoot, f.repositories)).rejects.toThrow("private_repository_path");
+  });
+  it("rechecks before each canonical clone write after an ancestor is replaced", async () => {
+    const f = await fixture(); const parent = join(f.dir, "private-parent"); await mkdir(parent, { mode: 0o700 });
+    await writeFile(join(f.storeRoot, "daily", "2029-01-01.md"), grammar.serializeBullet(bullet("fictional", "2029-01-01T00:00:00.000Z")), { mode: 0o600 });
+    const swappedGrammar = { ...grammar, parseDailyFile(text) {
+      renameSync(parent, join(f.dir, "moved-parent")); symlinkSync(f.repositories[0], parent); return grammar.parseDailyFile(text);
+    } };
+    await expect(reconstructClone({ source: f.storeRoot, destination: join(parent, "clone"), asOf: "2030-01-01T00:00:00.000Z", grammar: swappedGrammar, repositories: f.repositories })).rejects.toThrow("private_repository_path");
+    expect(await readdir(f.repositories[0])).toEqual([]);
+    expect(await readFile(join(f.storeRoot, "daily", "2029-01-01.md"), "utf8")).toContain(sentinel);
+  });
   it("serializes only explicitly allowed enums, numbers, opaque ids and labels", () => {
     const source = row(1, "current-only"); source.transcript = sentinel; source.response = sentinel; source.content = sentinel;
     source.lines[0].text = sentinel; source.path = sentinel;
@@ -106,13 +160,13 @@ describe("private memory evaluation privacy boundary", () => {
     await utimes(daily, new Date("2031-01-01"), new Date("2031-01-01"));
     await mkdir(join(f.storeRoot, "audit"), { mode: 0o700 }); await writeFile(join(f.storeRoot, "audit", "ignored.md"), sentinel, { mode: 0o600 });
     const clone = join(f.dir, "clone");
-    const evidence = await reconstructClone({ source: f.storeRoot, destination: clone, asOf: "2030-01-01T00:00:00.000Z", grammar });
+    const evidence = await reconstructClone({ source: f.storeRoot, destination: clone, asOf: "2030-01-01T00:00:00.000Z", repositories: f.repositories, grammar });
     const parsed = grammar.parseDailyFile(await readFile(join(clone, "daily", "2029-01-01.md"), "utf8"));
     expect(parsed.bullets.map((entry) => entry.id)).toEqual(["old"]);
     expect(evidence).toMatchObject({ count: 1, contaminated: true });
     expect(evidence.flags).toEqual(expect.arrayContaining(["later_file_edit_possible", "later_status_or_supersession_possible", "rewrite_history_unknown"]));
     expect(await readdir(clone)).toEqual(["daily"]);
-    const present = await reconstructClone({ source: f.storeRoot, destination: join(f.dir, "present"), asOf: "2030-01-01T00:00:00.000Z", grammar, present: true });
+    const present = await reconstructClone({ source: f.storeRoot, destination: join(f.dir, "present"), asOf: "2030-01-01T00:00:00.000Z", repositories: f.repositories, grammar, present: true });
     expect(present).toMatchObject({ count: 2, contaminated: true, flags: ["diagnostic_present_store"] });
     expect((await lstat(join(clone, "daily", "2029-01-01.md"))).mode & 0o077).toBe(0);
   });
@@ -127,7 +181,7 @@ describe("private memory evaluation privacy boundary", () => {
     ];
     await writeFile(join(f.storeRoot, "graph.jsonl"), records.map((record) => JSON.stringify(record)).join("\n"), { mode: 0o600 });
     const destination = join(f.dir, "clone");
-    const evidence = await reconstructClone({ source: f.storeRoot, destination, asOf: "2030-01-01T00:00:00.000Z", grammar, graph });
+    const evidence = await reconstructClone({ source: f.storeRoot, destination, asOf: "2030-01-01T00:00:00.000Z", repositories: f.repositories, grammar, graph });
     const projected = graph.parseCanonicalGraphStrict(await readFile(join(destination, "graph.jsonl"), "utf8"));
     expect(projected.entities.map((entity) => entity.id)).toEqual(["person:morgan"]); expect(projected.associations).toHaveLength(1);
     expect(evidence.flags).toContain("later_graph_edit_possible");
@@ -311,6 +365,61 @@ describe("private memory evaluation measurement", () => {
         loadInputs: async () => ({ turns: validateTurns(turns()), registration: registration() }), loadModules: async () => { throw new Error(sentinel); } })).rejects.toThrow("private_operation_failed");
     expect(stdout).not.toHaveBeenCalled();
     expect(JSON.parse(await readFile(join(f.outputRoot, "error.json"), "utf8"))).toEqual({ code: "private_operation_failed" });
+  });
+
+  it("refuses real 307/308 embedding redirects during indexing and configured-store query retrieval", async () => {
+    for (const status of [307, 308]) for (const stage of ["indexing", "query"]) {
+      const f = await fixture(); let forwarded = 0, received = 0;
+      const sink = createServer(async (request, response) => {
+        forwarded += 1; const chunks = []; for await (const chunk of request) chunks.push(chunk);
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ embeddings: body.input.map(() => [1, 0, 0]) }));
+      });
+      await new Promise((resolve) => sink.listen(0, "127.0.0.1", resolve));
+      const redirect = createServer(async (request, response) => {
+        received += 1; const chunks = []; for await (const chunk of request) chunks.push(chunk);
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        if (stage === "query" && received === 1) {
+          response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ embeddings: body.input.map(() => [1, 0, 0]) })); return;
+        }
+        response.writeHead(status, { location: `http://127.0.0.1:${sink.address().port}/different-receiver` }); response.end(sentinel);
+      });
+      await new Promise((resolve) => redirect.listen(0, "127.0.0.1", resolve));
+      try {
+        await writeFile(join(f.storeRoot, "daily", "2029-01-01.md"), grammar.serializeBullet(bullet("fictional", "2029-01-01T00:00:00.000Z")), { mode: 0o600 });
+        const endpoint = `http://127.0.0.1:${redirect.address().port}`;
+        const loadModules = async () => {
+          const modules = await productionModules({ privateEvaluation: true });
+          return { ...modules,
+            search: { ...modules.search, createEmbeddingProvider(config, transport) { return modules.search.createEmbeddingProvider({ ...config, endpoint }, transport); } },
+            app: { ...modules.app, createConfiguredMemory(config, deps) {
+              expect(typeof deps.embeddingsFetch).toBe("function");
+              return modules.app.createConfiguredMemory({ ...config, memory: { ...config.memory, embeddings: { ...config.memory.embeddings, endpoint } } }, deps);
+            } },
+          };
+        };
+        const error = await privateMain({ private: true, "private-mode": "retrieval", "private-input-root": f.inputRoot, "private-output-root": f.outputRoot, "private-store-root": f.storeRoot, "private-dimension": "3" },
+          { root, env: {}, repositories: f.repositories, stdout() {}, loadModules, prepareBuild: async () => null,
+            loadInputs: async () => ({ turns: validateTurns(turns()), registration: registration() }) }).catch((failure) => failure);
+        expect(error, `${status}:${stage}`).toBeInstanceOf(PrivateError); expect(received).toBeGreaterThan(stage === "query" ? 1 : 0); expect(forwarded).toBe(0);
+        const artifact = await readFile(join(f.outputRoot, "error.json"), "utf8"); expect(artifact).not.toContain(sentinel);
+        expect(Object.keys(JSON.parse(artifact))).toEqual(["code"]);
+      } finally {
+        await Promise.all([redirect, sink].map((server) => new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); })));
+      }
+    }
+  }, 60000);
+  it("reports constant per-day capture yield as point-only with no bootstrap interval", () => {
+    const baseline = Array.from({ length: 40 }, (_, i) => ({ ...row(i, "current-only"), conversationId: opaque(20000 + i), dayId: opaque(30000 + i) }));
+    const candidate = baseline.map((entry, i) => ({ ...entry, arm: "follow-up-window", lines: [...entry.lines, { id: opaque(40000 + i), kind: "capture", label: "useful", bytes: 20, repeated: false }] }));
+    const paired = pairedBootstrap(baseline, candidate, { iterations: 200 });
+    expect(paired.conversations).toBe(40);
+    for (const key of ["capturedLinesPerDay", "captureUsefulLinesPerDay"]) expect(paired.metrics[key]).toEqual({ difference: 1, interval: "no interval" });
+    expect(paired.metrics.captureNoiseLinesPerDay).toEqual({ difference: 0, interval: "no interval" });
+    expect(paired.metrics.usefulCoverage).toEqual({ difference: 0, low: 0, high: 0 });
+    const summary = summarizePrivate([...baseline, ...candidate], registration());
+    const artifact = JSON.parse(serializePrivateArtifact("summary", [summary]));
+    expect(artifact[0].comparisons[0].metrics.capturedLinesPerDay).toEqual({ difference: 1, interval: "no interval" });
   });
 
 });

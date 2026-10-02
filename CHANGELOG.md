@@ -5,7 +5,9 @@
 - Add an opt-in private BuJo evaluation mode with external owner-only inputs
   and disposable replay stores, blinded label-only review, aggregate paired
   confidence intervals, and code-only failures; keep fictional benchmarks
-  unchanged and refuse private evaluation in CI.
+  unchanged and refuse private evaluation in CI. Refuse SDK logging controls,
+  embedding redirects and replaced/untrusted ancestors; report daily yields
+  as point estimates without confidence intervals.
 
 - Fix Telegram native rich-message input, including forwarded and replied-to
   structured text, tables, lists, captions, and bounded background context.
