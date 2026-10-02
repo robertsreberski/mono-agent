@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add an opt-in private BuJo evaluation mode with external owner-only inputs
+  and disposable replay stores, blinded label-only review, aggregate paired
+  confidence intervals, and code-only failures; keep fictional benchmarks
+  unchanged and refuse private evaluation in CI.
+
 - Fix Telegram native rich-message input, including forwarded and replied-to
   structured text, tables, lists, captions, and bounded background context.
 

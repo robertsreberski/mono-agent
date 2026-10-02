@@ -1952,6 +1952,8 @@ function supportsSessionResume(): boolean {
 const DEFAULT_EMBEDDINGS_TIMEOUT_MS = 10_000;
 
 interface ConfiguredMemoryDependencies {
+  /** Volatile source-clock seam for disposable chronological evaluation. */
+  readonly clock?: () => Date;
   /** Canonical agent-root authority and folder used to resolve optional plugins. */
   readonly cwd?: string;
   /** Managed workers must use the plugin frozen into their app-side runtime closure. */
@@ -2127,6 +2129,7 @@ async function createConfiguredMemoryInternal(
     dim,
     ...(maxBytes !== undefined && { maxBytes }),
     llm: captureLlm,
+    ...(deps.clock === undefined ? {} : { clock: deps.clock }),
     ...(config.memory.capture === undefined ? {} : { capture: { ...(focus === undefined ? {} : { focus }), ...(only === undefined ? {} : { only }) } }),
     ...(deps.logger !== undefined && { logger: deps.logger }),
   });
