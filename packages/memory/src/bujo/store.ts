@@ -167,6 +167,7 @@ export class BujoMemoryStore implements MemoryStore {
   private readonly clock: () => Date;
   private readonly llm?: LlmComplete;
   private readonly captureSettings?: BujoOptions["capture"];
+  private readonly semanticOnly: boolean;
   private readonly _tier!: BujoTier;
   private readonly logger: BujoLogger;
   private readonly backgroundDrainTimeoutMs: number;
@@ -264,6 +265,7 @@ export class BujoMemoryStore implements MemoryStore {
         assertTierPrerequisites(tier, options);
       }
       this._tier = tier;
+      this.semanticOnly = tier === "bujo" && options.recall?.semanticOnly === true;
       if (!this.readOnly) {
         this.rollbackRuntimeLease = registerManagedRollbackRuntime(this.root, managed);
       }
@@ -434,7 +436,7 @@ export class BujoMemoryStore implements MemoryStore {
     return await this.runAdmittedOperation(async (abortSignal) => await composeRecallBlock(
       this.db,
       recallQuery,
-      { topK: 3, maxBytes: this.maxBytes, trackAccess: !this.readOnly, abortSignal, asOf, now: observedAt.toISOString() },
+      { topK: 3, maxBytes: this.maxBytes, trackAccess: !this.readOnly, abortSignal, asOf, now: observedAt.toISOString(), semanticOnly: this.semanticOnly },
     ));
   }
 
@@ -906,6 +908,7 @@ export class BujoMemoryStore implements MemoryStore {
         isFinalCaptureAttempt: isFinalAttempt,
         conversationId: turn.conversationId,
         ...(this.captureSettings === undefined ? {} : { captureSettings: this.captureSettings }),
+        ...(this.semanticOnly ? { semanticOnly: true } : {}),
         ...(turn.captureSpeakerKind === undefined ? {} : { captureSpeakerKind: turn.captureSpeakerKind }),
         ...(turn.captureEvidence === undefined ? {} : { captureEvidence: turn.captureEvidence }),
         canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,

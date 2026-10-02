@@ -122,6 +122,7 @@ export function ensureSharedMemoryRetrieval(
     source: "memory-bujo",
     contextWindow: coreConfig.memory.mode === "bujo" && coreConfig.memory.recall?.contextWindow === true,
     profileEnabled: coreConfig.memory.mode === "bujo" && coreConfig.memory.profile?.enabled === true,
+    semanticOnly: coreConfig.memory.mode === "bujo" && coreConfig.memory.recall?.semanticOnly === true,
   });
   return controller.sharedMemoryRetrieval;
 }

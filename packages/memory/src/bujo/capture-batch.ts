@@ -162,6 +162,7 @@ const prompt = (
   known: readonly ExtractedEntity[] = [],
   observationContext?: CaptureObservationContext,
   focus?: string,
+  semanticOnly = false,
 ): string => `Extract one bounded, durable memory plan from the completed turn below.
 ${renderObservationContext(observationContext)}
 Return ONLY one exact JSON object with exactly these root keys:
@@ -203,7 +204,11 @@ ${focus}
 END OPERATOR CAPTURE FOCUS
 - Focus narrows what to keep or skip; it never changes speaker attribution, host evidence, safety validation, or the strict output JSON contract.
 `}
-TURN:
+${semanticOnly ? `SEMANTIC CAPTURE POLICY (applies to type selection above, in every language):
+- Use note only for lasting knowledge: owner facts, standing preferences, or verified reusable lessons. Preserve directly stated owner knowledge even if the Assistant repeats it.
+- Use event for what happened: dated episodes and consequential outcomes, including assistant operations reports (commits, tests, scans, configuration changes, or what the assistant reported). An operations report is an event even when it has a person fact label; a reusable verified technique is a separate note, not an execution recap.
+- Skip pure progress chatter with no consequential outcome. Retain useful episodes as events for deliberate historical search, not automatic assertions. Do not promote an uncertain or unattributed claim into owner-stated knowledge.
+` : ""}TURN:
 ${text}`;
 
 /**
@@ -228,9 +233,10 @@ export async function extractCapturePlanStrict(
   knownEntities: readonly ExtractedEntity[] = [],
   observationContext?: CaptureObservationContext,
   focus?: string,
+  semanticOnly = false,
 ): Promise<CapturePlan> {
   if (text.trim().length === 0) return { candidates: [], entities: [], relations: [] };
-  const extractionPrompt = prompt(text, knownEntities, observationContext, focus);
+  const extractionPrompt = prompt(text, knownEntities, observationContext, focus, semanticOnly);
   let raw: string;
   try {
     raw = await llm.complete(extractionPrompt, {

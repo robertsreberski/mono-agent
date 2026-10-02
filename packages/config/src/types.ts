@@ -360,7 +360,7 @@ export interface MonoAgentConfig {
      */
     readonly recallTool?: { readonly enabled: boolean };
     /** BuJo-only volatile preceding-owner-query window; default off. */
-    readonly recall?: { readonly contextWindow: boolean };
+    readonly recall?: { readonly contextWindow?: boolean; readonly semanticOnly?: boolean };
     /** BuJo-only deterministic owner label profile; default off. */
     readonly profile?: { readonly enabled: boolean };
     /**

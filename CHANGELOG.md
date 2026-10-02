@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add default-off BuJo `memory.recall.semanticOnly` to restrict automatic memory
+  to current labelled knowledge notes, prefer user-stated evidence and protect
+  it from inferred overwrites; keep events searchable through deliberate tools.
+  Reuse reviewed curate retyping for legacy note/event and label review, with
+  backup/restore and no invented attribution or dates. Preserve newer user
+  refinements against delayed older capture retries using dated supersession;
+  keep profile inspection aligned with automatic whole-source eligibility.
+
 - Add an opt-in private BuJo evaluation mode with external owner-only inputs
   and disposable replay stores, blinded label-only review, aggregate paired
   confidence intervals, and code-only failures; keep fictional benchmarks

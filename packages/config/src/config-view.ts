@@ -107,6 +107,7 @@ export const CORE_CONFIG_FIELD_IDS = {
   "memory.llm.endpoint": true,
   "memory.recallTool.enabled": true,
   "memory.recall.contextWindow": true,
+  "memory.recall.semanticOnly": true,
   "memory.profile.enabled": true,
   "memory.rememberTool.enabled": true,
   "memory.consolidation.enabled": true,
@@ -551,6 +552,8 @@ function buildMemorySection(input: BuildMonoAgentConfigViewInput): ConfigViewSec
       return [toField({ id, label: key === "recall" ? "Owner query window" : "Owner profile",
         value: enabled === true ? "on" : "off", jsonPresent: json.memory?.[key] !== undefined })];
     }),
+    toField({ id: "memory.recall.semanticOnly", label: "Semantic notes only",
+      value: memory.recall?.semanticOnly === true ? "on" : "off", jsonPresent: json.memory?.recall?.semanticOnly !== undefined }),
     ...(memory.capture?.cron === undefined ? [] : [toField({
       id: "memory.capture.cron",
       label: "Capture cron",

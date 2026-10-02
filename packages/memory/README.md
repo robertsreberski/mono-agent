@@ -153,6 +153,21 @@ memories are split into separate candidates up to the eight-memory plan limit
 rather than silently discarding later sentences. Overlong individual sentences
 still clamp at a word or clause boundary.
 
+### Optional semantic eligibility
+
+BuJo `recall: { semanticOnly: true }` is default-off and applies to standalone
+`load()` and capture. Automatic context requires current open notes with accepted
+fact/preference/verified-lesson labels; events and unknown lines remain
+explicitly searchable. User-stated authority reorders only relevance-qualified
+candidates, without changing scores or the fifty-hit bound. Reconciliation
+protects user-stated sources and keeps unclassified inferred ADDs unlabelled.
+Structured built-in fact conflicts omit equal-authority assertions; coarse facts
+and preferences cannot represent comparable values and retain that limitation.
+The same flag changes capture's model guidance to notes versus useful episodes;
+flags-off prompts and canonical writes, including Lite/Journal, stay unchanged.
+Existing reviewed curate retype proposals can change note/event types and review
+labels with backup/restore, without inventing attribution or backfilling dates.
+
 ### Standalone automatic recall
 
 `BujoMemoryStore.load()` uses the same score-based, language-neutral
@@ -740,6 +755,7 @@ rollbackMemoryIndex
 safeRebuildMemoryIndex
 selectKnownEntityHints
 selectPossiblyRelevantRecallHits
+semanticRecallAuthorities
 serializeBullet
 serializeDailyFile
 validateCurateOperatorMerge

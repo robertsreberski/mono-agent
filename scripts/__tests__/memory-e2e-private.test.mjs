@@ -13,6 +13,7 @@ import { invokedMemoryObservation, productionModules } from "../lib/memory-e2e-r
 import { parseArguments } from "../memory-e2e-benchmark.mjs";
 import * as graph from "../../packages/memory/dist/bujo/graph.js";
 import * as grammar from "../../packages/memory/dist/bujo/grammar.js";
+import { encodeMemoryLabel } from "../../packages/memory/dist/bujo/labels.js";
 
 // Fictional-only tests: never discover a consumer, config, transcript or store.
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -262,13 +263,20 @@ describe("private memory evaluation privacy boundary", () => {
   it("detects unsupported flags through normalization and maps arms through config deltas only", async () => {
     const modules = await productionModules({ privateEvaluation: true });
     const json = { runtime: { model: "openai:gpt-4o" }, context: { identityPath: "IDENTITY.md" }, memory: { path: "memory", mode: "bujo", writeMode: "disabled", embeddings: { provider: "ollama", model: "fictional", dim: 3 }, llm: { provider: "ollama", model: "fictional" } } };
-    expect(resolvePrivateArm(modules, json, root, "current-only").status).toBe("completed");
-    expect(resolvePrivateArm(modules, json, root, "semantic-only").status).toBe("unsupported");
-    const configured = { config: { resolveJsonMonoAgentConfig: ({ json: input }) => structuredClone(input) } };
-    const window = resolvePrivateArm(configured, json, root, "follow-up-window");
+    const current = resolvePrivateArm(modules, json, root, "current-only");
+    expect(current.status).toBe("completed");
+    expect(current.config.memory.recall).toEqual({ contextWindow: false, semanticOnly: false });
+    const semantic = resolvePrivateArm(modules, json, root, "semantic-only");
+    expect(semantic.status).toBe("completed");
+    expect(semantic.config.memory.recall).toEqual({ contextWindow: false, semanticOnly: true });
+    expect(semantic.config.memory.profile).toEqual({ enabled: false });
+    const unknown = structuredClone(json); unknown.memory.recall = { fictionalUnsupportedFlag: true };
+    expect(() => modules.config.resolveJsonMonoAgentConfig({ json: unknown, cwd: root })).toThrow();
+    expect(resolvePrivateArm(modules, unknown, root, "semantic-only")).toEqual({ status: "unsupported" });
+    const window = resolvePrivateArm(modules, json, root, "follow-up-window");
     expect(window.config.memory.recall).toEqual({ contextWindow: true, semanticOnly: false });
     expect(window.config.memory.profile).toEqual({ enabled: false });
-    expect(resolvePrivateArm(configured, json, root, "window-profile-on").config.memory.profile.enabled).toBe(true);
+    expect(resolvePrivateArm(modules, json, root, "window-profile-on").config.memory.profile.enabled).toBe(true);
   });
   it("requires an exact declared/allowed production route for Pi, and refuses content sinks", () => {
     const r = registration(); r.productionRoutes = ["openai:fictional-model"];
@@ -315,7 +323,13 @@ describe("private memory evaluation measurement", () => {
   });
   it("replays fictional turns through real config/store/harness without loading private inputs or persisting sentinels", async () => {
     const f = await fixture();
-    await writeFile(join(f.storeRoot, "daily", "2029-01-01.md"), grammar.serializeBullet(bullet("fictional-note", "2029-01-01T00:00:00.000Z")) + "\n", { mode: 0o600 });
+    const unlabelled = bullet("fictional-note", "2029-01-01T00:00:00.000Z");
+    const knowledge = { ...unlabelled, id: "fictional-knowledge",
+      refs: [encodeMemoryLabel({ v: 1, kind: "preference", scope: "agent", attribution: "user-stated" })] };
+    const episode = { ...knowledge, id: "fictional-episode", type: "event" };
+    // Equal text/scores keep every source inside the existing relevance window.
+    // The semantic arm must inject only the labelled note, not the other sources.
+    await writeFile(join(f.storeRoot, "daily", "2029-01-01.md"), [unlabelled, knowledge, episode].map(grammar.serializeBullet).join("\n") + "\n", { mode: 0o600 });
     const network = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, options) => {
       expect(url).toBe("http://127.0.0.1:11434/api/embed");
       const input = JSON.parse(options.body).input;
@@ -340,8 +354,18 @@ describe("private memory evaluation measurement", () => {
     const names = await readdir(f.outputRoot); expect(names).toContain("review.json"); expect(names.some((name) => name.startsWith("clone-"))).toBe(false);
     for (const name of names) { expect(await readFile(join(f.outputRoot, name), "utf8")).not.toContain(sentinel); expect((await lstat(join(f.outputRoot, name))).mode & 0o077).toBe(0); }
     const observed = JSON.parse(await readFile(join(f.outputRoot, "observations.json"), "utf8"));
-    expect(observed.some((entry) => entry.arm === "semantic-only" && entry.status === "unsupported")).toBe(true);
-    expect(observed.find((entry) => entry.arm === "current-only" && entry.id === opaque(1)).bytes).toBeGreaterThan(0);
+    const semantic = observed.filter((entry) => entry.arm === "semantic-only");
+    expect(semantic).toHaveLength(turns().length);
+    expect(semantic.every((entry) => entry.status === "completed" && entry.bytes > 0 && entry.indexingEmbeddingRequests > 0)).toBe(true);
+    for (const [id, kind] of [[opaque(1), "similarity"], [opaque(2), "guidance"], [opaque(3), "similarity"]]) {
+      expect(semantic.find((entry) => entry.id === id).lines.map((line) => line.kind)).toEqual([kind]);
+    }
+    const current = observed.find((entry) => entry.arm === "current-only" && entry.id === opaque(1));
+    expect(current.bytes).toBeGreaterThan(semantic[0].bytes);
+    // Legacy text dedup selects one similarity source; scoped guidance is separate.
+    expect(current.lines).toHaveLength(2);
+    expect(current.lines.filter((line) => line.kind === "similarity")).toHaveLength(1);
+    expect(current.lines.filter((line) => line.kind === "guidance")).toHaveLength(1);
     expect(JSON.parse(await readFile(join(f.outputRoot, "summary-unjudged.json"), "utf8"))[1].status).toBe("inconclusive");
     expect((await readFile(join(f.storeRoot, "daily", "2029-01-01.md"), "utf8"))).toContain(sentinel);
   }, 30000);

@@ -1905,6 +1905,7 @@ function configuredMemoryForHarness(
     source: "memory-bujo",
     contextWindow: config.memory.mode === "bujo" && config.memory.recall?.contextWindow === true,
     profileEnabled: config.memory.mode === "bujo" && config.memory.profile?.enabled === true,
+    semanticOnly: config.memory.mode === "bujo" && config.memory.recall?.semanticOnly === true,
   });
 }
 
@@ -2133,6 +2134,7 @@ async function createConfiguredMemoryInternal(
     dim,
     ...(maxBytes !== undefined && { maxBytes }),
     llm: captureLlm,
+    ...(config.memory.recall?.semanticOnly === true ? { recall: { semanticOnly: true } } : {}),
     ...(deps.clock === undefined ? {} : { clock: deps.clock }),
     ...(config.memory.capture === undefined ? {} : { capture: { ...(focus === undefined ? {} : { focus }), ...(only === undefined ? {} : { only }) } }),
     ...(deps.logger !== undefined && { logger: deps.logger }),

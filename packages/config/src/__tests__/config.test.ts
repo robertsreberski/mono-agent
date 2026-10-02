@@ -38,6 +38,22 @@ const bujoMemoryPrerequisites = {
 };
 
 describe("resolveJsonMonoAgentConfig", () => {
+  it("validates default-off semanticOnly independently of the owner query window", () => {
+    const read = (recall?: unknown, mode = "bujo") => resolveJsonMonoAgentConfig({ cwd: "/fictional/repo", json: {
+      ...baseJson, memory: { path: "memory", mode, embeddings: { provider: "ollama" },
+        llm: { provider: "ollama", model: "fictional-model" }, ...(recall === undefined ? {} : { recall }) },
+    } as MonoAgentConfigJson });
+    expect(read().memory?.recall?.semanticOnly ?? false).toBe(false);
+    expect(read({ semanticOnly: true }).memory?.recall).toEqual({ contextWindow: false, semanticOnly: true });
+    expect(read({ contextWindow: true, semanticOnly: true }).memory?.recall).toEqual({ contextWindow: true, semanticOnly: true });
+    expect(read({ semanticOnly: false }).memory?.recall?.semanticOnly).toBe(false);
+    for (const mode of ["lite", "journal"]) expect(() => read({ semanticOnly: true }, mode)).toThrow("memory_option_requires_bujo");
+    for (const recall of [{ semanticOnly: "fictional-sensitive-value" }, { semanticOnly: true, unexpected: true }]) {
+      try { read(recall); } catch (error) { expect(String(error)).not.toContain("fictional-sensitive-value"); continue; }
+      throw new Error("invalid semantic flag accepted");
+    }
+  });
+
   it("validates independent, default-off BuJo recall/profile flags without echoing offending values", () => {
     const base = { ...baseJson, memory: { path: "memory", mode: "bujo" as const,
       embeddings: { provider: "ollama" as const }, llm: { provider: "ollama" as const, model: "fictional-model" } } };

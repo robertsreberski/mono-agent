@@ -17,6 +17,7 @@ import {
   POSSIBLY_RELEVANT_HEADING,
   POSSIBLY_RELEVANT_MAX_BYTES,
   selectPossiblyRelevantRecallHits,
+  semanticRecallAuthorities,
   type JournalBrowseInput,
   type JournalBrowseSnapshot,
 } from "@mono-agent/memory/bujo";
@@ -75,6 +76,7 @@ export interface MemoryRetrievalServiceOptions {
   readonly source?: string;
   readonly contextWindow?: boolean;
   readonly profileEnabled?: boolean;
+  readonly semanticOnly?: boolean;
 }
 
 export interface SharedMemoryRecallRuntimeExtensionOptions {
@@ -190,6 +192,7 @@ export class MemoryRetrievalService implements MemoryStore {
   private readonly conversations = new Map<string, ConversationRecallState>();
   private readonly contextWindow: boolean;
   private readonly profileEnabled: boolean;
+  private readonly semanticOnly: boolean;
   readonly persistCompletedTurn?: (turn: MemoryCompletedTurn) => Promise<MemoryCompletedTurnResult>;
 
   constructor(
@@ -200,6 +203,7 @@ export class MemoryRetrievalService implements MemoryStore {
     this.source = options.source ?? "memory";
     this.contextWindow = options.contextWindow === true && store.tier?.() === "bujo";
     this.profileEnabled = options.profileEnabled === true && store.tier?.() === "bujo";
+    this.semanticOnly = options.semanticOnly === true && store.tier?.() === "bujo";
     const persistCompletedTurn = store.persistCompletedTurn;
     if (persistCompletedTurn !== undefined) {
       // Preserve capability detection: stores without the strong method leave
@@ -264,7 +268,7 @@ export class MemoryRetrievalService implements MemoryStore {
       let profile: ReturnType<typeof formatMemoryProfile> | undefined;
       if (owner && this.profileEnabled) {
         try {
-          profile = formatMemoryProfile(this.store, options.hostLocalDate ?? options.hostDate ?? new Date().toISOString().slice(0, 10), this.maxBytes, options.hostInstant);
+          profile = formatMemoryProfile(this.store, options.hostLocalDate ?? options.hostDate ?? new Date().toISOString().slice(0, 10), this.maxBytes, options.hostInstant, this.semanticOnly);
         } catch { options.onWarning?.("memory_profile_unavailable"); }
       }
       let recall: MemoryBlock | undefined;
@@ -386,7 +390,20 @@ export class MemoryRetrievalService implements MemoryStore {
       // suppress only unsolicited similarity-selected lines.
       const shortOwnerQuery = !hasPrior && query !== undefined
         && Array.from(query.normalize("NFC").trim()).length <= SHORT_OWNER_QUERY_MAX_CODEPOINTS;
+      let semanticAuthorities: ReadonlyMap<string, number> | undefined;
+      if (this.semanticOnly) {
+        try {
+          semanticAuthorities = semanticRecallAuthorities(
+            this.store.labelsForMemories?.(outcome.hits.map((hit) => hit.record.id)) ?? [],
+            this.store.labelsForEntity?.bind(this.store), asOf ?? new Date().toISOString().slice(0, 10), now,
+          );
+        } catch {
+          semanticAuthorities = new Map();
+          options.onWarning?.("memory_recall_unavailable");
+        }
+      }
       const hits = shortOwnerQuery ? [] : selectPossiblyRelevantRecallHits(outcome.hits, {
+        ...(semanticAuthorities === undefined ? {} : { semanticAuthorities }),
         ...(asOf === undefined ? {} : { asOf }), ...(now === undefined ? {} : { now }),
       }).filter((hit) => !profileIds.has(hit.record.id));
       const budget = Math.min(this.maxBytes, POSSIBLY_RELEVANT_MAX_BYTES);
@@ -396,7 +413,7 @@ export class MemoryRetrievalService implements MemoryStore {
       try {
         const available = this.maxBytes - (block === undefined ? 0 : Buffer.byteLength(block.content, "utf8") + 2);
         background = formatMemoryBackground(this.store, evidenceQuery, conversationId, options, outcome.hits, available,
-          new Set([...profileIds, ...block?.shown.map((hit) => hit.record.id) ?? []]));
+          new Set([...profileIds, ...block?.shown.map((hit) => hit.record.id) ?? []]), this.semanticOnly);
       } catch {
         // Corrupt or temporarily unavailable labels must not erase ordinary recall.
         background = undefined;
@@ -404,6 +421,7 @@ export class MemoryRetrievalService implements MemoryStore {
       if (block === undefined && !background?.content) return undefined;
       if (block !== undefined) this.recordServed(turnId, block.shown);
       return { kind: "markdown", source: this.source,
+        ...(this.semanticOnly ? { traceContent: false } : {}),
         content: [block?.content, background?.content].filter((text) => text !== undefined && text.length > 0).join("\n\n"),
         truncated: (block?.truncated ?? false) || (background?.truncated ?? false) };
     } finally {
