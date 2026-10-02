@@ -129,7 +129,7 @@ The replay builds and verifies the clean, exact-HEAD app dependency closure
 before production imports; its captured build output never includes inputs.
 
 ```bash
-# Retrieval only: source is reconstructed before each ordered owner turn
+# Retrieval only: source is reconstructed at the start of each UTC day
 node scripts/memory-e2e-benchmark.mjs --private --private-mode retrieval \
   --private-input-root /OWNER-ONLY/EVAL-INPUT \
   --private-output-root /OWNER-ONLY/NEW-RETRIEVAL-OUTPUT \
@@ -204,15 +204,21 @@ Prepare these owner-private files before inference:
 
 Minima cannot be lowered. The output binds the registration to a private opaque
 key; analysis refuses a changed registration. Approximate as-of reconstruction
-keeps only canonical daily bullets whose production-parsed `created=` precedes
-the turn, filters canonical graph endpoints to those sources, and rebuilds the
-index instead of copying today's SQLite, audit, intake or projections. Later
+in retrieval mode rebuilds once per distinct **UTC civil day per arm**, cutting
+at `00:00:00.000Z` of that day. Only canonical daily bullets whose production-
+parsed `created=` strictly precedes that cutoff survive, and graph endpoints
+follow the same cutoff. This excludes same-day future sources **and earlier
+same-day memories**: it is a known conservative underestimate, not turn-exact
+historical recall. Ordered turns reuse the clone until the day changes; arms
+still own independent disposable stores. The index is rebuilt instead of
+copying today's SQLite, audit, intake or projections. Later
 file edits, terminal status/supersession, later graph updates and unknowable text
 rewrites are flagged. `created=` is **not** revision history: retained historical
 text cannot be certified clean, so `rewrite_history_unknown` excludes it from
 strict historical claims. `snapshot: "present_diagnostic"` deliberately uses
-present canonical source; it is always labelled diagnostic, never a historical
-baseline. Clean prospective snapshots/observations are still needed to confirm
+present canonical source with one initial build per arm; it is always labelled
+diagnostic, never a historical baseline. Chronological capture still seeds at
+the exact first turn and admits subsequent completed turns without daily reseeding. Clean prospective snapshots/observations are still needed to confirm
 historical quality.
 
 #### Arms, observation and blinded review
@@ -231,8 +237,29 @@ it does not report backend candidates as injected lines. Total block bytes and
 repeated rendered-line bytes are separate. Repeated bytes exclude section
 headings/framing. Capture candidates are reviewed separately from injected
 lines. Cold in-memory replay does not prove warm provider-session de-duplication.
+Day-boundary rebuilds replace only the native store behind the existing proxy:
+the per-arm retrieval service, conversation window/receipts, harness history
+and repeated-line observation state are not reset. Production TTL/cold-epoch
+rules still apply; replay does not fabricate retained-session invocation
+receipts or enable durable/warm sessions.
+
 Embedding requests, indexing work, completion invocations and replay latency
 are counted separately; completion invocations are not native model steps.
+A run-local in-memory embedding cache shares SHA-256-keyed exact text/model/
+dimension/provider-identity results across arms and snapshots, including
+in-flight requests; no cache key, text or vector cache is persisted or logged.
+Only real miss batches reserve embedding calls/tokens. Separate
+`embeddingCacheHits` and `indexingEmbeddingCacheHits` count reused texts; their
+per-turn aggregate rates are diagnostic. Failed/invalid batches are not cached.
+Global cache warming means latency/request comparisons are order-dependent
+pipeline diagnostics, not cold-provider performance comparisons.
+
+A private, atomically replaced `progress.json` contains only a fixed arm enum,
+`turnsDone`, `turnsTotal` and `elapsedMs`, checkpointed at day/snapshot boundaries
+and arm completion (not every turn). It contains no snapshot dates, source IDs,
+paths, text, cache keys, model responses or judge content. It reports replay
+progress, not judge completion. Budget exhaustion reports the stable code
+`private_budget_exhausted`; progress is not proof of a completed/evaluable run.
 
 Every replay writes a blinded `review.json`: opaque IDs plus empty labels, no
 arm identities or text. To review content without writing it into sheets, add

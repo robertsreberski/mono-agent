@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Keep private BuJo retrieval replay bounded by reusing conservative UTC-day
+  snapshots and volatile shared embedding results; meter only real embedding
+  calls, count cache hits separately, and expose content-free private progress
+  with a specific budget-exhaustion code. Preserve cold replay service state
+  across store rebuilds and leave present diagnostics/capture chronology intact.
+
 - Add an opt-in private BuJo evaluation mode with external owner-only inputs
   and disposable replay stores, blinded label-only review, aggregate paired
   confidence intervals, and code-only failures; keep fictional benchmarks

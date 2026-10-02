@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { open } from "node:fs/promises";
+import { open, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { createHmac, randomBytes } from "node:crypto";
 import { LABELS, PRIVATE_CODES, PrivateError, opaqueId, assertPrivateLocation } from "./memory-e2e-private-input.mjs";
@@ -13,7 +13,7 @@ const num = (value) => { if (!Number.isFinite(value)) throw new PrivateError("pr
 const bool = (value) => { if (typeof value !== "boolean") throw new PrivateError("private_input_invalid"); return value; };
 const nullableNumber = (value) => value === null ? null : num(value);
 const interval = (value) => value === null ? null : { difference: num(value.difference), low: num(value.low), high: num(value.high) };
-const metricNames = Object.freeze(["usefulPrecision", "partialRate", "noiseRate", "staleRate", "usefulCoverage", "followUpUsefulCoverage", "directUsefulCoverage", "followUpNoiseRate", "usefulLines", "bytesPerTurn", "repeatedBytesPerTurn", "latencyMsPerTurn", "capturedLinesPerTurn", "captureUsefulPrecision", "capturePartialRate", "captureNoiseRate", "captureStaleRate", "chatCallsPerTurn", "embeddingRequestsPerTurn", "indexingEmbeddingRequestsPerTurn", "capturedLinesPerDay", "captureUsefulLinesPerDay", "captureNoiseLinesPerDay"]);
+const metricNames = Object.freeze(["usefulPrecision", "partialRate", "noiseRate", "staleRate", "usefulCoverage", "followUpUsefulCoverage", "directUsefulCoverage", "followUpNoiseRate", "usefulLines", "bytesPerTurn", "repeatedBytesPerTurn", "latencyMsPerTurn", "capturedLinesPerTurn", "captureUsefulPrecision", "capturePartialRate", "captureNoiseRate", "captureStaleRate", "chatCallsPerTurn", "embeddingRequestsPerTurn", "indexingEmbeddingRequestsPerTurn", "embeddingCacheHitsPerTurn", "indexingEmbeddingCacheHitsPerTurn", "capturedLinesPerDay", "captureUsefulLinesPerDay", "captureNoiseLinesPerDay"]);
 const dayMetricNames = Object.freeze(["capturedLinesPerDay", "captureUsefulLinesPerDay", "captureNoiseLinesPerDay"]);
 const intervalMetricNames = metricNames.filter((key) => !dayMetricNames.includes(key));
 function pointOnly(value) {
@@ -32,6 +32,7 @@ export function safeObservation(row) {
     flags: row.flags.map((flag) => enumValue(flag, EVIDENCE_FLAGS)),
     status: enumValue(row.status, ["completed", "unsupported", ...PRIVATE_CODES]),
     bytes: num(row.bytes), repeatedBytes: num(row.repeatedBytes), latencyMs: num(row.latencyMs), chatCalls: num(row.chatCalls), embeddingRequests: num(row.embeddingRequests), indexingEmbeddingRequests: num(row.indexingEmbeddingRequests),
+    embeddingCacheHits: num(row.embeddingCacheHits ?? 0), indexingEmbeddingCacheHits: num(row.indexingEmbeddingCacheHits ?? 0),
     lines: row.lines.map((line) => ({ id: id(line.id), kind: enumValue(line.kind, LINE_KINDS),
       bytes: num(line.bytes), repeated: bool(line.repeated), label: line.label === null ? null : enumValue(line.label, LABELS) })) };
 }
@@ -62,16 +63,29 @@ export function serializePrivateArtifact(kind, value) {
     if (!/^[a-f0-9]{64}$/u.test(value.seed)) throw new PrivateError("private_input_invalid");
     safe = { seed: value.seed };
   } else if (kind === "summary") safe = value.map(safeSummary);
+  else if (kind === "progress") {
+    const turnsDone = num(value.turnsDone), turnsTotal = num(value.turnsTotal), elapsedMs = num(value.elapsedMs);
+    if (!Number.isSafeInteger(turnsDone) || !Number.isSafeInteger(turnsTotal) || turnsDone < 0 || turnsDone > turnsTotal || turnsTotal > 10000 || elapsedMs < 0) throw new PrivateError("private_input_invalid");
+    safe = { arm: enumValue(value.arm, PRIVATE_ARMS), turnsDone, turnsTotal, elapsedMs };
+  }
   else if (kind === "error") safe = { code: enumValue(value.code, PRIVATE_CODES) };
   else throw new PrivateError("private_input_invalid");
   return JSON.stringify(safe, null, 2) + "\n";
 }
 export async function writePrivateArtifact({ outputRoot: root, repositories }, filename, kind, value) {
   await assertPrivateLocation(root, repositories);
-  if (!new Set(["observations.json", "review.json", "review-seed.json", "summary.json", "error.json", "model-review.json", "human-review.json", "summary-unjudged.json", "protocol.json", "code.json"]).has(filename)) throw new PrivateError("private_input_invalid");
+  if (!new Set(["observations.json", "review.json", "review-seed.json", "summary.json", "error.json", "model-review.json", "human-review.json", "summary-unjudged.json", "protocol.json", "code.json", "progress.json"]).has(filename)) throw new PrivateError("private_input_invalid");
+  if ((filename === "progress.json") !== (kind === "progress")) throw new PrivateError("private_input_invalid");
   const content = serializePrivateArtifact(kind, value);
-  const handle = await open(join(root, filename), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  // Atomic checkpoint replacement; the fixed temporary artifact is private and
+  // passes the same closed serializer. Rename never follows a target symlink.
+  const target = filename === "progress.json" ? ".progress.json.tmp" : filename;
+  const handle = await open(join(root, target), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
   try { await handle.writeFile(content); } finally { await handle.close(); }
+  if (filename === "progress.json") {
+    await assertPrivateLocation(root, repositories);
+    await rename(join(root, target), join(root, filename));
+  }
 }
 
 const ratio = (a, b) => b === 0 ? null : a / b;
@@ -103,6 +117,8 @@ export function metrics(rows) {
     chatCallsPerTurn: ratio(rows.reduce((sum, row) => sum + row.chatCalls, 0), rows.length),
     embeddingRequestsPerTurn: ratio(rows.reduce((sum, row) => sum + row.embeddingRequests, 0), rows.length),
     indexingEmbeddingRequestsPerTurn: ratio(rows.reduce((sum, row) => sum + row.indexingEmbeddingRequests, 0), rows.length),
+    embeddingCacheHitsPerTurn: ratio(rows.reduce((sum, row) => sum + (row.embeddingCacheHits ?? 0), 0), rows.length),
+    indexingEmbeddingCacheHitsPerTurn: ratio(rows.reduce((sum, row) => sum + (row.indexingEmbeddingCacheHits ?? 0), 0), rows.length),
     capturedLinesPerDay: ratio(capture.length, days),
     captureUsefulLinesPerDay: ratio(captureJudged.filter((line) => line.label === "useful").length, days),
     captureNoiseLinesPerDay: ratio(captureJudged.filter((line) => line.label === "noise").length, days),

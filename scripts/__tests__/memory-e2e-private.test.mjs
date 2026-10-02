@@ -6,10 +6,12 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { PrivateError, privateCode, validatePrivateRoots, validateTurns, validateRegistration, validateAnnotations, reconstructClone, requirePrivateAncestor, createPrivateOutput, validatePrivateAclMetadata } from "../lib/memory-e2e-private-input.mjs";
-import { blindSheets, metrics, newReviewSeed, reviewId, pairedBootstrap, serializePrivateArtifact, summarizePrivate } from "../lib/memory-e2e-private-report.mjs";
-import { privateMain, resolvePrivateArm } from "../lib/memory-e2e-private-runner.mjs";
+import { blindSheets, metrics, newReviewSeed, reviewId, pairedBootstrap, serializePrivateArtifact, summarizePrivate, writePrivateArtifact } from "../lib/memory-e2e-private-report.mjs";
+import { privateMain, resolvePrivateArm, privateReplaySnapshot } from "../lib/memory-e2e-private-runner.mjs";
 import { assertPrivateRuntimeOptions, validatePrivateRoute, assertPrivateProviderEnvironment, PRIVATE_LOGGING_ENV, privateCompletionRuntime } from "../lib/memory-e2e-private-providers.mjs";
 import { invokedMemoryObservation, productionModules } from "../lib/memory-e2e-runner.mjs";
+import { Budget, BenchmarkError } from "../lib/memory-e2e-providers.mjs";
+import { privateEmbeddingCache } from "../lib/memory-e2e-private-cache.mjs";
 import { parseArguments } from "../memory-e2e-benchmark.mjs";
 import * as graph from "../../packages/memory/dist/bujo/graph.js";
 import * as grammar from "../../packages/memory/dist/bujo/grammar.js";
@@ -280,6 +282,117 @@ describe("private memory evaluation privacy boundary", () => {
     for (const options of [{ piSessionsRoot: sentinel }, { onEvent() {} }, { observers: [{}] }, { persistArtifact() {} }]) expect(() => assertPrivateRuntimeOptions(options)).toThrow("private_isolation_required");
     expect(parseArguments(["--private", "--allow-private-provider-route", "openai:fictional-model", "--allow-private-provider-route", "ollama:fictional"])["allow-private-provider-route"]).toHaveLength(2);
   });
+});
+
+
+describe("private replay performance contracts", () => {
+  it("keys retrieval by UTC day start, excluding same-day earlier and future canonical facts", async () => {
+    const f = await fixture();
+    const first = turns()[0], later = { ...first, timestamp: "2030-01-01T23:59:00.000Z" };
+    const a = privateReplaySnapshot(first, registration(), "retrieval"), b = privateReplaySnapshot(later, registration(), "retrieval");
+    expect(a).toEqual({ key: "2030-01-01", asOf: "2030-01-01T00:00:00.000Z" }); expect(b).toEqual(a);
+    expect(privateReplaySnapshot({ ...first, timestamp: "2030-01-02T00:01:00.000Z" }, registration(), "retrieval").key).not.toBe(a.key);
+    expect(privateReplaySnapshot(first, registration(), "capture").asOf).toBe(first.timestamp);
+    expect(privateReplaySnapshot(first, { ...registration(), snapshot: "present_diagnostic" }, "retrieval").key).toBe("present");
+    await writeFile(join(f.storeRoot, "daily", "2030-01-01.md"), [bullet("prior", "2029-12-31T23:59:59.000Z"), bullet("earlier_today", "2030-01-01T08:00:00.000Z"), bullet("future_today", "2030-01-01T22:00:00.000Z")].map(grammar.serializeBullet).join("\n"), { mode: 0o600 });
+    const destination = join(f.dir, "day-clone");
+    await reconstructClone({ source: f.storeRoot, destination, asOf: a.asOf, repositories: f.repositories, grammar });
+    expect(grammar.parseDailyFile(await readFile(join(destination, "daily", "2030-01-01.md"), "utf8")).bullets.map((entry) => entry.id)).toEqual(["prior"]);
+  });
+  it("shares volatile cache hits across providers/snapshots, deduplicates batches, and meters only real calls", async () => {
+    const budget = new Budget({ limits: { runtimeMs: 60000, embeddingCalls: 10, estimatedInputTokens: 10000, embeddingInputTokens: 10000 }, perCall: { embeddingTimeoutMs: 1000 } });
+    const cache = privateEmbeddingCache();
+    const embed = vi.fn(async (texts) => texts.map(() => [1, 0, 0]));
+    const options = { budget, model: "fictional-model", dimension: 3, tag: { arm: "current-only" } };
+    try {
+      const one = cache.wrap({ id: "fictional-provider", embed }, options);
+      const two = cache.wrap({ id: "fictional-provider", embed }, { ...options, tag: { arm: "profile-on" } });
+      const vectors = await one.embed([sentinel, sentinel]); vectors[0][0] = 99;
+      const tokens = budget.used.estimatedInputTokens;
+      expect(await two.embed([sentinel])).toEqual([[1, 0, 0]]);
+      expect(cache.stats).toEqual({ hits: 2, misses: 1 }); expect(embed).toHaveBeenCalledTimes(1); expect(budget.used.embeddingCalls).toBe(1); expect(budget.used.estimatedInputTokens).toBe(tokens);
+      await cache.wrap({ id: "fictional-provider", embed }, { ...options, model: "another-fictional-model" }).embed([sentinel]);
+      expect(embed).toHaveBeenCalledTimes(2);
+      const embedTwoDimensions = vi.fn(async (texts) => texts.map(() => [1, 0]));
+      await cache.wrap({ id: "fictional-provider", embed: embedTwoDimensions }, { ...options, dimension: 2 }).embed([sentinel]);
+      expect(embedTwoDimensions).toHaveBeenCalledOnce();
+      cache.clear(); await one.embed([sentinel]); expect(embed).toHaveBeenCalledTimes(3);
+      expect(JSON.stringify(budget.events)).not.toContain(sentinel);
+      budget.plan.limits.embeddingCalls = budget.used.embeddingCalls;
+      await one.embed([sentinel]); // A hit does not consume exhausted call quota.
+      const failure = await one.embed([sentinel + " fictional new text"]).catch((error) => error);
+      expect(privateCode(failure)).toBe("private_budget_exhausted"); expect(embed).toHaveBeenCalledTimes(3);
+    } finally { cache.clear(); budget.close(); }
+  });
+  it("deduplicates in-flight embeddings and does not retain failed batches", async () => {
+    const budget = new Budget({ limits: { runtimeMs: 60000, embeddingCalls: 10, estimatedInputTokens: 10000 }, perCall: { embeddingTimeoutMs: 1000 } });
+    const cache = privateEmbeddingCache(); let complete;
+    const embed = vi.fn(() => new Promise((resolve) => { complete = resolve; }));
+    const provider = cache.wrap({ id: "fictional", embed }, { budget, model: "fictional", dimension: 3, tag: {} });
+    try {
+      await expect(provider.embed([sentinel, null])).rejects.toThrow("private_provider_failed");
+      expect(embed).not.toHaveBeenCalled();
+      const first = provider.embed([sentinel]), second = provider.embed([sentinel]); complete([[1, 0, 0]]);
+      expect(await Promise.all([first, second])).toEqual([[[1, 0, 0]], [[1, 0, 0]]]); expect(embed).toHaveBeenCalledTimes(1);
+      cache.clear(); embed.mockResolvedValueOnce([[1]]).mockResolvedValueOnce([[1, 0, 0]]);
+      await expect(provider.embed([sentinel])).rejects.toThrow("private_provider_failed");
+      expect(await provider.embed([sentinel])).toEqual([[1, 0, 0]]); expect(embed).toHaveBeenCalledTimes(3);
+    } finally { cache.clear(); budget.close(); }
+  });
+  it("writes replaceable progress containing only a fixed arm and numeric allowlisted fields", async () => {
+    const f = await fixture(); await mkdir(f.outputRoot, { mode: 0o700 });
+    const progress = { arm: "current-only", turnsDone: 0, turnsTotal: 3, elapsedMs: 1, text: sentinel, path: sentinel, key: sentinel };
+    await writePrivateArtifact({ ...f }, "progress.json", "progress", progress);
+    await writePrivateArtifact({ ...f }, "progress.json", "progress", { ...progress, turnsDone: 2, elapsedMs: 5 });
+    const saved = JSON.parse(await readFile(join(f.outputRoot, "progress.json"), "utf8"));
+    expect(saved).toEqual({ arm: "current-only", turnsDone: 2, turnsTotal: 3, elapsedMs: 5 });
+    expect((await lstat(join(f.outputRoot, "progress.json"))).mode & 0o077).toBe(0);
+    expect(await readdir(f.outputRoot)).toEqual(["progress.json"]);
+    expect(() => serializePrivateArtifact("progress", { ...progress, turnsDone: 4 })).toThrow("private_input_invalid");
+    expect(() => serializePrivateArtifact("progress", { ...progress, arm: sentinel })).toThrow("private_input_invalid");
+  });
+  it("reports genuine budget exhaustion as a stable code, never trusting arbitrary error-code properties", async () => {
+    expect(privateCode(new BenchmarkError("runtime_budget_exhausted"))).toBe("private_budget_exhausted");
+    expect(privateCode(new BenchmarkError("budget_exhausted"))).toBe("private_budget_exhausted");
+    expect(privateCode({ code: "runtime_budget_exhausted", message: sentinel })).toBe("private_operation_failed");
+    const f = await fixture();
+    await expect(privateMain({ private: true, "private-mode": "retrieval", "private-input-root": f.inputRoot, "private-output-root": f.outputRoot, "private-store-root": f.storeRoot },
+      { root, env: {}, repositories: f.repositories, stdout() {}, prepareBuild: async () => null,
+        loadInputs: async () => ({ turns: validateTurns(turns()), registration: registration() }), loadModules: async () => {
+          const modules = await productionModules({ privateEvaluation: true });
+          return { ...modules, bujo: { ...modules.bujo, safeRebuildMemoryIndex() { throw new BenchmarkError("runtime_budget_exhausted"); } } };
+        } })).rejects.toThrow("private_budget_exhausted");
+    expect(JSON.parse(await readFile(join(f.outputRoot, "error.json"), "utf8"))).toEqual({ code: "private_budget_exhausted" });
+    expect(JSON.parse(await readFile(join(f.outputRoot, "progress.json"), "utf8")).turnsDone).toBe(0);
+  });
+  for (const snapshot of ["approximate_as_of", "present_diagnostic"]) it(`reuses ${snapshot} snapshots per arm, shares embeddings, and preserves conversation/service state`, async () => {
+    const f = await fixture(), builds = [], services = [], contexts = [], resets = [], texts = [];
+    const selected = turns().map((turn, i) => ({ ...turn, conversationId: opaque(100), timestamp: ["2030-01-01T23:50:00.000Z", "2030-01-01T23:55:00.000Z", "2030-01-02T00:05:00.000Z"][i] }));
+    await writeFile(join(f.storeRoot, "daily", "2029-01-01.md"), grammar.serializeBullet(bullet("prior", "2029-01-01T00:00:00.000Z")), { mode: 0o600 });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, options) => { const input = JSON.parse(options.body).input; texts.push(...input); return new Response(JSON.stringify({ embeddings: input.map(() => [1, 0, 0]) })); });
+    const modules = await productionModules({ privateEvaluation: true });
+    await privateMain({ private: true, "private-mode": "retrieval", "private-input-root": f.inputRoot, "private-output-root": f.outputRoot, "private-store-root": f.storeRoot, "private-dimension": "3" },
+      { root, env: {}, repositories: f.repositories, stdout() {}, prepareBuild: async () => null, loadInputs: async () => ({ turns: validateTurns(selected), registration: { ...registration(), snapshot } }),
+        loadModules: async () => ({ ...modules,
+          bujo: { ...modules.bujo, safeRebuildMemoryIndex(args) { builds.push(args.root); return modules.bujo.safeRebuildMemoryIndex(args); } },
+          controllerMemory: { ...modules.controllerMemory, ensureSharedMemoryRetrieval(...args) {
+            const service = modules.controllerMemory.ensureSharedMemoryRetrieval(...args); services.push(service);
+            const load = service.load.bind(service); service.load = (...params) => { contexts.push(params[2].retainedContext); return load(...params); };
+            const reset = service.resetRecallContext.bind(service); service.resetRecallContext = (...params) => { resets.push(contexts.length); return reset(...params); };
+            return service;
+          } },
+        }) });
+    expect(builds.length).toBe(services.length * (snapshot === "present_diagnostic" ? 1 : 2)); expect(services.length).toBeGreaterThan(1);
+    expect(contexts.every((value) => value === false)).toBe(true); expect(resets).toEqual(services.map((_service, index) => (index + 1) * selected.length));
+    expect(texts.length).toBe(new Set(texts).size);
+    expect(texts.some((text) => text.toLowerCase().includes("which pottery wheel is available") && text.toLowerCase().includes("and avery"))).toBe(true);
+    const observed = JSON.parse(await readFile(join(f.outputRoot, "observations.json"), "utf8"));
+    expect(observed.filter((row) => row.id === selected[1].id).every((row) => row.indexingEmbeddingRequests === 0)).toBe(true);
+    expect(observed.some((row) => row.indexingEmbeddingCacheHits > 0)).toBe(true);
+    expect(observed.some((row) => row.embeddingCacheHits > 0)).toBe(true);
+    const progress = JSON.parse(await readFile(join(f.outputRoot, "progress.json"), "utf8")); expect(progress.turnsDone).toBe(selected.length);
+    for (const name of await readdir(f.outputRoot)) expect(await readFile(join(f.outputRoot, name), "utf8")).not.toContain(sentinel);
+  }, 60000);
 });
 
 describe("private memory evaluation measurement", () => {

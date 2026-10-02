@@ -1,4 +1,4 @@
-import { PrivateError } from "./memory-e2e-private-input.mjs";
+import { PrivateError, privateCode } from "./memory-e2e-private-input.mjs";
 
 // Refuse presence, not just recognized values: SDK parsers can themselves warn
 // for invalid levels. The shared guard covers every admitted native Pi route,
@@ -49,7 +49,7 @@ export function privatePiRuntime(modules, workspace, budget) {
           abortSignal: AbortSignal.any([options.abortSignal, budget.controller.signal, AbortSignal.timeout(60000)].filter(Boolean)) }));
         if (result.failureKind || result.error) throw new PrivateError("private_provider_failed");
         return result;
-      } catch { throw new PrivateError("private_provider_failed"); }
+      } catch (error) { throw new PrivateError(privateCode(error) === "private_budget_exhausted" ? "private_budget_exhausted" : "private_provider_failed"); }
     },
     async disposeAllSessions() { await raw.disposeAllSessions?.(); },
   };
@@ -83,7 +83,7 @@ export function privateCompletionRuntime(modules, route, workspace, budget) {
         if (typeof data.response !== "string") throw new PrivateError("private_provider_failed");
         budget.reserve({ outputTokens: Math.ceil(Buffer.byteLength(data.response) / 3) });
         return { text: data.response, ...(options.outputSchema === undefined ? {} : { structuredResult: JSON.parse(data.response) }) };
-      } catch (error) { throw new PrivateError(error instanceof PrivateError ? error.code : "private_provider_failed"); }
+      } catch (error) { throw new PrivateError(error instanceof PrivateError || privateCode(error) === "private_budget_exhausted" ? privateCode(error) : "private_provider_failed"); }
     },
     async disposeAllSessions() {},
   };

@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { performance } from "node:perf_hooks";
 import { prepareRealBuild, sourceState, verifyRealBuild } from "./memory-e2e-build.mjs";
-import { Budget, meteredEmbeddings } from "./memory-e2e-providers.mjs";
+import { Budget } from "./memory-e2e-providers.mjs";
+import { privateEmbeddingCache } from "./memory-e2e-private-cache.mjs";
 import { productionModules, invokedMemoryObservation, awaitReady } from "./memory-e2e-runner.mjs";
 import { PrivateError, privateCode, validatePrivateRoots, createPrivateOutput, loadPrivateInputs, readPrivateJson, validateRegistration, validateAnnotations, reconstructClone, LABELS, assertPrivateLocation } from "./memory-e2e-private-input.mjs";
 import { PRIVATE_ARMS, newReviewSeed, reviewId, blindSheets, safeObservation, writePrivateArtifact, summarizePrivate } from "./memory-e2e-private-report.mjs";
@@ -88,6 +89,16 @@ export async function reviewOnTty(items) {
   } finally { await tty?.close(); }
 }
 
+/** Retrieval uses the UTC civil day's start, deliberately excluding even
+ * earlier same-day facts. Present diagnostics and chronological capture keep
+ * their single initial reconstruction semantics. Keys never enter artifacts. */
+export function privateReplaySnapshot(turn, registration, mode) {
+  if (registration.snapshot === "present_diagnostic") return { key: "present", asOf: turn.timestamp };
+  if (mode === "capture") return { key: "capture", asOf: turn.timestamp };
+  const date = new Date(turn.timestamp).toISOString().slice(0, 10);
+  return { key: date, asOf: `${date}T00:00:00.000Z` };
+}
+
 async function runPrivateReplay({ roots, flags, turns, registration, modules, review, seed }) {
   const rows = [], reviewItems = [];
   const maxRuntime = Number(flags["private-max-runtime-ms"] ?? 3600000);
@@ -101,9 +112,13 @@ async function runPrivateReplay({ roots, flags, turns, registration, modules, re
   if (judgeRoute !== undefined) validatePrivateRoute(judgeRoute, allowed, registration, modules.runtime);
   if (flags["private-mode"] === "capture" && flags["private-capture-route"] === undefined) throw new PrivateError("private_provider_route_refused");
   const budget = new Budget(plan); budget.privateChatCalls = 0;
+  const cache = privateEmbeddingCache();
   let judge, judgeRuntime;
   try {
     for (const arm of PRIVATE_ARMS.filter((name) => name !== "historical-baseline")) {
+      budget.reserve({});
+      const checkpoint = (turnsDone) => writePrivateArtifact(roots, "progress.json", "progress", { arm, turnsDone, turnsTotal: turns.length, elapsedMs: performance.now() - budget.started });
+      await checkpoint(0);
       await assertPrivateLocation(roots.outputRoot, roots.repositories);
       const work = await mkdtemp(join(roots.outputRoot, "clone-"));
       await assertPrivateLocation(work, roots.repositories);
@@ -117,27 +132,31 @@ async function runPrivateReplay({ roots, flags, turns, registration, modules, re
       if (resolved.status === "unsupported") {
         rows.push(...turns.map((turn) => emptyRow(turn, arm, [], true, "unsupported", seed)));
         await assertPrivateLocation(work, roots.repositories);
-        await rm(work, { recursive: true, force: true }); continue;
+        await rm(work, { recursive: true, force: true }); await checkpoint(turns.length); continue;
       }
       const config = resolved.config;
-      let store, harness, memoryRuntime, service, currentTurn = turns[0], pendingBlock, invocation, evidence, memoryWarning, indexingEmbeddingRequests = 0;
+      let store, harness, memoryRuntime, service, currentTurn = turns[0], pendingBlock, invocation, evidence, memoryWarning, indexingEmbeddingRequests = 0, indexingEmbeddingCacheHits = 0, snapshotKey;
       const proxy = new Proxy({}, { get(_target, key) { const value = store?.[key]; return typeof value === "function" ? (...args) => store[key](...args) : value; } });
       const controller = { sharedMemoryRetrieval: undefined };
       const seenByConversation = new Map();
       try {
         memoryRuntime = privateCompletionRuntime(modules, flags["private-capture-route"] ?? "ollama:private-unused", workspace, budget);
         const prepareStore = async (turn) => {
-          evidence = await reconstructClone({ source: roots.storeRoot, destination: memoryRoot, asOf: turn.timestamp,
+          const snapshot = privateReplaySnapshot(turn, registration, flags["private-mode"]);
+          evidence = await reconstructClone({ source: roots.storeRoot, destination: memoryRoot, asOf: snapshot.asOf,
             grammar: modules.grammar, graph: modules.graph, repositories: roots.repositories, present: registration.snapshot === "present_diagnostic" });
-          const indexingStart = budget.used.embeddingCalls;
-          const embeddings = meteredEmbeddings(modules.search.createEmbeddingProvider({ ...config.memory.embeddings }, privateEmbeddingFetch), { budget, tag: { arm }, dimension: config.memory.embeddings.dim });
+          const indexingStart = budget.used.embeddingCalls, cacheStart = cache.stats.hits;
+          const cacheOptions = { budget, tag: { arm }, dimension: config.memory.embeddings.dim, model: config.memory.embeddings.model };
+          const embeddings = cache.wrap(modules.search.createEmbeddingProvider({ ...config.memory.embeddings }, privateEmbeddingFetch), cacheOptions);
           await assertPrivateLocation(memoryRoot, roots.repositories);
           await budget.wait(modules.bujo.safeRebuildMemoryIndex({ root: memoryRoot, tier: "bujo", embeddings, dim: config.memory.embeddings.dim }));
           indexingEmbeddingRequests = budget.used.embeddingCalls - indexingStart;
+          indexingEmbeddingCacheHits = cache.stats.hits - cacheStart;
           await assertPrivateLocation(memoryRoot, roots.repositories);
           store = await modules.app.createConfiguredMemory(config, { cwd: work, clock: () => new Date(currentTurn.timestamp), embeddingsFetch: privateEmbeddingFetch, logger: { warn() {} },
             ...(memoryRuntime ? { memoryRuntime } : {}) });
-          store.db.embeddings = meteredEmbeddings(store.db.embeddings, { budget, tag: { arm }, dimension: config.memory.embeddings.dim });
+          store.db.embeddings = cache.wrap(store.db.embeddings, cacheOptions);
+          snapshotKey = snapshot.key;
         };
         await prepareStore(currentTurn);
         // Construct through app wiring only after the real BuJo store exists:
@@ -173,14 +192,15 @@ async function runPrivateReplay({ roots, flags, turns, registration, modules, re
         });
         for (const [index, turn] of turns.entries()) {
           budget.reserve({}); currentTurn = turn; pendingBlock = undefined; invocation = undefined; memoryWarning = false;
-          if (index > 0) indexingEmbeddingRequests = 0;
-          if (index > 0 && flags["private-mode"] === "retrieval") {
+          if (index > 0) { indexingEmbeddingRequests = 0; indexingEmbeddingCacheHits = 0; }
+          if (index > 0 && flags["private-mode"] === "retrieval" && privateReplaySnapshot(turn, registration, flags["private-mode"]).key !== snapshotKey) {
+            await checkpoint(index);
             if (store) { await assertPrivateLocation(memoryRoot, roots.repositories); await store.close(); store = undefined;
               await assertPrivateLocation(memoryRoot, roots.repositories); await rm(memoryRoot, { recursive: true, force: true }); }
             await prepareStore(turn);
           }
           const before = flags["private-mode"] === "capture" ? await snapshotBullets(memoryRoot, modules.grammar) : null;
-          const start = performance.now(); const chatStart = budget.privateChatCalls, embeddingStart = budget.used.embeddingCalls;
+          const start = performance.now(); const chatStart = budget.privateChatCalls, embeddingStart = budget.used.embeddingCalls, cacheStart = cache.stats.hits;
           await assertPrivateLocation(memoryRoot, roots.repositories);
           const response = await budget.wait(harness.run({ conversationId: turn.conversationId, userMessage: turn.ownerText,
             captureSpeakerKind: "human-turn", metadata: { source: "web" }, abortSignal: budget.controller.signal }));
@@ -190,6 +210,7 @@ async function runPrivateReplay({ roots, flags, turns, registration, modules, re
           if (flags["private-mode"] === "capture") await awaitReady(store, 60000, budget);
           const row = emptyRow(turn, arm, evidence.flags, evidence.contaminated, "completed", seed);
           row.chatCalls = budget.privateChatCalls - chatStart; row.embeddingRequests = budget.used.embeddingCalls - embeddingStart; row.indexingEmbeddingRequests = indexingEmbeddingRequests;
+          row.embeddingCacheHits = cache.stats.hits - cacheStart; row.indexingEmbeddingCacheHits = indexingEmbeddingCacheHits;
           row.bytes = invocation.bytes; row.repeatedBytes = invocation.repeatedBytes; row.latencyMs = performance.now() - start;
           row.lines = observedLines(invocation, seed, turn, arm);
           invocation.lines.forEach((line, index) => reviewItems.push({ id: row.lines[index].id, ownerText: turn.ownerText, text: line.text }));
@@ -201,6 +222,7 @@ async function runPrivateReplay({ roots, flags, turns, registration, modules, re
             }
           }
           rows.push(row);
+          if (index === turns.length - 1 || turns[index + 1].timestamp.slice(0, 10) !== turn.timestamp.slice(0, 10)) await checkpoint(index + 1);
         }
       } finally {
         try { await assertPrivateLocation(work, roots.repositories); } catch (error) { budget.controller.abort(); throw error; }
@@ -256,7 +278,13 @@ async function runPrivateReplay({ roots, flags, turns, registration, modules, re
       } finally { await judgeRuntime?.disposeAllSessions(); await assertPrivateLocation(work, roots.repositories); await rm(work, { recursive: true, force: true }); }
     }
     return rows;
-  } finally { budget.close(); }
+  } catch (error) {
+    // Harness/provider wrappers may report a generic failure after global abort.
+    // Preserve privacy/cleanup refusals; only elapsed budget masks generic errors.
+    if (["private_operation_failed", "private_provider_failed"].includes(privateCode(error))
+      && performance.now() - budget.started >= budget.plan.limits.runtimeMs - 10000) throw new PrivateError("private_budget_exhausted");
+    throw error;
+  } finally { cache.clear(); budget.close(); }
 }
 
 export async function privateMain(flags, { root, stdout = console.log, env = process.env, repositories,

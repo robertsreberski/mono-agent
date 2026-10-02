@@ -3,19 +3,24 @@ import { constants } from "node:fs";
 import { lstat, realpath, readdir, mkdir, open } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { BenchmarkError } from "./memory-e2e-providers.mjs";
 
 export const PRIVATE_CODES = Object.freeze([
   "private_ci_refused", "private_absolute_roots_required", "private_repository_path",
   "private_permissions", "private_unsafe_entry", "private_roots_overlap",
   "private_input_invalid", "private_preregistration_invalid", "private_preregistration_changed", "private_cleanup_failed", "private_output_exists",
   "private_arguments_invalid", "private_provider_route_refused", "private_isolation_required",
-  "private_provider_failed", "private_budget_exceeded", "private_invocation_missing",
+  "private_provider_failed", "private_budget_exceeded", "private_budget_exhausted", "private_invocation_missing",
   "private_review_tty_required", "private_annotations_invalid", "private_operation_failed",
 ]);
 export class PrivateError extends Error {
   constructor(code) { super(PRIVATE_CODES.includes(code) ? code : "private_operation_failed"); this.code = this.message; }
 }
-export function privateCode(error) { return error instanceof PrivateError ? error.code : "private_operation_failed"; }
+export function privateCode(error) {
+  if (error instanceof PrivateError) return error.code;
+  if (error instanceof BenchmarkError && ["runtime_budget_exhausted", "budget_exhausted"].includes(error.code)) return "private_budget_exhausted";
+  return "private_operation_failed";
+}
 export function inside(root, path) { const rel = relative(root, path); return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel)); }
 function requireOwned(info) {
   if (typeof process.getuid !== "function" || info.uid !== process.getuid() || (info.mode & 0o077) !== 0
