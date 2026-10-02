@@ -65,6 +65,60 @@ describe("semantic-only automatic app memory", () => {
     expect(warnings).toEqual(["memory_recall_unavailable"]);
   });
 
+  it("with all opt-ins and invocation receipts, injects a formerly filtered source only after it gains an accepted label, once", async () => {
+    const backend = store(); const text = "Avery repairs pottery wheels.";
+    const candidates = hits.map((hit) => hit.record.id === "unlabelled" ? { ...hit, record: { ...hit.record, text } } : hit);
+    let accepted: LabelHit[] = [];
+    const queries: string[] = [];
+    backend.recallWithOutcome = async (query) => { queries.push(query); return { hits: candidates, retrievalMode: "hybrid" }; };
+    backend.labelsForMemories = (ids) => [...labels, ...accepted].filter((hit) => ids.includes(hit.memoryId));
+    backend.labelsForEntity = (entity) => accepted.filter((hit) => hit.label.kind === "fact" && hit.label.entityId === entity);
+    const service = new MemoryRetrievalService(backend, { semanticOnly: true, contextWindow: true, profileEnabled: true });
+    const step = (turnId: string, minute: number, retainedContext = true) => ({ ...options, turnId, retainedContext,
+      hostInstant: new Date(Date.parse(options.hostInstant) + minute * 60_000).toISOString() });
+    const cold = await service.load("fictional-chat", "How should repair instructions be presented?", step("filtered-cold", 0, false));
+    expect(cold?.content).toContain(labels[2]!.text); expect(cold?.content).not.toContain(text);
+    service.recordInvocation("filtered-cold"); service.releaseTurn("filtered-cold");
+    expect(await service.load("fictional-chat", "And the tools?", step("still-filtered", 1))).toBeUndefined();
+    expect(queries[1]).toBe("and the tools? how should repair instructions be presented?");
+    service.recordInvocation("still-filtered"); service.releaseTurn("still-filtered");
+    accepted = [{ ...labels[2]!, memoryId: "unlabelled", text,
+      label: { v: 1, kind: "fact", entityId: "person:avery", attribution: "assistant-inferred" } }];
+    const newlyEligible = await service.load("fictional-chat", "And the tools?", step("labelled", 2));
+    expect(newlyEligible?.content.split(text)).toHaveLength(2);
+    expect(newlyEligible?.content).not.toContain("Owner profile");
+    service.recordInvocation("labelled"); service.releaseTurn("labelled");
+    expect(await service.load("fictional-chat", "And the tools?", step("already-served", 3))).toBeUndefined();
+  });
+
+  it.each([true, false])("with all opt-ins and invocation receipts, drops a served preference after a secondary fact conflict (other profile source=%s)", async (hasOtherSource) => {
+    const preference = { ...labels[2]!, text: "Use numbered repair instructions; Avery uses the name Avery." };
+    const secondary: LabelHit = { ...preference, ordinal: 1,
+      label: { v: 1, kind: "fact", entityId: "person:avery", key: "preferred_name", value: { type: "text", text: "Avery" }, attribution: "user-stated" } };
+    const peer: LabelHit = { ...secondary, memoryId: "peer", ordinal: 0, text: "Avery uses the name Morgan.",
+      label: { ...secondary.label, kind: "fact", entityId: "person:avery", key: "preferred_name", value: { type: "text", text: "Morgan" }, attribution: "user-stated" } };
+    const remaining: LabelHit[] = hasOtherSource ? [{ ...preference, memoryId: "remaining", currentAt: true, text: "Owner repairs pottery wheels.",
+      label: { v: 1, kind: "fact", entityId: "person:owner", attribution: "user-stated" } }] : [];
+    let conflict = false;
+    const backend = store(); backend.guidanceForScope = (scope) => scope === "agent" ? [preference] : [];
+    backend.labelsForEntity = (entity) => entity === "person:avery" ? [secondary, ...(conflict ? [peer] : [])]
+      : entity === "person:owner" ? remaining : [];
+    backend.labelsForMemories = (ids) => [preference, secondary, ...remaining, ...(conflict ? [peer] : [])].filter((hit) => ids.includes(hit.memoryId));
+    backend.recallWithOutcome = async () => ({ retrievalMode: "hybrid", hits: [preference, ...remaining]
+      .map((hit) => ({ score: 0.9, record: { id: hit.memoryId, text: hit.text, type: "note" as const, status: "open" as const, createdAt: hit.createdAt } })) });
+    const service = new MemoryRetrievalService(backend, { semanticOnly: true, contextWindow: true, profileEnabled: true });
+    const step = (turnId: string, minute: number, retainedContext = true) => ({ ...options, turnId, retainedContext,
+      hostInstant: new Date(Date.parse(options.hostInstant) + minute * 60_000).toISOString() });
+    expect((await service.load("fictional-chat", "How should repair instructions be presented?", step("profile-cold", 0, false)))?.content).toContain(preference.text);
+    service.recordInvocation("profile-cold"); service.releaseTurn("profile-cold");
+    conflict = true; // The preference label is retained; a peer claim changes whole-source eligibility.
+    const changed = await service.load("fictional-chat", "And the tools?", step("profile-conflict", 1));
+    expect(changed?.content).toContain("Owner profile"); expect(changed?.content).not.toContain(preference.text);
+    expect(changed?.content).toContain(hasOtherSource ? remaining[0]!.text : "No active supported profile entries.");
+    service.recordInvocation("profile-conflict"); service.releaseTurn("profile-conflict");
+    expect(await service.load("fictional-chat", "And the tools?", step("profile-stable", 2))).toBeUndefined();
+  });
+
   it("checks other labels on a preference source before rendering guidance or profile", () => {
     const preference = { ...labels[2]!, memoryId: "shared" };
     const facts: LabelHit[] = ["Avery", "Morgan"].map((value, index) => ({ ...preference, memoryId: index === 0 ? "shared" : "peer",

@@ -450,7 +450,7 @@ function planBatchAction(
       return planAddWithoutIndex(candidate, similar, deps, threadThreshold);
     case "noop":
       return planNoop(decision, deps);
-    case "update":
+    case "update": {
       if (deps.semanticOnly === true && deps.db.get(decision.targetId ?? "")?.type !== candidate.type) {
         return planAddWithoutIndex(candidate, similar, deps, threadThreshold);
       }
@@ -477,10 +477,18 @@ function planBatchAction(
         || (decision.text !== undefined && [...decision.text].length > MAX_RECONCILIATION_TEXT_CODE_POINTS)) {
         return planAddWithoutIndex(candidate, similar, deps, threadThreshold);
       }
-      if (isNewTimeSensitiveSnapshot(candidate, decision, deps)) {
-        return planBatchAction(candidate, { ...decision, action: "supersede", text: decision.text ?? candidate.text }, similar, deps, threadThreshold);
+      const target = deps.semanticOnly === true ? deps.db.get(decision.targetId ?? "") : undefined;
+      const mergedText = decision.text ?? candidate.text;
+      // In-place UPDATE preserves createdAt. A changed owner claim must instead
+      // carry its own admission timestamp, or an older delayed retry could erase
+      // this refinement. Reuse durable supersession, including its existing guards.
+      const changedUserClaim = deps.semanticOnly === true && target !== undefined && mergedText !== target.text
+        && (userRecord(target, deps) || userCandidate(candidate, deps, mergedText));
+      if (changedUserClaim || isNewTimeSensitiveSnapshot(candidate, decision, deps)) {
+        return planBatchAction(candidate, { ...decision, action: "supersede", text: mergedText }, similar, deps, threadThreshold);
       }
       return planUpdate(candidate, decision, deps);
+    }
     case "supersede": {
       const old = deps.db.get(decision.targetId ?? "");
       // Standing guidance is not replaced on a model decision alone. The owner

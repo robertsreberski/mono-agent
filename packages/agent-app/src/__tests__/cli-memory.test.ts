@@ -21,6 +21,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveAppTraceRegistryDir } from "../app-config.js";
 import { parseCliArgs, renderHelp, renderHelpTopic, runCli } from "../cli.js";
 import { curateRecoveredFailureReason, runMemoryCommand } from "../memory-command.js";
+import { formatMemoryProfile } from "../memory-guidance.js";
 
 /** Resolve a help topic to its rendered detail text. */
 function helpTopicText(topic: string): string {
@@ -65,6 +66,45 @@ describe("memory label CLI flags", () => {
       expect(JSON.parse(result.stdout)).toMatchObject({ sources: ["current-civil"] });
       expect(result.stdout).not.toContain("expired-instant");
       expect(result.stdout).not.toContain("expired-civil");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("semantic profile show matches automatic whole-source eligibility when a preference has a conflicting secondary fact", async () => {
+    const root = join(await tempDir(), "memory");
+    const memory = createBujoMemoryStore({ root });
+    await memory.remember("fictional", "Owner repairs bicycle spokes."); await memory.close();
+    const path = await resolveActiveMemoryDbPath(root);
+    const db = openMemoryDb({ path }); const base = db.topSalient(1)[0]!;
+    const createdAt = "2031-05-17T09:00:00.000Z";
+    for (const [id, text] of [["mixed", "Use numbered repair instructions; Avery uses the name Avery."],
+      ["peer", "Avery uses the name Morgan."], ["remaining", "Owner repairs bicycle spokes."]]) {
+      db.upsertLexical({ ...base, id: id!, text: text!, createdAt });
+    }
+    db.replaceMemoryLabels(base.id, []);
+    db.replaceMemoryLabels("mixed", [
+      { v: 1, kind: "preference", scope: "agent", attribution: "user-stated" },
+      { v: 1, kind: "fact", entityId: "person:avery", key: "preferred_name", value: { type: "text", text: "Avery" }, attribution: "user-stated" },
+    ]);
+    db.replaceMemoryLabels("peer", [
+      { v: 1, kind: "fact", entityId: "person:avery", key: "preferred_name", value: { type: "text", text: "Morgan" }, attribution: "user-stated" },
+    ]);
+    db.replaceMemoryLabels("remaining", [{ v: 1, kind: "fact", entityId: "person:owner", attribution: "user-stated" }]);
+    const observed = new Date(2031, 4, 17, 12, 0, 0);
+    const expected = formatMemoryProfile({ guidanceForScope: (scope) => db.guidanceForScope(scope),
+      labelsForEntity: (id, asOf) => db.labelsForEntity(id, asOf), labelsForMemories: (ids) => db.labelsForMemories(ids),
+    }, "2031-05-17", Infinity, observed.toISOString(), true);
+    expect(expected.entries.map((entry) => entry.id)).toEqual(["remaining"]);
+    db.close(); const before = await readFile(path);
+    const dir = await agentDir({ memory: { path: root, mode: "bujo", writeMode: "disabled", recall: { semanticOnly: true },
+      embeddings: { provider: "ollama" }, llm: { provider: "ollama", model: "fictional-model" } } });
+    const fetch = vi.fn(() => { throw new Error("fictional unexpected model call"); }); vi.stubGlobal("fetch", fetch);
+    vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(observed);
+    try {
+      const result = await captureCli(() => runMemoryCommand({ cwd: dir, env: {}, positionals: ["profile", "show"], json: true, strict: false }));
+      expect(result.code).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({ content: expected.content, sources: ["remaining"], truncated: expected.truncated });
+      expect(result.stdout).not.toContain("numbered repair instructions");
+      expect(fetch).not.toHaveBeenCalled(); expect(await readFile(path)).toEqual(before);
     } finally { vi.useRealTimers(); }
   });
 

@@ -620,6 +620,11 @@ independent of `memory.recall.contextWindow` and `memory.profile.enabled`:
 { "memory": { "recall": { "semanticOnly": true } } }
 ```
 
+Retained flags-off capture plans and already-published outbox actions complete
+under flags-off semantics, rather than being retroactively reclassified by this
+flag. Let pending capture intake drain and run the reviewed legacy note/event
+and label curate step before enabling `semanticOnly`.
+
 Add this to an otherwise valid BuJo configuration **after reviewing legacy
 coverage**. Similarity lines, the optional owner profile, scoped guidance and
 exact-name cards use current, open notes with an active accepted fact,
@@ -651,9 +656,10 @@ in those lines are a known limitation and may still appear automatically.
 
 Reconcile receives existing labels and host capture-source evidence. An
 inferred/unknown candidate cannot UPDATE or SUPERSEDE user-stated content; a
-supported newer user correction may supersede an older statement. To avoid
-promoting contradictory ADDs, inferred candidates near user-stated neighbors
-remain searchable without semantic labels, even when classification says ADD;
+supported newer user correction may supersede an older statement. Changed
+user-stated refinements use timestamped supersession so a delayed older retry
+cannot replace newer evidence. To avoid promoting contradictory ADDs, inferred
+candidates near user-stated neighbors remain searchable without semantic labels, even when classification says ADD;
 final classifier-fallback inferred ADDs likewise receive no semantic labels.
 This conservative rule may omit unrelated inferred findings near owner evidence.
 `Remember` remains retention priority, not owner authorship; its existing

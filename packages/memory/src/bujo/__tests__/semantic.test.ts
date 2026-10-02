@@ -171,6 +171,55 @@ describe("host reconciliation authority", () => {
     }
   });
 
+  it.each(["user-stated", "assistant-inferred"] as const)("timestamps a changed user UPDATE of %s content so an older retry cannot replace it, including rebuild", async (attribution) => {
+    const f = await authorityFixture();
+    if (attribution === "assistant-inferred") {
+      const oldLabel: MemoryLabel = { v: 1, kind: "preference", scope: "agent", attribution };
+      rewriteBullet(f.path, "daily/2031-05-16.md", "OLD", { refs: [encodeMemoryLabel(oldLabel)] });
+      f.db.replaceMemoryLabels("OLD", [oldLabel]);
+    }
+    // t0 is the seed; the refinement is admitted at t2, before t1's delayed retry.
+    expect(await reconcileBatch([f.candidate("user")], f.deps("update", "user")))
+      .toEqual([{ kind: "supersede", oldId: "OLD", newId: "NEW-1" }]);
+    const current = { text: f.candidate("user").text, createdAt: now, status: "open" };
+    expect(f.db.get("NEW-1")).toMatchObject(current);
+    expect(f.db.get("OLD")).toMatchObject({ status: "invalidated", createdAt: "2031-05-16T12:00:00.000Z" });
+    f.db.close(); dbs.splice(dbs.indexOf(f.db), 1);
+    const embeddings = fakeEmbeddings(16);
+    const rebuilt = await safeRebuildMemoryIndex({ root: f.path, tier: "bujo", embeddings, dim: 16 });
+    const db = openMemoryDb({ path: rebuilt.active, embeddings, dim: 16 }); dbs.push(db);
+    expect(db.get("NEW-1")).toMatchObject(current);
+    db.findSimilarMany = async () => [[{ record: db.get("NEW-1")!, distance: 0.1 }]];
+    const retry = { ...f.candidate("user"), text: "Owner prefers illustrated repair instructions." };
+    expect(await reconcileBatch([retry], { ...f.deps("supersede", "user"), db,
+      now: () => new Date(`${day}T11:00:00.000Z`),
+      captureEvidence: { ownerTurn: true, userText: retry.text, toolOutcomes: [] },
+      llm: { id: "fictional-older-retry", complete: async () => JSON.stringify([{ index: 0, action: "supersede", targetId: "NEW-1", text: retry.text }]) },
+    })).toEqual([{ kind: "add", id: "NEW-2" }]);
+    expect(db.get("NEW-1")).toMatchObject(current);
+    expect(db.labelsForMemories(["NEW-2"])).toEqual([]);
+    // The refused older claim stays deliberately searchable, not authoritative.
+    expect(db.get("NEW-2")?.text).toBe(retry.text);
+    db.close(); dbs.splice(dbs.indexOf(db), 1);
+    const again = await safeRebuildMemoryIndex({ root: f.path, tier: "bujo", embeddings, dim: 16 });
+    const projection = openMemoryDb({ path: again.active, readOnly: true }); dbs.push(projection);
+    expect(projection.get("NEW-1")).toMatchObject(current);
+    expect(projection.get("OLD")?.status).toBe("invalidated");
+    expect(projection.labelsForMemories(["NEW-1"])[0]?.label).toEqual(f.candidate("user").labels[0]);
+    expect(projection.labelsForMemories(["NEW-2"])).toEqual([]);
+  });
+
+  it("keeps an unchanged user UPDATE in place without redating its existing evidence", async () => {
+    const f = await authorityFixture(); const text = f.db.get("OLD")!.text;
+    const candidate = { ...f.candidate("user"), text };
+    expect(await reconcileBatch([candidate], { ...f.deps("update", "user"),
+      captureEvidence: { ownerTurn: true, userText: text, toolOutcomes: [] },
+      llm: { id: "fictional-identical-update", complete: async () => JSON.stringify([{ index: 0, action: "update", targetId: "OLD", text }]) },
+    })).toEqual([{ kind: "update", id: "OLD" }]);
+    expect(f.db.get("OLD")).toMatchObject({ text, status: "open", createdAt: "2031-05-16T12:00:00.000Z" });
+    expect(f.db.count()).toBe(1);
+  });
+
   it("final classifier fallback ADD has no inferred semantic authority", async () => {
     const f = await authorityFixture(); const d = f.deps("add");
     await reconcileBatch([f.candidate("assistant")], { ...d, fallbackOnClassifierFailure: true, isFinalCaptureAttempt: true,

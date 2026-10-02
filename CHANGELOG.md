@@ -6,7 +6,9 @@
   to current labelled knowledge notes, prefer user-stated evidence and protect
   it from inferred overwrites; keep events searchable through deliberate tools.
   Reuse reviewed curate retyping for legacy note/event and label review, with
-  backup/restore and no invented attribution or dates.
+  backup/restore and no invented attribution or dates. Preserve newer user
+  refinements against delayed older capture retries using dated supersession;
+  keep profile inspection aligned with automatic whole-source eligibility.
 
 - Keep graph-expanded recall fresh after memory writes, even when a pre-write
   search finishes afterward, without discarding pending invocation receipts.
