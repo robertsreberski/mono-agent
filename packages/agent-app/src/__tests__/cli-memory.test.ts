@@ -39,6 +39,35 @@ afterEach(async () => {
 });
 
 describe("memory label CLI flags", () => {
+  it("profile show observes timestamp expiry while civil end dates remain inclusive", async () => {
+    const root = join(await tempDir(), "memory");
+    const memory = createBujoMemoryStore({ root });
+    await memory.remember("fictional", "Morgan enjoys geometric sketches.");
+    await memory.close();
+    const path = await resolveActiveMemoryDbPath(root);
+    const db = openMemoryDb({ path });
+    const base = db.topSalient(1)[0]!;
+    const observed = new Date(2026, 3, 3, 10, 0, 0);
+    for (const [id, validTo] of [["expired-instant", new Date(observed.getTime() - 3_600_000).toISOString()],
+      ["current-civil", "2026-04-03"], ["expired-civil", "2026-04-02"]]) {
+      db.upsertLexical({ ...base, id: id!, text: `Fictional supported sketch entry ${id}.`, validTo: validTo! });
+      db.replaceMemoryLabels(id!, [{ v: 1, kind: "fact", entityId: "person:owner", attribution: "user-stated" }]);
+    }
+    db.replaceMemoryLabels(base.id, []);
+    db.close();
+    const dir = await agentDir({ memory: { path: root, mode: "bujo", writeMode: "disabled",
+      embeddings: { provider: "ollama" }, llm: { provider: "ollama", model: "fictional-model" } } });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(observed);
+    try {
+      const result = await captureCli(() => runMemoryCommand({ cwd: dir, env: {}, positionals: ["profile", "show"], json: true, strict: false }));
+      expect(result.code).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({ sources: ["current-civil"] });
+      expect(result.stdout).not.toContain("expired-instant");
+      expect(result.stdout).not.toContain("expired-civil");
+    } finally { vi.useRealTimers(); }
+  });
+
   it("shows the deterministic profile read-only without calling embeddings or models", async () => {
     const root = join(await tempDir(), "memory");
     const memory = createBujoMemoryStore({ root });

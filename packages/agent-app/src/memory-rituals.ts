@@ -87,10 +87,8 @@ export function startMemoryRituals(input: StartMemoryRitualsInput): RunningRitua
       let delayMs: number;
       try {
         delayMs = nextCronDelayMs(cronExpr, current);
-      } catch (err) {
-        logger?.warn(
-          `Memory consolidation has an invalid cron expression "${cronExpr}": ${err instanceof Error ? err.message : String(err)}. Consolidation disabled.`,
-        );
+      } catch {
+        logger?.warn("memory_consolidation_schedule_invalid");
         return;
       }
 

@@ -42,6 +42,85 @@ const owner = (turnId: string, minutes = 0, retainedContext = false): MemoryLoad
 });
 
 describe("opt-in volatile memory context", () => {
+  it.each(["remember", "details", "partial-details"])("preserves pending warm invocation receipts across %s query invalidation", async (write) => {
+    const f = storeFixture();
+    f.store.supportsRemember = () => true;
+    f.store.supportsRememberDetails = () => true;
+    f.store.remember = async (_conversationId, text) => ({ id: "written", source: "memory", text, duplicate: false });
+    f.store.rememberDetails = async (_conversationId, text) => {
+      if (write === "partial-details") throw Object.assign(new Error("fictional partial projection"), { rememberIntentWritten: true });
+      return { id: "written", source: "memory", text, duplicate: false };
+    };
+    const service = new MemoryRetrievalService(f.store, { profileEnabled: true, contextWindow: true });
+    const query = "Describe the ceramic glaze materials";
+    await service.load("conversation", query, owner("cold"));
+    service.recordInvocation("cold");
+    f.changeRecall("The ceramic glaze uses a fictional cobalt pigment.");
+    expect((await service.load("conversation", query, owner("warm", 1, true)))?.content).toContain("fictional cobalt");
+    if (write === "remember") await service.remember("conversation", "Morgan enjoys geometric sketches.");
+    else if (write === "details") await service.rememberDetails("conversation", "Morgan enjoys geometric sketches.", {});
+    else await expect(service.rememberDetails("conversation", "Morgan enjoys geometric sketches.", {})).rejects.toThrow("fictional partial projection");
+    const before = f.queries.length;
+    await service.recallOutcomeForTurn("warm", query);
+    expect(f.queries).toHaveLength(before + 1); // Stale searches really were invalidated.
+    service.recordInvocation("warm");
+    expect(await service.load("conversation", query, owner("next", 2, true))).toBeUndefined();
+  });
+
+  it("preserves a receipt prepared after a concurrent Remember invalidates an in-flight lookup", async () => {
+    const f = storeFixture();
+    f.store.remember = async (_id, text) => ({ id: "written", source: "memory", text, duplicate: false });
+    const service = new MemoryRetrievalService(f.store, { profileEnabled: true });
+    const query = "Describe the ceramic glaze materials";
+    await service.load("conversation", query, owner("cold"));
+    service.recordInvocation("cold");
+    let start!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => { start = resolve; });
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let pending = true;
+    f.store.recall = async () => {
+      if (pending) { pending = false; start(); await held; }
+      return [{ score: 0.9, record: { id: "new-glaze", text: "The fictional glaze uses ochre pigment." } }];
+    };
+    const loading = service.load("conversation", query, owner("warm", 1, true));
+    await started;
+    await service.remember("other-conversation", "Morgan enjoys geometric sketches.");
+    release();
+    expect((await loading)?.content).toContain("ochre pigment");
+    service.recordInvocation("warm");
+    expect(await service.load("conversation", query, owner("next", 2, true))).toBeUndefined();
+  });
+
+  it("caps normalized automatic queries and predecessors after Unicode case expansion without capping explicit originals", async () => {
+    const f = storeFixture();
+    const service = new MemoryRetrievalService(f.store, { contextWindow: true });
+    const query = "\u0130".repeat(1536);
+    await service.load("conversation", query, owner("expanded"));
+    expect(Array.from(f.queries[0]!).length).toBeLessThanOrEqual(1536);
+    expect(await service.recallOriginalOutcomeForTurn("expanded")).toMatchObject({ available: true, query });
+    expect(Array.from(f.queries[1]!).length).toBe(3072); // Existing deliberate-query semantics.
+    await service.load("conversation", "And now?", owner("follow", 1));
+    expect(Array.from(f.queries.at(-1)!).length).toBeLessThanOrEqual(1536);
+    expect(Array.from(f.queries.at(-1)!.slice("and now? ".length)).length).toBeLessThanOrEqual(512);
+    await service.load("conversation", query, owner("both-expanded", 2));
+    expect(Array.from(f.queries.at(-1)!).length).toBeLessThanOrEqual(1536);
+  });
+
+  it("uses the observation instant for same-day profile record expiry and preserves inclusive civil dates", async () => {
+    const f = storeFixture();
+    f.facts.splice(0, f.facts.length,
+      fact("ended", "Expired geometric sketch fact.", { validTo: "2026-04-03T09:00:00.000Z" }),
+      fact("offset-ended", "Expired offset sketch fact.", { validTo: "2026-04-03T09:00:00+02:00" }),
+      fact("today", "The fictional sketch preference remains current today.", { validTo: "2026-04-03" }),
+      fact("instant", "The fictional sketch fact is current at its exact boundary.", { validTo: "2026-04-03T10:00:00.000Z" }));
+    const service = new MemoryRetrievalService(f.store, { profileEnabled: true });
+    const content = (await service.load("conversation", "Which sketches?", owner("expiry")))?.content;
+    expect(content).not.toContain("Expired");
+    expect(content).toContain("current today");
+    expect(content).toContain("exact boundary");
+  });
+
   it("bypasses short-turn suppression with a prior, without eagerly embedding the tool's original query", async () => {
     const f = storeFixture();
     const service = new MemoryRetrievalService(f.store, { contextWindow: true });
@@ -250,8 +329,8 @@ describe("deterministic supported profile", () => {
 });
 
 const configFor = (cwd: string, enabled: boolean) => resolveJsonMonoAgentConfig({ cwd, json: {
-  runtime: { model: "pi:openai-codex:gpt-5.5" }, context: { identityPath: "IDENTITY.md" },
-  session: { mode: "continuous" }, tools: { allowedTools: [] },
+  runtime: { model: "pi:openai-codex:gpt-5.5", session: { mode: "continuous" } }, context: { identityPath: "IDENTITY.md" },
+  tools: { allowedTools: [] },
   memory: { path: "memory", mode: "bujo", embeddings: { provider: "ollama" },
     llm: { provider: "ollama", model: "fictional-local-model" }, recallTool: { enabled: false }, rememberTool: { enabled: false },
     recall: { contextWindow: enabled }, profile: { enabled } },
@@ -293,5 +372,97 @@ it("flows config-only arms through configured harness and shared-controller wiri
         expect(f.queries.at(-1)).toBe("which size?");
       } finally { await harness.dispose!(); }
     }
+  } finally { await rm(cwd, { recursive: true, force: true }); }
+});
+
+it.each([[true, false], [false, true], [true, true]])("preserves shared warm receipts across isolated cron with window=%s/profile=%s", async (contextWindow, profile) => {
+  const cwd = await mkdtemp(join(tmpdir(), "memory-isolation-"));
+  try {
+    await writeFile(join(cwd, "IDENTITY.md"), "You are a fictional test assistant.");
+    const f = storeFixture();
+    const base = configFor(cwd, true);
+    const config = { ...base, runtime: { ...base.runtime, session: { ...base.runtime.session, isolateProactive: true } },
+      memory: { ...base.memory!, recall: { contextWindow }, profile: { enabled: profile } } };
+    const calls: RuntimeRunOptions[] = [];
+    const harness = await createConfiguredAgentHarness({ config, cwd, memory: f.store, historyStore: createInMemoryHistoryStore(),
+      runtime: { async run(_prompt, options) { calls.push(options); return { text: "Fictional response.",
+        providerSessionId: options.sessionKeepAlive ? "shared-fictional-session" : "isolated-fictional-session" }; } },
+    });
+    const runOwner = (userMessage: string) => harness.run({ conversationId: "owner-isolation", userMessage,
+      captureSpeakerKind: "human-turn", metadata: { source: "web" }, abortSignal: new AbortController().signal });
+    try {
+      await runOwner("Describe the ceramic glaze materials");
+      await runOwner("Describe the ceramic glaze materials");
+      await harness.run({ conversationId: "owner-isolation", userMessage: "Fictional scheduled check.", captureSpeakerKind: "trigger",
+        metadata: { source: "cron", cron: { jobId: "fictional-check", expression: "0 3 * * *" } }, abortSignal: new AbortController().signal });
+      await runOwner("Describe the ceramic glaze materials");
+      expect(calls[2]!.sessionId).toBeUndefined();
+      expect(calls[3]!.sessionId).toBe("shared-fictional-session");
+      expect(String(calls[3]!.messages.at(-1)!.content)).not.toContain("Owner profile");
+      expect(String(calls[3]!.messages.at(-1)!.content)).not.toContain("bicycle wrench");
+      expect(f.queries.at(-1)).toBe("describe the ceramic glaze materials"); // Cron broke adjacency only.
+      f.facts[0] = fact("owner-fact", "Morgan now enjoys folded paper patterns.");
+      f.changeRecall("The ceramic glaze now uses a fictional ochre pigment.");
+      await runOwner("Describe the folded paper patterns");
+      expect(calls[4]!.sessionId).toBe("shared-fictional-session");
+      const final = String(calls[4]!.messages.at(-1)!.content);
+      expect(final).toContain(profile ? "folded paper patterns" : "fictional ochre");
+      if (profile) expect(final).toContain("Owner profile");
+      expect(f.queries.at(-1)).toBe("describe the folded paper patterns" + (contextWindow ? " describe the ceramic glaze materials" : ""));
+    } finally { await harness.dispose!(); }
+  } finally { await rm(cwd, { recursive: true, force: true }); }
+});
+
+it.each([false, true])("caches only original owner-authored attachment captions with window=%s", async (enabled) => {
+  const cwd = await mkdtemp(join(tmpdir(), "memory-owner-query-"));
+  try {
+    await writeFile(join(cwd, "IDENTITY.md"), "You are a fictional test assistant.");
+    const f = storeFixture();
+    const calls: RuntimeRunOptions[] = [];
+    const harness = await createConfiguredAgentHarness({ config: configFor(cwd, enabled), cwd, memory: f.store,
+      runtime: { async run(_prompt, options) { calls.push(options); return { text: "Fictional response.", providerSessionId: "fictional-session" }; } },
+    });
+    try {
+      await harness.run({ conversationId: "attached", userMessage: "Compare the ceramic glazes.", captureSpeakerKind: "human-turn",
+        metadata: { source: "web" }, abortSignal: new AbortController().signal,
+        attachments: [{ kind: "document", mimeType: "text/plain", name: "fictional-sample.txt",
+          data: Buffer.from("FICTIONAL_DOCUMENT_SENTINEL").toString("base64"), text: "FICTIONAL_DOCUMENT_SENTINEL" }],
+      });
+      expect(f.queries[0]).toContain("fictional_document_sentinel"); // Current turn still sees one-shot evidence.
+      await harness.run({ conversationId: "attached", userMessage: "And now?", captureSpeakerKind: "human-turn",
+        metadata: { source: "web" }, abortSignal: new AbortController().signal });
+      expect(f.queries.at(-1)).toBe(enabled ? "and now? compare the ceramic glazes." : "and now?");
+      expect(f.queries.at(-1)).not.toContain("fictional_document_sentinel");
+      expect(f.queries.at(-1)).not.toContain("fictional-sample.txt");
+      expect(f.queries.at(-1)).not.toContain(cwd.toLowerCase());
+    } finally { await harness.dispose!(); }
+  } finally { await rm(cwd, { recursive: true, force: true }); }
+});
+
+it("breaks owner-query adjacency on host continuation synthesis without recalling memory or losing warm receipts", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "memory-continuation-"));
+  try {
+    await writeFile(join(cwd, "IDENTITY.md"), "You are a fictional test assistant.");
+    const f = storeFixture();
+    const calls: RuntimeRunOptions[] = [];
+    const harness = await createConfiguredAgentHarness({ config: configFor(cwd, true), cwd, memory: f.store, historyStore: createInMemoryHistoryStore(),
+      runtime: { async run(_prompt, options) { calls.push(options); return { text: "Fictional response.",
+        providerSessionId: options.sessionKeepAlive ? "shared-fictional-session" : "synthesis-fictional-session" }; } },
+    });
+    try {
+      const runOwner = (userMessage: string) => harness.run({ conversationId: "continuation", userMessage,
+        captureSpeakerKind: "human-turn", metadata: { source: "web" }, abortSignal: new AbortController().signal });
+      await runOwner("Describe the ceramic glaze materials");
+      await harness.run({ conversationId: "continuation", userMessage: "FICTIONAL_SYNTHESIS_PAYLOAD", abortSignal: new AbortController().signal,
+        continuation: { continuationId: "fictional-continuation", originRunId: "fictional-origin", originContextPolicy: "detached_latest",
+          toolsDisabled: true, deferHistoryCommit: true } });
+      expect(f.queries).toHaveLength(1);
+      expect(String(calls[1]!.messages.at(-1)!.content)).not.toContain("Owner profile");
+      f.facts[0] = fact("owner-fact", "Morgan now enjoys folded paper patterns.");
+      await runOwner("And now?");
+      expect(f.queries.at(-1)).toBe("and now?");
+      expect(calls[2]!.sessionId).toBe("shared-fictional-session");
+      expect(String(calls[2]!.messages.at(-1)!.content)).toContain("folded paper patterns");
+    } finally { await harness.dispose!(); }
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });

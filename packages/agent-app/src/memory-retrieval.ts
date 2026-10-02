@@ -121,7 +121,19 @@ interface ConversationRecallState {
   saturated: boolean;
 }
 const fingerprint = (text: string): string => createHash("sha256").update(text).digest("hex");
-const codePoints = (text: string, limit: number): string => Array.from(text).slice(0, limit).join("");
+
+/** Keep evidence casing, but measure the exact normalized backend query budget. */
+function boundedAutomaticQuery(text: string, limit: number): string {
+  const points = Array.from(text.normalize("NFKC").trim().replace(/\s+/gu, " ")).slice(0, limit);
+  let low = 0;
+  let high = points.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (Array.from(normalizeQuery(points.slice(0, mid).join(""))).length <= limit) low = mid;
+    else high = mid - 1;
+  }
+  return points.slice(0, low).join("");
+}
 
 /** Remove empty section headers as well as unchanged visible bullet lines. */
 function freshMemoryLines(content: string, exclude: (line: string) => boolean): string {
@@ -198,18 +210,23 @@ export class MemoryRetrievalService implements MemoryStore {
     const turnId = options.turnId ?? `uncached:${randomUUID()}`;
     const turn = this.turnCache(turnId);
     const conversationKey = fingerprint(conversationId);
-    let state = this.conversations.get(conversationKey);
+    const isolated = options.isolated === true;
+    if (isolated) this.breakQueryAdjacency(conversationId);
+    let state = isolated ? undefined : this.conversations.get(conversationKey);
     if (state === undefined) {
       state = { served: new Set(), receiptsKnown: false, saturated: false };
     }
-    this.conversations.delete(conversationKey);
-    this.conversations.set(conversationKey, state);
-    while (this.conversations.size > MAX_CONVERSATIONS) this.conversations.delete(this.conversations.keys().next().value!);
+    if (!isolated) {
+      this.conversations.delete(conversationKey);
+      this.conversations.set(conversationKey, state);
+      while (this.conversations.size > MAX_CONVERSATIONS) this.conversations.delete(this.conversations.keys().next().value!);
+    }
     const owner = options.ownerTurn === true && !isHostProcessJobWakeRecall();
     if (!owner) delete state.previous; // Any verified non-owner/trigger interrupts adjacency.
     const current = this.contextWindow
-      ? codePoints((query ?? "").normalize("NFKC").trim().replace(/\s+/gu, " "), 1536)
+      ? boundedAutomaticQuery(query ?? "", 1536)
       : normalizeEvidenceQuery(query ?? "");
+    const ownerQuery = (options.ownerQuery ?? query ?? "").normalize("NFKC").trim().replace(/\s+/gu, " ");
     if (turn.automaticQuery === undefined) {
       const at = options.hostInstant === undefined ? Date.now() : Date.parse(options.hostInstant);
       // Lazy expiry also drops stale predecessor text from other bounded entries.
@@ -218,18 +235,18 @@ export class MemoryRetrievalService implements MemoryStore {
           && at - cached.previous.at >= WINDOW_TTL_MS) delete cached.previous;
       }
       const previous = state.previous;
-      const qualifies = this.contextWindow && owner && current.length > 0 && previous !== undefined
+      const qualifies = this.contextWindow && owner && ownerQuery.length > 0 && current.length > 0 && previous !== undefined
         && Number.isFinite(at) && at >= previous.at && at - previous.at < WINDOW_TTL_MS;
       // No transcript or assistant/tool content; only the preceding redacted owner query.
       turn.hasPrior = qualifies;
       turn.automaticQuery = qualifies
-        ? `${codePoints(current, 1023)}\n${codePoints(previous.query, 512)}` : this.contextWindow ? codePoints(current, 1536) : current;
-      if (this.contextWindow && owner && current && Number.isFinite(at)) {
-        const redacted = redactJsonValue(current, 32_000, { contentPatternRedaction: true });
-        state.previous = { query: codePoints(typeof redacted === "string" ? redacted : "", 512), at };
+        ? `${boundedAutomaticQuery(current, 1023)}\n${boundedAutomaticQuery(previous.query, 512)}` : current;
+      if (this.contextWindow && owner && ownerQuery && !isolated && Number.isFinite(at)) {
+        const redacted = redactJsonValue(ownerQuery, 32_000, { contentPatternRedaction: true });
+        state.previous = { query: boundedAutomaticQuery(typeof redacted === "string" ? redacted : "", 512), at };
       } else delete state.previous;
     }
-    if (options.retainedContext !== true) {
+    if (options.retainedContext !== true && !isolated) {
       // A distinct epoch object fences late receipts from an abandoned reseed.
       state = { served: new Set(), receiptsKnown: false, saturated: false,
         ...(state.previous === undefined ? {} : { previous: state.previous }) };
@@ -237,13 +254,13 @@ export class MemoryRetrievalService implements MemoryStore {
     }
     // Empty/non-owner cold invocations still establish that the cache observed
     // this provider epoch, without claiming any lines were delivered.
-    if (options.retainedContext !== true) turn.receipt = { conversationId, state, lines: [] };
+    if (options.retainedContext !== true && !isolated) turn.receipt = { conversationId, state, lines: [] };
     const suppress = options.retainedContext === true && (!state.receiptsKnown || state.saturated);
     try {
       let profile: ReturnType<typeof formatMemoryProfile> | undefined;
       if (owner && this.profileEnabled) {
         try {
-          profile = formatMemoryProfile(this.store, options.hostLocalDate ?? options.hostDate ?? new Date().toISOString().slice(0, 10), this.maxBytes);
+          profile = formatMemoryProfile(this.store, options.hostLocalDate ?? options.hostDate ?? new Date().toISOString().slice(0, 10), this.maxBytes, options.hostInstant);
         } catch { options.onWarning?.("memory_profile_unavailable"); }
       }
       let recall: MemoryBlock | undefined;
@@ -266,7 +283,7 @@ export class MemoryRetrievalService implements MemoryStore {
       // Whole-entry byte budget; the Unicode profile budget is enforced separately.
       const omittedRecall = Buffer.byteLength(content, "utf8") > this.maxBytes;
       if (omittedRecall) content = profileContent || recallContent;
-      turn.receipt = { conversationId, state, ...(profileChanged ? { profileFingerprint: profile!.fingerprint } : {}),
+      if (!isolated) turn.receipt = { conversationId, state, ...(profileChanged ? { profileFingerprint: profile!.fingerprint } : {}),
         lines: content.split("\n").filter((line) => line.startsWith("- ")).map(fingerprint) };
       return content ? { kind: "markdown", source: this.source, content, traceContent: false,
         truncated: omittedRecall || (profile?.truncated ?? false) || (recall?.truncated ?? false) } : undefined;
@@ -283,6 +300,11 @@ export class MemoryRetrievalService implements MemoryStore {
       if (state.served.size >= MAX_SERVED_LINES && !state.served.has(line)) { state.saturated = true; break; }
       state.served.add(line);
     }
+  }
+
+  breakQueryAdjacency(conversationId: string): void {
+    const state = this.conversations.get(fingerprint(conversationId));
+    if (state !== undefined) delete state.previous;
   }
 
   resetRecallContext(conversationId?: string): void {
@@ -455,6 +477,18 @@ export class MemoryRetrievalService implements MemoryStore {
     this.turns.clear();
   }
 
+  private invalidateRecallQueries(): void {
+    if (!this.contextWindow && !this.profileEnabled) { this.releaseAllTurns(); return; }
+    // Writes invalidate search results, not pending or already-prepared delivery
+    // receipts. Keep the same turn object so a concurrent preparation can finish.
+    for (const turn of this.turns.values()) {
+      turn.queries.clear();
+      turn.expansions.clear();
+      turn.accessedIds.clear();
+      delete turn.original;
+    }
+  }
+
   supportsGraphExpansion(): boolean {
     return this.store.expandGraph !== undefined && this.store.supportsGraphExpansion?.() !== false;
   }
@@ -520,14 +554,14 @@ export class MemoryRetrievalService implements MemoryStore {
     if (!this.supportsRememberDetails()) throw new Error("memory: Remember details require writable BuJo memory.");
     try {
       const result = await this.store.rememberDetails!(conversationId, text, details);
-      if (!result.duplicate || result.supersededId !== undefined) this.releaseAllTurns();
+      if (!result.duplicate || result.supersededId !== undefined) this.invalidateRecallQueries();
       return result;
     } catch (error) {
       // A published outbox intent can already have invalidated the old note
       // before replay reports a partial projection failure.
       if (typeof error === "object" && error !== null
         && ((error as { rememberIntentWritten?: unknown }).rememberIntentWritten === true
-          || (error as { canonicalWritten?: unknown }).canonicalWritten === true)) this.releaseAllTurns();
+          || (error as { canonicalWritten?: unknown }).canonicalWritten === true)) this.invalidateRecallQueries();
       throw error;
     }
   }
@@ -555,7 +589,7 @@ export class MemoryRetrievalService implements MemoryStore {
     // An already-stored fact changed nothing durable, so leave the caches
     // alone: clearing them there would make concurrent turns repeat identical
     // backend searches and re-record access telemetry.
-    if (!result.duplicate) this.releaseAllTurns();
+    if (!result.duplicate) this.invalidateRecallQueries();
     return result;
   }
 

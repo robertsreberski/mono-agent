@@ -1832,7 +1832,7 @@ async function runProfileShow(context: MemoryCommandContext, input: RunMemoryCom
       const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
       const profile = formatMemoryProfile(db === undefined ? {} : {
         guidanceForScope: (scope) => db.guidanceForScope(scope), labelsForEntity: (id, asOf) => db.labelsForEntity(id, asOf),
-      }, date, memory.maxBytes);
+      }, date, memory.maxBytes, now.toISOString());
       write(input.json, { content: profile.content, sources: profile.entries.map((entry) => entry.id), truncated: profile.truncated },
         () => `${profile.content || "No active supported profile entries."}\n`);
       return 0;

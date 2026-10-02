@@ -273,9 +273,7 @@ describe("startMemoryRituals", () => {
         clearTimer: fakeTimers.clearTimer,
       });
       expect(fakeTimers.pendingCount()).toBe(0);
-      expect(warns).toEqual([
-        expect.stringContaining('Hashed "H" cron fields require a non-empty hashSeed.'),
-      ]);
+      expect(warns).toEqual(["memory_consolidation_schedule_invalid"]);
       expect(random).not.toHaveBeenCalled();
     } finally {
       result?.stop();
@@ -283,12 +281,12 @@ describe("startMemoryRituals", () => {
     }
   });
 
-  it("surfaces the shared parser reason and schedules nothing for malformed cron", () => {
+  it("uses a stable code and schedules nothing for malformed private-looking cron", () => {
     const fakeTimers = createFakeTimers();
     const warns: string[] = [];
     const result = startMemoryRituals({
       store: createFakeStore("bujo"),
-      consolidation: { cron: "0 0 * FOO *" },
+      consolidation: { cron: "FICTIONAL_PRIVATE_RECORD /fictional/private/schedule" },
       logger: { info: () => undefined, warn: (m) => { warns.push(m); } },
       now: () => BASE_DATE,
       setTimer: fakeTimers.setTimer,
@@ -296,12 +294,8 @@ describe("startMemoryRituals", () => {
     });
 
     expect(fakeTimers.pendingCount()).toBe(0);
-    expect(warns).toHaveLength(1);
-    expect(warns[0]).toMatch(
-      /^Memory consolidation has an invalid cron expression "0 0 \* FOO \*":/u,
-    );
-    expect(warns[0]).toMatch(/resolve alias "foo"/u);
-    expect(warns[0]).toMatch(/Consolidation disabled\.$/u);
+    expect(warns).toEqual(["memory_consolidation_schedule_invalid"]);
+    expect(JSON.stringify(warns)).not.toMatch(/FICTIONAL_PRIVATE_RECORD|\/fictional\/private/u);
     result.stop();
   });
 

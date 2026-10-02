@@ -8,7 +8,12 @@
   automatic context on retained sessions using invocation receipts; add the
   read-only `memory profile show` inspection view.
 - Keep memory recall and consolidation failure warnings content-free with
-  stable codes instead of exception text.
+  stable codes instead of exception text, including when both recall flags are
+  off.
+- Fix owner recall bookkeeping across isolated triggers, continuations and
+  Remember writes; exclude attachment evidence from follow-up query context,
+  enforce case-expanded query budgets, honor instant-aware profile expiry and
+  finish shutdown when a memory reset hook fails.
 
 - Fix Telegram native rich-message input, including forwarded and replied-to
   structured text, tables, lists, captions, and bounded background context.

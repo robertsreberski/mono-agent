@@ -1,5 +1,6 @@
 import type { MemoryLoadOptions } from "@mono-agent/agent-contracts";
 import { createHash } from "node:crypto";
+import { recallLineStatus } from "@mono-agent/memory/bujo";
 import type { EntityRecord, MemoryDb } from "@mono-agent/memory/store";
 import type { MemoryRecallHit } from "./memory-recall.js";
 
@@ -204,11 +205,11 @@ export interface MemoryProfile {
 }
 
 /** Whole supported entries, deterministic byte ordering, including the heading in the budget. */
-export function formatMemoryProfile(store: LabelRecallStore, date: string, byteBudget = Infinity): MemoryProfile {
+export function formatMemoryProfile(store: LabelRecallStore, date: string, byteBudget = Infinity, now?: string): MemoryProfile {
   const supported = [...(store.guidanceForScope?.("agent") ?? []), ...(store.labelsForEntity?.("person:owner", date) ?? [])]
     .filter((hit) => hit.active && !hit.conflict && hit.type === "note" && hit.status === "open"
       && hit.dueAt === undefined && hit.supersededBy === undefined
-      && (hit.validTo === undefined || hit.validTo >= date)
+      && recallLineStatus(hit, date, now) === "current"
       && ((hit.label.kind === "preference" && hit.label.scope === "agent" && hit.label.attribution === "user-stated")
         || (hit.label.kind === "fact" && hit.label.entityId === "person:owner" && hit.label.attribution === "user-stated"
           && hit.currentAt === true)))

@@ -1254,6 +1254,7 @@ export class MonoAgentHarness implements AgentHarness {
           : "messages",
         turnId: runId,
         originalUserMessage: request.userMessage,
+        isolated,
         ...(exclusiveCapturedHistory === undefined ? {} : { historyOverride: exclusiveCapturedHistory }),
       }, emit);
       context = prepared.context;
@@ -1327,6 +1328,7 @@ export class MonoAgentHarness implements AgentHarness {
           historyMode: "messages",
           turnId: runId,
           originalUserMessage: request.userMessage,
+          isolated,
           ...(exclusiveCapturedHistory === undefined ? {} : { historyOverride: exclusiveCapturedHistory }),
         }, emit);
         context = prepared.context;
@@ -2062,8 +2064,13 @@ export class MonoAgentHarness implements AgentHarness {
     void liveSessionDisposal?.catch(() => undefined);
     const drained = await this.waitForActiveRuns();
     this.pendingTerminalReseeds.clear();
-    this.options.memory?.resetRecallContext?.();
     const cleanupErrors: unknown[] = [];
+    try { this.options.memory?.resetRecallContext?.(); }
+    catch {
+      // Optional memory cleanup cannot prevent unrelated resources being freed.
+      // Retain only a stable diagnostic, never the custom hook's exception.
+      cleanupErrors.push(new AgentHarnessError("memory_context_reset_unavailable", "memory_context_reset_unavailable"));
+    }
     if (drained) {
       try {
         await liveSessionDisposal;

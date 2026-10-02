@@ -567,9 +567,12 @@ speakers and triggers receive no automatic profile or recall block.
 
 `memory.recall.contextWindow` adds the immediately preceding redacted owner query
 to automatic retrieval, including short follow-ups normally suppressed at 16
-code points. It keeps no assistant/tool text: the previous query is capped at
-512 Unicode code points, the combined query at 1,536, and adjacency expires after
-30 minutes or a non-owner/trigger turn. There is no language-specific topic
+code points. The predecessor contains only original owner-authored text, not
+attachment-expanded text or attachment metadata. It keeps no assistant/tool text:
+the previous query is capped at 512 Unicode code points and the combined query
+at 1,536, measured after normalization and case expansion. Adjacency expires
+after 30 minutes or a non-owner/trigger turn; host continuations and process-job
+wakes also break it. There is no language-specific topic
 classifier; a new query replaces the predecessor for the next turn, rather than
 accumulating a transcript. Explicit `MemoryRecall` original-query mode still
 uses only the current query and embeds that query only if requested.
@@ -577,7 +580,9 @@ uses only the current query and embeds that query only if requested.
 `memory.profile.enabled` derives a profile from active owner-stated owner facts
 and agent-scope preferences in the existing label projection. It uses current,
 open notes only, omits conflicting/ended sources, dated intentions and episodes,
-and selects whole entries in newest-date then stable source-ID order. The entire
+and selects whole entries in newest-date then stable source-ID order. Timestamp
+expiry uses the host observation instant; civil end dates remain inclusive
+through the host's local day. The read-only profile CLI uses the same rule. The entire
 payload, including its heading, is at most 600 Unicode code points and also
 respects `memory.maxBytes`. Missing labels produce no profile. No model call,
 new file, store, version or history field is involved. Embedding failures do not
@@ -586,7 +591,10 @@ erase the profile and emit only `memory_recall_unavailable`.
 With either flag on, a confirmed retained provider session excludes unchanged
 already-served recall/background lines. A profile enters a cold reseed or when
 its supported contents change. Preparation alone does not count: only a
-successful retained provider invocation establishes receipts. The bounded
+successful retained provider invocation establishes receipts. Isolated turns
+do not replace shared-session receipts, and Remember writes invalidate searches
+without discarding pending receipts. Host continuations break adjacency without
+loading memory. The bounded
 volatile cache keeps at most 256 conversations and 256 served-line fingerprints
 per conversation. Query context and receipts disappear on reset, disposal or
 restart. If receipt knowledge is lost while the host still confirms retained

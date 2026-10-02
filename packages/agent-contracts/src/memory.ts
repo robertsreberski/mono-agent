@@ -78,6 +78,10 @@ export interface MemoryLoadOptions {
   readonly ownerTurn?: true;
   /** Host-confirmed live provider context, never inferred from history length. */
   readonly retainedContext?: boolean;
+  /** Host-confirmed one-shot invocation; never replaces the shared provider epoch. */
+  readonly isolated?: boolean;
+  /** Original owner-authored text only, without attachment text or host metadata. */
+  readonly ownerQuery?: string;
   /** Closed, content-free degradation diagnostic; no exception text crosses this hook. */
   readonly onWarning?: (code: "memory_recall_unavailable" | "memory_profile_unavailable") => void;
 }
@@ -104,4 +108,6 @@ export interface MemoryStore {
   recordInvocation?(turnId: string): void;
   /** Drop volatile context on a host-confirmed reset; does not mutate memory sources. */
   resetRecallContext?(conversationId?: string): void;
+  /** Observe a host-synthesized turn without recalling memory or discarding receipts. */
+  breakQueryAdjacency?(conversationId: string): void;
 }
