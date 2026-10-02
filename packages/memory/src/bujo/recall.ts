@@ -37,7 +37,7 @@ export function selectPossiblyRelevantRecallHits<T extends {
   readonly record: PossiblyRelevantRecord;
 }>(
   hits: readonly T[],
-  options: { readonly maxLines?: number; readonly asOf?: string; readonly now?: string; readonly semanticAuthorities?: ReadonlyMap<string, number> } = {},
+  options: { readonly maxLines?: number; readonly asOf?: string; readonly now?: string; readonly intentExpiry?: boolean; readonly semanticAuthorities?: ReadonlyMap<string, number> } = {},
 ): readonly T[] {
   const top = hits[0]?.score;
   if (top === undefined || !Number.isFinite(top) || top < POSSIBLY_RELEVANT_MIN_SCORE) return [];
@@ -50,10 +50,11 @@ export function selectPossiblyRelevantRecallHits<T extends {
   // Authority only filters/reorders the already-qualified window. Ineligible
   // leaders never lower the reference score or widen the fifty-hit lookup.
   const authorities = options.semanticAuthorities;
+  const eligibleWindow = options.intentExpiry === true ? window.filter((hit) => automaticIntentEligible(hit.record)) : window;
   const prioritized = authorities === undefined
-    ? [...window.filter((hit) => recallLineStatus(hit.record, options.asOf, options.now) === "current"),
-      ...window.filter((hit) => recallLineStatus(hit.record, options.asOf, options.now) !== "current")]
-    : window.filter((hit) => authorities.has(hit.record.id ?? ""))
+    ? [...eligibleWindow.filter((hit) => recallLineStatus(hit.record, options.asOf, options.now) === "current"),
+      ...eligibleWindow.filter((hit) => recallLineStatus(hit.record, options.asOf, options.now) !== "current")]
+    : eligibleWindow.filter((hit) => authorities.has(hit.record.id ?? ""))
       .sort((a, b) => (authorities.get(b.record.id ?? "") ?? 0) - (authorities.get(a.record.id ?? "") ?? 0));
   // Deduplicate identical text after currency preference, so a current copy wins.
   const seen = new Set<string>();
@@ -79,10 +80,17 @@ export interface PossiblyRelevantRecord {
   readonly supersededBy?: string;
 }
 
+/** No persisted intention marker: dated notes are ambiguous until reviewed.
+ * Even supported future dated intentions stay in the task app, not automatic context. */
+export function automaticIntentEligible(record: PossiblyRelevantRecord): boolean {
+  return record.type !== "note" || (record.dueAt === undefined && record.status !== "done"
+    && record.status !== "dropped" && record.status !== "invalidated");
+}
+
 /* Date-only values end after the host's local calendar day; timestamps are instants. */
-export function recallLineEndDate(record: PossiblyRelevantRecord, asOf?: string, now?: string): string | undefined {
+export function recallLineEndDate(record: PossiblyRelevantRecord, asOf?: string, now?: string, intentExpiry = false): string | undefined {
   if (asOf === undefined) return undefined;
-  const value = record.validTo ?? (record.type === "event" ? record.dueAt : undefined);
+  const value = record.validTo ?? (record.type === "event" || (intentExpiry && record.type === "note") ? record.dueAt : undefined);
   if (value === undefined) return undefined;
   if (/^\d{4}-\d{2}-\d{2}$/u.test(value)) {
     const parsed = Date.parse(value);
@@ -96,9 +104,9 @@ export function recallLineEndDate(record: PossiblyRelevantRecord, asOf?: string,
 }
 
 /** Reader-facing currency on the host's local `asOf` (YYYY-MM-DD) and observation instant. */
-export function recallLineStatus(record: PossiblyRelevantRecord, asOf?: string, now?: string): "current" | "superseded" | "ended" {
+export function recallLineStatus(record: PossiblyRelevantRecord, asOf?: string, now?: string, intentExpiry = false): "current" | "superseded" | "ended" {
   if (record.supersededBy !== undefined || record.status === "invalidated" || record.status === "dropped") return "superseded";
-  return recallLineEndDate(record, asOf, now) === undefined ? "current" : "ended";
+  return recallLineEndDate(record, asOf, now, intentExpiry) === undefined ? "current" : "ended";
 }
 
 /** Shared formatting contract for standalone stores and the app's automatic block. */
@@ -155,7 +163,7 @@ function clampLineBytes(text: string, maxBytes: number): string {
 export async function composeRecallBlock(
   db: MemoryDb,
   query: string,
-  options: { topK?: number; maxBytes?: number; trackAccess?: boolean; abortSignal?: AbortSignal; asOf?: string; now?: string; semanticOnly?: boolean } = {},
+  options: { topK?: number; maxBytes?: number; trackAccess?: boolean; abortSignal?: AbortSignal; asOf?: string; now?: string; semanticOnly?: boolean; intentExpiry?: boolean } = {},
 ): Promise<MemoryBlock | undefined> {
   const maxBytes = Math.max(1, Math.min(options.maxBytes ?? POSSIBLY_RELEVANT_MAX_BYTES, POSSIBLY_RELEVANT_MAX_BYTES));
   const topK = Math.max(1, Math.min(options.topK ?? POSSIBLY_RELEVANT_MAX_LINES, POSSIBLY_RELEVANT_MAX_LINES));
@@ -170,16 +178,16 @@ export async function composeRecallBlock(
   if (outcome.retrievalMode !== "hybrid" || outcome.degradation !== undefined) return undefined;
   const semanticAuthorities = options.semanticOnly === true ? semanticRecallAuthorities(
     db.labelsForMemories(outcome.hits.map((hit) => hit.record.id)), db.labelsForEntity.bind(db),
-    options.asOf ?? new Date().toISOString().slice(0, 10), options.now,
+    options.asOf ?? new Date().toISOString().slice(0, 10), options.now, options.intentExpiry,
   ) : undefined;
   const hits = selectPossiblyRelevantRecallHits(outcome.hits, {
     ...(semanticAuthorities === undefined ? {} : { semanticAuthorities }),
-    maxLines: topK, ...(options.asOf === undefined ? {} : { asOf: options.asOf }),
+    intentExpiry: options.intentExpiry === true, maxLines: topK, ...(options.asOf === undefined ? {} : { asOf: options.asOf }),
     ...(options.now === undefined ? {} : { now: options.now }),
   });
   const block = formatPossiblyRelevantBlock(hits, new Map(), maxBytes, options.asOf, options.now);
   if (block === undefined) return undefined;
   if (options.trackAccess !== false) db.recordAccess(block.shown.map((hit) => hit.record.id));
   return { kind: "markdown", content: block.content, source: "memory-bujo", truncated: block.truncated,
-    ...(options.semanticOnly === true ? { traceContent: false } : {}) };
+    ...(options.semanticOnly === true || options.intentExpiry === true ? { traceContent: false } : {}) };
 }

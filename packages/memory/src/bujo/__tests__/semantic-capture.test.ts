@@ -66,7 +66,7 @@ describe("semantic capture opt-in", () => {
       const store = createBujoMemoryStore({ root: path, tier, clock: () => new Date(observedAt),
         ...(tier === "lite" ? {} : { embeddings: fakeEmbeddings(16), dim: 16 }),
         ...(tier === "bujo" ? { llm: { id: "fictional-bytes", complete: async (prompt: string) => { calls.push(prompt); return response; } } } : {}),
-        ...(explicitOff ? { recall: { semanticOnly: false } } : {}),
+        ...(explicitOff ? { recall: { semanticOnly: false, intentExpiry: false, recency: false }, ...(tier === "bujo" ? { capture: { intentLifecycle: false } } : {}) } : {}),
       });
       try {
         await store.persistCompletedTurn({ runId: "fictional-byte-run", conversationId: "fictional-chat", summary: "A bicycle repair was discussed.",

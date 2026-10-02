@@ -777,3 +777,24 @@ root-swap transaction creates the same backup and rebuilds the index; existing
 `memory curate restore --backup <backup-directory>` restores canonical bytes.
 Validate useful labelled-note coverage before enabling the flag. Retyping alone
 does not label an unknown note or prove its original speaker.
+
+
+## Review intention dates before enabling expiry
+
+Before enabling `memory.recall.intentExpiry`, stop the configured agent and drain
+its pending capture under the old policy first. Inspect existing note `due=`
+values privately using `memory today`, `memory show <date>` and `memory search`.
+Use the existing bounded
+`memory curate prepare --semantic-review --plan <private-file> --limit 60`, review and stopped-store apply/restore flow to remove unsupported lines or retype
+actual dated episodes, accepting only supported proposals. Review the whole dated
+note inventory in bounded passes; a sample is not an audit of unexamined dates.
+Do not infer intention completion from a passed date, manufacture missing dates,
+upgrade attribution or rewrite generic supersession validity. This introduces no
+new curate command and performs no automatic audit, reinterpretation or backfill.
+
+An ambiguous old note date may have been a deadline, not an inclusive validity
+end. The new policy excludes every dated note from automatic sections, including
+future dates, but deliberate currentness assumes reviewed inclusive-end meaning.
+Keep the flag off until that meaning has been checked and ambiguous sources
+removed/retyped through accepted curate proposals. Plans and backups contain
+memory text and must stay private; rollback uses the existing exact backup flow.

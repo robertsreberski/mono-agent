@@ -26,7 +26,7 @@ import { redactJsonValue } from "@mono-agent/observability";
 
 import { formatMemoryBackground, formatMemoryProfile, type LabelRecallStore } from "./memory-guidance.js";
 import { isHostProcessJobWakeRecall } from "./process-jobs-context.js";
-import { readLabelSections, type LabelSectionRequest } from "./memory-label-sections.js";
+import { readLabelSections, type LabelContext, type LabelSectionRequest } from "./memory-label-sections.js";
 import {
   createMemoryRecallServer,
   MEMORY_RECALL_MCP_SERVER_NAME,
@@ -77,6 +77,7 @@ export interface MemoryRetrievalServiceOptions {
   readonly contextWindow?: boolean;
   readonly profileEnabled?: boolean;
   readonly semanticOnly?: boolean;
+  readonly intentExpiry?: boolean;
 }
 
 export interface SharedMemoryRecallRuntimeExtensionOptions {
@@ -193,6 +194,7 @@ export class MemoryRetrievalService implements MemoryStore {
   private readonly contextWindow: boolean;
   private readonly profileEnabled: boolean;
   private readonly semanticOnly: boolean;
+  private readonly intentExpiry: boolean;
   readonly persistCompletedTurn?: (turn: MemoryCompletedTurn) => Promise<MemoryCompletedTurnResult>;
 
   constructor(
@@ -204,6 +206,7 @@ export class MemoryRetrievalService implements MemoryStore {
     this.contextWindow = options.contextWindow === true && store.tier?.() === "bujo";
     this.profileEnabled = options.profileEnabled === true && store.tier?.() === "bujo";
     this.semanticOnly = options.semanticOnly === true && store.tier?.() === "bujo";
+    this.intentExpiry = options.intentExpiry === true && store.tier?.() === "bujo";
     const persistCompletedTurn = store.persistCompletedTurn;
     if (persistCompletedTurn !== undefined) {
       // Preserve capability detection: stores without the strong method leave
@@ -213,7 +216,7 @@ export class MemoryRetrievalService implements MemoryStore {
   }
 
   async load(conversationId: string, query?: string, options: MemoryLoadOptions = {}): Promise<MemoryBlock | undefined> {
-    if (!this.contextWindow && !this.profileEnabled) return await this.loadLegacy(conversationId, query, options);
+    if (!this.contextWindow && !this.profileEnabled && !this.intentExpiry) return await this.loadLegacy(conversationId, query, options);
     const ephemeral = options.turnId === undefined;
     const turnId = options.turnId ?? `uncached:${randomUUID()}`;
     const turn = this.turnCache(turnId);
@@ -268,7 +271,7 @@ export class MemoryRetrievalService implements MemoryStore {
       let profile: ReturnType<typeof formatMemoryProfile> | undefined;
       if (owner && this.profileEnabled) {
         try {
-          profile = formatMemoryProfile(this.store, options.hostLocalDate ?? options.hostDate ?? new Date().toISOString().slice(0, 10), this.maxBytes, options.hostInstant, this.semanticOnly);
+          profile = formatMemoryProfile(this.store, options.hostLocalDate ?? options.hostDate ?? new Date().toISOString().slice(0, 10), this.maxBytes, options.hostInstant, this.semanticOnly, this.intentExpiry);
         } catch { options.onWarning?.("memory_profile_unavailable"); }
       }
       let recall: MemoryBlock | undefined;
@@ -395,7 +398,7 @@ export class MemoryRetrievalService implements MemoryStore {
         try {
           semanticAuthorities = semanticRecallAuthorities(
             this.store.labelsForMemories?.(outcome.hits.map((hit) => hit.record.id)) ?? [],
-            this.store.labelsForEntity?.bind(this.store), asOf ?? new Date().toISOString().slice(0, 10), now,
+            this.store.labelsForEntity?.bind(this.store), asOf ?? new Date().toISOString().slice(0, 10), now, this.intentExpiry,
           );
         } catch {
           semanticAuthorities = new Map();
@@ -404,6 +407,7 @@ export class MemoryRetrievalService implements MemoryStore {
       }
       const hits = shortOwnerQuery ? [] : selectPossiblyRelevantRecallHits(outcome.hits, {
         ...(semanticAuthorities === undefined ? {} : { semanticAuthorities }),
+        intentExpiry: this.intentExpiry,
         ...(asOf === undefined ? {} : { asOf }), ...(now === undefined ? {} : { now }),
       }).filter((hit) => !profileIds.has(hit.record.id));
       const budget = Math.min(this.maxBytes, POSSIBLY_RELEVANT_MAX_BYTES);
@@ -413,7 +417,7 @@ export class MemoryRetrievalService implements MemoryStore {
       try {
         const available = this.maxBytes - (block === undefined ? 0 : Buffer.byteLength(block.content, "utf8") + 2);
         background = formatMemoryBackground(this.store, evidenceQuery, conversationId, options, outcome.hits, available,
-          new Set([...profileIds, ...block?.shown.map((hit) => hit.record.id) ?? []]), this.semanticOnly);
+          new Set([...profileIds, ...block?.shown.map((hit) => hit.record.id) ?? []]), this.semanticOnly, this.intentExpiry);
       } catch {
         // Corrupt or temporarily unavailable labels must not erase ordinary recall.
         background = undefined;
@@ -421,7 +425,7 @@ export class MemoryRetrievalService implements MemoryStore {
       if (block === undefined && !background?.content) return undefined;
       if (block !== undefined) this.recordServed(turnId, block.shown);
       return { kind: "markdown", source: this.source,
-        ...(this.semanticOnly ? { traceContent: false } : {}),
+        ...(this.semanticOnly || this.intentExpiry ? { traceContent: false } : {}),
         content: [block?.content, background?.content].filter((text) => text !== undefined && text.length > 0).join("\n\n"),
         truncated: (block?.truncated ?? false) || (background?.truncated ?? false) };
     } finally {
@@ -500,7 +504,7 @@ export class MemoryRetrievalService implements MemoryStore {
   }
 
   private invalidateRecallQueries(): void {
-    if (!this.contextWindow && !this.profileEnabled) { this.releaseAllTurns(); return; }
+    if (!this.contextWindow && !this.profileEnabled && !this.intentExpiry) { this.releaseAllTurns(); return; }
     // Writes invalidate search results, not pending or already-prepared delivery
     // receipts. Keep the turn object, but replace its search generation so work
     // already in flight cannot populate the current expansion cache.
@@ -511,6 +515,12 @@ export class MemoryRetrievalService implements MemoryStore {
     }
   }
 
+  intentExpiryEnabled(): boolean { return this.intentExpiry; }
+  recencyEnabled(): boolean { return this.store.recencyEnabled?.() === true; }
+  rankDeliberateRecall(hits: readonly SharedRecallHit[]): readonly SharedRecallHit[] {
+    return this.store.rankDeliberateRecall?.(hits) ?? hits;
+  }
+
   supportsGraphExpansion(): boolean {
     return this.store.expandGraph !== undefined && this.store.supportsGraphExpansion?.() !== false;
   }
@@ -519,8 +529,9 @@ export class MemoryRetrievalService implements MemoryStore {
     return this.store.labelsForEntity !== undefined && this.store.guidanceForScope !== undefined;
   }
 
-  labelSectionsForTurn(turnId: string, request: LabelSectionRequest, candidates: readonly SharedRecallHit[] = []) {
-    return readLabelSections(this.store, request, this.turns.get(turnId)?.context, candidates);
+  labelSectionsForTurn(turnId: string, request: LabelSectionRequest, candidates: readonly SharedRecallHit[] = [], observation?: LabelContext) {
+    const context = { ...this.turns.get(turnId)?.context, ...observation };
+    return readLabelSections(this.store, request, context, candidates, this.intentExpiry);
   }
 
   supportsJournalBrowse(): boolean {
@@ -696,9 +707,12 @@ export function createSharedMemoryRecallRuntimeExtension(
     const path = `/mcp/${randomUUID()}`;
     const graphEnabled = service.supportsGraphExpansion();
     const boundStore: RecallCapableStore = {
+      intentExpiryEnabled: () => service.intentExpiryEnabled(),
+      recencyEnabled: () => service.recencyEnabled(),
+      rankDeliberateRecall: (hits) => service.rankDeliberateRecall(hits),
       recall: (query, options) => service.recallForTurn(runId, query, options),
       ...(service.supportsLabelSections() ? {
-        labelSections: (request: LabelSectionRequest, candidates: readonly SharedRecallHit[]) => service.labelSectionsForTurn(runId, request, candidates),
+        labelSections: (request: LabelSectionRequest, candidates: readonly SharedRecallHit[], observation?: LabelContext) => service.labelSectionsForTurn(runId, request, candidates, observation),
       } : {}),
       recallWithOutcome: (query, options) => service.recallOutcomeForTurn(runId, query, options),
       recallOriginalWithOutcome: (originalOptions) => service.recallOriginalOutcomeForTurn(runId, {

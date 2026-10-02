@@ -468,3 +468,16 @@ within unchanged relevance budgets and gives capture model-guided note/event
 semantics. Useful episodes remain searchable through deliberate tools. Review
 legacy types and labels before enabling it; see
 [semantic-only capture and recall](/memory/capture-and-recall/#optional-semantic-only-bujo-memory).
+
+
+### Optional supported intentions and transient recency
+
+BuJo independently offers default-off `memory.capture.intentLifecycle`,
+`memory.recall.intentExpiry` and `memory.recall.recency`. Owner-supported
+intention proposals reuse note statuses and `due=`; state changes preserve the
+old sentence via supersession. Automatic expiry conservatively excludes all
+dated and done/dropped notes, including ambiguous legacy/future dates. Review
+legacy dates through curate before enabling policy-aware deliberate reads.
+Recency only reorders relevance-qualified deliberate event/unlabelled-note hits;
+facts/preferences and automatic recall do not decay. See
+[intention lifecycle and recency](/memory/capture-and-recall/#optional-intention-lifecycle-and-deliberate-recency).

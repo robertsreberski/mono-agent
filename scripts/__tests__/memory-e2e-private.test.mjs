@@ -265,16 +265,25 @@ describe("private memory evaluation privacy boundary", () => {
     const json = { runtime: { model: "openai:gpt-4o" }, context: { identityPath: "IDENTITY.md" }, memory: { path: "memory", mode: "bujo", writeMode: "disabled", embeddings: { provider: "ollama", model: "fictional", dim: 3 }, llm: { provider: "ollama", model: "fictional" } } };
     const current = resolvePrivateArm(modules, json, root, "current-only");
     expect(current.status).toBe("completed");
-    expect(current.config.memory.recall).toEqual({ contextWindow: false, semanticOnly: false });
+    expect(current.config.memory.recall).toEqual({ contextWindow: false, semanticOnly: false, intentExpiry: false });
     const semantic = resolvePrivateArm(modules, json, root, "semantic-only");
     expect(semantic.status).toBe("completed");
-    expect(semantic.config.memory.recall).toEqual({ contextWindow: false, semanticOnly: true });
+    expect(semantic.config.memory.recall).toEqual({ contextWindow: false, semanticOnly: true, intentExpiry: false });
     expect(semantic.config.memory.profile).toEqual({ enabled: false });
+    const expiry = resolvePrivateArm(modules, json, root, "intent-expiry");
+    expect(expiry.status).toBe("completed");
+    expect(expiry.config.memory.recall).toEqual({ contextWindow: false, semanticOnly: false, intentExpiry: true });
+    const withoutExpiry = { ...modules, config: { ...modules.config, resolveJsonMonoAgentConfig: (input) => {
+      const config = modules.config.resolveJsonMonoAgentConfig(input);
+      if (config.memory.recall) delete config.memory.recall.intentExpiry;
+      return config;
+    } } };
+    expect(resolvePrivateArm(withoutExpiry, json, root, "intent-expiry")).toEqual({ status: "unsupported" });
     const unknown = structuredClone(json); unknown.memory.recall = { fictionalUnsupportedFlag: true };
     expect(() => modules.config.resolveJsonMonoAgentConfig({ json: unknown, cwd: root })).toThrow();
     expect(resolvePrivateArm(modules, unknown, root, "semantic-only")).toEqual({ status: "unsupported" });
     const window = resolvePrivateArm(modules, json, root, "follow-up-window");
-    expect(window.config.memory.recall).toEqual({ contextWindow: true, semanticOnly: false });
+    expect(window.config.memory.recall).toEqual({ contextWindow: true, semanticOnly: false, intentExpiry: false });
     expect(window.config.memory.profile).toEqual({ enabled: false });
     expect(resolvePrivateArm(modules, json, root, "window-profile-on").config.memory.profile.enabled).toBe(true);
   });

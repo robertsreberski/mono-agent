@@ -54,6 +54,7 @@ import {
   CompletedTurnIntakeManager,
   type CompletedTurnIntakeSnapshot,
 } from "./capture-intake.js";
+import { rankDeliberateRecallHits } from "./recency.js";
 import { composeRecallBlock } from "./recall.js";
 import { recoverDurableMutationState, withSerializedBujoMutation } from "./mutation-lock.js";
 import { rememberWithDetails, type RememberDetails } from "./remember-details.js";
@@ -168,6 +169,8 @@ export class BujoMemoryStore implements MemoryStore {
   private readonly llm?: LlmComplete;
   private readonly captureSettings?: BujoOptions["capture"];
   private readonly semanticOnly: boolean;
+  private readonly intentExpiry: boolean;
+  private readonly recency: boolean;
   private readonly _tier!: BujoTier;
   private readonly logger: BujoLogger;
   private readonly backgroundDrainTimeoutMs: number;
@@ -255,6 +258,7 @@ export class BujoMemoryStore implements MemoryStore {
     this.captureSettings = options.capture === undefined ? undefined : {
       ...(options.capture.focus === undefined ? {} : { focus: options.capture.focus }),
       ...(options.capture.only === undefined ? {} : { only: [...options.capture.only] }),
+      ...(options.capture.intentLifecycle === undefined ? {} : { intentLifecycle: options.capture.intentLifecycle }),
     };
     let opened: MemoryDb | undefined;
     try {
@@ -266,6 +270,8 @@ export class BujoMemoryStore implements MemoryStore {
       }
       this._tier = tier;
       this.semanticOnly = tier === "bujo" && options.recall?.semanticOnly === true;
+      this.intentExpiry = tier === "bujo" && options.recall?.intentExpiry === true;
+      this.recency = tier === "bujo" && options.recall?.recency === true;
       if (!this.readOnly) {
         this.rollbackRuntimeLease = registerManagedRollbackRuntime(this.root, managed);
       }
@@ -436,7 +442,7 @@ export class BujoMemoryStore implements MemoryStore {
     return await this.runAdmittedOperation(async (abortSignal) => await composeRecallBlock(
       this.db,
       recallQuery,
-      { topK: 3, maxBytes: this.maxBytes, trackAccess: !this.readOnly, abortSignal, asOf, now: observedAt.toISOString(), semanticOnly: this.semanticOnly },
+      { topK: 3, maxBytes: this.maxBytes, trackAccess: !this.readOnly, abortSignal, asOf, now: observedAt.toISOString(), semanticOnly: this.semanticOnly, intentExpiry: this.intentExpiry },
     ));
   }
 
@@ -476,6 +482,17 @@ export class BujoMemoryStore implements MemoryStore {
         : options.trackAccess === undefined ? {} : { trackAccess: options.trackAccess }),
       abortSignal,
     }));
+  }
+
+  intentExpiryEnabled(): boolean { return this.intentExpiry; }
+  recencyEnabled(): boolean { return this.recency; }
+
+  /** Called only after deliberate recall relevance qualification, never by load(). */
+  rankDeliberateRecall<T extends { readonly score: number; readonly record: { readonly id: string; readonly type?: string; readonly createdAt?: string } }>(hits: readonly T[]): readonly T[] {
+    if (!this.recency) return hits;
+    const ids = hits.map((hit) => hit.record.id);
+    const labels = ids.flatMap((_id, index) => index % 50 === 0 ? this.db.labelsForMemories(ids.slice(index, index + 50)) : []);
+    return rankDeliberateRecallHits(hits, labels, this.clock().toISOString());
   }
 
   /** Explicitly status-bearing local recall; strict `recall()` remains unchanged. */

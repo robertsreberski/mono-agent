@@ -9,10 +9,10 @@ import { PrivateError, privateCode, validatePrivateRoots, createPrivateOutput, l
 import { PRIVATE_ARMS, newReviewSeed, reviewId, blindSheets, safeObservation, writePrivateArtifact, summarizePrivate } from "./memory-e2e-private-report.mjs";
 import { validatePrivateRoute, privateCompletionRuntime, assertPrivateProviderEnvironment, privateEmbeddingFetch } from "./memory-e2e-private-providers.mjs";
 
-const switchPaths = ["recall.contextWindow", "profile.enabled", "recall.semanticOnly"];
+const switchPaths = ["recall.contextWindow", "profile.enabled", "recall.semanticOnly", "recall.intentExpiry"];
 const armSwitches = {
   "current-only": [], "length-only-abstention": [], "follow-up-window": ["recall.contextWindow"],
-  "profile-on": ["profile.enabled"], "window-profile-on": ["recall.contextWindow", "profile.enabled"], "semantic-only": ["recall.semanticOnly"],
+  "profile-on": ["profile.enabled"], "window-profile-on": ["recall.contextWindow", "profile.enabled"], "semantic-only": ["recall.semanticOnly"], "intent-expiry": ["recall.intentExpiry"],
 };
 function put(memory, path, value) { const [section, key] = path.split("."); memory[section] ??= {}; memory[section][key] = value; }
 function carried(config, path) { const [section, key] = path.split("."); return config?.memory?.[section]?.[key]; }

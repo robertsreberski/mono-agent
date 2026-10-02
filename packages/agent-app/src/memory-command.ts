@@ -1838,7 +1838,7 @@ async function runProfileShow(context: MemoryCommandContext, input: RunMemoryCom
       const profile = formatMemoryProfile(db === undefined ? {} : {
         guidanceForScope: (scope) => db.guidanceForScope(scope), labelsForEntity: (id, asOf) => db.labelsForEntity(id, asOf),
         labelsForMemories: (ids) => db.labelsForMemories(ids),
-      }, date, memory.maxBytes, now.toISOString(), memory.recall?.semanticOnly === true);
+      }, date, memory.maxBytes, now.toISOString(), memory.recall?.semanticOnly === true, memory.recall?.intentExpiry === true);
       write(input.json, { content: profile.content, sources: profile.entries.map((entry) => entry.id), truncated: profile.truncated },
         () => `${profile.content || "No active supported profile entries."}\n`);
       return 0;

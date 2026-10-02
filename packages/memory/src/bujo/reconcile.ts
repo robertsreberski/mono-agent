@@ -16,6 +16,7 @@ import {
   type CandidateMemory,
 } from "./distill.js";
 import { parseJsonExact, parseJsonLoose } from "./json.js";
+import { assertIntentionProposal } from "./lifecycle-validation.js";
 import type { LlmComplete } from "./llm.js";
 import type { CanonicalGraphRepairGuard } from "./graph.js";
 import { MemoryModelError, MemoryModelOutputError } from "./model-error.js";
@@ -65,7 +66,7 @@ export interface ReconcileDeps {
   readonly captureSpeakerKind?: MemoryCaptureSpeakerKind;
   readonly captureEvidence?: MemoryCaptureEvidence;
   readonly conversationId?: string;
-  readonly captureSettings?: { readonly focus?: string; readonly only?: readonly ("fact" | "preference" | "lesson")[] };
+  readonly captureSettings?: { readonly focus?: string; readonly only?: readonly ("fact" | "preference" | "lesson")[]; readonly intentLifecycle?: boolean };
   /** Capture-only final gate after model reconciliation has possibly changed the memory text. */
   readonly keepCaptureAction?: (action: CaptureIntentAction) => boolean;
   /** Internal, host-validated label decision; undefined uses L1 retention defaults. */
@@ -94,6 +95,7 @@ export async function reconcile(
   candidates: readonly CandidateMemory[],
   deps: ReconcileDeps,
 ): Promise<ReconcileAction[]> {
+  candidates.forEach(assertIntentionProposal);
   return await withSerializedBujoMutation(deps, async () => await reconcileUnlocked(candidates, deps));
 }
 
@@ -159,6 +161,7 @@ export async function reconcileBatch(
   candidates: readonly CandidateMemory[],
   deps: ReconcileDeps,
 ): Promise<Array<ReconcileAction | undefined>> {
+  candidates.forEach(assertIntentionProposal);
   return await withSerializedBujoMutation(deps, async () => await reconcileBatchUnlocked(candidates, deps));
 }
 
@@ -445,11 +448,25 @@ function planBatchAction(
   if (deps.semanticOnly === true && authorityBlocks(candidate, decision, deps)) {
     return planAddWithoutIndex({ ...candidate, labels: [] }, similar, deps, threadThreshold);
   }
+  // A delayed owner intention observation cannot retire a later admitted state,
+  // even when the independent semantic-only policy is off.
+  if (supportedIntent(candidate, deps) && decision.action !== "add") {
+    const target = deps.db.get(decision.targetId ?? "");
+    if (target !== undefined && deps.now().getTime() < Date.parse(target.createdAt)) {
+      return planAddWithoutIndex(candidate, similar, deps, threadThreshold);
+    }
+  }
   switch (decision.action) {
     case "add":
       return planAddWithoutIndex(candidate, similar, deps, threadThreshold);
-    case "noop":
+    case "noop": {
+      const old = candidate.intentState === undefined ? undefined : deps.db.get(decision.targetId ?? "");
+      if (old !== undefined && supportedIntent(candidate, deps) && (old.status !== intentionStatus(candidate)
+        || (candidate.validTo !== undefined && old.dueAt !== candidate.validTo))) {
+        return planBatchAction(candidate, { ...decision, action: "supersede", text: candidate.text }, similar, deps, threadThreshold);
+      }
       return planNoop(decision, deps);
+    }
     case "update": {
       if (deps.semanticOnly === true && deps.db.get(decision.targetId ?? "")?.type !== candidate.type) {
         return planAddWithoutIndex(candidate, similar, deps, threadThreshold);
@@ -484,7 +501,7 @@ function planBatchAction(
       // this refinement. Reuse durable supersession, including its existing guards.
       const changedUserClaim = deps.semanticOnly === true && target !== undefined && mergedText !== target.text
         && (userRecord(target, deps) || userCandidate(candidate, deps, mergedText));
-      if (changedUserClaim || isNewTimeSensitiveSnapshot(candidate, decision, deps)) {
+      if (supportedIntent(candidate, deps) || changedUserClaim || isNewTimeSensitiveSnapshot(candidate, decision, deps)) {
         return planBatchAction(candidate, { ...decision, action: "supersede", text: mergedText }, similar, deps, threadThreshold);
       }
       return planUpdate(candidate, decision, deps);
@@ -554,6 +571,23 @@ function ownerCorrection(candidate: CandidateMemory, deps: ReconcileDeps): boole
     && deps.captureEvidence?.ownerTurn === true && deps.captureEvidence.userText.trim().length > 0;
 }
 
+/** Lifecycle proposals require host-verified owner evidence, including retained plans. */
+function supportedIntent(candidate: CandidateMemory, deps: ReconcileDeps): boolean {
+  return candidate.intentState !== undefined && ownerCorrection(candidate, deps);
+}
+
+function intentionStatus(candidate: CandidateMemory): Bullet["status"] {
+  return candidate.intentState === "planned" ? "scheduled" : candidate.intentState === "done" ? "done"
+    : candidate.intentState === "abandoned" ? "dropped" : "open";
+}
+
+function intentionFields(candidate: CandidateMemory, deps: ReconcileDeps, inheritedEnd?: string): Pick<Bullet, "status"> & { dueAt?: string } {
+  // Omission is not withdrawal; supported replacements retain an existing note end.
+  const end = candidate.validTo ?? inheritedEnd;
+  return supportedIntent(candidate, deps) ? { status: intentionStatus(candidate),
+    ...(end === undefined ? {} : { dueAt: end }) } : { status: "open" };
+}
+
 /** The owner's own preference scopes: `agent`, or this owner turn's own sender scope. */
 function ownerScope(scope: string, deps: ReconcileDeps): boolean {
   const sender = deps.captureEvidence?.senderToken;
@@ -575,7 +609,7 @@ function planAddWithoutIndex(
   const bullet: Bullet = withMemoryLabels({
     id,
     type: candidate.type,
-    status: "open",
+    ...intentionFields(candidate, deps),
     text: candidate.text,
     salience: candidate.salience,
     isInsight: candidate.isInsight,
@@ -735,7 +769,7 @@ function planSupersede(
   const bullet: Bullet = withMemoryLabels({
     id,
     type: candidate.type,
-    status: "open",
+    ...intentionFields(candidate, deps, old.type === "note" ? old.dueAt : undefined),
     text: replacement,
     salience: candidate.salience,
     isInsight: candidate.isInsight,
@@ -850,10 +884,11 @@ async function classifyBatch(
       ...(hit.sameEntity === undefined ? { distance: Number(hit.distance.toFixed(6)) }
         : { sameEntity: hit.sameEntity }),
       text: hit.record.text,
+      ...(deps.captureSettings?.intentLifecycle === true ? { type: hit.record.type, status: hit.record.status, dueAt: hit.record.dueAt } : {}),
       ...(deps.semanticOnly === true ? { type: hit.record.type, createdAt: hit.record.createdAt,
         labels: authorityLabels(hit.record, deps) } : {}),
     })),
-    ...(deps.semanticOnly === true ? { captureEvidence: authorityEvidence(deps) } : {}),
+    ...(deps.semanticOnly === true || deps.captureSettings?.intentLifecycle === true ? { captureEvidence: authorityEvidence(deps) } : {}),
   }));
   const strictOutput = deps.strictModelOutput === true;
   let raw: string;
@@ -886,7 +921,9 @@ Rules:
 - add and noop MUST omit text. update and supersede REQUIRE one complete, non-empty replacement text with no leading/trailing whitespace, no control, formatting, surrogate, line-separator, or paragraph-separator characters, and no reserved <!--mem delimiter.
 - Every object contains exactly the keys shown for its action. Do not emit duplicate object keys, nulls, extra keys, comments, or prose.
 
-${deps.semanticOnly === true ? AUTHORITY_RULES : ""}INPUT:
+${deps.semanticOnly === true ? AUTHORITY_RULES : ""}${deps.captureSettings?.intentLifecycle === true ? `
+- A supported owner intention state/end change is SUPERSEDE, never UPDATE or NOOP: preserve its old statement as history. Use only candidate intentState/validTo proposals and the supplied owner turn evidence. Never infer completion from a passed due date. Different intentions about the same topic remain ADD. Preserve the intention state, end and stated timezone in replacement text.
+` : ""}INPUT:
 ${JSON.stringify(input)}`,
       {
         label: "capture:reconcile-batch",
@@ -1095,6 +1132,7 @@ function recordFor(bullet: Bullet, root: string, now: Date): MemoryRecord {
     createdAt: bullet.createdAt,
     accessCount: 0,
     tags: [],
+    ...(bullet.dueAt === undefined ? {} : { dueAt: bullet.dueAt }),
     source: { file: relative(root, dailyFilePath(root, now)) },
   };
 }

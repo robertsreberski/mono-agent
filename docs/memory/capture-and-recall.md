@@ -678,3 +678,90 @@ Disable `semanticOnly` to restore the old read policy. Reviewed retyping needs
 curate backup/restore for semantic rollback; an older binary can automatically
 surface events again. Already-retained provider blocks cannot be erased by
 switching the flag off.
+
+
+## Optional intention lifecycle and deliberate recency
+
+Three independent BuJo-only switches default off. Add them to an otherwise
+valid BuJo configuration; capture still requires `writeMode: "capture"`:
+
+```json
+{
+  "memory": {
+    "capture": { "intentLifecycle": true },
+    "recall": { "intentExpiry": true, "recency": true }
+  }
+}
+```
+
+**Tasks remain authoritative in the task app.** Memory is not a second task
+list. `memory.capture.intentLifecycle` lets the extraction model propose a
+consequential intention only when the outer host-verified owner's user turn
+supports it. The sentence retains the intention meaning and state, in any
+language. Optional `intentState` maps `planned/pending/done/abandoned` to the
+existing note statuses `scheduled/open/done/dropped`. Ordinary open facts do not
+become pending intentions. Other speakers, triggers and assistant/tool/document
+claims cannot supply these proposals.
+
+Optional extraction/API `validTo` is an inclusive civil end, stored as existing
+`due=` / `dueAt`, **never** generic `MemoryRecord.validTo` or SQLite `valid_to`.
+Undated plans/pending intentions acquire no date. Relative ends use the immutable
+trusted admission context's UTC calendar, preserving stated timezone and
+uncertainty; no unstated date or timezone is invented. A supported explicit
+zone may use its inclusive last-millisecond end with the applicable ISO offset
+(`YYYY-MM-DDT23:59:59.999±HH:MM`, or `Z`); an uncertain offset means omit the
+proposal. Without a stated zone, keep the civil date only. Split or clamped
+sentences lose lifecycle proposals rather than transferring them to unsupported
+siblings. Supported intention changes use reconcile `SUPERSEDE`, including a
+classifier `UPDATE` or a `NOOP` whose state/end changes: the old sentence remains
+history. Repeating an intention without its end is not withdrawal: a NOOP
+retains the existing end, and replacements inherit it unless a supported new end
+is supplied. Deliberate fact-sheet currentness combines label validity with the
+source note's currentness, retaining expired rows as historical. A passed end
+never implies completion and never mutates a status.
+
+`memory.recall.intentExpiry` is a **conservative automatic read policy**:
+exclude **all dated notes**, even before their end, plus done/dropped notes,
+from similarity, scoped guidance and person cards. The optional profile already
+omits dated/closed notes. With `semanticOnly`, the same boundary also applies to
+source authority/conflict selection. There is no persisted intention marker,
+so an open pending note's date cannot be distinguished from an ambiguous legacy
+`due=`. Neither is automatically asserted. Unexpired dated plans also stay in
+the task app; this policy does not promise automatic reminder coverage.
+
+Under this option, deliberate `MemoryRecall` currentness treats a **reviewed**
+note `dueAt` as an inclusive validity end, just like the existing event end.
+Date-only ends remain current through the host's local civil day (daemon
+process timezone); offset ends remain current through their inclusive instant.
+Task deadlines retain their existing meaning. Closed statuses still show their
+status prefix. Generic supersession/terminal validity is unchanged.
+
+Before enabling, drain pending capture and use the existing private
+[reviewed curate audit](/memory/validation-and-cli/#review-intention-dates-before-enabling-expiry).
+There is **no backfill**, automatic legacy reinterpretation/mutation, new field,
+marker or migration. Review/remove/retype ambiguous dated sources before using
+policy-aware deliberate currentness; automatic exclusion alone does not prove
+what an old date meant. Retained extraction plans/outbox actions finish their
+already-admitted proposals rather than being retrospectively reclassified.
+`intentExpiry` does not require `intentLifecycle`: reviewed legacy reads and
+capture rollback must remain independent.
+
+Separately, `memory.recall.recency` adds at most **0.02** as a secondary ordering
+term with a **30-day half-life**, only in deliberate hybrid BuJo recall (including
+original-query mode). It applies to events without fact/preference labels and
+unlabelled notes, not facts, preferences, labelled notes or tasks. Future,
+missing and invalid recording instants earn no recency term. Qualification uses
+the unchanged base-score floor `0.65` and tail margin `0.15`; below-floor hits
+cannot be rescued. Returned scores and candidate membership stay unchanged;
+original-query mode keeps its uncut below-floor tail in place. Automatic lookup,
+profile, guidance, journal chronology, salience and access telemetry do not
+change. The bounded fifty-hit deliberate superset remains the limit.
+
+Flags absent/off preserve capture prompts, schemas, outputs and canonical bytes;
+Lite/Journal do not adopt these policies. Disable switches independently to
+roll back reads/new capture, but an older reader can surface dated or completed
+notes again, and no switch removes blocks already retained by a provider.
+Retained-session de-duplication uses actual invocation receipts; a profile
+source ending sends one changed/empty profile replacement, not repeated text.
+Keep recency off until separately reviewed usefulness evidence supports it;
+scripted regressions are not real-model extraction or retrieval-quality proof.

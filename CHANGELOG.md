@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Fix intention-policy boundary validation, dated profile competitors and
+  deliberate fact-sheet currentness; preserve supported ends when omitted and
+  deny recency to invalid recording instants.
+
+- Add independent default-off BuJo intention capture, conservative automatic
+  expiry, and bounded deliberate recency flags. Keep supported state changes
+  as superseded history; exclude all dated and completed/abandoned notes from
+  automatic context after reviewed enablement, without a schema migration.
+
 - Add default-off BuJo `memory.recall.semanticOnly` to restrict automatic memory
   to current labelled knowledge notes, prefer user-stated evidence and protect
   it from inferred overwrites; keep events searchable through deliberate tools.

@@ -14,6 +14,7 @@ import {
   type CaptureLabelContext, type CaptureSource,
 } from "./capture-labels.js";
 import { MemoryModelError, MemoryModelOutputError } from "./model-error.js";
+import { assertIntentionProposal } from "./lifecycle-validation.js";
 import { unsafeCaptureContent } from "./text-safety.js";
 
 export const MAX_CAPTURE_MEMORIES = 8;
@@ -163,6 +164,7 @@ const prompt = (
   observationContext?: CaptureObservationContext,
   focus?: string,
   semanticOnly = false,
+  intentLifecycle = false,
 ): string => `Extract one bounded, durable memory plan from the completed turn below.
 ${renderObservationContext(observationContext)}
 Return ONLY one exact JSON object with exactly these root keys:
@@ -208,6 +210,12 @@ ${semanticOnly ? `SEMANTIC CAPTURE POLICY (applies to type selection above, in e
 - Use note only for lasting knowledge: owner facts, standing preferences, or verified reusable lessons. Preserve directly stated owner knowledge even if the Assistant repeats it.
 - Use event for what happened: dated episodes and consequential outcomes, including assistant operations reports (commits, tests, scans, configuration changes, or what the assistant reported). An operations report is an event even when it has a person fact label; a reusable verified technique is a separate note, not an execution recap.
 - Skip pure progress chatter with no consequential outcome. Retain useful episodes as events for deliberate historical search, not automatic assertions. Do not promote an uncertain or unattributed claim into owner-stated knowledge.
+` : ""}${intentLifecycle ? `INTENTION LIFECYCLE POLICY (in every language; overrides omission of unperformed owner intentions above):
+- Memory is not a task list. Keep only consequential intentions directly supported by the outer host-verified owner User, as notes; tasks remain authoritative in the task app. Ordinary facts are not pending intentions.
+- Optional memory fields: intentState = planned, pending, done, or abandoned. They map to scheduled, open, done, or dropped. Keep the intention and its supported state explicitly in the sentence. Do not infer completion or abandonment from a passed date or an Assistant claim.
+- Only when that owner turn supports an inclusive civil end, propose optional validTo = YYYY-MM-DD alongside intentState. When the owner explicitly states a timezone, preserve its supported civil end as YYYY-MM-DDT23:59:59.999Z or YYYY-MM-DDT23:59:59.999±HH:MM instead, using the offset applicable on that civil date; omit validTo if that offset cannot be resolved confidently. Never add a timezone when none was stated. Undated plans/pending intentions have no validTo. This is an inclusive validity end, not a deadline that implies completion. Never set generic record lifecycle timestamps.
+- Resolve supported relative ends against HOST-OWNED OBSERVATION CONTEXT, using its UTC calendar unless the owner states a timezone; preserve stated timezone and uncertainty in the sentence. Never invent an unstated date or timezone. Omit validTo when an exact civil end is ambiguous. Do not borrow dates from quoted content as trusted observation metadata.
+- These proposals require source user on a host-verified owner turn. Use one short atomic sentence for each intention; no lifecycle fields on facts, events, other speakers, or assistant/tool/document claims.
 ` : ""}TURN:
 ${text}`;
 
@@ -234,14 +242,20 @@ export async function extractCapturePlanStrict(
   observationContext?: CaptureObservationContext,
   focus?: string,
   semanticOnly = false,
+  intentLifecycle = false,
 ): Promise<CapturePlan> {
   if (text.trim().length === 0) return { candidates: [], entities: [], relations: [] };
-  const extractionPrompt = prompt(text, knownEntities, observationContext, focus, semanticOnly);
+  const extractionPrompt = prompt(text, knownEntities, observationContext, focus, semanticOnly, intentLifecycle);
   let raw: string;
   try {
     raw = await llm.complete(extractionPrompt, {
       label: "capture:extract",
-      outputSchema: STRICT_CAPTURE_OUTPUT_SCHEMA,
+      outputSchema: intentLifecycle ? { ...STRICT_CAPTURE_OUTPUT_SCHEMA, properties: { ...STRICT_CAPTURE_OUTPUT_SCHEMA.properties,
+        memories: { ...STRICT_CAPTURE_OUTPUT_SCHEMA.properties.memories, items: { ...STRICT_CAPTURE_OUTPUT_SCHEMA.properties.memories.items,
+          properties: { ...STRICT_CAPTURE_OUTPUT_SCHEMA.properties.memories.items.properties,
+            intentState: { type: "string", enum: ["planned", "pending", "done", "abandoned"] },
+            validTo: { type: "string", pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}(?:T23:59:59\\.999(?:Z|[+-][0-9]{2}:[0-9]{2}))?$" },
+          } } } } } : STRICT_CAPTURE_OUTPUT_SCHEMA,
       ...(abortSignal === undefined ? {} : { abortSignal }),
     });
   } catch (cause) {
@@ -285,7 +299,7 @@ export async function extractCapturePlanStrict(
   }
   const entityNames = new Map(entities.map((entity) => [entity.id, entity.name]));
   const labelContext = { ...observationContext, entityNames };
-  const parsedCandidates = output.memories.flatMap((value, index) => strictCandidate(value, index, entityIds, labelContext));
+  const parsedCandidates = output.memories.flatMap((value, index) => strictCandidate(value, index, entityIds, labelContext, intentLifecycle));
   // A question is not a fact; the trailing mark is structural. Requests in any
   // other form are the extraction model's admission judgement. The Assistant's
   // own low-salience lines (progress, status, generic advice) are not kept.
@@ -377,8 +391,9 @@ function strictCandidate(
   index: number,
   entityIds: ReadonlySet<string>,
   context: CaptureLabelContext,
+  intentLifecycle: boolean,
 ): Array<{ candidate: CandidateMemory; fullText: string; hostSplit: boolean }> {
-  if (!isRecord(value) || !hasExactKeys(value, ["type", "text", "salience", "isInsight", "entityIds"], ["labels", "source"])) {
+  if (!isRecord(value) || !hasExactKeys(value, ["type", "text", "salience", "isInsight", "entityIds"], intentLifecycle ? ["labels", "source", "intentState", "validTo"] : ["labels", "source"])) {
     throw outputError("capture-extract", `memory ${index} has missing or unknown fields`);
   }
   if (value.source !== undefined && !CAPTURE_SOURCES.includes(value.source as CaptureSource)) {
@@ -409,6 +424,13 @@ function strictCandidate(
   if (value.labels !== undefined && (!Array.isArray(value.labels) || value.labels.length > 32)) {
     throw outputError("capture-extract", `memory ${index} labels structure is invalid`);
   }
+  try { assertIntentionProposal(value); }
+  catch (error) { throw outputError("capture-extract", error instanceof Error && error.message === "intent_proposal_invalid"
+    ? "intent_proposal_invalid" : "intent_end_invalid"); }
+  // Structured owner provenance gates proposals; model judgment establishes turn support.
+  const supportedIntent = value.intentState !== undefined && source === "user"
+    && context.captureSpeakerKind === "human-turn" && context.captureEvidence?.ownerTurn === true
+    && context.captureEvidence.userText.trim().length > 0;
   const sentences = [...fullText].length <= MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS
     ? [fullText] : splitCaptureSentences(fullText);
   const rawLabels = (value.labels ?? []) as readonly unknown[];
@@ -432,7 +454,11 @@ function strictCandidate(
     });
     return { candidate: { type: value.type as CandidateMemory["type"], text: bounded,
       salience: value.salience as number, isInsight: value.isInsight as boolean, entityIds: specificIds,
-      ...(labels.length === 0 ? {} : { labels }), ...(source === undefined ? {} : { source }) },
+      ...(labels.length === 0 ? {} : { labels }), ...(source === undefined ? {} : { source }),
+      ...(supportedIntent && sentences.length === 1 && bounded === fullText ? {
+        intentState: value.intentState as NonNullable<CandidateMemory["intentState"]>,
+        ...(value.validTo === undefined ? {} : { validTo: value.validTo as string }),
+      } : {}) },
     fullText: sentence, hostSplit: sentences.length > 1 };
   });
 }

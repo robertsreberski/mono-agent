@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { createHmac, randomBytes } from "node:crypto";
 import { LABELS, PRIVATE_CODES, PrivateError, opaqueId, assertPrivateLocation } from "./memory-e2e-private-input.mjs";
 
-export const PRIVATE_ARMS = Object.freeze(["current-only", "follow-up-window", "length-only-abstention", "profile-on", "window-profile-on", "semantic-only", "historical-baseline"]);
+export const PRIVATE_ARMS = Object.freeze(["current-only", "follow-up-window", "length-only-abstention", "profile-on", "window-profile-on", "semantic-only", "intent-expiry", "historical-baseline"]);
 export const LINE_KINDS = Object.freeze(["profile", "guidance", "similarity", "unclassified", "capture"]);
 export const EVIDENCE_FLAGS = Object.freeze(["approximate_as_of", "diagnostic_present_store", "later_file_edit_possible", "later_status_or_supersession_possible", "rewrite_history_unknown", "timestamp_unknown", "later_graph_edit_possible"]);
 const enumValue = (value, allowed) => { if (!allowed.includes(value)) throw new PrivateError("private_input_invalid"); return value; };
@@ -157,7 +157,7 @@ export function summarizePrivate(rows, registration, evidence = "diagnostic") {
     return { arm, status: unsupported ? "unsupported" : selected.length === base.length && selected.length > 0 ? "completed" : "inconclusive",
       turns: selected.length, lines: lines.length, judgedLines: lines.filter((line) => line.label !== null).length, metrics: metrics(selected) };
   });
-  const pairs = [["current-only", "follow-up-window"], ["length-only-abstention", "follow-up-window"], ["current-only", "profile-on"], ["follow-up-window", "window-profile-on"], ["current-only", "semantic-only"], ["historical-baseline", "current-only"]];
+  const pairs = [["current-only", "follow-up-window"], ["length-only-abstention", "follow-up-window"], ["current-only", "profile-on"], ["follow-up-window", "window-profile-on"], ["current-only", "semantic-only"], ["current-only", "intent-expiry"], ["historical-baseline", "current-only"]];
   const comparisons = pairs.filter(([a, b]) => arms.some((row) => row.arm === a) && arms.some((row) => row.arm === b)).map(([baseline, candidate]) => {
     const a = completed.filter((row) => row.arm === baseline), b = completed.filter((row) => row.arm === candidate);
     const match = new Set(b.map((row) => row.id)); const paired = a.filter((row) => match.has(row.id));

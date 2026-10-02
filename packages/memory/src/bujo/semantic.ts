@@ -1,13 +1,14 @@
 import type { MemoryLabelHit } from "../store/db-labels.js";
 import { canonicalMemoryLabel, isStructuredFact, type MemoryLabel } from "./labels.js";
-import { recallLineStatus } from "./recall.js";
+import { automaticIntentEligible, recallLineStatus } from "./recall.js";
 
 /** Retention (including Remember) is not authorship evidence. */
 function authority(label: MemoryLabel): number {
   return label.kind === "lesson" ? 0 : label.attribution === "user-stated" ? 2 : label.attribution === "document" ? 1 : 0;
 }
 
-function eligible(hit: MemoryLabelHit, asOf: string, now?: string): boolean {
+function eligible(hit: MemoryLabelHit, asOf: string, now?: string, intentExpiry = false): boolean {
+  if (intentExpiry && !automaticIntentEligible(hit)) return false;
   if (!hit.active || hit.type !== "note" || hit.status !== "open"
     || recallLineStatus(hit, asOf, now) !== "current") return false;
   const label = hit.label;
@@ -31,8 +32,9 @@ export function semanticRecallAuthorities(
   labelsForEntity: ((entityId: string, date?: string) => readonly MemoryLabelHit[]) | undefined,
   asOf: string,
   now?: string,
+  intentExpiry = false,
 ): ReadonlyMap<string, number> {
-  const supported = labels.filter((hit) => eligible(hit, asOf, now));
+  const supported = labels.filter((hit) => eligible(hit, asOf, now, intentExpiry));
   const entities = new Map<string, readonly MemoryLabelHit[]>();
   const excluded = new Set<string>();
   for (const hit of supported) {
@@ -42,7 +44,7 @@ export function semanticRecallAuthorities(
     if (peers === undefined) {
       // Missing conflict evidence fails closed for structured assertions.
       if (labelsForEntity === undefined) { excluded.add(hit.memoryId); continue; }
-      peers = labelsForEntity(label.entityId, asOf).filter((peer) => eligible(peer, asOf, now));
+      peers = labelsForEntity(label.entityId, asOf).filter((peer) => eligible(peer, asOf, now, intentExpiry));
       entities.set(label.entityId, peers);
     }
     const value = canonicalMemoryLabel({ v: 1, kind: "fact", entityId: label.entityId,
