@@ -610,3 +610,65 @@ Opt-in automatic blocks are omitted from content-bearing `turn_context` traces;
 only their byte count is recorded. The model/provider still receives the block.
 Disabling both flags restores the existing automatic retrieval path, but cannot
 erase blocks already retained by a provider session.
+
+## Optional semantic-only BuJo memory
+
+`memory.recall.semanticOnly` defaults to `false` and requires BuJo. It is
+independent of `memory.recall.contextWindow` and `memory.profile.enabled`:
+
+```json
+{ "memory": { "recall": { "semanticOnly": true } } }
+```
+
+Add this to an otherwise valid BuJo configuration **after reviewing legacy
+coverage**. Similarity lines, the optional owner profile, scoped guidance and
+exact-name cards use current, open notes with an active accepted fact,
+preference or verified-lesson label. Unknown attribution, absent labels,
+events, tasks and closed/ended sources are not automatic assertions. Legacy
+labels/types remain canonical: unlabelled notes are not promoted. Events and
+unknown lines remain available through deliberate `MemoryRecall`,
+`MemoryJournal` and operator search.
+
+The same flag opts capture into a language-neutral model distinction: `note`
+for lasting knowledge, `event` for what happened, including consequential
+assistant operations reports (commits, tests, scans, configuration changes or
+what the assistant reported). Pure progress chatter is skipped. A constrained
+review may retype a useful assistant episode to `event`; no English grammar or
+word list decides its type. With the flag absent/off, extraction and review
+prompts, memory output and canonical writes retain the previous behavior;
+Lite/Journal do not adopt this policy. The 160-code-point capture bound stays.
+
+Relevance still comes first: the fifty-hit superset, `0.62` leader floor,
+`0.04` window, three-line and byte budgets are unchanged. Within eligible
+candidates, user-stated evidence precedes document/inferred evidence. A leading
+event can still starve relevant notes below the unchanged window or outside the
+fifty hits; filtering does not silently widen retrieval. Structured built-in
+fact-key conflicts prefer stronger attribution and omit unresolved
+equal-authority values from every automatic section, including when a competing
+source lies outside the retrieved window. Coarse fact and preference labels
+have no comparable property/value, so unresolved equal-authority contradictions
+in those lines are a known limitation and may still appear automatically.
+
+Reconcile receives existing labels and host capture-source evidence. An
+inferred/unknown candidate cannot UPDATE or SUPERSEDE user-stated content; a
+supported newer user correction may supersede an older statement. To avoid
+promoting contradictory ADDs, inferred candidates near user-stated neighbors
+remain searchable without semantic labels, even when classification says ADD;
+final classifier-fallback inferred ADDs likewise receive no semantic labels.
+This conservative rule may omit unrelated inferred findings near owner evidence.
+`Remember` remains retention priority, not owner authorship; its existing
+replacement guard is unchanged. No new canonical field, tags projection or
+profile store is created. Opt-in automatic blocks omit content-bearing traces.
+
+`capture.focus` still narrows extraction/review, and `capture.only` still filters
+by host-accepted label kinds before and after reconcile. `only: ["fact"]` does
+**not** solve episodic noise: a person-associated event can carry a coarse fact
+label. Explicit Remember writes are unaffected.
+
+Prepare a bounded reviewed migration with
+`memory curate prepare --semantic-review`; see
+[reviewed semantic types and labels](/memory/validation-and-cli/#reviewed-semantic-types-and-labels).
+Disable `semanticOnly` to restore the old read policy. Reviewed retyping needs
+curate backup/restore for semantic rollback; an older binary can automatically
+surface events again. Already-retained provider blocks cannot be erased by
+switching the flag off.

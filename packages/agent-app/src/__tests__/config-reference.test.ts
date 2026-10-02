@@ -80,6 +80,7 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "memory.llm.endpoint": "string",
   "memory.recallTool.enabled": "boolean",
   "memory.recall.contextWindow": "boolean",
+  "memory.recall.semanticOnly": "boolean",
   "memory.profile.enabled": "boolean",
   "memory.rememberTool.enabled": "boolean",
   "memory.consolidation.enabled": "boolean",

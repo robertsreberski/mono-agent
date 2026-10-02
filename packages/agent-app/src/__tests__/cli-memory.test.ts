@@ -2431,6 +2431,42 @@ describe("memory entity identity CLI", { timeout: 30_000 }, () => {
   // Canonical v1 encoding of a coarse owner fact (label keys are sorted).
   const ownerFact = `label:v1:${Buffer.from(JSON.stringify({ attribution: "user-stated", entityId: "person:owner",
     kind: "fact", v: 1 })).toString("base64url")}`;
+  it("prepares, reviews, applies and restores semantic note/event retyping through the CLI", async () => {
+    expect(parseCliArgs(["memory", "curate", "prepare", "--plan", "p.json", "--semantic-review"]))
+      .toMatchObject({ semanticReview: true });
+    for (const args of [["memory", "curate", "review", "--semantic-review"], ["memory", "curate", "prepare", "--semantic-review", "--limit", "0"],
+      ["memory", "curate", "prepare", "--semantic-review", "--tasks-to-notes"]]) {
+      expect(() => parseCliArgs(args)).toThrow("memory_semantic_review_requires_model_prepare");
+    }
+    const memoryRoot = join(await tempDir(), "memory"); await mkdir(memoryRoot, { recursive: true });
+    const at = "2031-05-17T10:00:00.000Z";
+    bujoMemory.appendBullet(memoryRoot, { id: "LEGACY-EPISODE", type: "note", status: "open", text: "Owner received a bicycle inspection report.",
+      salience: 0.6, isInsight: false, createdAt: at, refs: [ownerFact] }, new Date(at));
+    await safeRebuildMemoryIndex({ root: memoryRoot, tier: "bujo", embeddings: deterministicEmbeddings("ollama:test-embed", 8), dim: 8 });
+    const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
+      embeddings: { provider: "ollama", model: "test-embed", dim: 8 }, llm: { provider: "ollama", model: "test-capture" } } });
+    const planPath = join(dir, "semantic-plan.json");
+    const before = await readFile(join(memoryRoot, "daily", "2031-05-17.md"), "utf8");
+    const prepared = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runMemoryCommand({
+      cwd: dir, env: {}, positionals: ["curate", "prepare"], planPath, semanticReview: true, json: true, strict: false,
+      curateLlm: { id: "fictional-semantic", complete: async (prompt) => {
+        expect(prompt).toContain("operations reports");
+        return JSON.stringify([{ id: "LEGACY-EPISODE", action: "retype", type: "event", labels: [] }]);
+      } },
+    }))));
+    expect(prepared.code, prepared.stderr).toBe(0); expect(JSON.parse(prepared.stdout)).toMatchObject({ count: 1, discarded: 0 });
+    const invoke = (args: string[]) => captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(args))));
+    expect((await invoke(["memory", "curate", "review", "--plan", planPath, "--accept", "id:LEGACY-EPISODE", "--json"])).code).toBe(0);
+    stubOllamaEmbeddings(8);
+    const applied = await invoke(["memory", "curate", "apply", "--plan", planPath, "--json"]);
+    expect(applied.code, applied.stderr).toBe(0);
+    const [bullet] = bujoMemory.parseDailyFile(await readFile(join(memoryRoot, "daily", "2031-05-17.md"), "utf8")).bullets;
+    expect(bullet).toMatchObject({ type: "event", refs: [], createdAt: at });
+    const restored = await invoke(["memory", "curate", "restore", "--backup", JSON.parse(applied.stdout).backupPath, "--json"]);
+    expect(restored.code, restored.stderr).toBe(0);
+    expect(await readFile(join(memoryRoot, "daily", "2031-05-17.md"), "utf8")).toBe(before);
+  });
+
   it("parses operator merge and duplicate flags only where they apply", () => {
     expect(parseCliArgs(["memory", "curate", "prepare", "--plan", "p.json", "--limit", "0", "--merge", "person:a=person:b",
       "--merge", "concept:a=person:b", "--merge-file", "merges.txt", "--allow-cross-type"]))

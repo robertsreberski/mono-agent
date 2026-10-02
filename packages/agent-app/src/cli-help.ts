@@ -266,6 +266,7 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
       "mono-agent memory profile show [--json]\n" +
       "mono-agent memory entities --duplicates [--limit N] [--json]\n" +
       "mono-agent memory curate prepare --plan <file> [--model provider:model] [--limit N] [--select recent,repeated,risky,oldest] [--owner-backfill] [--link-people] [--dry-run]\n" +
+      "mono-agent memory curate prepare --plan <file> --semantic-review [--limit <n>] [--dry-run]\n" +
       "mono-agent memory curate prepare --plan <file> --tasks-to-notes [--before <date>] [--capture-only] [--dry-run]\n" +
       "mono-agent memory curate review --plan <file> [--accept drop:generic-advice,label:*] [--reject id:<id>]\n" +
       "                  curate prepare|review also take [--merge <fromId>=<toId>]... [--merge-file <file>] [--allow-cross-type]\n" +

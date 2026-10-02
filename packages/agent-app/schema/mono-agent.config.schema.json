@@ -969,6 +969,14 @@
               ],
               "type": "boolean",
               "default": false
+            },
+            "semanticOnly": {
+              "description": "BuJo-only, default-off automatic eligibility and capture policy: current labelled notes only, user-stated authority first within unchanged relevance budgets. Events and unknown lines stay deliberately searchable; review legacy types and labels before enabling.",
+              "examples": [
+                true
+              ],
+              "type": "boolean",
+              "default": false
             }
           }
         },
@@ -1199,6 +1207,35 @@
                 ],
                 "properties": {
                   "contextWindow": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "mode": {
+                "const": "bujo"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "recall"
+            ],
+            "properties": {
+              "recall": {
+                "required": [
+                  "semanticOnly"
+                ],
+                "properties": {
+                  "semanticOnly": {
                     "const": true
                   }
                 }

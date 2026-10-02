@@ -225,7 +225,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly embeddings?: MonoAgentMemoryEmbeddingsJson;
     readonly llm?: MonoAgentMemoryLlmJson;
     readonly recallTool?: { readonly enabled?: boolean };
-    readonly recall?: { readonly contextWindow?: boolean };
+    readonly recall?: { readonly contextWindow?: boolean; readonly semanticOnly?: boolean };
     readonly profile?: { readonly enabled?: boolean };
     readonly rememberTool?: { readonly enabled?: boolean };
     readonly consolidation?: MonoAgentMemoryConsolidationJson;

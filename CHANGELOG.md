@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add default-off BuJo `memory.recall.semanticOnly` to restrict automatic memory
+  to current labelled knowledge notes, prefer user-stated evidence and protect
+  it from inferred overwrites; keep events searchable through deliberate tools.
+  Reuse reviewed curate retyping for legacy note/event and label review, with
+  backup/restore and no invented attribution or dates.
+
 - Keep graph-expanded recall fresh after memory writes, even when a pre-write
   search finishes afterward, without discarding pending invocation receipts.
 
