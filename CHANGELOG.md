@@ -18,6 +18,13 @@
   enforce case-expanded query budgets, honor instant-aware profile expiry and
   finish shutdown when a memory reset hook fails.
 
+- Add opt-in BuJo `tools.conversationSearch.datedSnippets` for owner-web
+  `SearchConversations` message-date and role filters, bounded dated evidence
+  and console links. Keep legacy search, the console UI and Telegram unchanged.
+  Return stable search codes for malformed rich MCP arguments without validation
+  diagnostics, including unavailable Telegram and flag-off requests, while
+  preserving legacy SDK validation responses when rich search is unavailable.
+
 - Fix devalue serialization vulnerabilities in documentation and marketing site
   dependencies.
 

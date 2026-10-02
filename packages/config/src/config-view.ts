@@ -115,6 +115,7 @@ export const CORE_CONFIG_FIELD_IDS = {
   "tools.disallowedTools": true,
   "tools.filesystem.readableRoots": true,
   "tools.filesystem.writableRoots": true,
+  "tools.conversationSearch.datedSnippets": true,
   "tools.computerUse.backend": true,
   "tools.computerUse.command": true,
   "tools.mcpConfigPath": true,
@@ -760,6 +761,12 @@ function buildToolsSection(input: BuildMonoAgentConfigViewInput): ConfigViewSect
         value: tools.filesystem?.writableRoots.join(", ") ?? "none",
         jsonPresent: json.tools?.filesystem?.writableRoots !== undefined,
       }),
+      ...(tools.conversationSearch === undefined ? [] : [toField({
+        id: "tools.conversationSearch.datedSnippets",
+        label: "Dated conversation evidence",
+        value: String(tools.conversationSearch.datedSnippets),
+        jsonPresent: json.tools?.conversationSearch?.datedSnippets !== undefined,
+      })]),
       toField({
         id: "tools.computerUse.backend",
         label: "Computer-use backend",

@@ -385,6 +385,8 @@ export interface MonoAgentConfig {
       readonly readableRoots: readonly string[];
       readonly writableRoots: readonly string[];
     };
+    /** BuJo-only, owner-web dated conversation evidence; absent means disabled. */
+    readonly conversationSearch?: { readonly datedSnippets: boolean };
     /** Opt-in local desktop control via the separately installed cua-driver. */
     readonly computerUse?: {
       readonly backend: "cua-driver";

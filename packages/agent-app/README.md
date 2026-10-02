@@ -900,6 +900,16 @@ than redacted, so a mangled value is never persisted behind a success result.
 
 ### Console project tools
 
+Local BuJo agents may opt in with `tools.conversationSearch.datedSnippets: true`
+(default off). On verified owner web turns, `SearchConversations` accepts
+`dated`, inclusive UTC `after` / `before` dates and `role`, and returns up to ten
+conversations by default with a bounded best message's identity, role, creation
+date and console link. Title-only evidence is labelled without a message date.
+Legacy calls, UI search and Telegram responses remain unchanged; rich Telegram
+requests return `conversation_search_unavailable`. Historical results are
+untrusted evidence, a fallback when memory lacks something. No new index or
+history schema is created.
+
 Writable web turns, typed or woken by a background host job, can use `ListProjects`, `GetProject`,
 `CreateProject`, `UpdateProject`, `DeleteProject`, `ListConversations`,
 `SearchConversations`, `CreateConversation`, `SetConversationProject`, `ListTags`,

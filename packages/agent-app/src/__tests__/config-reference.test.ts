@@ -88,6 +88,7 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "tools.disallowedTools": "string[]",
   "tools.filesystem.readableRoots": "string[]",
   "tools.filesystem.writableRoots": "string[]",
+  "tools.conversationSearch.datedSnippets": "boolean",
   "tools.computerUse.backend": "string",
   "tools.computerUse.command": "string",
   "tools.mcpConfigPath": "string",

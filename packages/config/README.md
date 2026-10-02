@@ -217,6 +217,13 @@ individual WebFetch call may use `render: "always"` for a strict browser-first
 request.
 
 
+### Dated conversation evidence
+
+`tools.conversationSearch.datedSnippets` defaults off and requires local BuJo
+memory. It opts the existing `SearchConversations` tool in to bounded dated
+message matches on owner-authenticated web turns only; Telegram and UI search
+keep legacy behavior. See [console tools](../../docs/tools/mcp.md#console-project-tools).
+
 ### Managed memory embeddings
 
 Journal and BuJo accept `ollama`, `lmstudio`, or `openai` in

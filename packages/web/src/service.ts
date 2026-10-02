@@ -966,8 +966,9 @@ export class WebService {
     const active = this.activeTurns.get(scope.threadId);
     if (this.stopped || !this.consoleToolTurns.has(scope.turnId) || active?.turnId !== scope.turnId
       || active.controller.signal.aborted || thread?.sourceId !== scope.sourceId || thread.archivedAt !== null
-      || thread.trigger !== undefined || this.store.activeTurn(scope.threadId)?.id !== scope.turnId) {
-      throw new WebConsoleError("console_tool_revoked", "The originating turn is no longer writable.", 403);
+      || thread.trigger !== undefined || this.store.activeTurn(scope.threadId)?.id !== scope.turnId
+      || (scope.datedSnippets === true && !this.store.isOwnerConsoleTurn(scope.threadId, scope.turnId))) {
+      throw new WebConsoleError("console_tool_revoked", scope.datedSnippets === true ? "console_tool_revoked" : "The originating turn is no longer writable.", 403);
     }
   }
 
