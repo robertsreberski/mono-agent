@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix process-job store reopening after an owner crash during an atomic write,
+  preserving committed records and removing verified replacement residue.
+
 - Fix devalue serialization vulnerabilities in documentation and marketing site
   dependencies.
 
