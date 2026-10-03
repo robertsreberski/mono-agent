@@ -59,6 +59,9 @@
   diagnostics, including unavailable Telegram and flag-off requests, while
   preserving legacy SDK validation responses when rich search is unavailable.
 
+- Fix process-job store reopening after an owner crash during an atomic write,
+  preserving committed records and removing verified replacement residue.
+
 - Fix devalue serialization vulnerabilities in documentation and marketing site
   dependencies.
 
