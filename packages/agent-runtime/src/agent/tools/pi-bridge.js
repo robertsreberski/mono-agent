@@ -826,15 +826,19 @@ async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine, 
       // Monkey-patched cleanup handle: not part of the MCP transport's typed shape.
       /** @type {any} */ (transport).__monoSandboxCleanup = prepared.cleanup;
       if (prepared.sandboxed) {
-        captureStderr = (chunk) => { startupStderr = (startupStderr + String(chunk)).slice(0, 4096); };
+        captureStderr = (chunk) => {
+          // Preserve inherited-stderr operator visibility, including startup bytes.
+          process.stderr.write(chunk);
+          startupStderr = (startupStderr + String(chunk)).slice(0, 4096);
+        };
         transport.stderr?.on("data", captureStderr);
       }
     }
     await client.connect(transport);
     if (captureStderr && transport instanceof StdioClientTransport) {
       transport.stderr?.removeListener("data", captureStderr);
-      // Continue draining without retaining successful servers' output.
-      transport.stderr?.on("data", () => {});
+      // Keep forwarding for the server lifetime without retaining its output.
+      transport.stderr?.on("data", (chunk) => { process.stderr.write(chunk); });
     }
     return {
       name,
@@ -855,7 +859,9 @@ async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine, 
     if (privateCapabilityUrl) throw new Error("Private request-scoped MCP server connection failed.");
     const diagnostic = sandboxFailureDiagnostic(preparedStdio?.sandboxed, startupStderr);
     if (diagnostic) {
-      const failure = new Error(`${diagnostic.prefix}Stdio MCP startup failed: ${String(error?.message ?? error).slice(0, 1024)}${startupStderr ? `\n${startupStderr}` : ""}`);
+      // This message becomes model-facing runtime_warning content. Neither raw
+      // stderr nor transport errors are safe to publish (paths, env secrets).
+      const failure = new Error(`${diagnostic.prefix}Stdio MCP startup failed.`);
       /** @type {any} */ (failure).code = diagnostic.code ?? "sandboxed_mcp_startup_failed";
       throw failure;
     }

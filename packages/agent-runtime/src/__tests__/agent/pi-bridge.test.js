@@ -616,24 +616,88 @@ describe("pi MCP tool helpers", () => {
   });
 
   it.each(["blocked by sandbox: Operation not permitted", "ordinary startup failure"])(
-    "retains bounded sandboxed stdio startup diagnostics (%s) and cleanup", async (stderr) => {
+    "keeps sandboxed stdio startup details operator-only (%s) and cleanup", async (reason) => {
       const root = tempWorkspace();
       const cleanup = vi.fn();
+      const privatePath = "/private/fictional-agent/credentials.json";
+      const secret = "sk-test-fake-0000";
+      const stderr = `${reason}: ${privatePath} env=${secret}`;
+      const operatorWrite = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      try {
+        const result = await initPiMcpTools({ broken: { command: "fictional-command" } }, new Set(), {
+          ctx, cwd: root, sandboxPolicy: failClosedSandboxPolicy({ root }), sandboxEngine: {
+            id: "fake", isAvailable: async () => true,
+            prepareCommand: async (command) => ({ ...command, command: process.execPath,
+              env: { FICTIONAL_SECRET: secret },
+              args: ["-e", `process.stderr.write(${JSON.stringify(`${reason}: ${privatePath} env=`)} + process.env.FICTIONAL_SECRET);process.exit(127)`],
+              sandboxed: true, cleanup }),
+          },
+        });
+        expect(result.clients).toEqual([]);
+        expect(result.warnings[0]).toMatchObject({
+          ...(reason.startsWith("blocked") ? { code: "sandbox_denied" } : {}),
+          message: `${reason.startsWith("blocked") ? "Error: Sandbox denied subprocess execution. " : "Command ran sandboxed. "}Stdio MCP startup failed.`,
+        });
+        expect(JSON.stringify(result.warnings)).not.toContain(privatePath);
+        expect(JSON.stringify(result.warnings)).not.toContain(secret);
+        expect(operatorWrite.mock.calls.map(([chunk]) => String(chunk)).join("")).toBe(stderr);
+        expect(cleanup).toHaveBeenCalledOnce();
+      } finally { operatorWrite.mockRestore(); }
+    },
+  );
+
+  it("does not publish raw transport errors for sandboxed stdio startup failures", async () => {
+    const root = tempWorkspace();
+    const connect = vi.spyOn(McpClient.prototype, "connect")
+      .mockRejectedValue(new Error("failed at /private/fictional-agent/credentials.json sk-test-fake-0000"));
+    try {
       const result = await initPiMcpTools({ broken: { command: "fictional-command" } }, new Set(), {
         ctx, cwd: root, sandboxPolicy: failClosedSandboxPolicy({ root }), sandboxEngine: {
           id: "fake", isAvailable: async () => true,
-          prepareCommand: async (command) => ({ ...command, command: process.execPath,
-            args: ["-e", `process.stderr.write(${JSON.stringify(stderr)});process.exit(127)`],
-            sandboxed: true, cleanup }),
+          prepareCommand: async (command) => ({ ...command, sandboxed: true }),
         },
       });
-      expect(result.clients).toEqual([]);
-      expect(result.warnings[0].message).toContain(stderr);
-      if (stderr.startsWith("blocked")) expect(result.warnings[0].code).toBe("sandbox_denied");
-      expect(result.warnings[0].message).toContain(stderr.startsWith("blocked") ? "Sandbox denied" : "Command ran sandboxed");
-      expect(cleanup).toHaveBeenCalledOnce();
-    },
-  );
+      expect(result.warnings[0].message).toBe("Command ran sandboxed. Stdio MCP startup failed.");
+    } finally { connect.mockRestore(); }
+  });
+
+  it("forwards sandboxed stdio stderr during successful startup and after connect", async () => {
+    const root = tempWorkspace();
+    const operatorWrite = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const cleanup = vi.fn();
+    let clients = [];
+    try {
+      // Real stdio handshake; listTools writes a post-connect marker.
+      const server = `
+        process.stderr.write("startup-marker\\n");
+        require("node:readline").createInterface({ input: process.stdin }).on("line", line => {
+          const request = JSON.parse(line);
+          if (request.id === undefined) return;
+          let result;
+          if (request.method === "initialize") result = { protocolVersion: request.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "fictional", version: "1" } };
+          else if (request.method === "tools/list") { process.stderr.write("connected-marker\\n"); result = { tools: [] }; }
+          else result = {};
+          process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }) + "\\n");
+        });`;
+      const result = await initPiMcpTools({ healthy: { command: "fictional-command" } }, new Set(), {
+        ctx, cwd: root, sandboxPolicy: failClosedSandboxPolicy({ root }), sandboxEngine: {
+          id: "fake", isAvailable: async () => true,
+          prepareCommand: async (command) => ({ ...command, command: process.execPath,
+            args: ["-e", server], sandboxed: true, cleanup }),
+        },
+      });
+      clients = result.clients;
+      expect(clients).toHaveLength(1);
+      expect(result.warnings).toEqual([]);
+      await vi.waitFor(() => {
+        expect(operatorWrite.mock.calls.map(([chunk]) => String(chunk)).join("")).toBe("startup-marker\nconnected-marker\n");
+      });
+    } finally {
+      await closePiMcpClients(clients);
+      operatorWrite.mockRestore();
+    }
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
 
   it.each([undefined, "off"])("ignores unavailable stdio engine with %s policy", async (mode) => {
     const root = tempWorkspace();

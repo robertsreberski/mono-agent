@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { lstat, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -37,13 +37,17 @@ vi.mock("../process-incarnation.js", async (importOriginal) => ({
 const { createConfiguredAgentRuntime } = await import("../index.js");
 const {
   AGENT_ROOT_REQUIRED_ERROR,
+  PROCESS_JOBS_GENERATION_CHANGED_ERROR,
   agentRootLeasePath,
   acquireAgentRootOwnership,
 } = await import("../agent-root-coordinator.js");
 const {
   loadProcessJobsRootRegistryProtection,
   registerProcessJobsRoot,
+  processJobsRootRegistryPaths,
 } = await import("../process-jobs-root-registry.js");
+
+const { PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR } = await import("../process-jobs-runtime.js");
 
 const PI_MODEL = {
   provider: "openai-codex", model: "gpt-5.6-sol",
@@ -138,6 +142,26 @@ describe("public configured raw runtime protection", () => {
     });
     await runtime.disposeAllSessions?.();
     owner.release();
+  });
+
+  it.each(["unavailable-engine", "malformed-registry"])("blocks %s before raw-runtime provider work with no host fallback", async (failure) => {
+    const fixture = await runtimeFixture(failure);
+    const owner = await seededOwnership(fixture, join(fixture.root, ".state", "jobs"));
+    const unavailable = { id: "unavailable", isAvailable: vi.fn(async () => false), prepareCommand: vi.fn() };
+    if (failure === "malformed-registry") {
+      await writeFile(processJobsRootRegistryPaths(fixture.root).manifestPath, "{ malformed", { mode: 0o600 });
+    }
+    const runtime = createConfiguredAgentRuntime({
+      config: configFor(fixture.root, fixture.workspace), cwd: fixture.root,
+      sandboxEngine: failure === "unavailable-engine" ? unavailable : sandboxEngine,
+    });
+    try {
+      await expect(runtime.run("system", runOptions(PI_MODEL, fixture.workspace))).rejects.toThrow(
+        failure === "unavailable-engine" ? PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR : PROCESS_JOBS_GENERATION_CHANGED_ERROR,
+      );
+      expect(runtimeState.run).not.toHaveBeenCalled();
+      expect(unavailable.prepareCommand).not.toHaveBeenCalled();
+    } finally { await runtime.disposeAllSessions?.(); owner.release(); }
   });
 
   it("keeps cooperative ownership through a dispose timeout until a late provider truly settles", async () => {
