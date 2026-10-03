@@ -370,6 +370,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         ...(args.ownerBackfill === undefined ? {} : { ownerBackfill: args.ownerBackfill }),
         ...(args.linkPeople === undefined ? {} : { linkPeople: args.linkPeople }),
         ...(args.tasksToNotes === undefined ? {} : { tasksToNotes: args.tasksToNotes }),
+        ...(args.semanticReview === undefined ? {} : { semanticReview: args.semanticReview }),
         ...(args.tasksBefore === undefined ? {} : { tasksBefore: args.tasksBefore }),
         ...(args.captureOnly === undefined ? {} : { captureOnly: args.captureOnly }),
         ...(args.duplicates === undefined ? {} : { duplicates: args.duplicates }),

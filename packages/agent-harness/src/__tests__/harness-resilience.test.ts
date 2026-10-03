@@ -10,7 +10,7 @@ import type { RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } fro
 import type { RuntimeResult } from "@mono-agent/runtime-adapter";
 import type { SkillsCache } from "../skills/index.js";
 
-import { createAgentHarness } from "../index.js";
+import { createAgentHarness, ToolHistoryReader } from "../index.js";
 
 const tempDirs: string[] = [];
 const model = { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" } as const;
@@ -209,4 +209,27 @@ describe("AgentHarness resilience + caching", () => {
     // loadSkills delegates to the cache (which dedupes disk reads internally).
     expect(calls).toBe(2);
   });
+});
+
+it("continues provider and tool-history disposal after a throwing recall reset, reporting only a stable code", async () => {
+  const identityPath = await identityFixture();
+  const lifecycle: string[] = [];
+  const sentinel = "FICTIONAL_PRIVATE_RECORD /fictional/private/record.md";
+  const harness = createAgentHarness({ identityPath, model,
+    runtime: { ...fakeRuntime(), async disposeSession() { lifecycle.push("provider-session"); return true; } },
+    session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true },
+    memory: { async load() { return undefined; }, resetRecallContext() { lifecycle.push("memory-reset"); throw new Error(sentinel); } },
+    toolHistory: { reader: new ToolHistoryReader(join(identityPath, "..", "tool-history")),
+      logicalConversationId: (id) => id,
+      writer: { createSink: () => async () => ({ persistence: "persisted" as const }), async finishRun() {}, async resetConversation() {} },
+      async release() { lifecycle.push("tool-history"); },
+    },
+  });
+  await harness.run(request("cleanup-context", "Describe fictional ceramic glazes."));
+  const disposal = harness.dispose!();
+  await expect(disposal).rejects.toMatchObject({ failureKind: "memory_context_reset_unavailable", message: "memory_context_reset_unavailable" });
+  await expect(disposal).rejects.not.toThrow(sentinel);
+  expect(lifecycle).toEqual(["memory-reset", "provider-session", "tool-history"]);
+  await expect(harness.dispose!()).rejects.toMatchObject({ failureKind: "memory_context_reset_unavailable" });
+  expect(lifecycle).toHaveLength(3); // Idempotent: all cleanup already ran before rejection.
 });

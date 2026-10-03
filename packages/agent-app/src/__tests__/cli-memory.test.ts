@@ -39,6 +39,66 @@ afterEach(async () => {
 });
 
 describe("memory label CLI flags", () => {
+  it("profile show observes timestamp expiry while civil end dates remain inclusive", async () => {
+    const root = join(await tempDir(), "memory");
+    const memory = createBujoMemoryStore({ root });
+    await memory.remember("fictional", "Morgan enjoys geometric sketches.");
+    await memory.close();
+    const path = await resolveActiveMemoryDbPath(root);
+    const db = openMemoryDb({ path });
+    const base = db.topSalient(1)[0]!;
+    const observed = new Date(2026, 3, 3, 10, 0, 0);
+    for (const [id, validTo] of [["expired-instant", new Date(observed.getTime() - 3_600_000).toISOString()],
+      ["current-civil", "2026-04-03"], ["expired-civil", "2026-04-02"]]) {
+      db.upsertLexical({ ...base, id: id!, text: `Fictional supported sketch entry ${id}.`, validTo: validTo! });
+      db.replaceMemoryLabels(id!, [{ v: 1, kind: "fact", entityId: "person:owner", attribution: "user-stated" }]);
+    }
+    db.replaceMemoryLabels(base.id, []);
+    db.close();
+    const dir = await agentDir({ memory: { path: root, mode: "bujo", writeMode: "disabled",
+      embeddings: { provider: "ollama" }, llm: { provider: "ollama", model: "fictional-model" } } });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(observed);
+    try {
+      const result = await captureCli(() => runMemoryCommand({ cwd: dir, env: {}, positionals: ["profile", "show"], json: true, strict: false }));
+      expect(result.code).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({ sources: ["current-civil"] });
+      expect(result.stdout).not.toContain("expired-instant");
+      expect(result.stdout).not.toContain("expired-civil");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("the reviewed intention audit uses the curate mode that allows retyping", async () => {
+    const doc = await readFile(new URL("../../../../docs/memory/validation-and-cli.md", import.meta.url), "utf8");
+    expect(doc.split("## Review intention dates before enabling expiry")[1]).toContain("memory curate prepare --semantic-review --plan <private-file> --limit 60");
+    expect(parseCliArgs(["memory", "curate", "prepare", "--semantic-review", "--plan", "fictional-plan.json", "--limit", "60"]).semanticReview).toBe(true);
+  });
+
+  it("shows the deterministic profile read-only without calling embeddings or models", async () => {
+    const root = join(await tempDir(), "memory");
+    const memory = createBujoMemoryStore({ root });
+    await memory.remember("fictional", "Morgan enjoys geometric sketches.");
+    await memory.close();
+    const path = await resolveActiveMemoryDbPath(root);
+    const db = openMemoryDb({ path });
+    const id = db.topSalient(1)[0]!.id;
+    db.replaceMemoryLabels(id, [{ v: 1, kind: "fact", entityId: "person:owner", attribution: "user-stated" }]);
+    db.close();
+    const before = await readFile(path);
+    const dir = await agentDir({ memory: { path: root, mode: "bujo", writeMode: "disabled",
+      embeddings: { provider: "ollama" }, llm: { provider: "ollama", model: "fictional-model" } } });
+    const fetch = vi.fn(() => { throw new Error("FICTIONAL_PRIVATE_RECORD /fictional/private/record.md"); });
+    vi.stubGlobal("fetch", fetch);
+    const result = await captureCli(() => runMemoryCommand({ cwd: dir, env: {}, positionals: ["profile", "show"], json: true, strict: false }));
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ content: expect.stringContaining("Morgan enjoys geometric sketches."), sources: [id], truncated: false });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(await readFile(path)).toEqual(before);
+    expect((await captureCli(() => runCli(["memory", "profile", "show", "--help"]))).stdout).toContain("Usage: mono-agent memory profile show");
+    const invalid = await captureCli(() => runMemoryCommand({ cwd: dir, env: {}, positionals: ["profile", "edit"], json: true, strict: false }));
+    expect(invalid.code).toBe(2);
+  });
+
   it("parses only the two read-only label verbs", () => {
     expect(parseCliArgs(["memory", "labels", "--kind", "fact", "--about", "Morgan", "--scope", "agent", "--json"]))
       .toMatchObject({ positionals: ["labels"], labelKind: "fact", labelAbout: "Morgan", labelScope: "agent", json: true });
@@ -2377,6 +2437,42 @@ describe("memory entity identity CLI", { timeout: 30_000 }, () => {
   // Canonical v1 encoding of a coarse owner fact (label keys are sorted).
   const ownerFact = `label:v1:${Buffer.from(JSON.stringify({ attribution: "user-stated", entityId: "person:owner",
     kind: "fact", v: 1 })).toString("base64url")}`;
+  it("prepares, reviews, applies and restores semantic note/event retyping through the CLI", async () => {
+    expect(parseCliArgs(["memory", "curate", "prepare", "--plan", "p.json", "--semantic-review"]))
+      .toMatchObject({ semanticReview: true });
+    for (const args of [["memory", "curate", "review", "--semantic-review"], ["memory", "curate", "prepare", "--semantic-review", "--limit", "0"],
+      ["memory", "curate", "prepare", "--semantic-review", "--tasks-to-notes"]]) {
+      expect(() => parseCliArgs(args)).toThrow("memory_semantic_review_requires_model_prepare");
+    }
+    const memoryRoot = join(await tempDir(), "memory"); await mkdir(memoryRoot, { recursive: true });
+    const at = "2031-05-17T10:00:00.000Z";
+    bujoMemory.appendBullet(memoryRoot, { id: "LEGACY-EPISODE", type: "note", status: "open", text: "Owner received a bicycle inspection report.",
+      salience: 0.6, isInsight: false, createdAt: at, refs: [ownerFact] }, new Date(at));
+    await safeRebuildMemoryIndex({ root: memoryRoot, tier: "bujo", embeddings: deterministicEmbeddings("ollama:test-embed", 8), dim: 8 });
+    const dir = await agentDir({ memory: { mode: "bujo", path: memoryRoot, writeMode: "capture",
+      embeddings: { provider: "ollama", model: "test-embed", dim: 8 }, llm: { provider: "ollama", model: "test-capture" } } });
+    const planPath = join(dir, "semantic-plan.json");
+    const before = await readFile(join(memoryRoot, "daily", "2031-05-17.md"), "utf8");
+    const prepared = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runMemoryCommand({
+      cwd: dir, env: {}, positionals: ["curate", "prepare"], planPath, semanticReview: true, json: true, strict: false,
+      curateLlm: { id: "fictional-semantic", complete: async (prompt) => {
+        expect(prompt).toContain("operations reports");
+        return JSON.stringify([{ id: "LEGACY-EPISODE", action: "retype", type: "event", labels: [] }]);
+      } },
+    }))));
+    expect(prepared.code, prepared.stderr).toBe(0); expect(JSON.parse(prepared.stdout)).toMatchObject({ count: 1, discarded: 0 });
+    const invoke = (args: string[]) => captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(args))));
+    expect((await invoke(["memory", "curate", "review", "--plan", planPath, "--accept", "id:LEGACY-EPISODE", "--json"])).code).toBe(0);
+    stubOllamaEmbeddings(8);
+    const applied = await invoke(["memory", "curate", "apply", "--plan", planPath, "--json"]);
+    expect(applied.code, applied.stderr).toBe(0);
+    const [bullet] = bujoMemory.parseDailyFile(await readFile(join(memoryRoot, "daily", "2031-05-17.md"), "utf8")).bullets;
+    expect(bullet).toMatchObject({ type: "event", refs: [], createdAt: at });
+    const restored = await invoke(["memory", "curate", "restore", "--backup", JSON.parse(applied.stdout).backupPath, "--json"]);
+    expect(restored.code, restored.stderr).toBe(0);
+    expect(await readFile(join(memoryRoot, "daily", "2031-05-17.md"), "utf8")).toBe(before);
+  });
+
   it("parses operator merge and duplicate flags only where they apply", () => {
     expect(parseCliArgs(["memory", "curate", "prepare", "--plan", "p.json", "--limit", "0", "--merge", "person:a=person:b",
       "--merge", "concept:a=person:b", "--merge-file", "merges.txt", "--allow-cross-type"]))

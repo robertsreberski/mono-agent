@@ -50,12 +50,18 @@ idempotency key and a 4096-byte conversation id.
 | Journal memory (hybrid recall BM25+vector + static canonical salience; needs configured embeddings) | config | `memory.mode: "journal"`, `path`, `memory.embeddings.{provider,endpoint,model,dim,apiKeyEnv}` (`provider: "ollama" \| "lmstudio" \| "openai"`; exclusive, no cross-provider fallback) | `memory.journal` |
 | BuJo memory (journal + LLM capture/reconcile ADD/UPDATE/SUPERSEDE/NOOP + entity graph + auto-scheduled consolidation; needs embeddings + an app-level `memory.llm`) | config | `memory.mode: "bujo"`, `path`; selected Ollama/LM Studio/OpenAI embeddings are independent from explicit `memory.llm` with `provider: "ollama"` (`model`, optional `endpoint`) or `provider: "agent-host"` (`model` is a runtime model ref) — see `docs/memory/index.md` | `memory.bujo` |
 | BuJo consolidation auto-scheduler (projection-only `index.md` refresh + empty `future-log.md` stub + duplicate-group reporting; in-app, no external cron needed) | config | `memory.consolidation.{enabled,cron}` (five-field UTC, default `0 */2 * * *`, no hashed `H`); env `MONO_AGENT_MEMORY_CONSOLIDATION_CRON`, `MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED` | `memory.bujo-consolidation` |
+| Optional BuJo supported intention lifecycle | config | `memory.capture.intentLifecycle` (default off, independent): requires `memory.writeMode: "capture"`; owner-supported intentions reuse note statuses and inclusive `due=` ends. State changes supersede history; omitted ends are not withdrawals and passed dates never imply completion. Tasks remain authoritative in the task app | `memory.intent-lifecycle` |
+| Optional BuJo conservative intention expiry | config | `memory.recall.intentExpiry` (default off, independent): automatically exclude all dated and done/dropped notes, including future/ambiguous legacy dates. Reviewed deliberate reads use inclusive ends and retain historical fact-sheet rows. Audit legacy dates with private `memory curate prepare --semantic-review` before enabling; no backfill or persisted marker | `memory.intent-expiry` |
+| Optional BuJo bounded deliberate recency | config | `memory.recall.recency` (default off, independent): at most 0.02 with a 30-day half-life for relevance-qualified deliberate transient event/unlabelled-note hits. Base scores/floors and automatic recall are unchanged; facts/preferences do not decay | `memory.recency` |
+| Reviewed BuJo note/event types and labels | cli | `memory curate prepare --semantic-review`: explicit review/apply/restore; no recall-policy switch or invented attribution/dates | — |
+| Optional deterministic BuJo owner profile | config + cli | `memory.profile.enabled` (default off): active owner-stated owner facts and agent preferences, ≤600 Unicode code points, embedding-independent. Invocation-confirmed warm suppression; `mono-agent memory profile show [--json]` is read-only | `memory.owner-profile` |
 | Memory maintenance CLI | cli | `mono-agent memory <subcommand>` from the agent folder (stats/today/show/search/top/audit/inspect/rebuild/rollback/…). The standalone `memory-bujo <subcommand> <root>` CLI and bin were removed; routine BuJo consolidation runs via the in-app scheduler | — |
 | Config-aware memory preview CLI (stats/today/show/search/top plus metadata-only audit; remains available when the live recall tool is disabled; local search warns and falls back to FTS-only when embeddings are down) | cli | `mono-agent memory stats\|today\|show <date>\|search <query>\|top\|audit [--limit <n>] [--json]` | — |
 | Memory liveness check (managed tier/provider/model/dimension identity; provider-native typed discovery plus real finite-vector/dimension probe for Ollama or LM Studio; declared auth env; BuJo LLM config + consolidation cadence; no cross-provider fallback) | cli | `mono-agent validate` | — |
 | Memory write modes and per-turn BuJo capture | config | `memory.writeMode`: `disabled`, `append-host-summary`, or `capture`; capture requires `memory.mode: "bujo"` | `memory.write-mode`, `memory.per-turn-capture` |
 | Optional BuJo capture focus, label-kind filter and trigger switches | config | `memory.capture.focus` (bounded operator guidance), `memory.capture.only` (host-accepted `fact`, `preference`, `lesson` subset), and `memory.capture.cron: false` / `memory.capture.webhook: false` (skip automatic admission and audit for the respective host-identified trigger). If Remember is enabled, the host gives per-turn manual-write guidance; unset keeps existing capture and explicit `Remember` writes are unaffected | `memory.capture-focus` |
 | Auto-provisioned targeted read-only `MemoryRecall` tool exposed for every configured memory backend; no chat LLM | config | `config.memory.recallTool.enabled` (`MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED`, default on; explicit false opts out of both explicit memory-read tools) | `memory.recall-tool` |
+| Dated conversation evidence via existing `SearchConversations` | config | `tools.conversationSearch.datedSnippets: true`, local BuJo only; verified owner web capability, inclusive UTC message-date and role filters, bounded plain snippets and console links. Default off; legacy/UI/Telegram unchanged; rich Telegram calls return `conversation_search_unavailable` | `web.dated-conversation-search` |
 | Bounded `MemoryJournal` broad chronological retrieval over curated canonical local memory; Lite/Journal/BuJo only; no embedding/chat call | config + auto | Shares `memory.recallTool.enabled`; restrictive `tools.allowedTools` must name `MemoryJournal` (or its canonical MCP name/server wildcard), deny wins | `memory.journal-browse` |
 | Agent-callable `Remember` tool that durably stores one explicitly stated fact; deterministic, append-only, no chat LLM; bujo backend and writable stores only; allowlist-gated and rejects credential-bearing text | config | `config.memory.rememberTool.enabled` (`MONO_AGENT_MEMORY_REMEMBER_TOOL_ENABLED`, default on for the bujo backend; explicit false opts out); a restrictive `tools.allowedTools` must name `Remember` | `memory.remember-tool` |
 | In-app memory LLM call timeout | config | `memory.llm.timeoutMs` (`MONO_AGENT_MEMORY_LLM_TIMEOUT_MS`, default 60000) | `memory.llm-timeout` |
@@ -214,3 +220,18 @@ a projected run-out with its lead time before the reset only when ahead of
 pace, a neutral unused-share note when clearly under pace, and
 `ahead`/`unsustainable` (1.5x and above) warnings — an extrapolation, not a
 forecast. Meters add an on-track tick and a pace chip.
+
+
+### BuJo intentions and deliberate recency
+
+Default-off, independent `memory.capture.intentLifecycle` keeps only supported
+owner intentions as notes, mapping planned/pending/done/abandoned to existing
+statuses and inclusive ends to `due=`; state changes supersede, never infer
+completion from dates. Tasks remain authoritative in the task app.
+`memory.recall.intentExpiry` excludes all dated and done/dropped notes from
+automatic context, including unexpired and ambiguous legacy dates. Review legacy
+dates with private curate before enabling deliberate inclusive-end currentness;
+there is no backfill or persisted marker. `memory.recall.recency` ranks qualified
+deliberate transient hits with a bounded 30-day half-life term, never decaying
+facts/preferences or changing automatic scores. All require BuJo; capture also
+requires `writeMode: "capture"`. Do not enable without reviewed coverage/usefulness.

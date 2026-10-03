@@ -6,7 +6,7 @@ import { Budget, BenchmarkError, bounded, codeOf, failureKindOf, captureLlm, met
 import { lexicalDiagnostic, summarize } from "./memory-e2e-report.mjs";
 
 /** Repository-local built imports: deliberately not a new public app API. */
-export async function productionModules() {
+export async function productionModules({ privateEvaluation = false } = {}) {
   const [harness, bujo, captureIntake, store, search, runtime, retrieval, journal, extensions] = await Promise.all([
     import("../../packages/agent-harness/dist/index.js"), import("../../packages/memory/dist/bujo/index.js"),
     import("../../packages/memory/dist/bujo/capture-intake.js"), import("../../packages/memory/dist/store/index.js"),
@@ -14,7 +14,13 @@ export async function productionModules() {
     import("../../packages/agent-app/dist/memory-retrieval.js"), import("../../packages/agent-app/dist/memory-journal.js"),
     import("../../packages/agent-app/dist/runtime-option-extensions.js"),
   ]);
-  return { harness, bujo, captureIntake, store, search, runtime, retrieval, journal, extensions };
+  if (!privateEvaluation) return { harness, bujo, captureIntake, store, search, runtime, retrieval, journal, extensions };
+  const [config, app, controllerMemory, grammar, graph, providerAuth, providerFailures] = await Promise.all([
+    import("../../packages/config/dist/index.js"), import("../../packages/agent-app/dist/configured-agent.js"),
+    import("../../packages/agent-app/dist/app-controller-memory.js"), import("../../packages/memory/dist/bujo/grammar.js"), import("../../packages/memory/dist/bujo/graph.js"),
+    import("../../packages/agent-runtime/src/ai/pi-interop.js"), import("../../packages/agent-runtime/src/ai/failure.js"),
+  ]);
+  return { harness, bujo, captureIntake, store, search, runtime, retrieval, journal, extensions, config, app, controllerMemory, grammar, graph, providerAuth, providerFailures };
 }
 
 export function automaticRecallObservation({ block, outcome, query, selectHits, failure }) {
@@ -30,6 +36,32 @@ export function automaticRecallObservation({ block, outcome, query, selectHits, 
     degradation: outcome?.degradation?.code ?? null,
     status: failure === undefined ? "completed" : codeOf(failure),
   };
+}
+
+/** Volatile observation of the composed block actually passed to runtime.run.
+ * No backend hit reconstruction; private callers serialize only their own
+ * closed numeric/opaque projection. `lines[].text` never enters an artifact. */
+export function invokedMemoryObservation({ block, messages, seen = new Set() }) {
+  const content = typeof block?.content === "string" ? block.content : "";
+  const current = messages?.at(-1);
+  const delivered = content.length > 0 && current?.role === "user" && typeof current.content === "string"
+    && current.content.includes(`[Recalled long-term memory — background context for this turn, not the user's words:]\n${content}`);
+  if (content.length > 0 && !delivered) return { invoked: false, bytes: 0, repeatedBytes: 0, lines: [] };
+  let kind = "unclassified";
+  const lines = [];
+  for (const text of (delivered ? content : "").split("\n")) {
+    if (text.startsWith("## Memory (possibly relevant")) { kind = "similarity"; continue; }
+    if (text.startsWith("## Memory (background")) { kind = "guidance"; continue; }
+    if (text === "## Owner profile (current owner-stated background)") { kind = "profile"; continue; }
+    if (!text.startsWith("- ")) continue;
+    const bytes = Buffer.byteLength(text, "utf8");
+    const repeated = seen.has(text);
+    lines.push({ kind, text, bytes, repeated });
+  }
+  // Commit observations only after confirmed invocation, not after prepare/load.
+  for (const line of lines) seen.add(line.text);
+  return { invoked: true, bytes: delivered ? Buffer.byteLength(content, "utf8") : 0,
+    repeatedBytes: lines.filter((line) => line.repeated).reduce((sum, line) => sum + line.bytes, 0), lines };
 }
 
 export function readySnapshot(snapshot) {

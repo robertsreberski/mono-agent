@@ -91,6 +91,15 @@ Use the exact `nomic-embed-text:v1.5` tag; the bare `nomic-embed-text` tag resol
 5. Run `mono-agent start` and confirm telegram reports running.
 6. Send a fact from an allowed chat (e.g. "My dog is named Pixel"), then in a later turn ask a paraphrased question and confirm recall.
 
+## Optional owner-web historical lookup
+
+When also using the owner web console, local BuJo agents can separately enable
+`tools.conversationSearch.datedSnippets: true` for dated `SearchConversations`
+evidence when memory lacks something. Use inclusive UTC message dates and a
+role filter; the results are bounded historical untrusted evidence. This is not
+an expansion of Telegram access: its search remains legacy and rich requests
+return `conversation_search_unavailable`. See [console tools](/tools/mcp/#console-project-tools).
+
 ## Smoke test
 
 :::tip
@@ -106,3 +115,12 @@ From the allowed Telegram chat, send a message; verify the typing indicator then
 - [Embeddings](/memory/embeddings/)
 - [Artifacts and traces](/observability/artifacts-and-traces/) — where the run JSONL lands
 - [mono-agent-composer skill](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-app/skills/mono-agent-composer/SKILL.md) — build this agent from one config
+
+## Optional owner-console context
+
+For the same agent's verified owner web, TUI or ACP turns, BuJo can opt in to
+`memory.profile.enabled`, which defaults off and does **not** add automatic
+memory injection on Telegram. Review the
+read-only `mono-agent memory profile show --json` output privately before
+turning on the profile. See [owner context](/memory/capture-and-recall/#optional-bujo-owner-context)
+for profile budgets and retained-session suppression.

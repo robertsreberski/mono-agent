@@ -459,3 +459,22 @@ removal remains the explicit two-phase `mono-agent memory forget` workflow.
 
 - [Memory quality benchmark](/memory/benchmarking/) — disposable offline quality and efficiency gate
 - [Feature registry](/reference/feature-registry/) rows — `memory.lite`, `memory.journal`, `memory.bujo`, `memory.write-mode`, `memory.per-turn-capture`, `memory.recall-tool`, `memory.journal-browse`
+
+### Reviewed note/event types and labels
+
+BuJo's explicit `memory curate prepare --semantic-review` pass proposes legacy
+note/event and label retyping for owner review, with backup/restore. It does not
+change automatic recall policy. See
+[reviewed semantic types and labels](/memory/validation-and-cli/#reviewed-semantic-types-and-labels).
+
+### Optional supported intentions and transient recency
+
+BuJo independently offers default-off `memory.capture.intentLifecycle`,
+`memory.recall.intentExpiry` and `memory.recall.recency`. Owner-supported
+intention proposals reuse note statuses and `due=`; state changes preserve the
+old sentence via supersession. Automatic expiry conservatively excludes all
+dated and done/dropped notes, including ambiguous legacy/future dates. Review
+legacy dates through curate before enabling policy-aware deliberate reads.
+Recency only reorders relevance-qualified deliberate event/unlabelled-note hits;
+facts/preferences and automatic recall do not decay. See
+[intention lifecycle and recency](/memory/capture-and-recall/#optional-intention-lifecycle-and-deliberate-recency).

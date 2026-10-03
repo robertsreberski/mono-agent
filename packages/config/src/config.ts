@@ -442,6 +442,19 @@ export function resolveJsonMonoAgentConfig(input: ResolveJsonMonoAgentConfigInpu
     ? undefined
     : jsonChoice<SkillDisclosureMode>(contextJson.skillDisclosure, "context.skillDisclosure", ["index", "full"], "full");
   const memory = readMemoryConfig(json.memory, cwd);
+  const conversationSearchJson = toolsJson?.conversationSearch;
+  if (conversationSearchJson !== undefined && (typeof conversationSearchJson !== "object" || conversationSearchJson === null
+    || Array.isArray(conversationSearchJson) || Object.keys(conversationSearchJson).some((key) => key !== "datedSnippets"))) {
+    throw new MonoAgentConfigError("invalid_json", "conversation_search_invalid_config");
+  }
+  const rawDatedSnippets = (conversationSearchJson as Record<string, unknown> | undefined)?.datedSnippets;
+  if (rawDatedSnippets !== undefined && typeof rawDatedSnippets !== "boolean") {
+    throw new MonoAgentConfigError("invalid_json", "conversation_search_invalid_config");
+  }
+  const datedSnippets = rawDatedSnippets === true;
+  if (datedSnippets && (memory?.mode !== "bujo" || memory.backend !== "bujo")) {
+    throw new MonoAgentConfigError("invalid_json", "conversation_search_requires_bujo");
+  }
   const computerUse = readComputerUseConfig(toolsJson?.computerUse, cwd);
   const mcpConfigPath = readOptionalPath(jsonString(toolsJson?.mcpConfigPath, "tools.mcpConfigPath"), cwd);
   const mcpRequestContextServers = jsonStringArray(toolsJson?.mcpRequestContextServers, "tools.mcpRequestContextServers");
@@ -583,6 +596,7 @@ export function resolveJsonMonoAgentConfig(input: ResolveJsonMonoAgentConfigInpu
             writableRoots: fileToolWritableRoots,
           },
         }),
+    ...(datedSnippets ? { conversationSearch: { datedSnippets: true } } : {}),
     ...(computerUse === undefined ? {} : { computerUse }),
     ...(mcpConfigPath === undefined ? {} : { mcpConfigPath }),
     ...(mcpRequestContextServers.length === 0 ? {} : { mcpRequestContextServers }),
@@ -1654,6 +1668,8 @@ function readMemoryConfig(value: unknown, cwd: string): MonoAgentConfig["memory"
   const llmJson = jsonRecord(memory.llm, "memory.llm");
   const captureJson = jsonRecord(memory.capture, "memory.capture");
   const recallToolJson = jsonRecord(memory.recallTool, "memory.recallTool");
+  const recallJson = jsonRecord(memory.recall, "memory.recall");
+  const profileJson = jsonRecord(memory.profile, "memory.profile");
   const rememberToolJson = jsonRecord(memory.rememberTool, "memory.rememberTool");
   const consolidationJson = jsonRecord(memory.consolidation, "memory.consolidation");
   if (embeddingsJson !== undefined) {
@@ -1664,6 +1680,8 @@ function readMemoryConfig(value: unknown, cwd: string): MonoAgentConfig["memory"
     if (breaker !== undefined) assertJsonScalarFields(breaker, "memory.embeddings.circuitBreaker", { failureThreshold: "number", cooldownMs: "number" });
   }
   if (llmJson !== undefined) assertJsonScalarFields(llmJson, "memory.llm", { provider: "string", model: "string", endpoint: "string", trace: "boolean", timeoutMs: "number" });
+  if (recallJson !== undefined) assertJsonScalarFields(recallJson, "memory.recall", { intentExpiry: "boolean", recency: "boolean" });
+  if (profileJson !== undefined) assertJsonScalarFields(profileJson, "memory.profile", { enabled: "boolean" });
   if (recallToolJson !== undefined) assertJsonScalarFields(recallToolJson, "memory.recallTool", { enabled: "boolean" });
   if (rememberToolJson !== undefined) assertJsonScalarFields(rememberToolJson, "memory.rememberTool", { enabled: "boolean" });
   if (consolidationJson !== undefined) assertJsonScalarFields(consolidationJson, "memory.consolidation", { enabled: "boolean", cron: "string" });
@@ -1681,6 +1699,8 @@ function readMemoryConfig(value: unknown, cwd: string): MonoAgentConfig["memory"
       "memory.mode",
       "memory.writeMode",
       "memory.capture",
+      "memory.recall",
+      "memory.profile",
       "memory.maxBytes",
       "memory.embeddings.provider",
       "memory.embeddings.model",
@@ -1729,6 +1749,21 @@ function readMemoryConfig(value: unknown, cwd: string): MonoAgentConfig["memory"
     MEMORY_WRITE_MODES,
     "disabled",
   );
+  const intentExpiry = jsonBoolean(recallJson?.intentExpiry, "memory.recall.intentExpiry", false);
+  const recency = jsonBoolean(recallJson?.recency, "memory.recall.recency", false);
+  const profileEnabled = jsonBoolean(profileJson?.enabled, "memory.profile.enabled", false);
+  if (recallJson !== undefined && Object.keys(recallJson).some((name) => !["intentExpiry", "recency"].includes(name))) {
+    throw new MonoAgentConfigError("invalid_json", "memory_option_unknown", { path: "memory.recall" });
+  }
+  if (profileJson !== undefined && Object.keys(profileJson).some((name) => name !== "enabled")) {
+    throw new MonoAgentConfigError("invalid_json", "memory_option_unknown", { path: "memory.profile" });
+  }
+  if (profileEnabled && mode !== "bujo") {
+    throw new MonoAgentConfigError("invalid_json", "memory_option_requires_bujo", { path: "memory.profile.enabled" });
+  }
+  for (const [name, enabled] of [["intentExpiry", intentExpiry], ["recency", recency]] as const) {
+    if (enabled && mode !== "bujo") throw new MonoAgentConfigError("invalid_json", "memory_option_requires_bujo", { path: `memory.recall.${name}` });
+  }
   // Capture requires the local BuJo tier and its chat LLM.
   if (writeMode === "capture" && mode !== "bujo") {
     throw new MonoAgentConfigError(
@@ -1781,7 +1816,10 @@ function readMemoryConfig(value: unknown, cwd: string): MonoAgentConfig["memory"
       throw new MonoAgentConfigError("invalid_json", "memory.capture.webhook must be a boolean.",
         { path: "memory.capture.webhook" });
     }
+    assertJsonScalarFields(captureJson, "memory.capture", { intentLifecycle: "boolean" });
+    const intentLifecycle = jsonBoolean(captureJson.intentLifecycle, "memory.capture.intentLifecycle", false);
     capture = {
+      ...(captureJson.intentLifecycle === undefined ? {} : { intentLifecycle }),
       ...(captureJson.cron === undefined ? {} : { cron: captureJson.cron }),
       ...(captureJson.webhook === undefined ? {} : { webhook: captureJson.webhook }),
       ...(rawFocus === undefined ? {} : { focus: rawFocus as string }),
@@ -1876,6 +1914,8 @@ function readMemoryConfig(value: unknown, cwd: string): MonoAgentConfig["memory"
     ...(embeddings === undefined ? {} : { embeddings }),
     ...(llm === undefined ? {} : { llm }),
     recallTool: { enabled: recallToolEnabled },
+    ...(recallJson === undefined ? {} : { recall: { ...(recallJson.intentExpiry === undefined ? {} : { intentExpiry }), ...(recallJson.recency === undefined ? {} : { recency }) } }),
+    ...(profileJson === undefined ? {} : { profile: { enabled: profileEnabled } }),
     rememberTool: { enabled: rememberToolEnabled },
     ...(consolidation === undefined ? {} : { consolidation }),
   };

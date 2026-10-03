@@ -345,7 +345,7 @@ export interface MonoAgentConfig {
     readonly maxBytes: number;
     readonly writeMode: MemoryWriteMode;
     /** Optional capture controls; reconcileModel selects only the classifier's agent-host model. */
-    readonly capture?: { readonly focus?: string; readonly only?: readonly ("fact" | "preference" | "lesson")[]; readonly reconcileModel?: string; readonly cron?: boolean; readonly webhook?: boolean };
+    readonly capture?: { readonly focus?: string; readonly only?: readonly ("fact" | "preference" | "lesson")[]; readonly reconcileModel?: string; readonly cron?: boolean; readonly webhook?: boolean; readonly intentLifecycle?: boolean };
     /** Embedding provider for semantic memory recall; keyword fallback when unset. */
     readonly embeddings?: MemoryEmbeddingsConfig;
     /** LLM for bujo capture and effective tier selection. */
@@ -359,6 +359,10 @@ export interface MonoAgentConfig {
      * disabling automatic memory context.
      */
     readonly recallTool?: { readonly enabled: boolean };
+    /** BuJo-only intention expiry and deliberate recency; independently default off. */
+    readonly recall?: { readonly intentExpiry?: boolean; readonly recency?: boolean };
+    /** BuJo-only deterministic owner label profile; default off. */
+    readonly profile?: { readonly enabled: boolean };
     /**
      * Agent-callable `Remember` tool that durably stores one explicitly stated
      * fact. Deterministic and append-only; it takes no chat LLM. Defaults on for
@@ -381,6 +385,8 @@ export interface MonoAgentConfig {
       readonly readableRoots: readonly string[];
       readonly writableRoots: readonly string[];
     };
+    /** BuJo-only, owner-web dated conversation evidence; absent means disabled. */
+    readonly conversationSearch?: { readonly datedSnippets: boolean };
     /** Opt-in local desktop control via the separately installed cua-driver. */
     readonly computerUse?: {
       readonly backend: "cua-driver";

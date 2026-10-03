@@ -417,7 +417,16 @@ export async function runHarnessRuntime(
       // attachment persistence, compaction, admission wait).
       const bridgeStartMs = Date.now();
       try {
-        return await runtime.run(context.systemPrompt, runtimeOptions);
+        const result = await runtime.run(context.systemPrompt, runtimeOptions);
+        // Prepared context is not evidence of dispatch. Only a successful
+        // invocation with a retained provider session can establish receipts.
+        if (sessionsEnabled && !sessionIsolated && !result.cancelled && !result.error && !result.failureKind
+          && typeof result.providerSessionId === "string" && result.providerSessionId.length > 0) {
+          try { options.memory?.recordInvocation?.(runId); }
+          catch { emitRuntimeEvent({ type: "runtime_warning", warning_kind: "memory_degraded",
+            error_code: "memory_receipt_unavailable", message: "memory_receipt_unavailable" }); }
+        }
+        return result;
       } finally {
         const latencyEvent: RuntimeEventLike = {
           type: "provider_bridge_latency",

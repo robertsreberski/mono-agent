@@ -531,6 +531,14 @@ export function buildMonoAgentConfigSchema(): JsonSchema {
     title: "mono-agent.config.json",
     type: "object",
     required: ["runtime", "context"],
+    allOf: [{
+      if: { required: ["tools"], properties: { tools: { required: ["conversationSearch"], properties: {
+        conversationSearch: { required: ["datedSnippets"], properties: { datedSnippets: { const: true } } },
+      } } } },
+      then: { required: ["memory"], properties: { memory: { required: ["mode"], properties: {
+        mode: { const: "bujo" }, backend: { const: "bujo" },
+      } } } },
+    }],
     additionalProperties: false,
     properties: {
       $schema: { type: "string" },
@@ -925,6 +933,11 @@ function setMemoryTierSchema(root: Record<string, JsonSchema>): void {
         },
       },
     }),
+    ...([["recall", "intentExpiry"], ["recall", "recency"], ["capture", "intentLifecycle"], ["profile", "enabled"]] as const).map(([key, field]): JsonSchema => ({
+      if: { required: [key], properties: { [key]: { required: [field],
+        properties: { [field]: { const: true } } } } },
+      then: { required: ["mode"], properties: { mode: { const: "bujo" } } },
+    })),
     {
       if: propertyPresentSchema("capture"),
       then: { properties: { mode: { const: "bujo" }, writeMode: { const: "capture" } }, required: ["mode", "writeMode"] },
@@ -1387,6 +1400,7 @@ function typeFromKind(kind: JsonEnvFieldSpec["kind"], id: string): ConfigReferen
 }
 
 function inferType(id: string): ConfigReferenceType {
+  if (id === "tools.conversationSearch.datedSnippets") return "boolean";
   if (id === "runtime.model") return "string | object";
   if (id === "artifacts.replyFiles.maxStorageBytes") return "integer | unlimited";
   if (id === "tools.web.search.backend" || id === "tools.web.fetch.provider") return "string | string[]";
@@ -1413,6 +1427,7 @@ function inferType(id: string): ConfigReferenceType {
   ].includes(id)) {
     return "integer";
   }
+  if (id === "memory.recall.intentExpiry" || id === "memory.recall.recency" || id === "memory.capture.intentLifecycle" || id === "memory.profile.enabled") return "boolean";
   if (id === "memory.capture.cron" || id === "memory.capture.webhook") return "boolean";
   if (id === "providers.piNative.promptCacheDiagnostics") return "boolean";
   if (id === "runtime.compaction.fixedOverheadEnabled") {
@@ -1458,6 +1473,7 @@ function defaultLabelFor(id: string): string {
 
 function defaultValueFor(id: string): SettingsJsonValue | undefined {
   const defaults: Record<string, SettingsJsonValue> = {
+    "tools.conversationSearch.datedSnippets": false,
     "runtime.fallbacks": [],
     subagents: { enabled: false },
     "slack.resolveUserNames": true,
@@ -1493,6 +1509,10 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "memory.llm.trace": true,
     "memory.llm.timeoutMs": 60_000,
     "memory.recallTool.enabled": true,
+    "memory.recall.intentExpiry": false,
+    "memory.recall.recency": false,
+    "memory.capture.intentLifecycle": false,
+    "memory.profile.enabled": false,
   "memory.rememberTool.enabled": true,
     "memory.consolidation.enabled": true,
     "memory.consolidation.cron": "0 */2 * * *",
@@ -1671,8 +1691,13 @@ function exampleFor(id: string): SettingsJsonValue {
 }
 
 function descriptionFor(id: string): string {
+  if (id === "memory.capture.intentLifecycle") return "BuJo capture-only, default-off owner-supported intention state and inclusive civil end proposals. Reuses note status and due=; state changes supersede, never infer completion from a date. Tasks stay authoritative in the task app.";
+  if (id === "memory.recall.intentExpiry") return "BuJo-only, default-off: exclude all dated notes and done/dropped notes from automatic sections, including unexpired/ambiguous legacy dates. Deliberate recall interprets reviewed note due= as an inclusive civil end. Requires reviewed curate audit before enablement; independent of intentLifecycle; no backfill.";
+  if (id === "memory.recall.recency") return "BuJo-only, default-off bounded secondary recency ranking for relevance-qualified deliberate event/unlabelled-note hits: at most 0.02, 30-day half-life. Facts/preferences never decay; base scores, floors and automatic retrieval are unchanged.";
+  if (id === "tools.conversationSearch.datedSnippets") return "Opt in to dated SearchConversations message evidence on verified owner web turns. Requires local BuJo memory; disabled by default. Telegram and the console UI keep legacy search. No new index or stored history fields.";
   if (id === "memory.capture.cron") return "Set false to skip automatic capture and raw audit for host-identified cron turns (including run-now); other turns and explicit Remember writes are unchanged. When Remember is enabled, this turn gets host-injected manual memory guidance. Unset preserves capture.";
   if (id === "memory.capture.webhook") return "Set false to skip automatic capture and raw audit for host-identified webhook turns; other turns and explicit Remember writes are unchanged. When Remember is enabled, this turn gets host-injected manual memory guidance. Unset preserves capture.";
+  if (id === "memory.profile.enabled") return "BuJo-only, default-off deterministic owner-stated label profile, at most 600 Unicode code points. Independent of embeddings. Warm provider context suppresses unchanged profile/served lines using invocation receipts; receipt loss conservatively suppresses automatic reinjection until a cold reseed.";
   if (id === "memory.capture.focus") return "Operator guidance (at most 2048 UTF-8 bytes) narrows BuJo capture extraction and review; it cannot override host safety or the strict JSON contract. Requires mode bujo and writeMode capture.";
   if (id === "memory.capture.only") return "Keep automatic capture memories only when a host-accepted label matches one of these kinds. An empty array drops all automatic captures; unset preserves current behavior. Remember writes are unaffected. Requires mode bujo and writeMode capture.";
   if (id === "memory.capture.reconcileModel") return "Optional validated agent-host runtime model reference for the capture reconciliation classifier only. Unset uses memory.llm for extraction, review and reconciliation. Requires mode bujo and writeMode capture; failures do not fall back to the capture model.";

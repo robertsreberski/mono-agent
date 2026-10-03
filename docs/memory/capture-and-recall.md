@@ -547,3 +547,134 @@ Journal and BuJo require an explicit, non-empty `memory.embeddings` **block**, b
 - [Embeddings](/memory/embeddings/) — the provider/model behind vector recall
 - [Consolidation](/memory/rituals/) — scheduled projection refresh and duplicate-group counting, without canonical-memory mutation
 - [Validation & CLI](/memory/validation-and-cli/) — `mono-agent validate` checks and `mono-agent memory` maintenance
+
+## Optional BuJo owner context
+
+`memory.profile.enabled` defaults to `false` and requires `memory.mode: "bujo"`:
+
+```json
+{
+  "memory": {
+    "profile": { "enabled": true }
+  }
+}
+```
+
+Add this block to an otherwise valid BuJo configuration. Automatic context is
+still restricted to host-verified owner web, TUI and ACP turns; Telegram, other
+speakers and triggers receive no automatic profile or recall block.
+
+`memory.profile.enabled` derives a profile from active owner-stated owner facts
+and agent-scope preferences in the existing label projection. It uses current,
+open notes only, omits conflicting/ended sources, dated intentions and episodes,
+and selects whole entries in newest-date then stable source-ID order. Timestamp
+expiry uses the host observation instant; civil end dates remain inclusive
+through the host's local day. The read-only profile CLI uses the same rule. The entire
+payload, including its heading, is at most 600 Unicode code points and also
+respects `memory.maxBytes`. Missing labels produce no profile. No model call,
+new file, store, version or history field is involved. Embedding failures do not
+erase the profile and emit only `memory_recall_unavailable`.
+
+With the profile enabled, a confirmed retained provider session excludes unchanged
+already-served recall/background lines. A profile enters a cold reseed or when
+its supported contents change. Preparation alone does not count: only a
+successful retained provider invocation establishes receipts. Isolated turns
+do not replace shared-session receipts, and Remember writes invalidate searches
+without discarding pending receipts. Host continuations do not load memory.
+The bounded
+volatile cache keeps at most 256 conversations and 256 served-line fingerprints
+per conversation. Receipts disappear on reset, disposal or
+restart. If receipt knowledge is lost while the host still confirms retained
+provider context, automatic reinjection is conservatively suppressed until a
+cold reseed; deliberate memory tools remain available. A full receipt set also
+suppresses further automatic warm injection rather than forgetting served lines.
+
+Opt-in automatic blocks are omitted from content-bearing `turn_context` traces;
+only their byte count is recorded. The model/provider still receives the block.
+Disabling the profile restores the existing automatic retrieval path, but cannot
+erase blocks already retained by a provider session.
+
+## Optional intention lifecycle and deliberate recency
+
+Three independent BuJo-only switches default off. Add them to an otherwise
+valid BuJo configuration; capture still requires `writeMode: "capture"`:
+
+```json
+{
+  "memory": {
+    "capture": { "intentLifecycle": true },
+    "recall": { "intentExpiry": true, "recency": true }
+  }
+}
+```
+
+**Tasks remain authoritative in the task app.** Memory is not a second task
+list. `memory.capture.intentLifecycle` lets the extraction model propose a
+consequential intention only when the outer host-verified owner's user turn
+supports it. The sentence retains the intention meaning and state, in any
+language. Optional `intentState` maps `planned/pending/done/abandoned` to the
+existing note statuses `scheduled/open/done/dropped`. Ordinary open facts do not
+become pending intentions. Other speakers, triggers and assistant/tool/document
+claims cannot supply these proposals.
+
+Optional extraction/API `validTo` is an inclusive civil end, stored as existing
+`due=` / `dueAt`, **never** generic `MemoryRecord.validTo` or SQLite `valid_to`.
+Undated plans/pending intentions acquire no date. Relative ends use the immutable
+trusted admission context's UTC calendar, preserving stated timezone and
+uncertainty; no unstated date or timezone is invented. A supported explicit
+zone may use its inclusive last-millisecond end with the applicable ISO offset
+(`YYYY-MM-DDT23:59:59.999±HH:MM`, or `Z`); an uncertain offset means omit the
+proposal. Without a stated zone, keep the civil date only. Split or clamped
+sentences lose lifecycle proposals rather than transferring them to unsupported
+siblings. Supported intention changes use reconcile `SUPERSEDE`, including a
+classifier `UPDATE` or a `NOOP` whose state/end changes: the old sentence remains
+history. Repeating an intention without its end is not withdrawal: a NOOP
+retains the existing end, and replacements inherit it unless a supported new end
+is supplied. Deliberate fact-sheet currentness combines label validity with the
+source note's currentness, retaining expired rows as historical. A passed end
+never implies completion and never mutates a status.
+
+`memory.recall.intentExpiry` is a **conservative automatic read policy**:
+exclude **all dated notes**, even before their end, plus done/dropped notes,
+from similarity, scoped guidance and person cards. The optional profile already
+omits dated/closed notes. There is no persisted intention marker,
+so an open pending note's date cannot be distinguished from an ambiguous legacy
+`due=`. Neither is automatically asserted. Unexpired dated plans also stay in
+the task app; this policy does not promise automatic reminder coverage.
+
+Under this option, deliberate `MemoryRecall` currentness treats a **reviewed**
+note `dueAt` as an inclusive validity end, just like the existing event end.
+Date-only ends remain current through the host's local civil day (daemon
+process timezone); offset ends remain current through their inclusive instant.
+Task deadlines retain their existing meaning. Closed statuses still show their
+status prefix. Generic supersession/terminal validity is unchanged.
+
+Before enabling, drain pending capture and use the existing private
+[reviewed curate audit](/memory/validation-and-cli/#review-intention-dates-before-enabling-expiry).
+There is **no backfill**, automatic legacy reinterpretation/mutation, new field,
+marker or migration. Review/remove/retype ambiguous dated sources before using
+policy-aware deliberate currentness; automatic exclusion alone does not prove
+what an old date meant. Retained extraction plans/outbox actions finish their
+already-admitted proposals rather than being retrospectively reclassified.
+`intentExpiry` does not require `intentLifecycle`: reviewed legacy reads and
+capture rollback must remain independent.
+
+Separately, `memory.recall.recency` adds at most **0.02** as a secondary ordering
+term with a **30-day half-life**, only in deliberate hybrid BuJo recall (including
+original-query mode). It applies to events without fact/preference labels and
+unlabelled notes, not facts, preferences, labelled notes or tasks. Future,
+missing and invalid recording instants earn no recency term. Qualification uses
+the unchanged base-score floor `0.65` and tail margin `0.15`; below-floor hits
+cannot be rescued. Returned scores and candidate membership stay unchanged;
+original-query mode keeps its uncut below-floor tail in place. Automatic lookup,
+profile, guidance, journal chronology, salience and access telemetry do not
+change. The bounded fifty-hit deliberate superset remains the limit.
+
+Flags absent/off preserve capture prompts, schemas, outputs and canonical bytes;
+Lite/Journal do not adopt these policies. Disable switches independently to
+roll back reads/new capture, but an older reader can surface dated or completed
+notes again, and no switch removes blocks already retained by a provider.
+Retained-session de-duplication uses actual invocation receipts; a profile
+source ending sends one changed/empty profile replacement, not repeated text.
+Keep recency off until separately reviewed usefulness evidence supports it;
+scripted regressions are not real-model extraction or retrieval-quality proof.

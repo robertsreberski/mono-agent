@@ -38,7 +38,57 @@ const bujoMemoryPrerequisites = {
 };
 
 describe("resolveJsonMonoAgentConfig", () => {
-  it.each(["embeddings", "llm", "recallTool", "rememberTool", "consolidation", "embeddings.circuitBreaker"])(
+  it("validates independent default-off lifecycle/expiry/recency flags, requiring BuJo", () => {
+    const read = (recall: unknown = {}, capture?: unknown, mode = "bujo", writeMode = "disabled") => resolveJsonMonoAgentConfig({ cwd: "/fictional/repo", json: {
+      ...baseJson, memory: { path: "memory", mode, writeMode, embeddings: { provider: "ollama" },
+        llm: { provider: "ollama", model: "fictional-model" }, recall, ...(capture === undefined ? {} : { capture }) },
+    } as MonoAgentConfigJson });
+    expect(read({ intentExpiry: true }).memory?.recall?.intentExpiry).toBe(true);
+    expect(read({ recency: true }).memory?.recall?.recency).toBe(true);
+    expect(read({}, { intentLifecycle: true }, "bujo", "capture").memory?.capture?.intentLifecycle).toBe(true);
+    expect(read().memory?.capture?.intentLifecycle).toBeUndefined();
+    expect(read({}, { intentLifecycle: false }, "bujo", "capture").memory?.capture?.intentLifecycle).toBe(false);
+    for (const flag of ["intentExpiry", "recency"]) {
+      for (const mode of ["lite", "journal"]) expect(() => read({ [flag]: true }, undefined, mode)).toThrow("memory_option_requires_bujo");
+      expect(() => read({ [flag]: "fictional-sensitive-value" })).toThrow();
+    }
+    expect(() => read({}, { intentLifecycle: true })).toThrow("memory.capture requires");
+    expect(() => read({}, { intentLifecycle: "fictional-sensitive-value" }, "bujo", "capture")).toThrow();
+  });
+
+  it.each(["true", "false", "FICTIONAL_REJECTED_VALUE", 1, null, { fictional: true }])("rejects non-boolean intention config without exposing values: %s", (value) => {
+    let caught: unknown;
+    try { resolveJsonMonoAgentConfig({ cwd: "/fictional/repo", json: { ...baseJson, memory: {
+      path: "memory", mode: "bujo", writeMode: "capture", embeddings: { provider: "ollama" },
+      llm: { provider: "ollama", model: "fictional-model" }, capture: { intentLifecycle: value },
+    } } as unknown as MonoAgentConfigJson }); } catch (error) { caught = error; }
+    expect(caught).toBeInstanceOf(MonoAgentConfigError);
+    const error = caught as MonoAgentConfigError;
+    expect(error.details).toEqual({ code: "invalid_json", path: "memory.capture.intentLifecycle" });
+    expect(error.message).toBe("memory.capture.intentLifecycle must be a boolean.");
+    expect(JSON.stringify(error.details)).not.toContain("FICTIONAL_REJECTED_VALUE");
+  });
+
+  it("validates the default-off BuJo profile flag without echoing offending values", () => {
+    const base = { ...baseJson, memory: { path: "memory", mode: "bujo" as const,
+      embeddings: { provider: "ollama" as const }, llm: { provider: "ollama" as const, model: "fictional-model" } } };
+    const resolve = (memory: Record<string, unknown>) => resolveJsonMonoAgentConfig({ cwd: "/fictional/repo",
+      json: { ...base, memory: { ...base.memory, ...memory } } as MonoAgentConfigJson });
+    expect(resolve({}).memory?.profile?.enabled ?? false).toBe(false);
+    for (const key of ["profile"] as const) {
+      const field = "enabled";
+      const enabled = resolve({ [key]: { [field]: true } });
+      expect(enabled.memory?.profile?.enabled).toBe(true);
+      for (const mode of ["lite", "journal"]) expect(() => resolve({ mode, [key]: { [field]: true } })).toThrow("memory_option_requires_bujo");
+      for (const block of [[], { [field]: "FICTIONAL_PRIVATE_RECORD" }, { unrelated: true }]) {
+        try { resolve({ [key]: block }); }
+        catch (error) { expect(error).toBeInstanceOf(MonoAgentConfigError); expect(String(error)).not.toContain("FICTIONAL_PRIVATE_RECORD"); continue; }
+        throw new Error("invalid fictional flag accepted");
+      }
+    }
+  });
+
+  it.each(["embeddings", "llm", "recall", "profile", "recallTool", "rememberTool", "consolidation", "embeddings.circuitBreaker"])(
     "rejects malformed memory.%s blocks, including without memory.path", (path) => {
       const parts = path.split(".");
       const block = parts.length === 1 ? { [path]: [] } : { embeddings: { circuitBreaker: [] } };
@@ -4500,5 +4550,34 @@ describe("computer-use config", () => {
     { backend: "cua-driver", unrestricted: true }, { backend: "cua-driver", typo: true },
   ])("rejects malformed or unsupported configuration %j", (value) => {
     expect(() => load(value)).toThrow(/tools\.computerUse.*docs\/tools\/computer-use\.md/u);
+  });
+});
+
+
+describe("dated conversation evidence opt-in", () => {
+  const bujo = { ...baseJson, memory: { path: "memory", mode: "bujo" as const,
+    embeddings: { provider: "ollama" as const }, llm: { provider: "ollama" as const, model: "fixture" } } };
+  const resolve = (json: MonoAgentConfigJson) => resolveJsonMonoAgentConfig({ cwd: "/fixture", json });
+  it("is absent by default and with explicit false in every memory tier", () => {
+    for (const mode of ["lite", "journal", "bujo"] as const) {
+      const json = { ...baseJson, memory: mode === "bujo" ? bujo.memory : { path: "memory", mode, ...(mode === "journal" ? { embeddings: bujo.memory.embeddings } : {}) } };
+      const baseline = resolve(json);
+      expect(resolve({ ...json, tools: { conversationSearch: { datedSnippets: false } } })).toEqual(baseline);
+      expect(baseline.tools.conversationSearch).toBeUndefined();
+    }
+    expect(resolve(baseJson).tools.conversationSearch).toBeUndefined();
+  });
+  it("accepts true only in local BuJo and emits only stable failure codes", () => {
+    expect(resolve({ ...bujo, tools: { conversationSearch: { datedSnippets: true } } }).tools.conversationSearch)
+      .toEqual({ datedSnippets: true });
+    for (const json of [baseJson, { ...baseJson, memory: { path: "memory", mode: "lite" as const } },
+      { ...baseJson, memory: { path: "memory", mode: "journal" as const, embeddings: bujo.memory.embeddings } }]) {
+      expect(() => resolve({ ...json, tools: { conversationSearch: { datedSnippets: true } } }))
+        .toThrowError(expect.objectContaining({ code: "invalid_json", message: "conversation_search_requires_bujo" }));
+    }
+    for (const conversationSearch of [[], null, "fixture", { datedSnippets: "true" }, { datedSnippets: 1 }, { extra: "fixture" }]) {
+      expect(() => resolve({ ...bujo, tools: { conversationSearch } } as unknown as MonoAgentConfigJson))
+        .toThrowError(expect.objectContaining({ code: "invalid_json", message: "conversation_search_invalid_config" }));
+    }
   });
 });

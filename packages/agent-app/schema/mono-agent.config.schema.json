@@ -7,6 +7,54 @@
     "runtime",
     "context"
   ],
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "tools"
+        ],
+        "properties": {
+          "tools": {
+            "required": [
+              "conversationSearch"
+            ],
+            "properties": {
+              "conversationSearch": {
+                "required": [
+                  "datedSnippets"
+                ],
+                "properties": {
+                  "datedSnippets": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "memory"
+        ],
+        "properties": {
+          "memory": {
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "mode": {
+                "const": "bujo"
+              },
+              "backend": {
+                "const": "bujo"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "additionalProperties": false,
   "properties": {
     "$schema": {
@@ -748,6 +796,14 @@
               ],
               "type": "string",
               "minLength": 1
+            },
+            "intentLifecycle": {
+              "description": "BuJo capture-only, default-off owner-supported intention state and inclusive civil end proposals. Reuses note status and due=; state changes supersede, never infer completion from a date. Tasks stay authoritative in the task app.",
+              "examples": [
+                true
+              ],
+              "type": "boolean",
+              "default": false
             }
           }
         },
@@ -907,6 +963,42 @@
               ],
               "type": "boolean",
               "default": true
+            }
+          }
+        },
+        "recall": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "intentExpiry": {
+              "description": "BuJo-only, default-off: exclude all dated notes and done/dropped notes from automatic sections, including unexpired/ambiguous legacy dates. Deliberate recall interprets reviewed note due= as an inclusive civil end. Requires reviewed curate audit before enablement; independent of intentLifecycle; no backfill.",
+              "examples": [
+                true
+              ],
+              "type": "boolean",
+              "default": false
+            },
+            "recency": {
+              "description": "BuJo-only, default-off bounded secondary recency ranking for relevance-qualified deliberate event/unlabelled-note hits: at most 0.02, 30-day half-life. Facts/preferences never decay; base scores, floors and automatic retrieval are unchanged.",
+              "examples": [
+                true
+              ],
+              "type": "boolean",
+              "default": false
+            }
+          }
+        },
+        "profile": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "description": "BuJo-only, default-off deterministic owner-stated label profile, at most 600 Unicode code points. Independent of embeddings. Warm provider context suppresses unchanged profile/served lines using invocation receipts; receipt loss conservatively suppresses automatic reinjection until a cold reseed.",
+              "examples": [
+                true
+              ],
+              "type": "boolean",
+              "default": false
             }
           }
         },
@@ -1113,6 +1205,122 @@
         },
         {
           "if": {
+            "required": [
+              "recall"
+            ],
+            "properties": {
+              "recall": {
+                "required": [
+                  "intentExpiry"
+                ],
+                "properties": {
+                  "intentExpiry": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "mode": {
+                "const": "bujo"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "recall"
+            ],
+            "properties": {
+              "recall": {
+                "required": [
+                  "recency"
+                ],
+                "properties": {
+                  "recency": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "mode": {
+                "const": "bujo"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "capture"
+            ],
+            "properties": {
+              "capture": {
+                "required": [
+                  "intentLifecycle"
+                ],
+                "properties": {
+                  "intentLifecycle": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "mode": {
+                "const": "bujo"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "profile"
+            ],
+            "properties": {
+              "profile": {
+                "required": [
+                  "enabled"
+                ],
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "mode": {
+                "const": "bujo"
+              }
+            }
+          }
+        },
+        {
+          "if": {
             "properties": {
               "capture": {}
             },
@@ -1223,6 +1431,20 @@
               "items": {
                 "type": "string"
               }
+            }
+          }
+        },
+        "conversationSearch": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "datedSnippets": {
+              "description": "Opt in to dated SearchConversations message evidence on verified owner web turns. Requires local BuJo memory; disabled by default. Telegram and the console UI keep legacy search. No new index or stored history fields.",
+              "examples": [
+                true
+              ],
+              "type": "boolean",
+              "default": false
             }
           }
         },

@@ -95,6 +95,312 @@ never reports scripted correctness as a real quality score. The default
 historical replay avoids reader calls and automatic recall during ingestion;
 it is not a live-channel or whole configured-app lifecycle benchmark.
 
+### Private owner-turn evaluation (opt-in, never CI)
+
+The same entrypoint has a separate BuJo-only owner-run mode. **Do not give CI
+private inputs.** It refuses execution whenever `CI` exists, even if empty;
+do not unset it to bypass this guard. The fictional benchmark above never opens
+this adapter's inputs. Development and tests use invented data only.
+
+All three roots must be explicit, absolute, disjoint, and outside both the
+checkout and its main Git toplevel. Existing ancestors and symlinks are resolved
+before any input content, build, or provider is loaded. Input/store trees and
+output roots must be owner-owned and have no group/other permissions (typically
+0700 directories and 0600 files); symlink entries, multiply linked files, and
+macOS ACL grants and unrecognized ACL metadata are refused throughout canonical
+ancestry; private tree entries and the nearest private root/ancestor must have
+no ACL at all, while higher ancestors may have verified deny-only ACLs.
+A missing output's nearest existing ancestor must also be owner-private.
+Every ancestor must belong to the current user or root and not be
+group/other-writable; only root-owned sticky system directories are an exception.
+Containment is rechecked after output creation and before clone or artifact
+writes; a replaced ancestor alias refuses instead of becoming trusted.
+Without directory-identity anchoring, the check-to-open boundary assumes root
+and the current user do not replace verified components after ownership, mode
+and ACL checks.
+Replay requires a **new** output directory, never a fallback
+under `.worklab-tmp`. The source store is read-only to this evaluator.
+
+Use a non-recorded local shell and a network-isolated, non-logging local Ollama
+service. Both indexing and configured-store embedding transports refuse HTTP redirects.
+Only loopback Ollama embeddings are used (default
+`nomic-embed-text:v1.5`, dimension 768). No consumer configuration is discovered.
+The replay builds and verifies the clean, exact-HEAD app dependency closure
+before production imports; its captured build output never includes inputs.
+
+```bash
+# Retrieval only: source is reconstructed at the start of each UTC day
+node scripts/memory-e2e-benchmark.mjs --private --private-mode retrieval \
+  --private-input-root /OWNER-ONLY/EVAL-INPUT \
+  --private-output-root /OWNER-ONLY/NEW-RETRIEVAL-OUTPUT \
+  --private-store-root /OWNER-ONLY/STORE-SOURCE
+
+# Chronological capture: seed before the first turn, then admit completed turns
+# through the production harness into disposable source-clock clones
+node scripts/memory-e2e-benchmark.mjs --private --private-mode capture \
+  --private-input-root /OWNER-ONLY/EVAL-INPUT \
+  --private-output-root /OWNER-ONLY/NEW-CAPTURE-OUTPUT \
+  --private-store-root /OWNER-ONLY/STORE-SOURCE \
+  --private-capture-route ollama:LOCAL-CAPTURE-MODEL
+```
+
+These are placeholder paths/models, not usable operator settings. Optional
+`--private-embedding-model MODEL`, `--private-dimension N`, and
+`--private-max-runtime-ms N` are execution-only selections. Runtime defaults to
+one hour, bounded to 30 seconds–four hours. Existing budget admission and
+cancellation bound embedding requests and completion input/steps; local
+completion output is byte-bounded. Provider output-token hints are not a promise
+of wire-capped spend. Capture uses the recorded assistant reply when supplied,
+or a fixed claim-free acknowledgement, **not** a newly generated assistant
+answer. Each supported arm has an independent clone. Capture-arm comparisons
+are pipeline diagnostics, not causal proof of a read-policy improvement.
+
+#### Private input format
+
+Prepare these owner-private files before inference:
+
+- `turns.json`: an array in non-decreasing timestamp order (maximum 10,000).
+  `id` and `conversationId` are newly assigned opaque 32-character lowercase
+  hexadecimal IDs, **not** names, original session IDs, or source-data hashes.
+  Every row has `timestamp` (UTC `YYYY-MM-DDTHH:mm:ss.sssZ`), `ownerText`,
+  `followUp` and `directQuestion` booleans. Optional `assistantText` is the
+  historical completed reply. Optional `baselineLines` contains only
+  `{ "kind": "profile|guidance|similarity", "text": "..." }` rows privately
+  recovered from **provider session transcripts**, with
+  `baselineSource: "provider_session_transcript"`. Do not substitute the
+  content-free `memory_recalled` event or copy whole transcripts into reports.
+- `preregistration.json`: define usefulness, selection, denominators and the
+  abstention threshold **before** inspecting results or tuning. The following
+  template has no personal data. The isolation declarations must be true in the
+  actual environment; a declaration is not a sandbox or a provider audit.
+- `annotations.json` (analysis only): an array of exactly `{ "id": "OPAQUE-ID",
+  "label": "useful|partial|noise|stale" }`; null means unjudged. No comments,
+  examples, paths or free-text explanations. IDs come from the blinded sheet.
+
+```json
+{
+  "version": 1,
+  "definitions": {
+    "useful": "Current evidence that materially helps the owner turn",
+    "partial": "Relevant but incomplete help; report separately from useful",
+    "noise": "Does not help the owner turn",
+    "stale": "Outdated, superseded or no longer applicable"
+  },
+  "caseSelection": "all_ordered_owner_turns",
+  "denominators": "all_selected_turns_and_all_invoked_lines",
+  "minimumTurns": 400,
+  "minimumFollowUps": 50,
+  "minimumJudgedFollowUpLines": 100,
+  "lengthAbstentionMaxCodePoints": 16,
+  "snapshot": "approximate_as_of",
+  "isolation": {
+    "noContentLogs": true,
+    "noTelemetry": true,
+    "localServiceNoOutbound": true
+  },
+  "productionRoutes": []
+}
+```
+
+Minima cannot be lowered. The output binds the registration to a private opaque
+key; analysis refuses a changed registration. Approximate as-of reconstruction
+in retrieval mode rebuilds once per distinct **UTC civil day per arm**, cutting
+at `00:00:00.000Z` of that day. Only canonical daily bullets whose production-
+parsed `created=` strictly precedes that cutoff survive, and graph endpoints
+follow the same cutoff. This excludes same-day future sources **and earlier
+same-day memories**: it is a known conservative underestimate, not turn-exact
+historical recall. Ordered turns reuse the clone until the day changes; arms
+still own independent disposable stores. The index is rebuilt instead of
+copying today's SQLite, audit, intake or projections. Later
+file edits, terminal status/supersession, later graph updates and unknowable text
+rewrites are flagged. `created=` is **not** revision history: retained historical
+text cannot be certified clean, so `rewrite_history_unknown` excludes it from
+strict historical claims. `snapshot: "present_diagnostic"` deliberately uses
+present canonical source with one initial build per arm; it is always labelled
+diagnostic, never a historical baseline. Chronological capture still seeds at
+the exact first turn and admits subsequent completed turns without daily reseeding. Clean prospective snapshots/observations are still needed to confirm
+historical quality.
+
+#### Arms, observation and blinded review
+
+Arms are `current-only` (profile/expiry off), pre-registered
+`length-only-abstention`, `profile-on`, `intent-expiry`, and optional
+`historical-baseline`. Paired comparisons are length-only abstention versus
+current, profile versus current, expiry versus current, and current versus the
+historical baseline. Switches go through production config normalization and
+app memory composition: `memory.profile.enabled` and
+`memory.recall.intentExpiry`. The expiry arm
+uses conservative automatic exclusion of all dated/closed intention notes,
+without mutating legacy source. Recency has no automatic-retrieval arm because
+it applies only to deliberate search; intention capture quality requires a
+separately reviewed capture workload. A rejected or dropped flag yields `unsupported`,
+not simulated results. Optional transcript lines form a separate historical
+baseline. No reader chat-model call is needed for retrieval replay.
+
+The evaluator observes the composed block the **production harness actually
+passes to runtime invocation**, including profile, guidance and similarity;
+it does not report backend candidates as injected lines. Total block bytes and
+repeated rendered-line bytes are separate. Repeated bytes exclude section
+headings/framing. Capture candidates are reviewed separately from injected
+lines. Cold in-memory replay does not prove warm provider-session de-duplication.
+Day-boundary rebuilds replace only the native store behind the existing proxy:
+the per-arm retrieval service, volatile receipts, harness history and
+repeated-line observation state are not reset. Production cold-epoch rules still
+apply; replay does not fabricate retained-session invocation
+receipts or enable durable/warm sessions.
+
+Embedding requests, indexing work, completion invocations and replay latency
+are counted separately; completion invocations are not native model steps.
+A run-local in-memory embedding cache shares SHA-256-keyed exact text/model/
+dimension/provider-identity results across arms and snapshots, including
+in-flight requests; no cache key, text or vector cache is persisted or logged.
+Only real miss batches reserve embedding calls/tokens. Separate
+`embeddingCacheHits` and `indexingEmbeddingCacheHits` count reused texts; their
+per-turn aggregate rates are diagnostic. Failed/invalid batches are not cached.
+Global cache warming means latency/request comparisons are order-dependent
+pipeline diagnostics, not cold-provider performance comparisons.
+
+A private, atomically replaced `progress.json` contains a fixed arm enum and
+numeric `turnsDone`, `turnsTotal`, `elapsedMs`, `phase`, `judgedDone`,
+`judgedTotal` and `retries`. Phase `0` is replay; phase `1` is judging.
+Replay checkpoints remain at day/snapshot boundaries and arm completion (not
+every turn). Judging checkpoints count successful **unique turn/line pairs** and
+additional completion attempts, with serialized writes even under concurrency.
+They contain no snapshot dates, source IDs, paths, text, cache keys or model
+responses. A complete judging count is not proof that the whole evaluation
+finished. Budget exhaustion reports `private_budget_exhausted`, including
+reservation exhaustion swallowed by production recall wrappers; progress is not
+proof of a completed/evaluable run.
+
+Every replay writes a blinded `review.json`: opaque IDs plus empty labels, no
+arm identities or text. To review content without writing it into sheets, add
+`--private-review` to the replay command **in a non-recording local TTY**. The
+in-memory review displays owner text and rendered/captured lines in blinded
+order directly on `/dev/tty`, never stdout/stderr or a server. It stores only
+`human-review.json` ID/label annotations. Do not use terminal recording,
+`script`, output capture, or a logged session. Interactive review is not run by
+CI. Copy the completed opaque annotations to the input root's
+`annotations.json`, then analyze without constructing providers or reading turns:
+
+```bash
+node scripts/memory-e2e-benchmark.mjs --private --private-mode analyze \
+  --private-input-root /OWNER-ONLY/EVAL-INPUT \
+  --private-output-root /OWNER-ONLY/EXISTING-REPLAY-OUTPUT \
+  --private-store-root /OWNER-ONLY/STORE-SOURCE
+```
+
+Before any provider is constructed, private mode refuses the presence of SDK
+logging controls (`ANTHROPIC_LOG`, `OPENAI_LOG`, `GOOGLE_SDK_NODE_LOGGING`,
+`AZURE_LOG_LEVEL`, `AWS_SDK_LOG_LEVEL`, `AWS_SDK_JS_LOG_LEVEL`) or process debug
+controls (`DEBUG`, `NODE_DEBUG`, `NODE_DEBUG_NATIVE`). Empty, off, and invalid
+values also refuse: SDKs may log warnings while parsing them. The shared guard
+applies to all admitted native Pi SDK routes, not only one provider family.
+
+The model judge is **off by default**. Explicit `--private-judge
+ollama:LOCAL-JUDGE-MODEL` enables a local hook. For a Pi-native capture or judge
+route, additionally repeat `--allow-private-provider-route provider:model` for
+each role's route and declare the identical reference in `productionRoutes`.
+The operator must confirm it is already used by the owner's production agent
+for the same data; this is not permission to choose another hosted provider.
+Only built-in Pi routes are accepted. Recording/tracing callbacks, provider
+logs, tools, artifact sinks and durable session roots are forbidden; native
+sessions stay in `MemorySessionRepo`. Otherwise the route refuses execution.
+The local completion seam also refuses HTTP redirects. Hosted judge setup and
+credential availability are checked before snapshot reconstruction/indexing;
+Pi's credential check sends no request and does not refresh OAuth. The actual
+completion still determines model entitlement and credential validity.
+
+Use `--pi-auth-path /OWNER-ONLY/PI-AUTH.json` to select the same Pi auth store as
+the real benchmark/production route. The path must be absolute, outside the
+repository, and a regular, non-symlink,
+single-link file owned by the current uid with no group/other permission bits.
+Its immediate parent must belong to that uid and not be group/other-writable;
+read/execute bits are allowed (0755 passes; 0775/0777 refuse). Auth file/parent
+ACLs are refused, and existing trusted-ancestry checks still apply. Unsafe or
+missing paths report `private_auth_path_refused` before credential loading.
+The selection is execution-only: neither the path nor credentials enter
+artifacts. The existing
+lazy Pi resolver handles normal reads and OAuth refreshes on that store; do not
+copy rotating OAuth credentials to a second store. Without the flag, only the
+native provider's ambient authentication is used; no consumer config or default
+Pi credential file is discovered.
+
+```bash
+node scripts/memory-e2e-benchmark.mjs --private --private-mode retrieval \
+  --private-input-root /OWNER-ONLY/EVAL-INPUT \
+  --private-output-root /OWNER-ONLY/NEW-JUDGED-OUTPUT \
+  --private-store-root /OWNER-ONLY/STORE-SOURCE \
+  --private-judge PROVIDER:MODEL \
+  --allow-private-provider-route PROVIDER:MODEL \
+  --pi-auth-path /OWNER-ONLY/PI-AUTH.json \
+  --private-judge-concurrency 4
+```
+
+Judging uses `--private-judge-concurrency N` (integer 1–8, default 4) and reuses
+one successful label for identical **turn ID + exact rendered line** pairs
+across arms. Different turns remain distinct, even when their text matches.
+Keys, prompts and deduplication state remain volatile; only each original opaque
+review ID and its label enter `model-review.json`.
+
+The judge pool makes at most three attempts for a trusted transient transport
+failure, with bounded exponential jitter. Auth/route/setup failures, permanent
+provider rejection and invalid JSON/labels are not retried. Native SDK retries
+and fallback routing remain disabled: each pool attempt is separately metered.
+Both backoff and concurrent calls respect the run's global deadline and
+reservations. A terminal failure stops new pool admissions and cancels/settles
+siblings before cleanup. This is bounded retry, **not** resume/checkpointed model
+annotations: exhausting retries still fails the run rather than reporting fake
+success or silently substituting missing labels.
+
+Failures remain codes only: `private_provider_route_refused` for route admission,
+`private_judge_unavailable` for judge construction,
+`private_provider_auth_failed` for missing/unreadable or rejected authentication,
+`private_provider_failed` for runtime/transport failures, and
+`private_judge_output_invalid` for malformed JSON or an unrecognized label.
+Initial embedding and other snapshot failures use `private_embedding_failed`
+and `private_snapshot_failed`; privacy and budget codes remain distinct.
+Preflight confirms availability, not a provider health or quality claim.
+Model annotations go to
+`model-review.json`, never silently replacing human judgments. Any adoption or
+provider-backed run remains the owner's explicit decision.
+
+#### Measurement and artifact boundary
+
+Reports separate useful precision/coverage, partial rate, noise/stale rates,
+follow-up versus direct coverage, useful-line counts, latency and repeated
+bytes. Coverage uses **all** selected turns, including zero-line turns;
+precision uses judged invoked lines. Capture yield/labels have separate metrics, including counts per observed UTC
+day; day coordinates are opaque and no dates enter artifacts.
+Pairs match turn IDs and resample **whole conversations together** on both arms
+(2,000 paired bootstrap draws, percentile 95% intervals), not independent lines.
+Fewer than 400 turns, 50 follow-ups, 100 judged follow-up current-only baseline lines, two
+paired conversations, or incomplete judging makes a comparison `inconclusive`.
+Per-day capture yield is a point estimate only, explicitly labelled **no
+interval**: conversation resampling does not preserve day exposure multiplicity.
+Diagnostic intervals cannot establish historical truth. Missing arms are not
+quality successes.
+
+Compare current recall against length-only abstention without treating zero
+injection as perfect precision. Review profile support/omissions privately and
+compare profile versus current coverage and noise; verify unchanged warm
+profile/served recall adds zero bytes in a separate retained-provider scenario.
+Numbers here are evidence, not automatic enablement or owner acceptance.
+
+Private output serialization is a field/value allowlist, not string redaction.
+Evaluation artifacts never contain raw blocks, owner/capture text, transcripts,
+model responses, private plan fields, paths or exception messages. Only necessary
+opaque coordinates/labels, numeric observations, aggregate summaries and code
+digests survive. Native disposable clones temporarily hold canonical memory and
+the production completed-turn intake/plan caches; normal cleanup settles and
+removes them, rather than exporting those files as evaluation logs. Failed
+cleanup retains only the private clone and returns a stable code; it is not a
+success. Stdout/stderr contain stable codes only, never output paths.
+
+Do not publish inputs, annotations, seeds, protocol keys, observations or private
+manifests. Only owner-approved aggregate numbers and **code** digests may leave
+this private boundary. These fictional tests and runbooks are not a real-owner
+quality result or a provider-isolation guarantee.
+
 ### Corpus and arms
 
 `fictional-v1` has two development and six frozen evaluation histories. Each has

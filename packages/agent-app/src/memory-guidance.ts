@@ -1,5 +1,6 @@
 import type { MemoryLoadOptions } from "@mono-agent/agent-contracts";
 import { createHash } from "node:crypto";
+import { automaticIntentEligible, recallLineStatus } from "@mono-agent/memory/bujo";
 import type { EntityRecord, MemoryDb } from "@mono-agent/memory/store";
 import type { MemoryRecallHit } from "./memory-recall.js";
 
@@ -8,7 +9,7 @@ export interface LabelRecallStore {
   labelsForEntity?(id: string, date?: string): readonly MemoryLabelHit[];
   guidanceForScope?(scope: string): readonly MemoryLabelHit[];
   findMemoryEntitiesByNames?(names: readonly string[]): readonly EntityRecord[];
-  /** Labels on these memory ids; used only to show a recalled line's attribution. */
+  /** Labels on these memory ids: attribution and deliberate label sections. */
   labelsForMemories?(memoryIds: readonly string[]): readonly MemoryLabelHit[];
 }
 
@@ -130,6 +131,7 @@ export function formatMemoryBackground(
   byteBudget = MAX_BACKGROUND_BYTES,
   /** Memory ids already shown in the possibly-relevant block. */
   shownMemoryIds: ReadonlySet<string> = new Set(),
+  intentExpiry = false,
 ): { readonly content: string; readonly truncated: boolean } | undefined {
   if (store.guidanceForScope === undefined || store.labelsForEntity === undefined) return undefined;
   const date = options.hostLocalDate ?? options.hostDate;
@@ -139,9 +141,10 @@ export function formatMemoryBackground(
   const floor = guidanceScoreFloor(hits.map((hit) => hit.score));
   const ranked = new Set([...hits].sort((a, b) => b.score - a.score).slice(0, GUIDANCE_MAX_RANK).map((hit) => hit.record.id));
   // Opposite statements may both appear; the main model judges them.
-  const guidance = scopes.flatMap((scope) => store.guidanceForScope!(scope))
-    .filter((hit) => hit.active && (hit.label.kind === "preference" || (hit.label.kind === "lesson" && hit.label.verified))
-      && ranked.has(hit.memoryId) && (scores.get(hit.memoryId) ?? 0) >= floor && !shownMemoryIds.has(hit.memoryId))
+  const scoped = scopes.flatMap((scope) => store.guidanceForScope!(scope))
+    .filter((hit) => (!intentExpiry || automaticIntentEligible(hit)) && hit.active && (hit.label.kind === "preference" || (hit.label.kind === "lesson" && hit.label.verified))
+      && ranked.has(hit.memoryId) && (scores.get(hit.memoryId) ?? 0) >= floor && !shownMemoryIds.has(hit.memoryId));
+  const guidance = scoped
     .sort((a, b) => (scores.get(b.memoryId) ?? 0) - (scores.get(a.memoryId) ?? 0) || a.memoryId.localeCompare(b.memoryId))
     .filter((hit, index, all) => all.findIndex((other) => other.text === hit.text) === index);
 
@@ -153,7 +156,8 @@ export function formatMemoryBackground(
   // A named person gets the whole current card; conflicting values ask.
   const cards: string[] = [];
   for (const entity of entities.filter((entry) => !ambiguous.has(entry.id)).slice(0, 3)) {
-    const facts = store.labelsForEntity(entity.id, date).filter((hit) => hit.label.kind === "fact" && hit.label.key !== undefined && hit.active
+    const allFacts = store.labelsForEntity(entity.id, date);
+    const facts = allFacts.filter((hit) => !intentExpiry || automaticIntentEligible(hit)).filter((hit) => hit.label.kind === "fact" && hit.label.key !== undefined && hit.active
       && (hit.label.attribution === "user-stated" || hit.label.attribution === "document"));
     const parts: string[] = [];
     for (const key of [...new Set(facts.flatMap((hit) => hit.label.kind === "fact" && hit.label.key !== undefined ? [hit.label.key] : []))]) {
@@ -193,4 +197,44 @@ export function formatMemoryBackground(
   addSection("Working preferences & lessons:", guidance.slice(0, 3).map((hit) => safeLine(hit.text)));
   addSection("Person card:", cards);
   return selected.length > 1 ? { content: selected.join("\n"), truncated } : truncated ? { content: "", truncated } : undefined;
+}
+
+/** The profile is a read-only projection; source ids are for private inspection only. */
+export interface MemoryProfile {
+  readonly content: string;
+  readonly entries: readonly { readonly id: string; readonly text: string }[];
+  readonly fingerprint: string;
+  readonly truncated: boolean;
+}
+
+/** Whole supported entries, deterministic byte ordering, including the heading in the budget. */
+export function formatMemoryProfile(store: LabelRecallStore, date: string, byteBudget = Infinity, now?: string): MemoryProfile {
+  const sources = [...(store.guidanceForScope?.("agent") ?? []), ...(store.labelsForEntity?.("person:owner", date) ?? [])];
+  const supported = sources
+    .filter((hit) => hit.active && !hit.conflict && hit.type === "note" && hit.status === "open"
+      && hit.dueAt === undefined && hit.supersededBy === undefined
+      && recallLineStatus(hit, date, now) === "current"
+      && ((hit.label.kind === "preference" && hit.label.scope === "agent" && hit.label.attribution === "user-stated")
+        || (hit.label.kind === "fact" && hit.label.entityId === "person:owner" && hit.label.attribution === "user-stated"
+          && hit.currentAt === true)))
+    .sort((a, b) => Buffer.compare(Buffer.from(b.createdAt), Buffer.from(a.createdAt))
+      || Buffer.compare(Buffer.from(a.memoryId), Buffer.from(b.memoryId)) || a.ordinal - b.ordinal);
+  const heading = "## Owner profile (current owner-stated background)";
+  const entries: Array<{ id: string; text: string }> = [];
+  const lines = [heading];
+  let truncated = false;
+  for (const hit of supported) {
+    const text = safeLine(hit.text);
+    if (!text || entries.some((entry) => entry.text === text)) continue;
+    const next = [...lines, `- ${text}`].join("\n");
+    if (Array.from(next).length > 600 || Buffer.byteLength(next, "utf8") > byteBudget) {
+      truncated = true;
+      continue;
+    }
+    lines.push(`- ${text}`);
+    entries.push({ id: hit.memoryId, text });
+  }
+  const content = entries.length === 0 ? "" : lines.join("\n");
+  return { content, entries, truncated,
+    fingerprint: createHash("sha256").update(JSON.stringify(entries)).digest("hex") };
 }

@@ -559,3 +559,53 @@ it("reports steering admission as an observation of the bound controller", async
   expect(operations).toEqual([...operations].sort());
   expect(operations).toContain("AgentManage.steer");
 });
+
+
+it("keeps memory errors and opt-in private memory content out of host warnings and traces", async () => {
+  const identityPath = await identityFixture();
+  const sentinel = "FICTIONAL_PRIVATE_RECORD /fictional/private/record.md";
+  for (const failing of [true, false]) {
+    const recorder = new SpyRecorder();
+    const fake = createFakeRuntime();
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, recorderFactory: () => recorder,
+      memory: { async load() {
+        if (failing) throw new Error(sentinel);
+        return { kind: "markdown", content: sentinel, source: "memory", truncated: false, traceContent: false };
+      } },
+    });
+    try {
+      await harness.run(request("private-memory", "Describe a fictional repair."));
+      expect(JSON.stringify(recorder.events)).not.toContain(sentinel);
+      if (failing) expect(recorder.events.filter((event) => event.type === "runtime_warning"))
+        .toMatchObject([{ warning_kind: "memory_degraded", error_code: "memory_recall_unavailable", message: "memory_recall_unavailable" }]);
+      else {
+        expect(fake.calls[0]!.options.messages!.at(-1)!.content).toContain(sentinel);
+        expect(turnContextEvents(recorder.events)[0]).toMatchObject({ memoryBytes: Buffer.byteLength(sentinel) });
+      }
+    } finally { await harness.dispose!(); }
+  }
+});
+
+it("passes retained context from host history mode and records only successful retained invocations", async () => {
+  const identityPath = await identityFixture();
+  const loaded: Array<{ turnId?: string; retainedContext?: boolean }> = [];
+  const receipts: string[] = [];
+  const reset: Array<string | undefined> = [];
+  const fake = createFakeRuntime(async (_prompt, _options, call) => call === 3
+    ? { text: "", error: "fictional-failure", providerSessionId: "session" }
+    : { text: "ok", providerSessionId: "session" });
+  const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, session,
+    historyStore: createInMemoryHistoryStore(), memory: {
+      async load(_id, _query, options) { loaded.push(options ?? {}); return undefined; },
+      recordInvocation: (turnId) => receipts.push(turnId), resetRecallContext: (id) => reset.push(id),
+    },
+  });
+  try {
+    for (let index = 0; index < 3; index++) await harness.run(request("receipt-context", "Fictional question."));
+    expect(loaded.map((item) => item.retainedContext)).toEqual([false, true, true]);
+    expect(receipts).toEqual(loaded.slice(0, 2).map((item) => item.turnId));
+    await harness.resetConversation!("receipt-context");
+    expect(reset).toEqual(["receipt-context"]);
+  } finally { await harness.dispose!(); }
+  expect(reset.at(-1)).toBeUndefined();
+});

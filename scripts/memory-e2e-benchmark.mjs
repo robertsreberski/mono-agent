@@ -10,13 +10,16 @@ import { prepareRealBuild, sourceState, verifyRealBuild } from "./lib/memory-e2e
 const ROOT = fileURLToPath(new URL("../", import.meta.url)).replace(/\/$/u, "");
 export function parseArguments(argv) {
   const flags = {};
-  const boolean = new Set(["dry-run", "real", "help", "allow-hosted-locomo-transfer", "allow-measured-output"]);
-  const valued = new Set(["corpus", "dataset", "split", "reader", "extractor", "embedding-provider", "embedding-model", "dimension", "confirm-plan", "pi-auth-path", "locomo-experiment", "locomo-arm", "reuse-artifact"]);
+  const boolean = new Set(["dry-run", "real", "help", "allow-hosted-locomo-transfer", "allow-measured-output", "private", "private-review"]);
+  const valued = new Set(["corpus", "dataset", "split", "reader", "extractor", "embedding-provider", "embedding-model", "dimension", "confirm-plan", "pi-auth-path", "locomo-experiment", "locomo-arm", "reuse-artifact",
+    "private-mode", "private-input-root", "private-output-root", "private-store-root", "private-embedding-model", "private-dimension", "private-capture-route", "private-judge", "private-judge-concurrency", "private-max-runtime-ms", "allow-private-provider-route"]);
   for (let i = 0; i < argv.length; i += 1) {
     const key = argv[i].replace(/^--/u, "");
-    if (argv[i] !== `--${key}` || Object.hasOwn(flags, key) || (!boolean.has(key) && !valued.has(key))) throw new Error("invalid_arguments");
-    flags[key] = boolean.has(key) ? true : argv[++i];
-    if (flags[key] === undefined || (valued.has(key) && flags[key].startsWith("--"))) throw new Error("missing_argument");
+    if (argv[i] !== `--${key}` || (Object.hasOwn(flags, key) && key !== "allow-private-provider-route") || (!boolean.has(key) && !valued.has(key))) throw new Error("invalid_arguments");
+    const value = boolean.has(key) ? true : argv[++i];
+    if (value === undefined || (valued.has(key) && value.startsWith("--"))) throw new Error("missing_argument");
+    if (key === "allow-private-provider-route") { flags[key] ??= []; flags[key].push(value); }
+    else flags[key] = value;
   }
   return flags;
 }
@@ -44,9 +47,19 @@ export function profileFrom(flags) {
 }
 
 export async function main(argv = process.argv.slice(2), { stdout = console.log, prepareBuild = prepareRealBuild } = {}) {
+  const privateRequested = argv.some((arg) => arg === "--private" || arg.startsWith("--private-") || arg === "--allow-private-provider-route");
+  if (privateRequested) {
+    const { PrivateError } = await import("./lib/memory-e2e-private-input.mjs");
+    if (Object.hasOwn(process.env, "CI")) throw new PrivateError("private_ci_refused");
+    let privateFlags;
+    try { privateFlags = parseArguments(argv); } catch { throw new PrivateError("private_arguments_invalid"); }
+    if (!privateFlags.private) throw new PrivateError("private_arguments_invalid");
+    const { privateMain } = await import("./lib/memory-e2e-private-runner.mjs");
+    return privateMain(privateFlags, { root: ROOT, stdout, prepareBuild });
+  }
   const flags = parseArguments(argv);
   if (flags.help) {
-    stdout("memory-e2e-benchmark [--dry-run] [--corpus fictional-v1|bujo-learning-v1|capture-fidelity-v1|locomo-v1] [--dataset PATH] [--split development|evaluation] [--pi-auth-path PATH] [--allow-hosted-locomo-transfer] [--allow-measured-output] [--locomo-experiment locomo-bujo-eval-v1-rank5-development-30|locomo-bujo-eval-v1-rank6-confirmation-20] [--locomo-arm full-history|bujo|both] [--reuse-artifact PATH]\nDefault: scripted offline production-path contract, NOT model quality. LoCoMo requires a separately downloaded, pinned --dataset file and is CC BY-NC 4.0 noncommercial-only input.\nReal execution: --real --reader provider:model --extractor provider:model --embedding-provider ollama|lmstudio|openai --embedding-model model --dimension N [--pi-auth-path PATH] [--allow-measured-output] --confirm-plan SHA256\n--allow-measured-output is an explicit plan-bound opt-in for a provider whose output is measured but not wire-capped; ordinary strict execution keeps refusing that route. Within one successful LoCoMo invocation, capture runs once and questions use independent histories. --reuse-artifact reuses only an exact completed result; it cannot resume capture or readers from an incomplete run. A dry-plan confirmation is not execution authorization. Hosted LoCoMo is rejected unless --allow-hosted-locomo-transfer affirmatively selects the documented Luna chat/local bge-m3 profile.\nFirst obtain SHA256 with the same profile and flags in --dry-run. Outputs stay under .worklab-tmp/memory-e2e. The benchmark never downloads datasets or changes consumer configuration.");
+    stdout("memory-e2e-benchmark [--dry-run] [--corpus fictional-v1|bujo-learning-v1|capture-fidelity-v1|locomo-v1] [--dataset PATH] [--split development|evaluation] [--pi-auth-path PATH] [--allow-hosted-locomo-transfer] [--allow-measured-output] [--locomo-experiment locomo-bujo-eval-v1-rank5-development-30|locomo-bujo-eval-v1-rank6-confirmation-20] [--locomo-arm full-history|bujo|both] [--reuse-artifact PATH]\nDefault: scripted offline production-path contract, NOT model quality. LoCoMo requires a separately downloaded, pinned --dataset file and is CC BY-NC 4.0 noncommercial-only input.\nReal execution: --real --reader provider:model --extractor provider:model --embedding-provider ollama|lmstudio|openai --embedding-model model --dimension N [--pi-auth-path PATH] [--allow-measured-output] --confirm-plan SHA256\n--allow-measured-output is an explicit plan-bound opt-in for a provider whose output is measured but not wire-capped; ordinary strict execution keeps refusing that route. Within one successful LoCoMo invocation, capture runs once and questions use independent histories. --reuse-artifact reuses only an exact completed result; it cannot resume capture or readers from an incomplete run. A dry-plan confirmation is not execution authorization. Hosted LoCoMo is rejected unless --allow-hosted-locomo-transfer affirmatively selects the documented Luna chat/local bge-m3 profile.\nFirst obtain SHA256 with the same profile and flags in --dry-run. Outputs stay under .worklab-tmp/memory-e2e. The benchmark never downloads datasets or changes consumer configuration.\nPrivate owner replay: --private --private-mode retrieval|capture|analyze --private-input-root ABS --private-output-root ABS --private-store-root ABS. Refused in CI; no checkout-owned fallback. See docs/memory/benchmarking.md.");
     return 0;
   }
   const { head } = sourceState(ROOT);
@@ -121,9 +134,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     // The report is durable before ending this standalone CLI. Even successful
     // transports can retain handles; process exit is not provider cancellation.
     process.stdout.write("", () => process.exit(code));
-  }).catch(() => {
+  }).catch((error) => {
     // Raw runtime/config failures can contain credentials and paths.
-    console.error("memory-e2e: failed; check flags, built dependency closure, and the owned report if present. No quality result is implied.");
+    if (process.argv.slice(2).some((arg) => arg === "--private" || arg.startsWith("--private-") || arg === "--allow-private-provider-route")) {
+      console.error(error?.constructor?.name === "PrivateError" ? error.code : "private_operation_failed");
+    } else console.error("memory-e2e: failed; check flags, built dependency closure, and the owned report if present. No quality result is implied.");
     process.exitCode = 1;
     process.stderr.write("", () => process.exit(1));
   });

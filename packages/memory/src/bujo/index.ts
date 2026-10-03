@@ -212,3 +212,6 @@ export type {
 } from "./migrate.js";
 export { readBujoCanonicalSourceFingerprint } from "./replay-projection.js";
 export { writeFutureLog, writeIndex } from "./projections.js";
+
+export { rankDeliberateRecallHits } from "./recency.js";
+export { automaticIntentEligible } from "./recall.js";

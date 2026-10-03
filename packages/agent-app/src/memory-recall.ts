@@ -8,7 +8,7 @@ import type { MemoryStatus, MemoryType } from "@mono-agent/memory/store";
 import { AUTO_RECALL_MIN_SCORE, recallLineStatus } from "@mono-agent/memory/bujo";
 import { normalizeOptionalString } from "@mono-agent/agent-contracts";
 import * as z from "zod/v4";
-import { readLabelSections, type LabelKind, type LabelSectionRequest, type LabelSections } from "./memory-label-sections.js";
+import { readLabelSections, type LabelKind, type LabelContext, type LabelSectionRequest, type LabelSections } from "./memory-label-sections.js";
 import type { LabelRecallStore } from "./memory-guidance.js";
 
 import type {
@@ -64,7 +64,10 @@ export interface MemoryRecallOutcome {
 
 /** Read-only recall surface the MCP server formats. Both backend stores satisfy it structurally. */
 export interface RecallCapableStore extends LabelRecallStore {
-  labelSections?(request: LabelSectionRequest, candidates: readonly MemoryRecallHit[]): LabelSections | undefined;
+  intentExpiryEnabled?(): boolean;
+  recencyEnabled?(): boolean;
+  rankDeliberateRecall?(hits: readonly MemoryRecallHit[]): readonly MemoryRecallHit[];
+  labelSections?(request: LabelSectionRequest, candidates: readonly MemoryRecallHit[], observation?: LabelContext): LabelSections | undefined;
   recall(
     query: string,
     options?: { readonly topK?: number; readonly trackAccess?: boolean },
@@ -134,6 +137,7 @@ export async function createRecallStore(settings: MemoryRecallSettings): Promise
       root: settings.root,
       dbPath,
       readOnly: true,
+      ...(settings.recall === undefined ? {} : { recall: settings.recall }),
       ...(settings.tier === undefined ? {} : { tier: settings.tier }),
       ...(settings.ftsOnlyFallback === true ? { allowFtsFallback: true } : {}),
     });
@@ -143,6 +147,7 @@ export async function createRecallStore(settings: MemoryRecallSettings): Promise
     root: settings.root,
     dbPath,
     readOnly: true,
+    ...(settings.recall === undefined ? {} : { recall: settings.recall }),
     ...(settings.tier === undefined ? {} : { tier: settings.tier }),
     embeddings: provider,
     dim: embeddings.dim ?? 768,
@@ -182,11 +187,11 @@ export function calibrateRecallHits<T extends { readonly score: number }>(hits: 
 }
 
 /** Only records that carry lifecycle metadata get a currentness marker. */
-export function recallHitCurrentness(hit: MemoryRecallHit, today: string, now?: string): RecallHitCurrentness | undefined {
+export function recallHitCurrentness(hit: MemoryRecallHit, today: string, now?: string, intentExpiry = false): RecallHitCurrentness | undefined {
   const { type, status, validTo, dueAt, createdAt, supersededBy } = hit.record;
   if (type === undefined && status === undefined && validTo === undefined && dueAt === undefined
     && createdAt === undefined && supersededBy === undefined) return undefined;
-  return recallLineStatus(hit.record, today, now);
+  return recallLineStatus(hit.record, today, now, intentExpiry);
 }
 
 /** Bounded candidate window retained for compatibility with explicit recall consumers. */
@@ -265,14 +270,17 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
 
   const handleRecall = async (args: ToolArgs) => {
     const originalMode = args.useOriginalQuery === true;
+    const intentExpiry = store.intentExpiryEnabled?.() === true;
+    const recency = store.recencyEnabled?.() === true && store.rankDeliberateRecall !== undefined;
+    const retrievalLimit = recency ? 50 : clampLimit(args.limit, 8);
     let effectiveQuery: string;
     let originalOutcome: MemoryRecallOutcome | undefined;
     if (originalMode) {
       let original: Awaited<ReturnType<NonNullable<RecallCapableStore["recallOriginalWithOutcome"]>>> | undefined;
       try {
-        original = await store.recallOriginalWithOutcome?.({ topK: clampLimit(args.limit, 8) });
+        original = await store.recallOriginalWithOutcome?.({ topK: retrievalLimit });
       } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
+        const reason = intentExpiry || recency ? "memory_recall_unavailable" : error instanceof Error ? error.message : String(error);
         return {
           content: [{ type: "text" as const, text: `Original-query memory recall is temporarily unavailable: ${reason}` }],
           structuredContent: { hits: [], queryMode: "original", degraded: true, reason },
@@ -322,19 +330,19 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
         calibrated = originalOutcome.retrievalMode === "hybrid" && degradation === undefined;
         // The bound capability already applies the same graph policy while
         // reusing its original direct lookup, so never expand it a second time.
-        hits = originalOutcome.hits.slice(0, topK);
+        hits = originalOutcome.hits.slice(0, retrievalLimit);
         candidates = originalOutcome.hits.slice(0, Math.max(RECALL_CONFLICT_WINDOW, topK));
       } else {
         const direct = store.recallWithOutcome === undefined
           ? {
               hits: await store.recall(effectiveQuery, {
-                topK: graphEnabled ? 50 : topK,
+                topK: graphEnabled ? 50 : retrievalLimit,
                 trackAccess: false,
               }),
               retrievalMode: "hybrid" as const,
             }
           : await store.recallWithOutcome(effectiveQuery, {
-              topK: graphEnabled ? 50 : topK,
+              topK: graphEnabled ? 50 : retrievalLimit,
               // The bundled recall process opens the active generation read-only.
               // Never ask a store to mutate access telemetry on this path.
               trackAccess: false,
@@ -347,15 +355,17 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
         candidates = direct.hits.slice(0, Math.max(RECALL_CONFLICT_WINDOW, topK));
         const directHits = calibrated ? calibrateRecallHits(direct.hits) : direct.hits;
         hits = !graphEnabled || store.expandGraph === undefined
-          ? directHits.slice(0, topK)
-          : await store.expandGraph(effectiveQuery, directHits, { topK });
+          ? directHits.slice(0, retrievalLimit)
+          : await store.expandGraph(effectiveQuery, directHits, { topK: retrievalLimit });
         if (calibrated) hits = calibrateRecallHits(hits);
       }
+      if (recency && calibrated) hits = store.rankDeliberateRecall!(hits).slice(0, topK);
+      else if (recency) hits = hits.slice(0, topK);
       // Record only the final served set. Read-only BuJo recall stores make
       // this a no-op; shared writable stores deduplicate it for the turn.
       store.recordAccess?.(hits.map((hit) => hit.record.id));
     } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
+      const reason = intentExpiry || recency ? "memory_recall_unavailable" : error instanceof Error ? error.message : String(error);
       return {
         content: [{ type: "text" as const, text: `${originalPrefix}Memory recall is temporarily unavailable: ${reason}` }],
         structuredContent: { hits: [], degraded: true, reason, ...originalMetadata },
@@ -363,14 +373,15 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
     }
     const observedAt = new Date();
     const today = `${observedAt.getFullYear()}-${String(observedAt.getMonth() + 1).padStart(2, "0")}-${String(observedAt.getDate()).padStart(2, "0")}`;
+    const labelObservation = { hostLocalDate: today, hostInstant: observedAt.toISOString() };
     let sections: LabelSections | undefined;
     try {
-      sections = store.labelSections?.({ query: effectiveQuery,
+      const request: LabelSectionRequest = { query: effectiveQuery,
         ...(args.kind === undefined ? {} : { kind: args.kind }),
-        ...(args.about === undefined ? {} : { about: args.about }) }, candidates)
-        ?? readLabelSections(store, { query: effectiveQuery,
-          ...(args.kind === undefined ? {} : { kind: args.kind }),
-          ...(args.about === undefined ? {} : { about: args.about }) }, { hostLocalDate: today }, candidates);
+        ...(args.about === undefined ? {} : { about: args.about }) };
+      sections = (intentExpiry ? store.labelSections?.(request, candidates, labelObservation)
+        : store.labelSections?.(request, candidates))
+        ?? readLabelSections(store, request, intentExpiry ? labelObservation : { hostLocalDate: today }, candidates, intentExpiry);
     } catch { /* A bad label cannot discard the normal dated hits. */ }
     const sectionPrefix = sections?.text ? `${sections.text}\n\n` : "";
     const sectionFields = sections === undefined ? {} : {
@@ -407,7 +418,7 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
         },
       };
     }
-    const currentness = hits.map((hit) => calibrated ? recallHitCurrentness(hit, today, observedAt.toISOString()) : undefined);
+    const currentness = hits.map((hit) => calibrated || intentExpiry ? recallHitCurrentness(hit, today, observedAt.toISOString(), intentExpiry) : undefined);
     const evidence = calibrated ? recallEvidenceNote(effectiveQuery, hits, sections, candidates) : undefined;
     const hitText = hits
       .map((hit, index) => `${hit.score.toFixed(3)}  ${formatHitDates(hit, currentness[index])}${lifecyclePrefix(hit)}${hit.record.text}`)

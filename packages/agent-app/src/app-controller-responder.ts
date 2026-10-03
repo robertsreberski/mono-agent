@@ -318,10 +318,12 @@ export async function buildResponder(
     () => false,
   );
   const observabilityContext = await controller.observabilityContext();
+  const datedConversationSearch = coreConfig.memory?.mode === "bujo" && coreConfig.memory.backend === "bujo" && coreConfig.tools.conversationSearch?.datedSnippets === true;
   const consoleProjectsExtension = observabilityContext.sourceId === undefined ? undefined : createConsoleProjectsRuntimeExtension({
     sourceId: observabilityContext.sourceId, policy: coreConfig.tools,
     channelProjects: await telegramProjectsConfigured(controller.configReadPath),
-    onUnavailable: () => { controller.logger?.warn?.("Console project tools could not authenticate the active turn; tools are unavailable."); },
+    datedSnippets: datedConversationSearch,
+    onUnavailable: () => { controller.logger?.warn?.(datedConversationSearch ? "conversation_search_unavailable" : "Console project tools could not authenticate the active turn; tools are unavailable."); },
   });
   const conversationTitleExtension = conversationTitleBase;
   const mcpAppsExtension = mcpAppsBase;

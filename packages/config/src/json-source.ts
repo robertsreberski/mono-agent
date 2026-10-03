@@ -220,11 +220,13 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly path?: string;
     readonly maxBytes?: number;
     readonly writeMode?: MemoryWriteMode;
-    readonly capture?: { readonly focus?: string; readonly only?: readonly string[]; readonly reconcileModel?: string; readonly cron?: boolean; readonly webhook?: boolean };
+    readonly capture?: { readonly focus?: string; readonly only?: readonly string[]; readonly reconcileModel?: string; readonly cron?: boolean; readonly webhook?: boolean; readonly intentLifecycle?: boolean };
     readonly supermemory?: MonoAgentMemorySupermemoryJson;
     readonly embeddings?: MonoAgentMemoryEmbeddingsJson;
     readonly llm?: MonoAgentMemoryLlmJson;
     readonly recallTool?: { readonly enabled?: boolean };
+    readonly recall?: { readonly intentExpiry?: boolean; readonly recency?: boolean };
+    readonly profile?: { readonly enabled?: boolean };
     readonly rememberTool?: { readonly enabled?: boolean };
     readonly consolidation?: MonoAgentMemoryConsolidationJson;
     /** Removed and ignored; retained so stale JSON stays typed/tolerated. */
@@ -239,6 +241,8 @@ export interface MonoAgentConfigJson extends SettingsJson {
       readonly readableRoots?: readonly string[];
       readonly writableRoots?: readonly string[];
     };
+    /** Default-off BuJo owner-web conversation evidence. */
+    readonly conversationSearch?: { readonly datedSnippets?: boolean };
     /** Opt-in local desktop control via the separately installed cua-driver. */
     readonly computerUse?: {
       readonly backend: "cua-driver";

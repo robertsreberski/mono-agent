@@ -217,6 +217,13 @@ individual WebFetch call may use `render: "always"` for a strict browser-first
 request.
 
 
+### Dated conversation evidence
+
+`tools.conversationSearch.datedSnippets` defaults off and requires local BuJo
+memory. It opts the existing `SearchConversations` tool in to bounded dated
+message matches on owner-authenticated web turns only; Telegram and UI search
+keep legacy behavior. See [console tools](../../docs/tools/mcp.md#console-project-tools).
+
 ### Managed memory embeddings
 
 Journal and BuJo accept `ollama`, `lmstudio`, or `openai` in
@@ -313,6 +320,25 @@ and a matching long-input pricing tier. It is not a subscription guarantee.
 The normalized runtime map is an internal resolved form, not a JSON config field.
 
 ## Architecture
+
+`memory.profile.enabled` is a validated BuJo-only boolean, default off,
+enabling a deterministic owner label profile. See [owner context](../../docs/memory/capture-and-recall.md#optional-bujo-owner-context)
+for budgets, privacy boundaries and retained-session behavior.
+
+
+### Optional supported intentions and recency
+
+BuJo-only `memory.capture.intentLifecycle`, `memory.recall.intentExpiry` and
+`memory.recall.recency` independently default off. Owner-supported intention
+proposals reuse note statuses and `due=`, with superseded history for changes;
+generic terminal/supersession validity is unchanged. Expiry excludes all dated
+and done/dropped notes automatically (including future/ambiguous legacy dates),
+and reviewed deliberate reads use inclusive ends. Recency reorders qualified
+deliberate event/unlabelled-note hits only, at most 0.02 with a 30-day half-life;
+facts/preferences and automatic scores do not decay. Review legacy dates through
+curate before enablement. No new persisted field, date backfill or task list.
+See [intention lifecycle and recency](../../docs/memory/capture-and-recall.md#optional-intention-lifecycle-and-deliberate-recency).
+
 
 ### Data flow
 

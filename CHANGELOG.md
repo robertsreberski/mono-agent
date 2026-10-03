@@ -2,6 +2,63 @@
 
 ## Unreleased
 
+- Keep private memory judging bounded with concurrent, deduplicated calls,
+  transient-only retries and numeric judging progress. Refuse unsafe Pi auth
+  files and writable/foreign auth parents, and preserve budget-exhaustion codes
+  when recall wrappers swallow reservation failures.
+
+- Fix private memory judges to use an explicitly selected Pi auth store and
+  owner-private workspace; check hosted credential availability before snapshot
+  indexing and report distinct code-only setup, auth, runtime and output errors.
+
+- Keep private BuJo retrieval replay bounded by reusing conservative UTC-day
+  snapshots and volatile shared embedding results; meter only real embedding
+  calls, count cache hits separately, and expose content-free private progress
+  with a specific budget-exhaustion code. Preserve cold replay service state
+  across store rebuilds and leave present diagnostics/capture chronology intact.
+
+- Fix intention-policy boundary validation and
+  deliberate fact-sheet currentness; preserve supported ends when omitted and
+  deny recency to invalid recording instants.
+
+- Add independent default-off BuJo intention capture, conservative automatic
+  expiry, and bounded deliberate recency flags. Keep supported state changes
+  as superseded history; exclude all dated and completed/abandoned notes from
+  automatic context after reviewed enablement, without a schema migration.
+
+- Add explicit BuJo `memory curate prepare --semantic-review` for reviewed
+  legacy note/event and label retyping with backup/restore, without invented
+  attribution or dates.
+
+- Add an opt-in private BuJo evaluation mode with external owner-only inputs
+  and disposable replay stores, blinded label-only review, aggregate paired
+  confidence intervals, and code-only failures; keep fictional benchmarks
+  unchanged and refuse private evaluation in CI. Refuse SDK logging controls,
+  embedding redirects and replaced/untrusted ancestors, including ACL grants
+  or unknown ACL metadata across the full canonical ancestry; retain harmless
+  verified deny-only ACLs on higher ancestors and report daily yields as point
+  estimates without confidence intervals.
+
+- Keep graph-expanded recall fresh after memory writes, even when a pre-write
+  search finishes afterward, without discarding pending invocation receipts.
+
+- Add default-off BuJo `memory.profile.enabled` for an embedding-independent,
+  600-code-point owner profile. Suppress unchanged
+  automatic context on retained sessions using invocation receipts; add the
+  read-only `memory profile show` inspection view.
+- Keep memory recall and consolidation failure warnings content-free with
+  stable codes instead of exception text, including when memory opt-ins are off.
+- Fix owner recall receipts across isolated triggers, continuations and
+  Remember writes; honor instant-aware profile expiry and finish shutdown when
+  a memory reset hook fails.
+
+- Add opt-in BuJo `tools.conversationSearch.datedSnippets` for owner-web
+  `SearchConversations` message-date and role filters, bounded dated evidence
+  and console links. Keep legacy search, the console UI and Telegram unchanged.
+  Return stable search codes for malformed rich MCP arguments without validation
+  diagnostics, including unavailable Telegram and flag-off requests, while
+  preserving legacy SDK validation responses when rich search is unavailable.
+
 - Fix sandbox-off and omitted-policy subprocesses to run directly on the host
   when no ProcessJobs roots require protection; report retained-root protection
   truthfully and distinguish confirmed sandbox denials from ordinary permission

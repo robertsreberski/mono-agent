@@ -913,6 +913,16 @@ than redacted, so a mangled value is never persisted behind a success result.
 
 ### Console project tools
 
+Local BuJo agents may opt in with `tools.conversationSearch.datedSnippets: true`
+(default off). On verified owner web turns, `SearchConversations` accepts
+`dated`, inclusive UTC `after` / `before` dates and `role`, and returns up to ten
+conversations by default with a bounded best message's identity, role, creation
+date and console link. Title-only evidence is labelled without a message date.
+Legacy calls, UI search and Telegram responses remain unchanged; rich Telegram
+requests return `conversation_search_unavailable`. Historical results are
+untrusted evidence, a fallback when memory lacks something. No new index or
+history schema is created.
+
 Writable web turns, typed or woken by a background host job, can use `ListProjects`, `GetProject`,
 `CreateProject`, `UpdateProject`, `DeleteProject`, `ListConversations`,
 `SearchConversations`, `CreateConversation`, `SetConversationProject`, `ListTags`,
@@ -1283,9 +1293,34 @@ OS grants, privacy, and safe unattended-operation limits.
 
 ## Architecture
 
+BuJo can opt in to default-off `memory.profile.enabled` (deterministic
+owner-stated label profile, at most 600 Unicode code points), only for verified
+owner web/TUI/ACP turns. The configured harness and app controller wire it from
+resolved config; retained-session suppression uses
+actual invocation receipts. Search invalidation replaces query/expansion caches
+without discarding pending receipts, fencing pre-write lookups from fresh recall;
+isolated turns and host continuations preserve shared provider receipts.
+`mono-agent memory profile show [--json]` is a
+read-only, provider-free inspection view. See [owner context](../../docs/memory/capture-and-recall.md#optional-bujo-owner-context).
+
+
 The controller wraps its shared Pi-store-scoped `provider-usage.ts` service in an agent-config-scoped `provider-usage-scope.ts` operator for web/TUI and `provider-usage-tool.ts` request extensions. Activation reuses provider authentication’s effective primary/fallback, agent-host memory LLM, and enabled cron/webhook model references. Each read reloads channel references; new configs receive new scopes without changing the shared credential cache. Aggregate reads/refreshes visit only active supported providers, and explicit inactive reads return an empty snapshot before credential discovery or vendor work. Credential presence alone never activates usage. Pure mappers retain only Claude/Codex/OpenCode Go/GitHub Copilot core subscription windows. Copilot OAuth quota reads use Pi's underlying GitHub device token (`credential.refresh`), never inference `access`; inference expiry/rotation/model catalogs do not refresh or invalidate usage. Cache/retention identity follows source, GitHub token and Pi-normalized host. Missing/blank refresh or malformed/non-github.com `enterpriseUrl` omits usage without local fallback. Blank/absent host means github.com. Pi API keys are sent directly. All Copilot quota 401/403 responses get one request, no resolver/retry, and the five-minute failure fence. Only absent Pi Copilot entries allow bounded local editor apps.json/hosts.json, the active github.com token in gh hosts.yml, and shell-free noninteractive `gh auth token --hostname github.com` (2s, bounded output, token environment removed). The private `copilot-usage-credentials.ts` discovery seams are injectable; stores are never mutated. Unusable Pi entries or unreadable ownership never select a local account. Only github.com tokens qualify; no environment-token fallback, cookies or organization billing calls. Paid Credits and free Chat/Completions are percentages; unlimited/zero placeholders are omitted and explicit token billing may show only a plan. Demand-driven five-minute caching, coalescing, last-good stale data and Retry-After keep usage reads bounded. Explicit `refresh()` bypasses successful freshness and awaits shared vendor work, but honors error/backoff fences and preserves last-good fetch times. Default snapshots and tool reads retain their cached/SWR behavior. `ProviderUsage` honors normal app-tool policy and never purchases quota or changes routing. Only agent-owned Pi credential success/auth-failure outcomes feed the controller's credential-generation-fenced auth observations without additional vendor calls. Account acceptance is weaker than live inference proof; account rejection has no model and uses the existing `provider_auth` failure kind.
 
 Configured continuous sessions persist the requested primary model with their durable epoch. Per-model runtime factories are cached for the harness lifetime, and history retirement resolves the owning runtime. A model switch cold-seeds one new epoch; repeated overrides stay warm. Existing fallback and proactive-isolation policies continue to apply. See [session boundaries](../../docs/runtime/sessions-concurrency.md).
+
+### Optional supported intentions and recency
+
+BuJo-only `memory.capture.intentLifecycle`, `memory.recall.intentExpiry` and
+`memory.recall.recency` independently default off. Owner-supported intention
+proposals reuse note statuses and `due=`, with superseded history for changes;
+generic terminal/supersession validity is unchanged. Expiry excludes all dated
+and done/dropped notes automatically (including future/ambiguous legacy dates),
+and reviewed deliberate reads use inclusive ends. Recency reorders qualified
+deliberate event/unlabelled-note hits only, at most 0.02 with a 30-day half-life;
+facts/preferences and automatic scores do not decay. Review legacy dates through
+curate before enablement. No new persisted field, date backfill or task list.
+See [intention lifecycle and recency](../../docs/memory/capture-and-recall.md#optional-intention-lifecycle-and-deliberate-recency).
+
 
 ### Data flow
 

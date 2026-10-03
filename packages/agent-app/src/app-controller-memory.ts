@@ -91,7 +91,7 @@ export async function resetSharedMemory(controller: MemoryControllerPort): Promi
     | { flush?: () => Promise<void>; close?: () => Promise<void> | void }
     | undefined;
   controller.sharedMemory = undefined;
-  controller.sharedMemoryRetrieval?.releaseAllTurns();
+  controller.sharedMemoryRetrieval?.resetRecallContext();
   controller.sharedMemoryRetrieval = undefined;
   controller.sharedMemoryBuilt = false;
   controller.sharedMemoryBuild = undefined;
@@ -120,6 +120,8 @@ export function ensureSharedMemoryRetrieval(
   controller.sharedMemoryRetrieval = new MemoryRetrievalService(store, {
     maxBytes: coreConfig.memory.maxBytes,
     source: "memory-bujo",
+    profileEnabled: coreConfig.memory.mode === "bujo" && coreConfig.memory.profile?.enabled === true,
+    intentExpiry: coreConfig.memory.mode === "bujo" && coreConfig.memory.recall?.intentExpiry === true,
   });
   return controller.sharedMemoryRetrieval;
 }
