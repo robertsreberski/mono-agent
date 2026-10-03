@@ -1,3 +1,4 @@
+import { createFakeSandbox, testSandboxPolicy } from "../helpers/fake-sandbox.js";
 import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { spawn } from "node:child_process";
@@ -1330,3 +1331,73 @@ describe("per-run foreground command ceilings", () => {
 
 // Each test file binds its direct tool calls to an explicit context.
 const ctx = createToolContext();
+
+describe("subprocess sandbox provenance", () => {
+  it.each(["Bash", "Exec"])("attributes recognizable %s denials and bounds stderr", async (tool) => {
+    const workspace = tempWorkspace();
+    const cleanup = vi.fn();
+    const engine = { isAvailable: async () => true, prepareCommand: async (command) => ({
+      ...command, command: process.execPath,
+      args: ["-e", "process.stderr.write('blocked by sandbox: Operation not permitted\\n' + 'x'.repeat(1000));process.exit(127)"],
+      sandboxed: true, cleanup,
+    }) };
+    const run = tool === "Bash" ? bashToolRun : execToolRun;
+    const params = tool === "Bash" ? { command: "fictional-command", max_output_chars: 300 }
+      : { executable: "fictional-command", max_output_chars: 300 };
+    const result = await run(params, { ctx: { workspace, sandbox: createFakeSandbox() },
+      sandboxPolicy: testSandboxPolicy({ root: workspace }), sandboxEngine: engine });
+    expect(result.outcome).toMatchObject({ code: "sandbox_denied", exitCode: 127 });
+    expect(result.text).toContain("Sandbox denied");
+    expect(result.text).toContain("blocked by sandbox");
+    expect(result.text.length).toBeLessThan(600);
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
+  it.each(["Bash", "Exec"])("qualifies bare permission errors from %s without a definitive sandbox code", async (tool) => {
+    const workspace = tempWorkspace();
+    const args = ["-e", "process.stderr.write('EPERM: Operation not permitted');process.exit(1)"];
+    const engine = { isAvailable: async () => true, prepareCommand: async (command) => ({
+      ...command, command: process.execPath, args, sandboxed: true,
+    }) };
+    const run = tool === "Bash" ? bashToolRun : execToolRun;
+    const wrapped = await run(tool === "Bash" ? { command: "fictional-command" } : { executable: "fictional-command" }, {
+      ctx: { workspace, sandbox: createFakeSandbox() },
+      sandboxPolicy: testSandboxPolicy({ root: workspace }), sandboxEngine: engine,
+    });
+    expect(wrapped.outcome).toMatchObject({ code: "nonzero_exit", exitCode: 1 });
+    expect(wrapped.text).toContain("Command ran sandboxed. Permission error is commonly a sandbox denial, but may be an OS permission error.");
+    expect(wrapped.text).not.toContain("Sandbox denied subprocess execution");
+    const host = await run(tool === "Bash" ? {
+      command: `"${process.execPath}" -e ${JSON.stringify(args[1])}`,
+    } : { executable: process.execPath, args }, options(workspace));
+    expect(host.outcome).toMatchObject({ code: "nonzero_exit", exitCode: 1 });
+    expect(host.text).toContain("Operation not permitted");
+    expect(host.text).not.toContain("sandbox");
+  });
+
+  it("labels ambiguous wrapped exits without calling them denials, and keeps genuine ENOENT unchanged", async () => {
+    const workspace = tempWorkspace();
+    const params = { executable: "fictional-nonexistent-executable" };
+    const host = await execToolRun(params, options(workspace));
+    expect(host.outcome.code).toBe("spawn_error");
+    expect(host.text).not.toContain("sandboxed");
+    const wrapped = await execToolRun(params, { ctx: { workspace, sandbox: createFakeSandbox() },
+      sandboxPolicy: testSandboxPolicy({ root: workspace }), sandboxEngine: {
+        isAvailable: async () => true, prepareCommand: async (command) => ({ ...command, sandboxed: true }),
+      } });
+    expect(wrapped.outcome.code).toBe("spawn_error");
+    expect(wrapped.text).toContain("Command ran sandboxed");
+    expect(wrapped.text).not.toContain("Sandbox denied");
+  });
+
+  it.each([undefined, "off"])("ignores an unavailable engine under %s", async (mode) => {
+    const workspace = tempWorkspace();
+    const engine = { isAvailable: vi.fn(async () => false), prepareCommand: vi.fn() };
+    const opts = { ctx: { workspace, sandbox: createFakeSandbox() }, sandboxEngine: engine,
+      ...(mode ? { sandboxPolicy: { ...testSandboxPolicy({ root: workspace }), mode } } : {}) };
+    expect((await execToolRun({ executable: process.execPath, args: ["-e", "console.log('host')"] }, opts)).text).toContain("host");
+    expect((await bashToolRun({ command: "printf host" }, opts)).text).toContain("host");
+    expect(engine.isAvailable).not.toHaveBeenCalled();
+    expect(engine.prepareCommand).not.toHaveBeenCalled();
+  });
+});

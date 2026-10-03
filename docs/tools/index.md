@@ -7,7 +7,22 @@ sidebar:
 
 This section covers how an agent's tool surface is controlled in mono-agent: the **tool policy** (`@mono-agent/agent-harness`) that allow/deny-lists built-in and adapter tools, the **MCP servers** you attach to extend that surface, and the **native sandbox** (`@mono-agent/runtime-adapter`) that confines what tools like `Exec`, `Bash`, `NodeRepl`, `Write`, and `Edit` may touch on disk and over the network.
 
-All three are configured in `mono-agent.config.json`; every route runs the Pi runtime, so enforcement is uniform and unsupported combinations fail closed. The tool policy is **allow-all by default**. When `sandbox.mode` is `native`, SRT confines what tool subprocesses may reach on disk and over the network. With `sandbox.mode: "off"` — or no `sandbox` block at all — `mono-agent validate` reports its Sandbox section as `disabled` (the runtime state is `effective: "off"`) and Bash/stdio MCP subprocesses run unsandboxed. That is a different case from `native` with no usable engine: there the default `sandbox.fallback: "fail-closed"` refuses the **command**, so the tool call fails and the run continues instead of the command running unsandboxed. What the model and the transcript actually see is a `sandbox_prepare_failed` tool outcome reading `Error: Sandbox engine is unavailable and policy is fail-closed.`; `sandbox_unavailable` is the internal sandbox error behind it and the engine state `mono-agent validate` and `mono-agent status` report, not a tool-result code. Only the opt-in `sandbox.fallback: "unsafe-host-process"` (which additionally requires `unsafeAllowHostProcess`) lets that command fall through to the host, and it is loudly warned. Unsupported capabilities are never silently removed.
+All three are configured in `mono-agent.config.json`; every route runs the Pi runtime, so enforcement is uniform and unsupported combinations fail closed. The tool policy is **allow-all by default**. When `sandbox.mode` is `native`, SRT confines what tool subprocesses may reach on disk and over the network. With `sandbox.mode: "off"` — or no `sandbox` block at all — when no ProcessJobs roots require protection, `mono-agent validate` reports its Sandbox section as `disabled` (the runtime state is `effective: "off"`) and Bash/stdio MCP subprocesses run unsandboxed. That is a different case from `native` with no usable engine: there the default `sandbox.fallback: "fail-closed"` refuses the **command**, so the tool call fails and the run continues instead of the command running unsandboxed. What the model and the transcript actually see is a `sandbox_prepare_failed` tool outcome reading `Error: Sandbox engine is unavailable and policy is fail-closed.`; `sandbox_unavailable` is the internal sandbox error behind it and the engine state `mono-agent validate` and `mono-agent status` report, not a tool-result code. Only the opt-in `sandbox.fallback: "unsafe-host-process"` (which additionally requires `unsafeAllowHostProcess`) lets that command fall through to the host, and it is loudly warned. Unsupported capabilities are never silently removed.
+
+With `sandbox.mode: "off"` or an omitted sandbox block, Bash, Exec and stdio-MCP
+subprocesses run directly on the host when no ProcessJobs roots need protection.
+No SRT engine or ProcessJobs unsafe flag is needed in that case. Same-UID
+subprocesses can reach private agent state, including clear-sessions control
+files and coordination leases. Retained ProcessJobs roots (even with jobs
+disabled) require fail-closed SRT protection and explicit private-root denial,
+except under the validated trusted-host opt-in
+`processJobs.unsafeAllowUnprotectedState` with explicit `sandbox.mode: "off"`,
+which deliberately runs unprotected. When that protection applies, off/omitted policies
+synthesize workspace confinement; native policies retain their configured readable/writable roots.
+Enabled jobs register roots at startup. `validate`, `doctor` and status describe
+the effective boundary rather than just the configured mode.
+If the ProcessJobs root registry is unavailable, execution is blocked with no
+host fallback, including under off/omitted configuration.
 
 ## The three pieces
 

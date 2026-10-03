@@ -1,3 +1,4 @@
+import { inspectEffectiveSandboxBoundary } from "./effective-sandbox.js";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { NotifyDeliveryContext } from "@mono-agent/agent-contracts";
 import type { MonoRuntimeLike, SandboxEngine } from "@mono-agent/runtime-adapter";
@@ -82,13 +83,16 @@ export async function startMemoryRitualsIfConfigured(controller: MaintenanceCont
     return;
   }
 
-  const sandboxEngine = controller.sandboxEngineFor(coreConfig);
+  const boundary = await inspectEffectiveSandboxBoundary(coreConfig, { cwd: controller.cwd,
+    configPath: controller.configReadPath, env: controller.env });
+  const sandboxEngine = boundary.requiresEngine ? controller.sandboxEngineFor({ ...coreConfig,
+    ...(boundary.policy === undefined ? {} : { sandbox: boundary.policy }) }) : undefined;
   const runtime = controller.runtime ?? createConfiguredAgentRuntimeForApp({
     config: coreConfig,
     cwd: controller.cwd,
     ...(sandboxEngine === undefined ? {} : { sandboxEngine }),
   }, {
-    suppressSandboxEngine: controller.processJobsProtectionPosture?.suppressSyntheticSandbox === true,
+    suppressSandboxEngine: !boundary.requiresEngine,
   });
   if (!controller.activeRuntimes.includes(runtime)) {
     controller.activeRuntimes.push(runtime);

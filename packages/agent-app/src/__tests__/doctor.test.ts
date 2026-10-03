@@ -2456,9 +2456,26 @@ describe("validateMonoAgentFolder", () => {
     const sandboxSection = sectionById(report, "sandbox");
     const text = sandboxSection.details.join("\n");
     expect(sandboxSection.status).toBe("disabled");
-    expect(text).toContain(sandbox === undefined
-      ? "No sandbox policy configured."
-      : "Sandbox is off; commands run without mono-agent sandbox wrapping.");
+    expect(text).toContain("subprocesses run unwrapped on the host");
+    expect(text).toContain("reachable by same-UID subprocesses");
+    if (sandbox !== undefined) expect(text).toContain("Mode: off, network: none, fallback: fail-closed.");
+    else expect(text).not.toContain("Mode:");
+  });
+
+  it.each([undefined, { mode: "off" }])("predicts required protection for enabled, uninitialized jobs without creating state (%j)", async (sandbox) => {
+    await writeFile(join(dir, "IDENTITY.md"), "Fictional identity");
+    const configPath = await writeConfig({ runtime: { model: "openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" }, processJobs: { enabled: true },
+      ...(sandbox ? { sandbox } : {}) });
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false,
+      sandboxEngine: availableSandboxEngine });
+    const section = sectionById(report, "sandbox");
+    expect(section.details.join("\n")).toContain("ProcessJobs startup will require protection");
+    expect(section.details.join("\n")).toContain("Readable roots:");
+    expect(section.details.join("\n")).toContain("writable roots:");
+    expect(section.details.join("\n")).toContain("fallback: fail-closed");
+    expect(section.details.join("\n")).not.toContain("commands run without mono-agent sandbox wrapping");
+    await expect(stat(join(dir, ".mono-agent", "process-jobs"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("keeps opencode-go under the native mono-agent sandbox", async () => {
@@ -2481,6 +2498,7 @@ describe("validateMonoAgentFolder", () => {
     const sandbox = sectionById(report, "sandbox");
     expect(sandbox).toMatchObject({ status: "ok" });
     expect(sandbox.details.join("\n")).toContain('Sandbox is effective with native engine "fake-srt"');
+    expect(sandbox.details).toContain("Mode: native, network: none, fallback: fail-closed.");
   });
 
   it("warns non-fatally when unsafe sandbox fallback is active", async () => {
@@ -2512,6 +2530,9 @@ describe("validateMonoAgentFolder", () => {
     expect(text).toContain("WARNING: Unsafe sandbox fallback is active");
     expect(text).toContain("Unsafe sandbox fallback is active");
     expect(text).toContain("all sandbox roots/denyWrite entries are inert; commands run unsandboxed");
+    expect(text).toContain("reachable by same-UID subprocesses");
+    expect(text).toContain("clear-sessions control and coordination leases");
+    expect(sandbox.details).toContain("Mode: native, network: none, fallback: unsafe-host-process.");
   });
 
   it("reports fail-closed sandbox unavailability without failing validation", async () => {

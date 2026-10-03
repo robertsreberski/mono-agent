@@ -1,5 +1,7 @@
 // @ts-check
 
+import { sandboxFailureDiagnostic } from "./shared/sandbox-diagnostics.js";
+
 import { existsSync } from "node:fs";
 import { passthroughSandbox } from "../sandbox-seam.js";
 import { DEFAULT_MAX_BASH_OUTPUT_CHARS } from "./shared/constants.js";
@@ -230,26 +232,28 @@ export async function bashToolRun(
       resolvedCtx,
     );
   }
+  const sandboxDiagnostic = sandboxFailureDiagnostic(prepared.sandboxed,
+    `${result.stderr ?? ""}\n${result.spawnError?.message ?? ""}`);
   if (result.spawnError) {
     return failedWithOutcome(
-      withPartial(`Exit code 1:\n${result.spawnError.message}`, partial),
-      { ...baseOutcome, status: "error", code: "spawn_error", retryable: false, exitCode: 1 },
+      withPartial(`${sandboxDiagnostic?.prefix ?? ""}Exit code 1:\n${result.spawnError.message}`, partial),
+      { ...baseOutcome, status: "error", code: sandboxDiagnostic?.code ?? "spawn_error", retryable: false, exitCode: 1 },
       maxChars,
       resolvedCtx,
     );
   }
   if (result.code !== null && result.code !== 0) {
     return failedWithOutcome(
-      withPartial(`Exit code ${result.code}`, partial),
-      { ...baseOutcome, status: "error", code: "nonzero_exit", retryable: false },
+      withPartial(`${sandboxDiagnostic?.prefix ?? ""}Exit code ${result.code}`, partial),
+      { ...baseOutcome, status: "error", code: sandboxDiagnostic?.code ?? "nonzero_exit", retryable: false },
       maxChars,
       resolvedCtx,
     );
   }
   if (result.signal) {
     return failedWithOutcome(
-      withPartial(`Exit code 1:\nCommand terminated by ${result.signal}`, partial),
-      { ...baseOutcome, status: "error", code: "signal", retryable: false, exitCode: 1 },
+      withPartial(`${sandboxDiagnostic?.prefix ?? ""}Exit code 1:\nCommand terminated by ${result.signal}`, partial),
+      { ...baseOutcome, status: "error", code: sandboxDiagnostic?.code ?? "signal", retryable: false, exitCode: 1 },
       maxChars,
       resolvedCtx,
     );

@@ -13,7 +13,7 @@
  * agent-host-runtime-auth) so we can observe the OPTIONS createMonoRuntime is
  * built with AND capture the `model` reaching each `runtime.run`.
  */
-import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -69,6 +69,7 @@ const {
 const {
   loadProcessJobsRootRegistryProtection,
   registerProcessJobsRoot,
+  processJobsRootRegistryPaths,
 } = await import("../process-jobs-root-registry.js");
 const { resolveProcessJobsProtectionPosture } = await import("../process-jobs-protection.js");
 
@@ -91,7 +92,9 @@ async function tempDir(): Promise<string> {
 beforeEach(() => {
   runCalls.length = 0;
   createMonoRuntimeMock.mockClear();
-  createSrtSandboxEngineMock.mockClear();
+  createSrtSandboxEngineMock.mockReset();
+  createSrtSandboxEngineMock.mockImplementation(() => ({ id: "unexpected-srt",
+    isAvailable: async () => true, prepareCommand: async (command: unknown) => command }));
 });
 
 afterEach(async () => {
@@ -134,6 +137,72 @@ describe("memory LLM honours config.memory.llm.model", () => {
     for (const options of memoryRuntimeOptions) {
       expect(options.fallbackChain).toBeUndefined();
     }
+  });
+
+  it("re-attests newly retained roots even with a cached inactive app posture", async () => {
+    const dir = await realpath(await tempDir());
+    const workspace = join(dir, "workspace");
+    await mkdir(workspace);
+    const config = memoryModelConfig(dir, workspace);
+    const ownership = await acquireAgentRootOwnership(dir);
+    const registry = await loadProcessJobsRootRegistryProtection(ownership.agentRoot, workspace);
+    ownership.coordinator.synchronizeGeneration(registry.generation);
+    const posture = resolveProcessJobsProtectionPosture({ coreConfig: config, registry,
+      settings: { enabled: false, unsafeAllowUnprotectedState: false } });
+    const store = await createConfiguredMemoryForApp(config, { cwd: dir }, posture) as unknown as {
+      persistCompletedTurn(turn: MemoryCompletedTurn): Promise<MemoryCompletedTurnResult>;
+      flush(): Promise<void>; close(): Promise<void>;
+    };
+    try {
+      await store.persistCompletedTurn({ runId: "inactive", conversationId: "conv-1", summary: "A fictional preference.", captureText: "A fictional preference." });
+      await store.flush();
+      expect(runCalls.length).toBeGreaterThan(0);
+      expect(runCalls.at(-1)?.options.sandboxPolicy).toBeUndefined();
+      await registerProcessJobsRoot({ agentRoot: ownership.agentRoot, workspace,
+        stateDir: join(dir, ".state", "jobs"), coordinator: ownership.coordinator });
+      const previous = runCalls.length;
+      await store.persistCompletedTurn({ runId: "retained", conversationId: "conv-2", summary: "Another fictional preference.", captureText: "Another fictional preference." });
+      await store.flush();
+      expect(runCalls.length).toBeGreaterThan(previous);
+      expect(runCalls.at(-1)?.options.sandboxPolicy).toMatchObject({ mode: "native", fallback: "fail-closed",
+        protectedRoots: expect.arrayContaining([join(ownership.agentRoot, ".state", "jobs")]) });
+    } finally { await store.close(); await releaseAgentRootOwnershipWhenIdle(ownership); }
+  });
+
+  it.each(["unavailable-engine", "malformed-registry"])("blocks %s before memory provider work with no host fallback", async (failure) => {
+    const dir = await realpath(await tempDir());
+    const workspace = join(dir, "workspace");
+    await mkdir(workspace);
+    const config = memoryModelConfig(dir, workspace);
+    const ownership = await acquireAgentRootOwnership(dir);
+    const registry = await loadProcessJobsRootRegistryProtection(ownership.agentRoot, workspace);
+    ownership.coordinator.synchronizeGeneration(registry.generation);
+    const posture = resolveProcessJobsProtectionPosture({ coreConfig: config, registry,
+      settings: { enabled: false, unsafeAllowUnprotectedState: false } });
+    const store = await createConfiguredMemoryForApp(config, { cwd: dir }, posture) as unknown as {
+      persistCompletedTurn(turn: MemoryCompletedTurn): Promise<MemoryCompletedTurnResult>;
+      flush(): Promise<void>; close(): Promise<void>;
+      queueSnapshot(): { intake: { pending: number; resolved: number } };
+    };
+    const prepareCommand = vi.fn(async (command: unknown) => command);
+    const isAvailable = vi.fn(async () => false);
+    try {
+      await registerProcessJobsRoot({ agentRoot: ownership.agentRoot, workspace,
+        stateDir: join(dir, ".state", "jobs"), coordinator: ownership.coordinator });
+      if (failure === "malformed-registry") {
+        await writeFile(processJobsRootRegistryPaths(dir).manifestPath, "{ malformed", { mode: 0o600 });
+      } else {
+        createSrtSandboxEngineMock.mockImplementation(() => ({ id: "unavailable", isAvailable, prepareCommand }));
+      }
+      await store.persistCompletedTurn({ runId: "blocked", conversationId: "conv-blocked",
+        summary: "A fictional preference.", captureText: "A fictional preference." });
+      await store.flush();
+      expect(store.queueSnapshot().intake).toMatchObject({ pending: 1, resolved: 0 });
+      expect(runCalls).toEqual([]);
+      expect(prepareCommand).not.toHaveBeenCalled();
+      if (failure === "unavailable-engine") expect(isAvailable).toHaveBeenCalled();
+      else expect(createSrtSandboxEngineMock).not.toHaveBeenCalled();
+    } finally { await store.close(); await releaseAgentRootOwnershipWhenIdle(ownership); }
   });
 
   it("keeps Pi agent-host memory tool-less and SRT-free under validated unsafe app authority", async () => {

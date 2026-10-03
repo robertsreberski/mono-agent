@@ -415,8 +415,9 @@ async function securelyRemovePurgeRoots(
   for (const value of quarantined) {
     await options.hooks?.beforeQuarantineRemoval?.(value.path);
     await assertQuarantinedRootUnchanged(value);
-    // The owner-private control directory is protected from model tools, and
-    // same-UID ambient OS processes are outside this deletion boundary.
+    // Native sandbox policies protect this owner-private control directory.
+    // Off/omitted policies without retained ProcessJobs roots do not: same-UID
+    // subprocesses and ambient OS processes are outside this deletion boundary.
     await rm(value.path, { recursive: true, force: false });
     await syncAndReattestPrivateDirectory(value.control, "clear-sessions control directory");
     await options.hooks?.afterQuarantineRemoved?.(value.path);

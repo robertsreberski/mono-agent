@@ -1,3 +1,4 @@
+import { effectiveSandboxReport, inspectEffectiveSandboxBoundary } from "./effective-sandbox.js";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import {
   pruneTraceSources,
@@ -5,7 +6,6 @@ import {
   registerTraceSource,
 } from "@mono-agent/observability";
 import type { TraceSourceHandle, TraceSourceMemoryHealth } from "@mono-agent/observability";
-import { resolveSandboxEffectiveState } from "@mono-agent/runtime-adapter";
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
 
 import {
@@ -179,14 +179,12 @@ export async function refreshSandboxStatus(controller: TraceabilityControllerPor
     const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath,
       ...(controller.privateRuntimePaths === undefined ? {} : { privateRuntimePaths: controller.privateRuntimePaths }) };
     const coreConfig = await loadAppCoreConfig(input);
-    const sandboxEngine = controller.processJobsProtectionPosture?.suppressSyntheticSandbox === true
-      ? undefined
-      : controller.sandboxEngineFor(coreConfig);
-    const state = await resolveSandboxEffectiveState({
-      ...(coreConfig.sandbox === undefined ? {} : { policy: coreConfig.sandbox }),
-      ...(sandboxEngine === undefined ? {} : { engine: sandboxEngine }),
-    });
-    const status = sandboxStatusFromState(state);
+    const boundary = await inspectEffectiveSandboxBoundary(coreConfig, { cwd: controller.cwd,
+      configPath: controller.configReadPath, env: controller.env });
+    const sandboxEngine = boundary.requiresEngine ? controller.sandboxEngineFor({ ...coreConfig,
+      ...(boundary.policy === undefined ? {} : { sandbox: boundary.policy }) }) : undefined;
+    const report = await effectiveSandboxReport(coreConfig, boundary, sandboxEngine);
+    const status = { ...sandboxStatusFromState(report.state), detail: report.detail };
     controller.sandboxStatusValue = status;
     if (status.warning !== undefined) {
       controller.logger?.warn?.(status.warning, { reason, detail: status.detail });

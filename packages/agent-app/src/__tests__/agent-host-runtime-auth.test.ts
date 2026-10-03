@@ -33,7 +33,6 @@ describe("configured agent runtime Pi auth", () => {
       additionalWriteRoots: ["/worktrees"],
       qaOutputDir: "/repo/.mono-agent/artifacts",
       resolvePiApiKey,
-      sandboxEngine: expect.objectContaining({ id: "srt" }),
     });
   });
 });

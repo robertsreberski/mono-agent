@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -27,6 +27,8 @@ import {
   stopProcessJobsService,
 } from "../app-controller-process-jobs.js";
 import { traceMetadata } from "../app-controller-traceability.js";
+import { acquireAgentRootOwnership, releaseAgentRootOwnershipWhenIdle } from "../agent-root-coordinator.js";
+import { loadProcessJobsRootRegistryProtection, registerProcessJobsRoot, PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR } from "../process-jobs-root-registry.js";
 
 
 const PROCESS_JOB_WAKE_DELIVERY_METADATA = Symbol.for("mono-agent.process-job-wake.delivery-key.v1");
@@ -1018,4 +1020,49 @@ it("detached child holds an independent generation lease after parent settlement
   await built.cleanup?.(); await built.settleCleanup?.();
   expect(releases[0]).toHaveBeenCalledOnce(); expect(releases[1]).not.toHaveBeenCalled();
   finish(); await child; expect(releases[1]).toHaveBeenCalledOnce();
+});
+
+it("blocks a real empty-to-retained registry transition with cached inactive posture and jobs disabled", async () => {
+  const dir = await realpath(await mkdtemp(join(tmpdir(), "process-jobs-late-registration-")));
+  const workspace = join(dir, "workspace");
+  await mkdir(workspace);
+  await mkdir(join(dir, "home"), { mode: 0o700 });
+  const ownership = await acquireAgentRootOwnership(dir, { homeDir: join(dir, "home") });
+  let harness: ReturnType<typeof createAgentHarness> | undefined;
+  try {
+    const registry = await loadProcessJobsRootRegistryProtection(ownership.agentRoot, workspace);
+    expect(registry.kind).toBe("empty");
+    ownership.coordinator.synchronizeGeneration(registry.generation);
+    const model = { provider: "openai-codex", model: "gpt-5.6-sol", reference: "openai-codex:gpt-5.6-sol" } as const;
+    const coreConfig = { runtime: { model, workspace }, tools: { allowedTools: [], disallowedTools: [] } } as never;
+    const extension = createProcessJobsRuntimeExtension({ ownership, registry, coreConfig, baseModel: model,
+      service: undefined, channelId: undefined, sandboxEngine: availableSandboxEngine,
+      protectionPosture: { kind: "inactive", retainedRoots: false, requiresPiNative: false,
+        suppressSyntheticSandbox: false, unsafeAllowUnprotectedState: false },
+    });
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are a fictional test agent.");
+    const provider = vi.fn(async (_prompt: string, _options: { sandboxPolicy?: unknown }) => ({ text: "ok" }));
+    harness = createAgentHarness({ identityPath, model,
+      session: { mode: "per-message", idleTimeoutMs: 60_000 },
+      historyStore: createInMemoryHistoryStore({ maxMessages: 10 }),
+      runtimeOptionsForRequest: extension, runtime: { run: provider },
+    });
+    const responder = createAgentResponder({ harness });
+    const request = { conversationId: "test", text: "hello", abortSignal: new AbortController().signal };
+    const stream = { append: async () => undefined };
+    await responder.respond(request, stream);
+    expect(provider).toHaveBeenCalledOnce();
+    expect(provider.mock.calls[0]?.[1].sandboxPolicy).toBeUndefined();
+    provider.mockClear();
+    await registerProcessJobsRoot({ agentRoot: ownership.agentRoot, workspace,
+      stateDir: join(dir, ".state", "jobs"), coordinator: ownership.coordinator });
+    await expect(responder.respond(request, stream)).rejects.toThrow(PROCESS_JOBS_REGISTRY_UNAVAILABLE_ERROR);
+    // The runtime boundary is never crossed, sandboxed or on the host.
+    expect(provider).not.toHaveBeenCalled();
+  } finally {
+    await harness?.dispose?.();
+    await releaseAgentRootOwnershipWhenIdle(ownership);
+    await rm(dir, { recursive: true, force: true });
+  }
 });

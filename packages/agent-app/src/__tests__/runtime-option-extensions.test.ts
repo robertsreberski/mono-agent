@@ -45,12 +45,13 @@ describe("composeRuntimeOptionExtensions", () => {
     expect(inner).not.toHaveBeenCalled();
   });
 
-  it("protects the stable registry for Pi without restricting the inherited network posture", async () => {
+  it("protects the stable registry for native Pi without restricting the inherited network posture", async () => {
     const assertion = vi.fn(async () => {});
     const extension = createClearSessionsRuntimeExtension(undefined, {
       cwd: "/agent",
       workspace: "/agent/workspace",
       baseModel: { provider: "openai-codex", model: "gpt-5.6-sol", reference: "openai-codex:gpt-5.6-sol" },
+      sandboxPolicy: failClosedSandboxPolicy({ root: "/agent/workspace", network: { mode: "all" } }),
       assertRecoveryResolved: assertion,
       registryRoot: () => "/agent/.mono-agent/clear-sessions-v1",
     });
@@ -66,6 +67,28 @@ describe("composeRuntimeOptionExtensions", () => {
     });
   });
 
+  it.each([undefined, { ...failClosedSandboxPolicy({ root: "/agent/workspace" }), mode: "off" as const }])(
+    "does not synthesize a policy under off/omitted (%j), but attests recovery first",
+    async (sandboxPolicy) => {
+      const calls: string[] = [];
+      const options = { cwd: "/agent", workspace: "/agent/workspace",
+        baseModel: { provider: "ollama", model: "test", reference: "ollama:test" },
+        ...(sandboxPolicy === undefined ? {} : { sandboxPolicy }),
+        assertRecoveryResolved: async () => { calls.push("attest"); },
+        registryRoot: () => { throw new Error("must not inspect registry for host execution"); },
+      };
+      expect(clearSessionsSandboxPolicy(options)).toBeUndefined();
+      const result = await createClearSessionsRuntimeExtension(async () => {
+        calls.push("inner"); return { runtimeOptions: {} };
+      }, options)(INPUT);
+      expect(result.runtimeOptions?.sandboxPolicy).toBeUndefined();
+      expect(calls).toEqual(["attest", "inner"]);
+      await expect(createClearSessionsRuntimeExtension(undefined, {
+        ...options, assertRecoveryResolved: async () => { throw new Error("recovery pending"); },
+      })(INPUT)).rejects.toThrow("recovery pending");
+    },
+  );
+
   it("keeps recovery attestation but suppresses both clear-sessions policy injection sites in unsafe posture", async () => {
     const assertion = vi.fn(async () => {});
     const options = {
@@ -74,6 +97,7 @@ describe("composeRuntimeOptionExtensions", () => {
       baseModel: { provider: "openai-codex", model: "gpt-5.6-sol", reference: "openai-codex:gpt-5.6-sol" },
       fallbackModels: [{ provider: "ollama", model: "qwen3:8b", reference: "ollama:qwen3:8b" }],
       suppressSyntheticSandbox: true,
+      sandboxPolicy: failClosedSandboxPolicy({ root: "/agent/workspace", network: { mode: "all" } }),
       assertRecoveryResolved: assertion,
       registryRoot: () => "/agent/.mono-agent/clear-sessions-v1",
     };

@@ -93,6 +93,7 @@ describe("clear-sessions fallback sandbox boundary", () => {
         },
         context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
         tools: { allowedTools: ["Read", "Write", "Bash"], disallowedTools: [] },
+        sandbox: { mode: "native", network: { mode: "all" } },
         artifacts: { dir: "./artifacts" },
       }, null, 2)}\n`);
       const config = await loadAppCoreConfig({ cwd: workspace, configPath, env: {} });
