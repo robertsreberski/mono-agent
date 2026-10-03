@@ -132,8 +132,7 @@ invocations or certified terminal recovery and clear them on reset/disposal. `Me
 keeps opted-in private blocks out of `turn_context` content while retaining byte
 counts and model delivery. Memory read failures emit stable codes, never raw
 exception text; no canonical history format changes. Isolated turns keep shared
-provider receipts intact while breaking query adjacency. Continuation synthesis
-breaks adjacency without a memory load. A failing memory-reset hook reports only
+provider receipts intact. Continuation synthesis does not load memory. A failing memory-reset hook reports only
 `memory_context_reset_unavailable` after the other shutdown cleanup has run.
 
 

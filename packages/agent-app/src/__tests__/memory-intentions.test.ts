@@ -36,32 +36,13 @@ async function call(store: RecallCapableStore, args: Record<string, unknown>) {
   finally { await client.close(); await server.close(); }
 }
 describe("conservative intention expiry across automatic app sections", () => {
-  it.each([false, true])("excludes closed and all dated notes with semanticOnly=%s, including future/legacy dates", async (semanticOnly) => {
+  it("excludes closed and all dated notes, including future/legacy dates", async () => {
     const store = backend();
-    expect(formatMemoryBackground(store, "person:owner", "chat", options, hits, 1024, new Set(), semanticOnly, true)).toBeUndefined();
-    expect(formatMemoryProfile(store, date, Infinity, now, semanticOnly).content).toBe("");
-    const service = new MemoryRetrievalService(store, { intentExpiry: true, semanticOnly, profileEnabled: true });
+    expect(formatMemoryBackground(store, "person:owner", "chat", options, hits, 1024, new Set(), true)).toBeUndefined();
+    expect(formatMemoryProfile(store, date, Infinity, now).content).toBe("");
+    const service = new MemoryRetrievalService(store, { intentExpiry: true, profileEnabled: true });
     expect(await service.load("chat", "Which fictional lessons are planned next?", options)).toBeUndefined();
     expect((await service.recallForTurn(options.turnId, "Which fictional lessons are planned next?")).map((hit) => hit.record.id)).toEqual(hits.map((hit) => hit.record.id));
-  });
-  it("ignores a dated structured competitor in profile authority and sends no spurious warm replacement", async () => {
-    const { dueAt: _dueAt, ...base } = labels[2]!;
-    const undated: LabelHit = { ...base, memoryId: "undated-workshop", text: "Owner uses the fictional cedar atelier.",
-      label: { v: 1, kind: "fact", entityId: "person:owner", key: "work_location",
-        value: { type: "text", text: "Cedar atelier" }, attribution: "user-stated" } };
-    const dated: LabelHit = { ...undated, memoryId: "dated-workshop", dueAt: "2032-06-12", text: "Owner plans to use the fictional maple atelier.",
-      label: { ...undated.label as Extract<LabelHit["label"], { kind: "fact" }>, value: { type: "text", text: "Maple atelier" } } };
-    let rows = [undated];
-    const store = backend(); store.guidanceForScope = () => []; store.labelsForEntity = () => rows;
-    store.labelsForMemories = () => rows; store.recallWithOutcome = async () => ({ hits: [], retrievalMode: "hybrid" });
-    const service = new MemoryRetrievalService(store, { semanticOnly: true, intentExpiry: true, profileEnabled: true });
-    expect((await service.load("chat", "Where is the fictional workshop?", options))?.content).toContain(undated.text);
-    service.recordInvocation(options.turnId); service.releaseTurn(options.turnId);
-    rows = [undated, dated];
-    expect(formatMemoryProfile(store, date, Infinity, now, true, false).entries).toEqual([]);
-    expect(formatMemoryProfile(store, date, Infinity, now, true, true).entries.map((entry) => entry.id)).toEqual([undated.memoryId]);
-    expect(await service.load("chat", "And that workshop?", { ...options, retainedContext: true,
-      turnId: "fixture-dated-competitor", hostInstant: `${date}T12:01:00.000Z` })).toBeUndefined();
   });
   it("keeps absent/off output identical and does not reinterpret Lite or Journal", async () => {
     for (const tier of ["bujo", "lite", "journal"] as const) {
@@ -78,7 +59,7 @@ describe("conservative intention expiry across automatic app sections", () => {
     store.labelsForEntity = () => [{ ...active, status: done ? "done" : "open" }];
     store.labelsForMemories = () => store.labelsForEntity!("person:owner");
     store.recallWithOutcome = async () => ({ retrievalMode: "hybrid", hits: [{ score: 0.9, record: { id: "undated", text: active.text, type: "note", status: done ? "done" : "open", createdAt: now } }] });
-    const service = new MemoryRetrievalService(store, { intentExpiry: true, semanticOnly: true, profileEnabled: true, contextWindow: true });
+    const service = new MemoryRetrievalService(store, { intentExpiry: true, profileEnabled: true });
     expect((await service.load("chat", "Which fictional lesson is planned?", options))?.content).toContain(active.text);
     service.recordInvocation(options.turnId); service.releaseTurn(options.turnId);
     done = true;

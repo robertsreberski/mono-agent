@@ -119,8 +119,8 @@ From the allowed Telegram chat, send a message; verify the typing indicator then
 ## Optional owner-console context
 
 For the same agent's verified owner web, TUI or ACP turns, BuJo can opt in to
-`memory.recall.contextWindow` and `memory.profile.enabled`. Both default off;
-these flags do **not** add automatic memory injection on Telegram. Review the
+`memory.profile.enabled`, which defaults off and does **not** add automatic
+memory injection on Telegram. Review the
 read-only `mono-agent memory profile show --json` output privately before
 turning on the profile. See [owner context](/memory/capture-and-recall/#optional-bujo-owner-context)
-for query TTL, Unicode budgets and retained-session suppression.
+for profile budgets and retained-session suppression.

@@ -223,13 +223,13 @@ historical quality.
 
 #### Arms, observation and blinded review
 
-Arms are current-only/profile-off, follow-up window, pre-registered length-only
-abstention, profile-on, window+profile-on, semantic-only, and intent-expiry. The semantic-only
-arm uses the supported BuJo policy for current, accepted labelled notes; events
-and unlabelled sources remain deliberately searchable, not injected. Switches go
-through production config normalization and app memory composition:
-`memory.recall.contextWindow`, `memory.profile.enabled`, and
-`memory.recall.semanticOnly`, and `memory.recall.intentExpiry`. The expiry arm
+Arms are `current-only` (profile/expiry off), pre-registered
+`length-only-abstention`, `profile-on`, `intent-expiry`, and optional
+`historical-baseline`. Paired comparisons are length-only abstention versus
+current, profile versus current, expiry versus current, and current versus the
+historical baseline. Switches go through production config normalization and
+app memory composition: `memory.profile.enabled` and
+`memory.recall.intentExpiry`. The expiry arm
 uses conservative automatic exclusion of all dated/closed intention notes,
 without mutating legacy source. Recency has no automatic-retrieval arm because
 it applies only to deliberate search; intention capture quality requires a
@@ -244,9 +244,9 @@ repeated rendered-line bytes are separate. Repeated bytes exclude section
 headings/framing. Capture candidates are reviewed separately from injected
 lines. Cold in-memory replay does not prove warm provider-session de-duplication.
 Day-boundary rebuilds replace only the native store behind the existing proxy:
-the per-arm retrieval service, conversation window/receipts, harness history
-and repeated-line observation state are not reset. Production TTL/cold-epoch
-rules still apply; replay does not fabricate retained-session invocation
+the per-arm retrieval service, volatile receipts, harness history and
+repeated-line observation state are not reset. Production cold-epoch rules still
+apply; replay does not fabricate retained-session invocation
 receipts or enable durable/warm sessions.
 
 Embedding requests, indexing work, completion invocations and replay latency
@@ -380,10 +380,9 @@ interval**: conversation resampling does not preserve day exposure multiplicity.
 Diagnostic intervals cannot establish historical truth. Missing arms are not
 quality successes.
 
-Before enabling the follow-up window, require halved follow-up noise, no loss of
-useful lines, no more than two percentage points of direct useful-coverage loss,
-and a paired useful-coverage advantage over length-only abstention without worse
-precision. Review profile support/omissions privately; verify unchanged warm
+Compare current recall against length-only abstention without treating zero
+injection as perfect precision. Review profile support/omissions privately and
+compare profile versus current coverage and noise; verify unchanged warm
 profile/served recall adds zero bytes in a separate retained-provider scenario.
 Numbers here are evidence, not automatic enablement or owner acceptance.
 

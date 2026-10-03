@@ -69,33 +69,16 @@ describe("resolveJsonMonoAgentConfig", () => {
     expect(JSON.stringify(error.details)).not.toContain("FICTIONAL_REJECTED_VALUE");
   });
 
-  it("validates default-off semanticOnly independently of the owner query window", () => {
-    const read = (recall?: unknown, mode = "bujo") => resolveJsonMonoAgentConfig({ cwd: "/fictional/repo", json: {
-      ...baseJson, memory: { path: "memory", mode, embeddings: { provider: "ollama" },
-        llm: { provider: "ollama", model: "fictional-model" }, ...(recall === undefined ? {} : { recall }) },
-    } as MonoAgentConfigJson });
-    expect(read().memory?.recall?.semanticOnly ?? false).toBe(false);
-    expect(read({ semanticOnly: true }).memory?.recall).toEqual({ contextWindow: false, semanticOnly: true });
-    expect(read({ contextWindow: true, semanticOnly: true }).memory?.recall).toEqual({ contextWindow: true, semanticOnly: true });
-    expect(read({ semanticOnly: false }).memory?.recall?.semanticOnly).toBe(false);
-    for (const mode of ["lite", "journal"]) expect(() => read({ semanticOnly: true }, mode)).toThrow("memory_option_requires_bujo");
-    for (const recall of [{ semanticOnly: "fictional-sensitive-value" }, { semanticOnly: true, unexpected: true }]) {
-      try { read(recall); } catch (error) { expect(String(error)).not.toContain("fictional-sensitive-value"); continue; }
-      throw new Error("invalid semantic flag accepted");
-    }
-  });
-
-  it("validates independent, default-off BuJo recall/profile flags without echoing offending values", () => {
+  it("validates the default-off BuJo profile flag without echoing offending values", () => {
     const base = { ...baseJson, memory: { path: "memory", mode: "bujo" as const,
       embeddings: { provider: "ollama" as const }, llm: { provider: "ollama" as const, model: "fictional-model" } } };
     const resolve = (memory: Record<string, unknown>) => resolveJsonMonoAgentConfig({ cwd: "/fictional/repo",
       json: { ...base, memory: { ...base.memory, ...memory } } as MonoAgentConfigJson });
-    expect(resolve({}).memory?.recall?.contextWindow ?? false).toBe(false);
     expect(resolve({}).memory?.profile?.enabled ?? false).toBe(false);
-    for (const key of ["recall", "profile"] as const) {
-      const field = key === "recall" ? "contextWindow" : "enabled";
+    for (const key of ["profile"] as const) {
+      const field = "enabled";
       const enabled = resolve({ [key]: { [field]: true } });
-      expect(key === "recall" ? enabled.memory?.recall?.contextWindow : enabled.memory?.profile?.enabled).toBe(true);
+      expect(enabled.memory?.profile?.enabled).toBe(true);
       for (const mode of ["lite", "journal"]) expect(() => resolve({ mode, [key]: { [field]: true } })).toThrow("memory_option_requires_bujo");
       for (const block of [[], { [field]: "FICTIONAL_PRIVATE_RECORD" }, { unrelated: true }]) {
         try { resolve({ [key]: block }); }
@@ -105,7 +88,7 @@ describe("resolveJsonMonoAgentConfig", () => {
     }
   });
 
-  it.each(["embeddings", "llm", "recallTool", "rememberTool", "consolidation", "embeddings.circuitBreaker"])(
+  it.each(["embeddings", "llm", "recall", "profile", "recallTool", "rememberTool", "consolidation", "embeddings.circuitBreaker"])(
     "rejects malformed memory.%s blocks, including without memory.path", (path) => {
       const parts = path.split(".");
       const block = parts.length === 1 ? { [path]: [] } : { embeddings: { circuitBreaker: [] } };

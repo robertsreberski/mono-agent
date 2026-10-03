@@ -46,13 +46,6 @@ export async function prepareHarnessContext(
         ?? await loadHarnessHistory(options, request.conversationId, request.continuation);
     // Recall rides on the current user message on every turn. It remains outside
     // stable system instructions and never enters canonical history replay.
-    if (request.continuation !== undefined) {
-      // Synthesis is not owner-authored input, even when it shares a conversation.
-      // Observe adjacency without loading memory or changing shared receipts.
-      try { options.memory?.breakQueryAdjacency?.(request.conversationId); }
-      catch { emit?.({ type: "runtime_warning", warning_kind: "memory_degraded",
-        error_code: "memory_query_context_unavailable", message: "memory_query_context_unavailable" }); }
-    }
     const memory = request.continuation === undefined
       ? await loadHarnessMemory(options, request, contextOptions.turnId, contextOptions.originalUserMessage, emit,
         contextOptions.historyMode === "omitted", contextOptions.isolated === true)
@@ -275,7 +268,6 @@ async function loadHarnessMemory(
       const observedAt = options.now?.() ?? new Date();
       const localDate = `${observedAt.getFullYear()}-${String(observedAt.getMonth() + 1).padStart(2, "0")}-${String(observedAt.getDate()).padStart(2, "0")}`;
       const base = originalUserMessage ?? request.userMessage;
-      const ownerQuery = memoryUserText({ ...request, userMessage: base });
       const query = request.userMessage.startsWith(base)
         ? memoryUserText({ ...request, userMessage: base }) + request.userMessage.slice(base.length)
         : request.userMessage;
@@ -288,7 +280,7 @@ async function loadHarnessMemory(
         hostLocalDate: localDate,
         hostInstant: observedAt.toISOString(),
         ...(senderToken === undefined ? {} : { senderToken }),
-        ...(ownerTurn ? { ownerTurn: true as const, ownerQuery } : {}),
+        ...(ownerTurn ? { ownerTurn: true as const } : {}),
       });
     } catch {
       // A slow or failing memory backend (e.g. embeddings timeout / circuit

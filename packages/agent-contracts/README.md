@@ -147,9 +147,8 @@ closed degradation codes. `MemoryStore.recordInvocation` acknowledges a
 successful retained invocation or certified recovery, and `resetRecallContext` clears volatile recall
 state. `MemoryBlock.traceContent: false` requests a content-free host trace;
 model-visible content is unchanged. `MemoryLoadOptions.isolated` distinguishes
-one-shot invocations from shared cold reseeds; `ownerQuery` carries only original
-owner-authored text for predecessor capture. `breakQueryAdjacency` observes
-host-synthesized continuations without reading memory or dropping receipts.
+one-shot invocations from shared cold reseeds, preserving shared provider
+receipts.
 These hooks add no durable history fields.
 
 

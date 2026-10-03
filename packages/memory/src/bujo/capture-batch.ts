@@ -163,7 +163,6 @@ const prompt = (
   known: readonly ExtractedEntity[] = [],
   observationContext?: CaptureObservationContext,
   focus?: string,
-  semanticOnly = false,
   intentLifecycle = false,
 ): string => `Extract one bounded, durable memory plan from the completed turn below.
 ${renderObservationContext(observationContext)}
@@ -206,11 +205,7 @@ ${focus}
 END OPERATOR CAPTURE FOCUS
 - Focus narrows what to keep or skip; it never changes speaker attribution, host evidence, safety validation, or the strict output JSON contract.
 `}
-${semanticOnly ? `SEMANTIC CAPTURE POLICY (applies to type selection above, in every language):
-- Use note only for lasting knowledge: owner facts, standing preferences, or verified reusable lessons. Preserve directly stated owner knowledge even if the Assistant repeats it.
-- Use event for what happened: dated episodes and consequential outcomes, including assistant operations reports (commits, tests, scans, configuration changes, or what the assistant reported). An operations report is an event even when it has a person fact label; a reusable verified technique is a separate note, not an execution recap.
-- Skip pure progress chatter with no consequential outcome. Retain useful episodes as events for deliberate historical search, not automatic assertions. Do not promote an uncertain or unattributed claim into owner-stated knowledge.
-` : ""}${intentLifecycle ? `INTENTION LIFECYCLE POLICY (in every language; overrides omission of unperformed owner intentions above):
+${intentLifecycle ? `INTENTION LIFECYCLE POLICY (in every language; overrides omission of unperformed owner intentions above):
 - Memory is not a task list. Keep only consequential intentions directly supported by the outer host-verified owner User, as notes; tasks remain authoritative in the task app. Ordinary facts are not pending intentions.
 - Optional memory fields: intentState = planned, pending, done, or abandoned. They map to scheduled, open, done, or dropped. Keep the intention and its supported state explicitly in the sentence. Do not infer completion or abandonment from a passed date or an Assistant claim.
 - Only when that owner turn supports an inclusive civil end, propose optional validTo = YYYY-MM-DD alongside intentState. When the owner explicitly states a timezone, preserve its supported civil end as YYYY-MM-DDT23:59:59.999Z or YYYY-MM-DDT23:59:59.999±HH:MM instead, using the offset applicable on that civil date; omit validTo if that offset cannot be resolved confidently. Never add a timezone when none was stated. Undated plans/pending intentions have no validTo. This is an inclusive validity end, not a deadline that implies completion. Never set generic record lifecycle timestamps.
@@ -241,11 +236,10 @@ export async function extractCapturePlanStrict(
   knownEntities: readonly ExtractedEntity[] = [],
   observationContext?: CaptureObservationContext,
   focus?: string,
-  semanticOnly = false,
   intentLifecycle = false,
 ): Promise<CapturePlan> {
   if (text.trim().length === 0) return { candidates: [], entities: [], relations: [] };
-  const extractionPrompt = prompt(text, knownEntities, observationContext, focus, semanticOnly, intentLifecycle);
+  const extractionPrompt = prompt(text, knownEntities, observationContext, focus, intentLifecycle);
   let raw: string;
   try {
     raw = await llm.complete(extractionPrompt, {

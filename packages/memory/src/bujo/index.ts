@@ -22,7 +22,6 @@ export {
   selectPossiblyRelevantRecallHits,
 } from "./recall.js";
 export type { FormattedRecallRecord, PossiblyRelevantRecord } from "./recall.js";
-export { semanticRecallAuthorities } from "./semantic.js";
 export {
   rebuildFromMarkdown,
   rollbackMemoryIndex,

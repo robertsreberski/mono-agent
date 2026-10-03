@@ -51,7 +51,7 @@ describe("opt-in volatile memory context", () => {
       if (write === "partial-details") throw Object.assign(new Error("fictional partial projection"), { rememberIntentWritten: true });
       return { id: "written", source: "memory", text, duplicate: false };
     };
-    const service = new MemoryRetrievalService(f.store, { profileEnabled: true, contextWindow: true });
+    const service = new MemoryRetrievalService(f.store, { profileEnabled: true });
     const query = "Describe the ceramic glaze materials";
     await service.load("conversation", query, owner("cold"));
     service.recordInvocation("cold");
@@ -92,7 +92,7 @@ describe("opt-in volatile memory context", () => {
     expect(await service.load("conversation", query, owner("next", 2, true))).toBeUndefined();
   });
 
-  it.each([[true, false], [false, true], [true, true]])("fences pre-write graph lookups from fresh expansion caches with window=%s/profile=%s", async (contextWindow, profileEnabled) => {
+  it.each([{ profileEnabled: true }, { intentExpiry: true }, { profileEnabled: true, intentExpiry: true }])("fences pre-write graph lookups from fresh expansion caches with %o", async (flags) => {
     const f = storeFixture();
     const hit = (id: string) => ({ score: 0.9, record: { id, text: `Fictional ceramic glaze evidence ${id}.` } });
     const before = [hit("glaze-before-write")];
@@ -118,7 +118,7 @@ describe("opt-in volatile memory context", () => {
       expandedSeeds.push(seed);
       return [...direct, hit(`${seed}-related`)];
     };
-    const service = new MemoryRetrievalService(f.store, { contextWindow, profileEnabled });
+    const service = new MemoryRetrievalService(f.store, flags);
     const query = "Which fictional ceramic glaze is current?";
     const options = { expandHops: 1 as const, trackAccess: false };
     const pending = service.recallOutcomeForTurn("graph-turn", query, options);
@@ -133,21 +133,6 @@ describe("opt-in volatile memory context", () => {
     expect(expandedSeeds).toEqual(["glaze-before-write", "glaze-after-write"]);
   });
 
-  it("caps normalized automatic queries and predecessors after Unicode case expansion without capping explicit originals", async () => {
-    const f = storeFixture();
-    const service = new MemoryRetrievalService(f.store, { contextWindow: true });
-    const query = "\u0130".repeat(1536);
-    await service.load("conversation", query, owner("expanded"));
-    expect(Array.from(f.queries[0]!).length).toBeLessThanOrEqual(1536);
-    expect(await service.recallOriginalOutcomeForTurn("expanded")).toMatchObject({ available: true, query });
-    expect(Array.from(f.queries[1]!).length).toBe(3072); // Existing deliberate-query semantics.
-    await service.load("conversation", "And now?", owner("follow", 1));
-    expect(Array.from(f.queries.at(-1)!).length).toBeLessThanOrEqual(1536);
-    expect(Array.from(f.queries.at(-1)!.slice("and now? ".length)).length).toBeLessThanOrEqual(512);
-    await service.load("conversation", query, owner("both-expanded", 2));
-    expect(Array.from(f.queries.at(-1)!).length).toBeLessThanOrEqual(1536);
-  });
-
   it("uses the observation instant for same-day profile record expiry and preserves inclusive civil dates", async () => {
     const f = storeFixture();
     f.facts.splice(0, f.facts.length,
@@ -160,64 +145,6 @@ describe("opt-in volatile memory context", () => {
     expect(content).not.toContain("Expired");
     expect(content).toContain("current today");
     expect(content).toContain("exact boundary");
-  });
-
-  it("bypasses short-turn suppression with a prior, without eagerly embedding the tool's original query", async () => {
-    const f = storeFixture();
-    const service = new MemoryRetrievalService(f.store, { contextWindow: true });
-    await service.load("conversation", "Which wrench fits the bicycle repair?", owner("first"));
-    service.releaseTurn("first");
-    const block = await service.load("conversation", "And the size?", owner("second", 1));
-    expect(block?.content).toContain("six millimetre");
-    expect(f.queries).toEqual(["which wrench fits the bicycle repair?", "and the size? which wrench fits the bicycle repair?"]);
-    const original = await service.recallOriginalOutcomeForTurn("second");
-    expect(original).toMatchObject({ available: true, query: "And the size?" });
-    await service.recallOriginalOutcomeForTurn("second");
-    expect(f.queries).toHaveLength(3);
-    expect(f.queries[2]).toBe("and the size?");
-  });
-
-  it("updates once per logical turn, and a new topic replaces rather than accumulates old topics", async () => {
-    const f = storeFixture();
-    const service = new MemoryRetrievalService(f.store, { contextWindow: true });
-    await service.load("conversation", "Bicycle repair components", owner("first"));
-    await service.load("conversation", "Pottery class materials", owner("second", 1));
-    await service.load("conversation", "Pottery class materials", owner("second", 1));
-    await service.load("conversation", "Which clay?", owner("third", 2));
-    expect(f.queries).toHaveLength(3);
-    expect(f.queries[2]).toBe("which clay? pottery class materials");
-    expect(f.queries[2]).not.toContain("bicycle");
-  });
-
-  it.each(["ttl", "clock", "non-owner", "trigger", "reset", "restart"])("breaks query adjacency on %s", async (kind) => {
-    const f = storeFixture();
-    let service = new MemoryRetrievalService(f.store, { contextWindow: true });
-    await service.load("conversation", "Bicycle repair components", owner("first"));
-    if (kind === "non-owner" || kind === "trigger") {
-      const { ownerTurn: _ownerTurn, ...interruption } = owner("interruption", 1);
-      await service.load("conversation", "An unrelated interruption", interruption);
-    }
-    if (kind === "reset") service.resetRecallContext("conversation");
-    if (kind === "restart") service = new MemoryRetrievalService(f.store, { contextWindow: true });
-    const block = await service.load("conversation", "Which size?", owner("next", kind === "ttl" ? 30 : kind === "clock" ? -1 : 2));
-    expect(block).toBeUndefined();
-    expect(f.queries.at(-1)).toBe("which size?");
-  });
-
-  it("bounds conversations, redacts the predecessor, and budgets code points without splitting astral characters", async () => {
-    const f = storeFixture();
-    const service = new MemoryRetrievalService(f.store, { contextWindow: true });
-    const credentialShape = `ghp_${"Q".repeat(36)}`;
-    await service.load("bounded", `Bicycle ${credentialShape} ${"🧩".repeat(700)}`, owner("first"));
-    await service.load("bounded", "🪁".repeat(1400), owner("second", 1));
-    const query = f.queries.at(-1)!;
-    expect(Array.from(query)).toHaveLength(1536);
-    expect(query).toContain("[redacted]");
-    expect(query).not.toContain(credentialShape);
-    expect(query).not.toMatch(/[\uD800-\uDBFF]$/u);
-    for (let index = 0; index < 256; index++) await service.load(`other-${index}`, "Other fictional topic", owner(`turn-${index}`));
-    await service.load("bounded", "Which size?", owner("evicted", 2));
-    expect(f.queries.at(-1)).toBe("which size?");
   });
 
   it("requires actual invocation receipts, suppresses unchanged warm lines, and permits changed sources and cold reseeds", async () => {
@@ -293,7 +220,7 @@ describe("opt-in volatile memory context", () => {
   it("deduplicates labelled guidance lines as well as similarity lines", async () => {
     const f = storeFixture();
     f.store.recall = async () => [{ score: 0.9, record: { id: "owner-pref", text: f.guidance[0]!.text } }];
-    const service = new MemoryRetrievalService(f.store, { contextWindow: true });
+    const service = new MemoryRetrievalService(f.store, { profileEnabled: true });
     expect((await service.load("conversation", "Explain the bicycle repair", owner("cold")))?.content).toContain("compact numbered");
     service.recordInvocation("cold");
     expect(await service.load("conversation", "Explain the bicycle repair", owner("warm", 1, true))).toBeUndefined();
@@ -333,12 +260,12 @@ describe("opt-in volatile memory context", () => {
   it.each(["bujo", "lite", "journal"] as const)("preserves disabled flags and the %s compatibility path", async (tier) => {
     const f = storeFixture(tier);
     const baseline = new MemoryRetrievalService(f.store);
-    const disabled = new MemoryRetrievalService(f.store, { contextWindow: false, profileEnabled: false });
+    const disabled = new MemoryRetrievalService(f.store, { profileEnabled: false });
     const input = owner("same", 0, true);
     const expected = await baseline.load("conversation", "Describe bicycle repair components", input);
     expect(await disabled.load("conversation", "Describe bicycle repair components", input)).toEqual(expected);
     if (tier !== "bujo") {
-      const forced = new MemoryRetrievalService(f.store, { contextWindow: true, profileEnabled: true });
+      const forced = new MemoryRetrievalService(f.store, { profileEnabled: true });
       expect(await forced.load("conversation", "Describe bicycle repair components", input)).toEqual(expected);
     }
   });
@@ -374,7 +301,7 @@ const configFor = (cwd: string, enabled: boolean) => resolveJsonMonoAgentConfig(
   tools: { allowedTools: [] },
   memory: { path: "memory", mode: "bujo", embeddings: { provider: "ollama" },
     llm: { provider: "ollama", model: "fictional-local-model" }, recallTool: { enabled: false }, rememberTool: { enabled: false },
-    recall: { contextWindow: enabled }, profile: { enabled } },
+    profile: { enabled } },
 } });
 
 it("flows config-only arms through configured harness and shared-controller wiring, with invocation-confirmed warm suppression", async () => {
@@ -404,7 +331,7 @@ it("flows config-only arms through configured harness and shared-controller wiri
         expect(first.includes("Owner profile")).toBe(enabled);
         expect(second).not.toContain("Owner profile");
         expect(second).not.toContain("six millimetre");
-        expect(f.queries.at(-1)).toBe(enabled ? "and the size? which wrench fits the bicycle repair?" : "and the size?");
+        expect(f.queries.at(-1)).toBe("and the size?");
         const traces = events.filter((event) => (event as { type?: string }).type === "turn_context");
         if (enabled) expect(JSON.stringify(traces)).not.toContain("geometric patterns");
         expect(JSON.stringify(await history.load("configured"))).not.toContain("Owner profile");
@@ -416,14 +343,14 @@ it("flows config-only arms through configured harness and shared-controller wiri
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });
 
-it.each([[true, false], [false, true], [true, true]])("preserves shared warm receipts across isolated cron with window=%s/profile=%s", async (contextWindow, profile) => {
+it("preserves shared warm profile receipts across isolated cron", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "memory-isolation-"));
   try {
     await writeFile(join(cwd, "IDENTITY.md"), "You are a fictional test assistant.");
     const f = storeFixture();
     const base = configFor(cwd, true);
     const config = { ...base, runtime: { ...base.runtime, session: { ...base.runtime.session, isolateProactive: true } },
-      memory: { ...base.memory!, recall: { contextWindow }, profile: { enabled: profile } } };
+      memory: { ...base.memory!, profile: { enabled: true } } };
     const calls: RuntimeRunOptions[] = [];
     const harness = await createConfiguredAgentHarness({ config, cwd, memory: f.store, historyStore: createInMemoryHistoryStore(),
       runtime: { async run(_prompt, options) { calls.push(options); return { text: "Fictional response.",
@@ -441,21 +368,21 @@ it.each([[true, false], [false, true], [true, true]])("preserves shared warm rec
       expect(calls[3]!.sessionId).toBe("shared-fictional-session");
       expect(String(calls[3]!.messages.at(-1)!.content)).not.toContain("Owner profile");
       expect(String(calls[3]!.messages.at(-1)!.content)).not.toContain("bicycle wrench");
-      expect(f.queries.at(-1)).toBe("describe the ceramic glaze materials"); // Cron broke adjacency only.
+      expect(f.queries.at(-1)).toBe("describe the ceramic glaze materials"); // The current query is never augmented.
       f.facts[0] = fact("owner-fact", "Morgan now enjoys folded paper patterns.");
       f.changeRecall("The ceramic glaze now uses a fictional ochre pigment.");
       await runOwner("Describe the folded paper patterns");
       expect(calls[4]!.sessionId).toBe("shared-fictional-session");
       const final = String(calls[4]!.messages.at(-1)!.content);
-      expect(final).toContain(profile ? "folded paper patterns" : "fictional ochre");
-      if (profile) expect(final).toContain("Owner profile");
-      expect(f.queries.at(-1)).toBe("describe the folded paper patterns" + (contextWindow ? " describe the ceramic glaze materials" : ""));
+      expect(final).toContain("folded paper patterns");
+      expect(final).toContain("Owner profile");
+      expect(f.queries.at(-1)).toBe("describe the folded paper patterns");
     } finally { await harness.dispose!(); }
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });
 
-it.each([false, true])("caches only original owner-authored attachment captions with window=%s", async (enabled) => {
-  const cwd = await mkdtemp(join(tmpdir(), "memory-owner-query-"));
+it.each([false, true])("uses attachment evidence only for the current query with profile=%s", async (enabled) => {
+  const cwd = await mkdtemp(join(tmpdir(), "memory-attachment-query-"));
   try {
     await writeFile(join(cwd, "IDENTITY.md"), "You are a fictional test assistant.");
     const f = storeFixture();
@@ -472,7 +399,7 @@ it.each([false, true])("caches only original owner-authored attachment captions 
       expect(f.queries[0]).toContain("fictional_document_sentinel"); // Current turn still sees one-shot evidence.
       await harness.run({ conversationId: "attached", userMessage: "And now?", captureSpeakerKind: "human-turn",
         metadata: { source: "web" }, abortSignal: new AbortController().signal });
-      expect(f.queries.at(-1)).toBe(enabled ? "and now? compare the ceramic glazes." : "and now?");
+      expect(f.queries.at(-1)).toBe("and now?");
       expect(f.queries.at(-1)).not.toContain("fictional_document_sentinel");
       expect(f.queries.at(-1)).not.toContain("fictional-sample.txt");
       expect(f.queries.at(-1)).not.toContain(cwd.toLowerCase());
@@ -480,7 +407,7 @@ it.each([false, true])("caches only original owner-authored attachment captions 
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });
 
-it("breaks owner-query adjacency on host continuation synthesis without recalling memory or losing warm receipts", async () => {
+it("skips memory on host continuation synthesis without losing warm profile receipts", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "memory-continuation-"));
   try {
     await writeFile(join(cwd, "IDENTITY.md"), "You are a fictional test assistant.");
