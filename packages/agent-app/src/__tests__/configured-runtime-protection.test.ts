@@ -121,6 +121,7 @@ describe("public configured raw runtime protection", () => {
     await expect(runtime.run("system", runOptions(CLAUDE_MODEL, fixture.workspace))).resolves.toMatchObject({
       text: "empty-registry result",
     });
+    expect(runtimeState.run.mock.calls[0]?.[1].sandboxPolicy).toBeUndefined();
     await registerProcessJobsRoot({
       agentRoot: fixture.root,
       workspace: fixture.workspace,
@@ -132,6 +133,9 @@ describe("public configured raw runtime protection", () => {
       text: "empty-registry result",
     });
     expect(runtimeState.run).toHaveBeenCalledTimes(2);
+    expect(runtimeState.run.mock.calls[1]?.[1].sandboxPolicy).toMatchObject({
+      mode: "native", fallback: "fail-closed", protectedRoots: expect.arrayContaining([join(fixture.root, ".state", "jobs")]),
+    });
     await runtime.disposeAllSessions?.();
     owner.release();
   });

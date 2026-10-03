@@ -379,6 +379,21 @@ describe("process-job mixed fallback route guard", () => {
     }
   });
 
+  it.each([false, true])("keeps inactive off/omitted execution unwrapped (off=%s)", async (off) => {
+    const fixture = await createRouteGuardFixture(PI_ROUTE, PI_FALLBACK_ROUTE, "none", false, false, off);
+    try {
+      await fixture.responder.respond({ conversationId: "slack:C1:host", text: "hello",
+        abortSignal: new AbortController().signal }, { append: async () => {} });
+      expect(fixture.sandboxEngineFor).not.toHaveBeenCalled();
+      expect(fixture.routeRunOptions.length).toBeGreaterThan(0);
+      for (const options of [...fixture.routeRunOptions, ...fixture.routeToolOptions]) {
+        expect(options.sandboxPolicy?.mode).not.toBe("native");
+        expect(options.sandboxPolicy?.protectedRoots ?? []).toEqual([]);
+        expect(options.sandboxEngine).toBeUndefined();
+      }
+    } finally { await fixture.dispose(); }
+  });
+
   it("keeps the full app responder and routed harness unprotected in validated unsafe posture", async () => {
     const fixture = await createRouteGuardFixture(
       PI_ROUTE,
@@ -440,6 +455,7 @@ async function createRouteGuardFixture(
   processJobsMode: "live" | "degraded" | "none",
   sandboxEngineAvailable = true,
   unsafe = false,
+  off = false,
 ): Promise<{
   readonly responder: Awaited<ReturnType<typeof buildResponder>>;
   readonly providerRunCounts: readonly number[];
@@ -491,7 +507,7 @@ async function createRouteGuardFixture(
       stateDir: ".mono-agent/process-jobs",
       ...(unsafe ? { unsafeAllowUnprotectedState: true } : {}),
     },
-    ...(unsafe ? { sandbox: { mode: "off" } } : {}),
+    ...(unsafe || off ? { sandbox: { mode: "off" } } : {}),
   }, null, 2)}\n`);
   const loadedConfig = await loadAppCoreConfig({ cwd: workspace, configPath, env: {} });
   const primaryModel = parseMonoRuntimeModelReference(primaryReference);

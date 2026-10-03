@@ -9,6 +9,15 @@ The ACP bridge lets a standard ACP client run tasks through an existing local mo
 
 This is an **ACP v1 core-session profile for mono-agent**, not an unqualified general ACP v1 Agent. It supports initialization, new and resumed sessions, prompts, streamed updates, cancellation, text, and resource-link input. Client-supplied MCP servers are intentionally unsupported even though stdio MCP is part of the general ACP v1 Agent baseline.
 
+With `sandbox.mode: "off"` or an omitted sandbox block, Bash, Exec and stdio-MCP
+subprocesses run directly on the host when no ProcessJobs roots need protection.
+No SRT engine or ProcessJobs unsafe flag is needed in that case. Same-UID
+subprocesses can reach private agent state, including clear-sessions control
+files and coordination leases. Retained ProcessJobs roots (even with jobs
+disabled) still require workspace-confined, fail-closed SRT protection and explicit
+private-root denial; enabled jobs register roots at startup. `validate`, `doctor`
+and status describe the effective boundary rather than just the configured mode.
+
 ## Discover importable agents
 
 Use the installed CLI as the process boundary:

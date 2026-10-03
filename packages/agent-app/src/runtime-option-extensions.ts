@@ -3,7 +3,6 @@ import type {
   AgentHarnessRuntimeOptionsInput,
 } from "@mono-agent/agent-harness";
 import {
-  failClosedSandboxPolicy,
   mergeSandboxPolicies,
   protectSandboxRoots,
   type RuntimeModelReference,
@@ -45,7 +44,7 @@ export interface ClearSessionsRuntimeBoundaryOptions {
 
 /**
  * Run the recovery attestation before any sibling extension/provider work,
- * then protect the stable registry for every reachable Pi provider route.
+ * then strengthen an existing native policy for every reachable Pi route.
  */
 export function createClearSessionsRuntimeExtension(
   next: RuntimeOptionsExtension | undefined,
@@ -72,12 +71,8 @@ export function clearSessionsSandboxPolicy(
   _effectiveModel: RuntimeModelReference = options.baseModel,
 ): SandboxPolicy | undefined {
   if (options.suppressSyntheticSandbox === true) return undefined;
-  const base = options.sandboxPolicy?.mode === "native"
-    ? { ...options.sandboxPolicy, fallback: "fail-closed" as const, unsafeAllowHostProcess: false }
-    : failClosedSandboxPolicy({
-        root: options.workspace,
-        network: { mode: "all" },
-      });
+  if (options.sandboxPolicy?.mode !== "native") return undefined;
+  const base = { ...options.sandboxPolicy, fallback: "fail-closed" as const, unsafeAllowHostProcess: false };
   return protectSandboxRoots(base, [
     (options.registryRoot ?? clearSessionsRegistryRoot)(options.cwd),
   ]);

@@ -1,3 +1,4 @@
+import { sandboxFailureDiagnostic } from "./shared/sandbox-diagnostics.js";
 import { startPreparedProcess } from "./shared/process-runner.js";
 import { Type } from "@earendil-works/pi-ai";
 import { randomUUID } from "node:crypto";
@@ -798,6 +799,9 @@ async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine, 
     },
   );
   let transport;
+  let preparedStdio;
+  let startupStderr = "";
+  let captureStderr;
   try {
     if (cfg.type === "http") {
       transport = new StreamableHTTPClientTransport(new URL(cfg.url), { requestInit: { headers: cfg.headers || {} } });
@@ -810,7 +814,9 @@ async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine, 
       });
     } else {
       const prepared = await prepareMcpStdioCommand(cfg, { cwd, sandboxPolicy, sandboxEngine, ctx });
+      preparedStdio = prepared;
       transport = new StdioClientTransport({
+        ...(prepared.sandboxed ? { stderr: "pipe" } : {}),
         command: prepared.command,
         // Copy the (readonly) prepared args into the transport's mutable list.
         args: [...(prepared.args || [])],
@@ -819,8 +825,17 @@ async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine, 
       });
       // Monkey-patched cleanup handle: not part of the MCP transport's typed shape.
       /** @type {any} */ (transport).__monoSandboxCleanup = prepared.cleanup;
+      if (prepared.sandboxed) {
+        captureStderr = (chunk) => { startupStderr = (startupStderr + String(chunk)).slice(0, 4096); };
+        transport.stderr?.on("data", captureStderr);
+      }
     }
     await client.connect(transport);
+    if (captureStderr && transport instanceof StdioClientTransport) {
+      transport.stderr?.removeListener("data", captureStderr);
+      // Continue draining without retaining successful servers' output.
+      transport.stderr?.on("data", () => {});
+    }
     return {
       name,
       client,
@@ -836,7 +851,14 @@ async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine, 
   } catch (error) {
     try { await transport?.close?.(); } catch { /* best-effort */ }
     try { await /** @type {any} */ (transport)?.__monoSandboxCleanup?.(); } catch { /* best-effort */ }
+    if (captureStderr && transport instanceof StdioClientTransport) transport.stderr?.removeListener("data", captureStderr);
     if (privateCapabilityUrl) throw new Error("Private request-scoped MCP server connection failed.");
+    const diagnostic = sandboxFailureDiagnostic(preparedStdio?.sandboxed, startupStderr);
+    if (diagnostic) {
+      const failure = new Error(`${diagnostic.prefix}Stdio MCP startup failed: ${String(error?.message ?? error).slice(0, 1024)}${startupStderr ? `\n${startupStderr}` : ""}`);
+      /** @type {any} */ (failure).code = diagnostic.code ?? "sandboxed_mcp_startup_failed";
+      throw failure;
+    }
     throw error;
   }
 }
@@ -989,6 +1011,7 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
       warnings.push({
         type: "runtime_warning",
         warning_kind: "mcp_init_failed",
+        ...(result.reason?.code === "sandbox_denied" ? { code: "sandbox_denied" } : {}),
         server: serverName,
         message: result.reason?.message || String(result.reason),
       });

@@ -203,6 +203,15 @@ usage-bearing record, do not roll either side back before #1107: older agents
 cannot open their process-job store, and older consoles cannot open conversations
 holding those cards.
 
+With `sandbox.mode: "off"` or an omitted sandbox block, Bash, Exec and stdio-MCP
+subprocesses run directly on the host when no ProcessJobs roots need protection.
+No SRT engine or ProcessJobs unsafe flag is needed in that case. Same-UID
+subprocesses can reach private agent state, including clear-sessions control
+files and coordination leases. Retained ProcessJobs roots (even with jobs
+disabled) still require workspace-confined, fail-closed SRT protection and explicit
+private-root denial; enabled jobs register roots at startup. `validate`, `doctor`
+and status describe the effective boundary rather than just the configured mode.
+
 ## Install / Usage
 
 Process-job chains keep the default depth budget of 4 and allow a configured

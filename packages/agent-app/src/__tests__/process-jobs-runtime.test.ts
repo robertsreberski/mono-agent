@@ -1019,3 +1019,26 @@ it("detached child holds an independent generation lease after parent settlement
   expect(releases[0]).toHaveBeenCalledOnce(); expect(releases[1]).not.toHaveBeenCalled();
   finish(); await child; expect(releases[1]).toHaveBeenCalledOnce();
 });
+
+it("applies fresh retained-root protection with a cached inactive posture and jobs disabled", async () => {
+  const coreConfig = { runtime: { model: CLAUDE_MODEL, workspace: "/agent" },
+    tools: { allowedTools: [], disallowedTools: [] } } as never;
+  const ready = processJobsBoundary(coreConfig);
+  let retained = false;
+  const empty = { kind: "empty", protectedRoots: [], generation: { id: "empty", rootKeys: [] } } as never;
+  const extension = createProcessJobsRuntimeExtension({ ...ready, registry: empty,
+    service: undefined, channelId: undefined, sandboxEngine: availableSandboxEngine,
+    protectionPosture: { kind: "inactive", retainedRoots: false, requiresPiNative: false,
+      suppressSyntheticSandbox: false, unsafeAllowUnprotectedState: false },
+    attestRegistry: (async () => retained ? ready.registry : empty) as never,
+  });
+  const input = { request: { conversationId: "test", text: "hello" }, runId: "test" } as never;
+  const host = await extension(input);
+  expect(host.runtimeOptions?.sandboxPolicy).toBeUndefined();
+  await host.cleanup?.(); await host.settleCleanup?.();
+  retained = true;
+  const protectedRun = await extension(input);
+  expect(protectedRun.runtimeOptions?.sandboxPolicy).toMatchObject({ mode: "native",
+    fallback: "fail-closed", protectedRoots: [PROCESS_JOBS_STATE_DIR] });
+  await protectedRun.cleanup?.(); await protectedRun.settleCleanup?.();
+});

@@ -615,6 +615,36 @@ describe("pi MCP tool helpers", () => {
     expect(cleanupCalls).toBe(1);
   });
 
+  it.each(["blocked by sandbox: Operation not permitted", "ordinary startup failure"])(
+    "retains bounded sandboxed stdio startup diagnostics (%s) and cleanup", async (stderr) => {
+      const root = tempWorkspace();
+      const cleanup = vi.fn();
+      const result = await initPiMcpTools({ broken: { command: "fictional-command" } }, new Set(), {
+        ctx, cwd: root, sandboxPolicy: failClosedSandboxPolicy({ root }), sandboxEngine: {
+          id: "fake", isAvailable: async () => true,
+          prepareCommand: async (command) => ({ ...command, command: process.execPath,
+            args: ["-e", `process.stderr.write(${JSON.stringify(stderr)});process.exit(127)`],
+            sandboxed: true, cleanup }),
+        },
+      });
+      expect(result.clients).toEqual([]);
+      expect(result.warnings[0].message).toContain(stderr);
+      if (stderr.startsWith("blocked")) expect(result.warnings[0].code).toBe("sandbox_denied");
+      expect(result.warnings[0].message).toContain(stderr.startsWith("blocked") ? "Sandbox denied" : "Command ran sandboxed");
+      expect(cleanup).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([undefined, "off"])("ignores unavailable stdio engine with %s policy", async (mode) => {
+    const root = tempWorkspace();
+    const engine = { id: "fake", isAvailable: vi.fn(async () => false), prepareCommand: vi.fn() };
+    const command = { command: process.execPath, args: ["-e", "process.exit(0)"] };
+    const prepared = await prepareMcpStdioCommand(command, { ctx, cwd: root, sandboxEngine: engine,
+      ...(mode ? { sandboxPolicy: { ...failClosedSandboxPolicy({ root }), mode } } : {}) });
+    expect(prepared).toMatchObject({ ...command, sandboxed: false });
+    expect(engine.isAvailable).not.toHaveBeenCalled();
+  });
+
   it("never serializes or echoes a private request capability URL in MCP warnings", async () => {
     const secretUrl = "http://127.0.0.1:43199/mcp/11111111-1111-4111-8111-111111111111";
     const spec = { type: "http" };
