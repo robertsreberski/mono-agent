@@ -40,6 +40,19 @@ started it. It is independent from [durable continuations](/tools/durable-contin
 a process job owns a local `Exec` or `Bash` child, while a continuation accepts a
 later result from a selected external MCP service.
 
+With `sandbox.mode: "off"` or an omitted sandbox block, Bash, Exec and stdio-MCP
+subprocesses run directly on the host when no ProcessJobs roots need protection.
+No SRT engine or ProcessJobs unsafe flag is needed in that case. Same-UID
+subprocesses can reach private agent state, including clear-sessions control
+files and coordination leases. Retained ProcessJobs roots (even with jobs
+disabled) require fail-closed SRT protection and explicit private-root denial,
+except under the validated trusted-host opt-in
+`processJobs.unsafeAllowUnprotectedState` with explicit `sandbox.mode: "off"`,
+which deliberately runs unprotected. When that protection applies, off/omitted policies
+synthesize workspace confinement; native policies retain their configured readable/writable roots.
+Enabled jobs register roots at startup. `validate`, `doctor` and status describe
+the effective boundary rather than just the configured mode.
+
 ## Configuration
 
 The feature is opt-in and every key is JSON-only. Unknown keys are rejected.

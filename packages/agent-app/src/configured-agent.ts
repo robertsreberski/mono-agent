@@ -1,3 +1,4 @@
+import { effectiveSandboxBoundary } from "./effective-sandbox.js";
 import { configuredToolPolicyInput as toolPolicyInput } from "./computer-use.js";
 import { composeHostTurnEnvelope, formatHostCapabilities, HOST_TURN_CONTEXT_GUIDANCE } from "@mono-agent/agent-harness";
 import { createSubagentRecoveryAccess } from "./subagent-recovery-access.js";
@@ -449,7 +450,7 @@ function createConfiguredAgentRuntimeBase(
 ): MonoRuntimeLike {
   assertNoRetiredMonoAgentConfig(config);
   const fallback = fallbackChainForConfig(config, options);
-  const sandboxEngine = suppressSandboxEngine
+  const sandboxEngine = suppressSandboxEngine || config.sandbox?.mode !== "native"
     ? undefined
     : configuredSandboxEngine(options?.sandboxEngine);
   const runtimeOptions: Parameters<typeof createMonoRuntime>[0] = {
@@ -1108,21 +1109,21 @@ async function createConfiguredAgentHarnessInternal(
   setToolActivityPathRoots({ workspaceRoot: config.runtime.workspace, homeDir: homedir() });
   const model = options.model ?? config.runtime.model;
   const fallbackModels = configuredRuntimeFallbackModels(config.runtime);
-  const sandboxEngine = processJobsProtectionPosture.suppressSyntheticSandbox
-    ? undefined
-    : configuredSandboxEngine(options.sandboxEngine);
-  const harnessSandboxPolicy: SandboxPolicy | undefined = processJobsProtectionPosture.suppressSyntheticSandbox
-    ? config.sandbox
-    : processJobsProtectedRoots.length === 0
-    ? config.sandbox
-    : processJobsSandboxPolicy({ coreConfig: config, protectedRoots: processJobsProtectedRoots });
+  const boundary = effectiveSandboxBoundary({ config, posture: processJobsProtectionPosture,
+    protectedRoots: processJobsProtectedRoots });
+  // Keep overlay authority available for a later inactive-to-retained transition,
+  // but do not inject an engine into ordinary off/omitted execution.
+  const protectionSandboxEngine = processJobsProtectionPosture.suppressSyntheticSandbox
+    ? undefined : configuredSandboxEngine(options.sandboxEngine);
+  const sandboxEngine = boundary.requiresEngine ? protectionSandboxEngine : undefined;
+  const harnessSandboxPolicy = boundary.policy;
   const runtime = options.runtime ?? createConfiguredAgentRuntimeForApp({
     config,
     cwd: agentRoot,
     model,
     ...(sandboxEngine === undefined ? {} : { sandboxEngine }),
   }, {
-    suppressSandboxEngine: processJobsProtectionPosture.suppressSyntheticSandbox,
+    suppressSandboxEngine: !boundary.requiresEngine,
   });
   const runtimeForSession = createSessionRuntimeResolver({ runtime, model,
     ...(options.runtimeForModel === undefined ? {} : { runtimeForModel: options.runtimeForModel }),
@@ -1299,7 +1300,7 @@ async function createConfiguredAgentHarnessInternal(
     baseModel: model,
     channelId: internalHooks.processJobs?.channelId,
     conversationScheme: internalHooks.processJobs?.conversationScheme,
-    sandboxEngine,
+    sandboxEngine: protectionSandboxEngine,
     protectionPosture: processJobsProtectionPosture,
     routesOnlyPiNative: internalHooks.processJobs?.routesOnlyPiNative
       ?? (() => configuredRoutesOnlyPiNative(config, model).ok),

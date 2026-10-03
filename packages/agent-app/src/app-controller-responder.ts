@@ -1,3 +1,4 @@
+import { effectiveSandboxBoundary } from "./effective-sandbox.js";
 import { createSuggestRepliesService, isSuggestRepliesToolAllowed } from "./suggest-replies.js";
 import { trackResponderActivity, type WorkerActivityTracker } from "./worker-activity.js";
 import { createProviderUsageRuntimeExtension } from "./provider-usage-tool.js";
@@ -7,7 +8,7 @@ import { resolve } from "node:path";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
-import { failClosedSandboxPolicy, modelReferenceKey } from "@mono-agent/runtime-adapter";
+import { modelReferenceKey } from "@mono-agent/runtime-adapter";
 import type {
   MonoRuntimeLike,
   RuntimeModelReference,
@@ -72,7 +73,6 @@ import type { MemoryRetrievalService } from "./memory-retrieval.js";
 import type { SeenNotifyDestinationCache } from "./seen-conversations.js";
 import { agentArtifactDerivedRoots } from "./agent-artifact-paths.js";
 import {
-  processJobsSandboxPolicy,
 } from "./process-jobs-runtime.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
 import type { AgentRootOwnership } from "./agent-root-coordinator.js";
@@ -199,36 +199,17 @@ export async function buildResponder(
       coreConfig,
     });
   const processJobsProtectedRoots = processJobsProtectionPolicyRoots(processJobsRegistry);
-  const modelBoundaryConfig = processJobsProtectionPosture.suppressSyntheticSandbox
-    ? coreConfig
-    : processJobsProtectedRoots.length === 0
-    ? coreConfig
-    : {
-        ...coreConfig,
-        sandbox: processJobsSandboxPolicy({
-          coreConfig,
-          protectedRoots: processJobsProtectedRoots,
-        }),
-      };
-  const sandboxEngineConfig = modelBoundaryConfig.sandbox?.mode === "native"
-    ? modelBoundaryConfig
-    : {
-        ...modelBoundaryConfig,
-        sandbox: failClosedSandboxPolicy({
-          root: coreConfig.runtime.workspace,
-          network: { mode: "all" },
-        }),
-      };
-  const sandboxEngine = processJobsProtectionPosture.suppressSyntheticSandbox
-    ? undefined
-    : controller.sandboxEngineFor(sandboxEngineConfig);
+  const boundary = effectiveSandboxBoundary({ config: coreConfig,
+    posture: processJobsProtectionPosture, protectedRoots: processJobsProtectedRoots });
+  const modelBoundaryConfig = boundary.policy === undefined ? coreConfig : { ...coreConfig, sandbox: boundary.policy };
+  const sandboxEngine = boundary.requiresEngine ? controller.sandboxEngineFor(modelBoundaryConfig) : undefined;
   const sessionRollover = sessionRolloverForChannel(channelId, coreConfig.runtime.session.rollover);
   const runtime = controller.runtime ?? createConfiguredAgentRuntimeForApp({
     config: coreConfig,
     cwd: controller.cwd,
     ...(sandboxEngine === undefined ? {} : { sandboxEngine }),
   }, {
-    suppressSandboxEngine: processJobsProtectionPosture.suppressSyntheticSandbox,
+    suppressSandboxEngine: !boundary.requiresEngine,
   });
   if (!controller.activeRuntimes.includes(runtime)) {
     controller.activeRuntimes.push(runtime);
@@ -516,8 +497,15 @@ export function buildRuntimeForModel(
   coreConfig: MonoAgentConfig,
 ): (model: RuntimeModelReference) => MonoRuntimeLike {
   const cache = new Map<string, MonoRuntimeLike>();
-  const suppressSandboxEngine = controller.processJobsProtectionPosture?.suppressSyntheticSandbox === true;
-  const sandboxEngine = suppressSandboxEngine ? undefined : controller.sandboxEngineFor(coreConfig);
+  const registry = controller.processJobsRegistry
+    ?? failedProcessJobsRootRegistryProtection(controller.agentRootOwnership.agentRoot);
+  const posture = controller.processJobsProtectionPosture ?? resolveProcessJobsProtectionPosture({
+    settings: { enabled: false, unsafeAllowUnprotectedState: false }, registry, coreConfig });
+  const boundary = effectiveSandboxBoundary({ config: coreConfig, posture,
+    protectedRoots: processJobsProtectionPolicyRoots(registry) });
+  const suppressSandboxEngine = !boundary.requiresEngine;
+  const sandboxEngine = suppressSandboxEngine ? undefined : controller.sandboxEngineFor({
+    ...coreConfig, ...(boundary.policy === undefined ? {} : { sandbox: boundary.policy }) });
   return (model) => {
     const key = modelReferenceKey(model);
     const cached = cache.get(key);

@@ -1,3 +1,4 @@
+import { effectiveSandboxReport, inspectEffectiveSandboxBoundary } from "./effective-sandbox.js";
 import { assertComputerUseServerNameAvailable, COMPUTER_USE_SERVER_NAME, computerUseSection } from "./computer-use.js";
 import { describeMaintenanceActivity, readLaunchdMaintenanceActivityStatus } from "./launchd-maintenance-activity.js";
 import { persistentSubagentsEnabled, subagentInstancesRoot } from "./subagent-instances.js";
@@ -44,10 +45,8 @@ import {
 } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import {
-  describeSandboxEffectiveState,
   MODEL_REFERENCE_ECHO_MAX_BYTES,
   MODEL_REFERENCE_REASON_MAX_BYTES,
-  resolveSandboxEffectiveState,
   RuntimeAdapterError,
   sandboxEffectiveStateWarning,
   sanitizeModelReferenceText,
@@ -315,7 +314,7 @@ export async function validateMonoAgentFolder(
     sections.push(await webToolsSection(coreConfig, options, liveness));
     sections.push(await continuationSection(coreConfig, options));
     sections.push(await processJobsSection(coreConfig, options));
-    sections.push(await sandboxSection(coreConfig, options.sandboxEngine));
+    sections.push(await sandboxSection(coreConfig, options));
   }
 
   sections.push(await runsSection(options, coreConfig));
@@ -3618,33 +3617,26 @@ function endpointHost(url: string): string {
   }
 }
 
-async function sandboxSection(config: MonoAgentConfig, engine?: SandboxEngine): Promise<ValidationSection> {
-  if (config.sandbox === undefined) {
-    return { id: "sandbox", label: "Sandbox", status: "disabled", details: ["No sandbox policy configured."] };
+async function sandboxSection(config: MonoAgentConfig, input: ValidateMonoAgentFolderOptions): Promise<ValidationSection> {
+  try {
+    const boundary = await inspectEffectiveSandboxBoundary(config, input);
+    const { state, detail } = await effectiveSandboxReport(config, boundary, input.sandboxEngine);
+    const warning = sandboxEffectiveStateWarning(state);
+    return { id: "sandbox", label: "Sandbox",
+      status: warning !== undefined || state.effective === "blocked" ? "waiting"
+        : state.effective === "off" ? "disabled" : "ok",
+      details: [
+        ...(config.sandbox === undefined ? [] : [
+          `Mode: ${config.sandbox.mode}, network: ${config.sandbox.network.mode}, fallback: ${config.sandbox.fallback}.`,
+        ]),
+        detail, ...(warning === undefined ? [] : [warning]),
+      ],
+    };
+  } catch {
+    return { id: "sandbox", label: "Sandbox", status: "waiting",
+      details: ["Sandbox boundary is unavailable; subprocess execution is blocked until private-state protection can be resolved."],
+    };
   }
-  const state = await resolveSandboxEffectiveState({
-    policy: config.sandbox,
-    ...(engine === undefined ? {} : { engine }),
-  });
-  const warning = sandboxEffectiveStateWarning(state);
-  const details = [
-    `Mode: ${config.sandbox.mode}, network: ${config.sandbox.network.mode}, fallback: ${config.sandbox.fallback}.`,
-    describeSandboxEffectiveState(state),
-    ...(warning === undefined ? [] : [warning]),
-  ];
-  const status: ValidationStatus = warning !== undefined
-    ? "waiting"
-    : state.effective === "off"
-      ? "disabled"
-      : state.effective === "blocked"
-        ? "waiting"
-      : "ok";
-  return {
-    id: "sandbox",
-    label: "Sandbox",
-    status,
-    details,
-  };
 }
 
 

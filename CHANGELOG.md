@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fix sandbox-off and omitted-policy subprocesses to run directly on the host
+  when no ProcessJobs roots require protection; report retained-root protection
+  truthfully and distinguish confirmed sandbox denials from ordinary permission
+  or command failures.
+
 - Fix process-job store reopening after an owner crash during an atomic write,
   preserving committed records and removing verified replacement residue.
 

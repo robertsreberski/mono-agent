@@ -1,3 +1,4 @@
+import { effectiveSandboxBoundary, effectiveSandboxReport } from "../effective-sandbox.js";
 import { describe, expect, it } from "vitest";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
@@ -122,5 +123,45 @@ describe("ProcessJobs app-private protection posture", () => {
       suppressSyntheticSandbox: false,
       unsafeAllowUnprotectedState: false,
     });
+  });
+});
+
+describe("effective subprocess boundary", () => {
+  it.each(["off", "absent", "native"] as const)("keeps %s ordinary policy separate from mandatory protection", async (sandbox) => {
+    const coreConfig = config({ sandbox });
+    for (const registry of [EMPTY, READY, FAILED]) {
+      const posture = resolve({ unsafe: false, enabled: false, registry, coreConfig });
+      const boundary = effectiveSandboxBoundary({ config: coreConfig, posture,
+        protectedRoots: registry === READY ? ["/agent/private/jobs"] : [] });
+      expect(posture.suppressSyntheticSandbox).toBe(false);
+      expect(boundary.blocked).toBe(registry === FAILED);
+      expect(boundary.policy?.mode).toBe(registry === READY ? "native" : coreConfig.sandbox?.mode);
+      if (registry === READY) {
+        expect(boundary.policy).toMatchObject({ fallback: "fail-closed", unsafeAllowHostProcess: false,
+          protectedRoots: ["/agent/private/jobs"] });
+      }
+      const engine = { id: "srt", isAvailable: async () => false } as never;
+      const report = await effectiveSandboxReport(coreConfig, boundary, engine);
+      if (registry === FAILED || registry === READY) {
+        expect(report.state.effective).toBe("blocked");
+        expect(report.detail).not.toContain("run unwrapped");
+      } else if (sandbox !== "native") {
+        expect(report.state.effective).toBe("off");
+        expect(report.detail).toContain("reachable by same-UID subprocesses");
+      }
+      expect(report.state.configuredMode).toBe(coreConfig.sandbox?.mode);
+    }
+  });
+
+  it("does not turn ordinary host execution into unsafe ProcessJobs authority", () => {
+    const coreConfig = config();
+    const posture = resolve({ unsafe: false, enabled: false, registry: EMPTY, coreConfig });
+    expect(effectiveSandboxBoundary({ config: coreConfig, posture, protectedRoots: [] }).requiresEngine).toBe(false);
+    expect(effectiveSandboxBoundary({ config: coreConfig, posture,
+      protectedRoots: ["/agent/private/jobs"] }).policy).toMatchObject({ mode: "native",
+        protectedRoots: ["/agent/private/jobs"], fallback: "fail-closed" });
+    const unsafe = resolve({ coreConfig });
+    expect(effectiveSandboxBoundary({ config: coreConfig, posture: unsafe,
+      protectedRoots: ["/agent/private/jobs"] }).policy?.mode).toBe("off");
   });
 });

@@ -78,7 +78,38 @@ compatibility path; it does not satisfy the guided managed-install choice.
 ## Mode
 
 - **`native`** — every sandboxed command is rewritten to `srt --settings <generated-file> <command> ...`. The generated settings file encodes the network and filesystem policy below. The run-scoped `NodeRepl` child is prepared through this same path, so evaluated JavaScript does not bypass the policy. Under `network.mode: "all"` the rewrite instead drives SRT through its library entry (see below) because the SRT CLI always starts domain filtering.
-- **`off`** — commands run unwrapped on the host. Equivalent to omitting the `sandbox` block.
+- **`off`** — Bash, Exec and stdio-MCP subprocesses run unwrapped on the host,
+  without requiring an SRT engine, when no retained ProcessJobs roots need
+  protection. Omitting the `sandbox` block has the same behavior.
+
+Retained ProcessJobs roots are the exception, including roots retained after jobs
+are disabled. They require fail-closed native SRT protection and explicit
+private-root denial, unless the validated trusted-host opt-in
+`processJobs.unsafeAllowUnprotectedState` with explicit `sandbox.mode: "off"`
+deliberately runs them unprotected (see below). A synthetic off/omitted policy
+confines read/write access to the workspace and uses unrestricted network; a
+configured native policy retains its readable/writable roots and network policy.
+When protection is required, missing SRT blocks execution with no host fallback.
+Enabled jobs register their state root at startup. `validate`, `doctor` and
+status distinguish configured mode from this effective ProcessJobs boundary;
+read-only validation predicts required protection without initializing state.
+
+Unwrapped same-UID subprocesses can access private agent state, including
+clear-sessions registry/control directories and coordination leases outside the
+workspace. Recovery attestation still blocks pending clear-sessions recovery;
+cooperative ownership is not an OS security boundary against arbitrary shell
+commands. Clear-sessions strengthens native policies but does not create a
+sandbox from off/omitted configuration. Fixed subagent verification observations
+remain read-only and fail closed independently.
+
+Explicit sandbox denial markers in wrapped subprocess output report
+`sandbox_denied` with bounded output. Bare `Operation not permitted` / `EPERM`
+errors say the command ran sandboxed and the permission error is commonly a
+sandbox denial, but may be an ordinary OS permission error; they do not report
+`sandbox_denied`. Other ambiguous failures retain sandbox provenance. MCP startup
+warnings contain only path-free classified summaries, with raw stderr sent to the
+operator. An ordinary unwrapped missing executable remains a
+spawn/command-not-found error.
 
 `processJobs.unsafeAllowUnprotectedState` is a separate, JSON-only trusted-host
 posture. It requires an explicit `sandbox.mode: "off"`; omission is rejected.

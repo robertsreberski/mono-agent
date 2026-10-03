@@ -1,5 +1,7 @@
 // @ts-check
 
+import { sandboxFailureDiagnostic } from "./shared/sandbox-diagnostics.js";
+
 import { existsSync } from "node:fs";
 import { passthroughSandbox } from "../sandbox-seam.js";
 import { DEFAULT_MAX_BASH_OUTPUT_CHARS } from "./shared/constants.js";
@@ -180,26 +182,28 @@ export async function execToolRun(
       resolvedCtx,
     );
   }
+  const sandboxDiagnostic = sandboxFailureDiagnostic(prepared.sandboxed,
+    `${result.stderr ?? ""}\n${result.spawnError?.message ?? ""}`);
   if (result.spawnError) {
     return finishError(
-      withPartial(`Exit code 1:\n${result.spawnError.message}`, partial),
-      { ...outcome, status: "error", code: "spawn_error", exitCode: 1 },
+      withPartial(`${sandboxDiagnostic?.prefix ?? ""}Exit code 1:\n${result.spawnError.message}`, partial),
+      { ...outcome, status: "error", code: sandboxDiagnostic?.code ?? "spawn_error", exitCode: 1 },
       maxChars,
       resolvedCtx,
     );
   }
   if (result.code !== null && result.code !== 0) {
     return finishError(
-      withPartial(`Exit code ${result.code}`, partial),
-      { ...outcome, status: "error", code: "nonzero_exit" },
+      withPartial(`${sandboxDiagnostic?.prefix ?? ""}Exit code ${result.code}`, partial),
+      { ...outcome, status: "error", code: sandboxDiagnostic?.code ?? "nonzero_exit" },
       maxChars,
       resolvedCtx,
     );
   }
   if (result.signal) {
     return finishError(
-      withPartial(`Exit code 1:\nProcess terminated by ${result.signal}`, partial),
-      { ...outcome, status: "error", code: "signal", exitCode: 1 },
+      withPartial(`${sandboxDiagnostic?.prefix ?? ""}Exit code 1:\nProcess terminated by ${result.signal}`, partial),
+      { ...outcome, status: "error", code: sandboxDiagnostic?.code ?? "signal", exitCode: 1 },
       maxChars,
       resolvedCtx,
     );

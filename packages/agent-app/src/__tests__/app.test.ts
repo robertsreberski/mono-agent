@@ -1403,6 +1403,8 @@ describe("startMonoAgentApp", () => {
 
     expect(app.sandboxStatus.effective).toBe("unsafe-host-process");
     expect(app.sandboxStatus.fallbackActive).toBe(true);
+    expect(app.sandboxStatus.detail).toContain("reachable by same-UID subprocesses");
+    expect(app.sandboxStatus.detail).toContain("clear-sessions control and coordination leases");
     expect(warnings.join("\n")).toContain("WARNING: Unsafe sandbox fallback is active");
     expect(warnings.join("\n")).toContain("all sandbox roots/denyWrite entries are inert; commands run unsandboxed");
 
@@ -1416,6 +1418,36 @@ describe("startMonoAgentApp", () => {
     expect(sandbox?.warning).toContain("all sandbox roots/denyWrite entries are inert; commands run unsandboxed");
 
     await app.stop();
+  });
+
+  it.each([undefined, { mode: "off" }])("reports unwrapped inactive execution without probing an unavailable engine (%j)", async (sandbox) => {
+    await writeConfig({ ...baseConfig(), ...(sandbox ? { sandbox } : {}) });
+    const isAvailable = vi.fn(async () => false);
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [],
+      sandboxEngine: { ...unavailableSandboxEngine, isAvailable } });
+    try {
+      expect(app.sandboxStatus.effective).toBe("off");
+      expect(app.sandboxStatus.detail).toContain("subprocesses run unwrapped on the host");
+      expect(app.sandboxStatus.detail).toContain("reachable by same-UID subprocesses");
+      expect(isAvailable).not.toHaveBeenCalled();
+    } finally { await app.stop(); }
+  });
+
+  it("reports the retained ProcessJobs boundary after jobs are disabled under off", async () => {
+    await writeConfig({ ...baseConfig(), processJobs: { enabled: true }, sandbox: { mode: "off" } });
+    const first = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [], sandboxEngine: unavailableSandboxEngine });
+    try {
+      expect(first.sandboxStatus.effective).toBe("blocked");
+      expect(first.sandboxStatus.detail).toContain("ProcessJobs requires native SRT protection");
+    } finally { await first.stop(); }
+    await writeConfig({ ...baseConfig(), processJobs: { enabled: false }, sandbox: { mode: "off" } });
+    const second = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [], sandboxEngine: unavailableSandboxEngine });
+    try {
+      expect(second.sandboxStatus.configuredMode).toBe("off");
+      expect(second.sandboxStatus.effective).toBe("blocked");
+      expect(second.sandboxStatus.detail).toContain("ProcessJobs requires native SRT protection");
+      expect(second.sandboxStatus.detail).not.toContain("commands run without mono-agent sandbox wrapping");
+    } finally { await second.stop(); }
   });
 
   it("threads the status sandbox engine into responder runtime execution", async () => {

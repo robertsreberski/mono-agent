@@ -85,7 +85,7 @@ describe("printAppStatus", () => {
           fallbackActive: true,
           unsafeAllowHostProcess: true,
           detail:
-            "Sandbox unsafe-host-process fallback is active because engine \"srt\" is unavailable; all sandbox roots/denyWrite entries are inert; commands run unsandboxed.",
+            "Sandbox unsafe-host-process fallback is active because engine \"srt\" is unavailable; all sandbox roots/denyWrite entries are inert; commands run unsandboxed. Private agent state (including clear-sessions control and coordination leases) is reachable by same-UID subprocesses.",
           warning:
             "WARNING: Unsafe sandbox fallback is active: all sandbox roots/denyWrite entries are inert; commands run unsandboxed.",
         },
@@ -94,6 +94,7 @@ describe("printAppStatus", () => {
 
     expect(out).toContain("sandbox");
     expect(out).toContain("effective: unsafe-host-process");
+    expect(out).toContain("reachable by same-UID subprocesses");
     expect(out).toContain("engine: srt (absent)");
     expect(out).toContain("fallback active: yes");
     expect(out).toContain("WARNING: Unsafe sandbox fallback is active");
