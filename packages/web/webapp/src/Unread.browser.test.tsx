@@ -266,7 +266,8 @@ describe("real route writers under mounted App settings", () => {
     screen.getByRole("button", { name: "Close agent settings" }).click();
     expect(window.location.href).toBe(destination);
     window.history.back();
-    await waitFor(() => expect(screen.getByText("Pin Beta first")).toBeVisible());
+    await waitFor(() => expect(window.history.state.monoAgentMobileNavigation.section).toBe("agent"));
+    expect(screen.getByText("Pin Beta first")).toBeVisible();
     expect(window.history.state.monoAgentMobileNavigation.section).toBe("agent");
     window.history.forward();
     await waitFor(() => expect(window.location.href).toBe(destination));
