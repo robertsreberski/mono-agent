@@ -1403,6 +1403,8 @@ describe("startMonoAgentApp", () => {
 
     expect(app.sandboxStatus.effective).toBe("unsafe-host-process");
     expect(app.sandboxStatus.fallbackActive).toBe(true);
+    expect(app.sandboxStatus.detail).toContain("reachable by same-UID subprocesses");
+    expect(app.sandboxStatus.detail).toContain("clear-sessions control and coordination leases");
     expect(warnings.join("\n")).toContain("WARNING: Unsafe sandbox fallback is active");
     expect(warnings.join("\n")).toContain("all sandbox roots/denyWrite entries are inert; commands run unsandboxed");
 
@@ -1434,9 +1436,10 @@ describe("startMonoAgentApp", () => {
   it("reports the retained ProcessJobs boundary after jobs are disabled under off", async () => {
     await writeConfig({ ...baseConfig(), processJobs: { enabled: true }, sandbox: { mode: "off" } });
     const first = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [], sandboxEngine: unavailableSandboxEngine });
-    expect(first.sandboxStatus.effective).toBe("blocked");
-    expect(first.sandboxStatus.detail).toContain("ProcessJobs requires native SRT protection");
-    await first.stop();
+    try {
+      expect(first.sandboxStatus.effective).toBe("blocked");
+      expect(first.sandboxStatus.detail).toContain("ProcessJobs requires native SRT protection");
+    } finally { await first.stop(); }
     await writeConfig({ ...baseConfig(), processJobs: { enabled: false }, sandbox: { mode: "off" } });
     const second = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [], sandboxEngine: unavailableSandboxEngine });
     try {

@@ -6,9 +6,12 @@
  */
 export function sandboxFailureDiagnostic(sandboxed, diagnostic) {
   if (!sandboxed) return undefined;
-  const denied = /blocked by sandbox|sandbox(?:[- ](?:exec|denial))?[^\n]*\b(?:deny|denied|violation)\b|operation not permitted/i.test(diagnostic);
+  const denied = /blocked by sandbox|sandbox(?:[- ](?:exec|denial))?[^\n]*\b(?:deny|denied|violation)\b/i.test(diagnostic);
   return {
     code: denied ? "sandbox_denied" : undefined,
-    prefix: denied ? "Error: Sandbox denied subprocess execution. " : "Command ran sandboxed. ",
+    prefix: denied ? "Error: Sandbox denied subprocess execution. "
+      : /operation not permitted|\bEPERM\b/i.test(diagnostic)
+        ? "Command ran sandboxed. Permission error is commonly a sandbox denial, but may be an OS permission error. "
+        : "Command ran sandboxed. ",
   };
 }

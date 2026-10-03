@@ -1353,6 +1353,28 @@ describe("subprocess sandbox provenance", () => {
     expect(cleanup).toHaveBeenCalledOnce();
   });
 
+  it.each(["Bash", "Exec"])("qualifies bare permission errors from %s without a definitive sandbox code", async (tool) => {
+    const workspace = tempWorkspace();
+    const args = ["-e", "process.stderr.write('EPERM: Operation not permitted');process.exit(1)"];
+    const engine = { isAvailable: async () => true, prepareCommand: async (command) => ({
+      ...command, command: process.execPath, args, sandboxed: true,
+    }) };
+    const run = tool === "Bash" ? bashToolRun : execToolRun;
+    const wrapped = await run(tool === "Bash" ? { command: "fictional-command" } : { executable: "fictional-command" }, {
+      ctx: { workspace, sandbox: createFakeSandbox() },
+      sandboxPolicy: testSandboxPolicy({ root: workspace }), sandboxEngine: engine,
+    });
+    expect(wrapped.outcome).toMatchObject({ code: "nonzero_exit", exitCode: 1 });
+    expect(wrapped.text).toContain("Command ran sandboxed. Permission error is commonly a sandbox denial, but may be an OS permission error.");
+    expect(wrapped.text).not.toContain("Sandbox denied subprocess execution");
+    const host = await run(tool === "Bash" ? {
+      command: `"${process.execPath}" -e ${JSON.stringify(args[1])}`,
+    } : { executable: process.execPath, args }, options(workspace));
+    expect(host.outcome).toMatchObject({ code: "nonzero_exit", exitCode: 1 });
+    expect(host.text).toContain("Operation not permitted");
+    expect(host.text).not.toContain("sandbox");
+  });
+
   it("labels ambiguous wrapped exits without calling them denials, and keeps genuine ENOENT unchanged", async () => {
     const workspace = tempWorkspace();
     const params = { executable: "fictional-nonexistent-executable" };

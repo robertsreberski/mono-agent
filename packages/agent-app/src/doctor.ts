@@ -3625,7 +3625,12 @@ async function sandboxSection(config: MonoAgentConfig, input: ValidateMonoAgentF
     return { id: "sandbox", label: "Sandbox",
       status: warning !== undefined || state.effective === "blocked" ? "waiting"
         : state.effective === "off" ? "disabled" : "ok",
-      details: [detail, ...(warning === undefined ? [] : [warning])],
+      details: [
+        ...(config.sandbox === undefined ? [] : [
+          `Mode: ${config.sandbox.mode}, network: ${config.sandbox.network.mode}, fallback: ${config.sandbox.fallback}.`,
+        ]),
+        detail, ...(warning === undefined ? [] : [warning]),
+      ],
     };
   } catch {
     return { id: "sandbox", label: "Sandbox", status: "waiting",

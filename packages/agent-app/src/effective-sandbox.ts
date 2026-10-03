@@ -95,7 +95,9 @@ export async function effectiveSandboxReport(
         ].join(" ")
       : state.effective === "off"
         ? "Sandbox is off; subprocesses run unwrapped on the host. Private agent state (including clear-sessions control and coordination leases) is reachable by same-UID subprocesses."
-        : describeSandboxEffectiveState(state);
+        : state.effective === "unsafe-host-process"
+          ? `${describeSandboxEffectiveState(state)} Private agent state (including clear-sessions control and coordination leases) is reachable by same-UID subprocesses.`
+          : describeSandboxEffectiveState(state);
   return { state, detail };
 }
 

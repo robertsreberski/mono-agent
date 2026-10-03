@@ -83,11 +83,15 @@ compatibility path; it does not satisfy the guided managed-install choice.
   protection. Omitting the `sandbox` block has the same behavior.
 
 Retained ProcessJobs roots are the exception, including roots retained after jobs
-are disabled. They require fail-closed native SRT protection: workspace-confined
-read/write access, explicit private-root denial, and unrestricted network for a
-synthetic off/omitted policy. Missing SRT blocks execution; it never falls back to
-the host. Enabled jobs register their state root at startup. `validate`, `doctor`
-and status distinguish configured mode from this effective ProcessJobs boundary;
+are disabled. They require fail-closed native SRT protection and explicit
+private-root denial, unless the validated trusted-host opt-in
+`processJobs.unsafeAllowUnprotectedState` with explicit `sandbox.mode: "off"`
+deliberately runs them unprotected (see below). A synthetic off/omitted policy
+confines read/write access to the workspace and uses unrestricted network; a
+configured native policy retains its readable/writable roots and network policy.
+When protection is required, missing SRT blocks execution with no host fallback.
+Enabled jobs register their state root at startup. `validate`, `doctor` and
+status distinguish configured mode from this effective ProcessJobs boundary;
 read-only validation predicts required protection without initializing state.
 
 Unwrapped same-UID subprocesses can access private agent state, including
@@ -98,9 +102,14 @@ commands. Clear-sessions strengthens native policies but does not create a
 sandbox from off/omitted configuration. Fixed subagent verification observations
 remain read-only and fail closed independently.
 
-Recognizable wrapped subprocess denials report `sandbox_denied` with bounded
-output; ambiguous failures say the command ran sandboxed. An ordinary unwrapped
-missing executable remains a spawn/command-not-found error.
+Explicit sandbox denial markers in wrapped subprocess output report
+`sandbox_denied` with bounded output. Bare `Operation not permitted` / `EPERM`
+errors say the command ran sandboxed and the permission error is commonly a
+sandbox denial, but may be an ordinary OS permission error; they do not report
+`sandbox_denied`. Other ambiguous failures retain sandbox provenance. MCP startup
+warnings contain only path-free classified summaries, with raw stderr sent to the
+operator. An ordinary unwrapped missing executable remains a
+spawn/command-not-found error.
 
 `processJobs.unsafeAllowUnprotectedState` is a separate, JSON-only trusted-host
 posture. It requires an explicit `sandbox.mode: "off"`; omission is rejected.

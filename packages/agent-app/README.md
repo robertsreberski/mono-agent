@@ -208,9 +208,13 @@ subprocesses run directly on the host when no ProcessJobs roots need protection.
 No SRT engine or ProcessJobs unsafe flag is needed in that case. Same-UID
 subprocesses can reach private agent state, including clear-sessions control
 files and coordination leases. Retained ProcessJobs roots (even with jobs
-disabled) still require workspace-confined, fail-closed SRT protection and explicit
-private-root denial; enabled jobs register roots at startup. `validate`, `doctor`
-and status describe the effective boundary rather than just the configured mode.
+disabled) require fail-closed SRT protection and explicit private-root denial,
+except under the validated trusted-host opt-in
+`processJobs.unsafeAllowUnprotectedState` with explicit `sandbox.mode: "off"`,
+which deliberately runs unprotected. Off/omitted policies synthesize workspace
+confinement; native policies retain their configured readable/writable roots.
+Enabled jobs register roots at startup. `validate`, `doctor` and status describe
+the effective boundary rather than just the configured mode.
 
 ## Install / Usage
 

@@ -615,7 +615,7 @@ describe("pi MCP tool helpers", () => {
     expect(cleanupCalls).toBe(1);
   });
 
-  it.each(["blocked by sandbox: Operation not permitted", "ordinary startup failure"])(
+  it.each(["blocked by sandbox: Operation not permitted", "Operation not permitted", "EPERM", "ordinary startup failure"])(
     "keeps sandboxed stdio startup details operator-only (%s) and cleanup", async (reason) => {
       const root = tempWorkspace();
       const cleanup = vi.fn();
@@ -636,8 +636,12 @@ describe("pi MCP tool helpers", () => {
         expect(result.clients).toEqual([]);
         expect(result.warnings[0]).toMatchObject({
           ...(reason.startsWith("blocked") ? { code: "sandbox_denied" } : {}),
-          message: `${reason.startsWith("blocked") ? "Error: Sandbox denied subprocess execution. " : "Command ran sandboxed. "}Stdio MCP startup failed.`,
+          message: `${reason.startsWith("blocked") ? "Error: Sandbox denied subprocess execution. "
+            : reason === "Operation not permitted" || reason === "EPERM"
+              ? "Command ran sandboxed. Permission error is commonly a sandbox denial, but may be an OS permission error. "
+              : "Command ran sandboxed. "}Stdio MCP startup failed.`,
         });
+        expect(result.warnings[0].code).toBe(reason.startsWith("blocked") ? "sandbox_denied" : undefined);
         expect(JSON.stringify(result.warnings)).not.toContain(privatePath);
         expect(JSON.stringify(result.warnings)).not.toContain(secret);
         expect(operatorWrite.mock.calls.map(([chunk]) => String(chunk)).join("")).toBe(stderr);
