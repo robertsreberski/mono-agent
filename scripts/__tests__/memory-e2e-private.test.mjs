@@ -1,15 +1,19 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, rename, symlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rm, rename, symlink, utimes, writeFile } from "node:fs/promises";
 import { renameSync, symlinkSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { PrivateError, privateCode, validatePrivateRoots, validateTurns, validateRegistration, validateAnnotations, reconstructClone, requirePrivateAncestor, createPrivateOutput, validatePrivateAclMetadata } from "../lib/memory-e2e-private-input.mjs";
-import { blindSheets, metrics, newReviewSeed, reviewId, pairedBootstrap, serializePrivateArtifact, summarizePrivate } from "../lib/memory-e2e-private-report.mjs";
-import { privateMain, resolvePrivateArm } from "../lib/memory-e2e-private-runner.mjs";
-import { assertPrivateRuntimeOptions, validatePrivateRoute, assertPrivateProviderEnvironment, PRIVATE_LOGGING_ENV, privateCompletionRuntime } from "../lib/memory-e2e-private-providers.mjs";
+import { PrivateError, privateCode, validatePrivateRoots, validatePrivateAuthPath, requirePrivateAuthParent, validateTurns, validateRegistration, validateAnnotations, reconstructClone, requirePrivateAncestor, createPrivateOutput, validatePrivateAclMetadata } from "../lib/memory-e2e-private-input.mjs";
+import { blindSheets, metrics, newReviewSeed, reviewId, pairedBootstrap, serializePrivateArtifact, summarizePrivate, writePrivateArtifact } from "../lib/memory-e2e-private-report.mjs";
+import { privateMain, resolvePrivateArm, privateReplaySnapshot } from "../lib/memory-e2e-private-runner.mjs";
+import { assertPrivateRuntimeOptions, validatePrivateRoute, assertPrivateProviderEnvironment, PRIVATE_LOGGING_ENV, privateCompletionRuntime, privatePiRuntime, PrivateProviderError } from "../lib/memory-e2e-private-providers.mjs";
 import { invokedMemoryObservation, productionModules } from "../lib/memory-e2e-runner.mjs";
+import { Budget, BenchmarkError } from "../lib/memory-e2e-providers.mjs";
+import { privateEmbeddingCache } from "../lib/memory-e2e-private-cache.mjs";
+import { judgePrivateItems, privateJudgeConcurrency } from "../lib/memory-e2e-private-judge.mjs";
 import { parseArguments } from "../memory-e2e-benchmark.mjs";
 import * as graph from "../../packages/memory/dist/bujo/graph.js";
 import * as grammar from "../../packages/memory/dist/bujo/grammar.js";
@@ -49,7 +53,8 @@ async function fixture() {
   const inputRoot = join(dir, "input"), storeRoot = join(dir, "source"), outputRoot = join(dir, "output");
   await mkdir(inputRoot, { mode: 0o700 }); await mkdir(join(storeRoot, "daily"), { recursive: true, mode: 0o700 });
   const repository = join(dir, "repository"); await mkdir(repository, { mode: 0o700 });
-  return { dir, inputRoot, storeRoot, outputRoot, repositories: [repository], env: {} };
+  const authPath = join(dir, "fictional-auth.json"); await writeFile(authPath, "{}", { mode: 0o600 });
+  return { dir, inputRoot, storeRoot, outputRoot, authPath, repositories: [repository], env: {} };
 }
 const bullet = (id, createdAt, status = "open") => ({ id, type: "note", status, text: sentinel, salience: 0.9, isInsight: false, createdAt, refs: [] });
 const row = (n, arm, label = "useful") => ({ dayId: opaque(900000), id: opaque(n + 1), conversationId: opaque(10000 + Math.floor(n / 10)), arm, followUp: n < 50, directQuestion: n >= 50,
@@ -299,6 +304,371 @@ describe("private memory evaluation privacy boundary", () => {
   });
 });
 
+
+describe("private replay performance contracts", () => {
+  it("keys retrieval by UTC day start, excluding same-day earlier and future canonical facts", async () => {
+    const f = await fixture();
+    const first = turns()[0], later = { ...first, timestamp: "2030-01-01T23:59:00.000Z" };
+    const a = privateReplaySnapshot(first, registration(), "retrieval"), b = privateReplaySnapshot(later, registration(), "retrieval");
+    expect(a).toEqual({ key: "2030-01-01", asOf: "2030-01-01T00:00:00.000Z" }); expect(b).toEqual(a);
+    expect(privateReplaySnapshot({ ...first, timestamp: "2030-01-02T00:01:00.000Z" }, registration(), "retrieval").key).not.toBe(a.key);
+    expect(privateReplaySnapshot(first, registration(), "capture").asOf).toBe(first.timestamp);
+    expect(privateReplaySnapshot(first, { ...registration(), snapshot: "present_diagnostic" }, "retrieval").key).toBe("present");
+    await writeFile(join(f.storeRoot, "daily", "2030-01-01.md"), [bullet("prior", "2029-12-31T23:59:59.000Z"), bullet("earlier_today", "2030-01-01T08:00:00.000Z"), bullet("future_today", "2030-01-01T22:00:00.000Z")].map(grammar.serializeBullet).join("\n"), { mode: 0o600 });
+    const destination = join(f.dir, "day-clone");
+    await reconstructClone({ source: f.storeRoot, destination, asOf: a.asOf, repositories: f.repositories, grammar });
+    expect(grammar.parseDailyFile(await readFile(join(destination, "daily", "2030-01-01.md"), "utf8")).bullets.map((entry) => entry.id)).toEqual(["prior"]);
+  });
+  it("shares volatile cache hits across providers/snapshots, deduplicates batches, and meters only real calls", async () => {
+    const budget = new Budget({ limits: { runtimeMs: 60000, embeddingCalls: 10, estimatedInputTokens: 10000, embeddingInputTokens: 10000 }, perCall: { embeddingTimeoutMs: 1000 } });
+    const cache = privateEmbeddingCache();
+    const embed = vi.fn(async (texts) => texts.map(() => [1, 0, 0]));
+    const options = { budget, model: "fictional-model", dimension: 3, tag: { arm: "current-only" } };
+    try {
+      const one = cache.wrap({ id: "fictional-provider", embed }, options);
+      const two = cache.wrap({ id: "fictional-provider", embed }, { ...options, tag: { arm: "profile-on" } });
+      const vectors = await one.embed([sentinel, sentinel]); vectors[0][0] = 99;
+      const tokens = budget.used.estimatedInputTokens;
+      expect(await two.embed([sentinel])).toEqual([[1, 0, 0]]);
+      expect(cache.stats).toEqual({ hits: 2, misses: 1 }); expect(embed).toHaveBeenCalledTimes(1); expect(budget.used.embeddingCalls).toBe(1); expect(budget.used.estimatedInputTokens).toBe(tokens);
+      await cache.wrap({ id: "fictional-provider", embed }, { ...options, model: "another-fictional-model" }).embed([sentinel]);
+      expect(embed).toHaveBeenCalledTimes(2);
+      const embedTwoDimensions = vi.fn(async (texts) => texts.map(() => [1, 0]));
+      await cache.wrap({ id: "fictional-provider", embed: embedTwoDimensions }, { ...options, dimension: 2 }).embed([sentinel]);
+      expect(embedTwoDimensions).toHaveBeenCalledOnce();
+      cache.clear(); await one.embed([sentinel]); expect(embed).toHaveBeenCalledTimes(3);
+      expect(JSON.stringify(budget.events)).not.toContain(sentinel);
+      budget.plan.limits.embeddingCalls = budget.used.embeddingCalls;
+      await one.embed([sentinel]); // A hit does not consume exhausted call quota.
+      const failure = await one.embed([sentinel + " fictional new text"]).catch((error) => error);
+      expect(privateCode(failure)).toBe("private_budget_exhausted"); expect(embed).toHaveBeenCalledTimes(3);
+    } finally { cache.clear(); budget.close(); }
+  });
+  it("deduplicates in-flight embeddings and does not retain failed batches", async () => {
+    const budget = new Budget({ limits: { runtimeMs: 60000, embeddingCalls: 10, estimatedInputTokens: 10000 }, perCall: { embeddingTimeoutMs: 1000 } });
+    const cache = privateEmbeddingCache(); let complete;
+    const embed = vi.fn(() => new Promise((resolve) => { complete = resolve; }));
+    const provider = cache.wrap({ id: "fictional", embed }, { budget, model: "fictional", dimension: 3, tag: {} });
+    try {
+      await expect(provider.embed([sentinel, null])).rejects.toThrow("private_embedding_failed");
+      expect(embed).not.toHaveBeenCalled();
+      const first = provider.embed([sentinel]), second = provider.embed([sentinel]); complete([[1, 0, 0]]);
+      expect(await Promise.all([first, second])).toEqual([[[1, 0, 0]], [[1, 0, 0]]]); expect(embed).toHaveBeenCalledTimes(1);
+      cache.clear(); embed.mockResolvedValueOnce([[1]]).mockResolvedValueOnce([[1, 0, 0]]);
+      await expect(provider.embed([sentinel])).rejects.toThrow("private_embedding_failed");
+      expect(await provider.embed([sentinel])).toEqual([[1, 0, 0]]); expect(embed).toHaveBeenCalledTimes(3);
+    } finally { cache.clear(); budget.close(); }
+  });
+  it("writes replaceable progress containing only a fixed arm and numeric allowlisted fields", async () => {
+    const f = await fixture(); await mkdir(f.outputRoot, { mode: 0o700 });
+    const progress = { arm: "current-only", turnsDone: 0, turnsTotal: 3, elapsedMs: 1, text: sentinel, path: sentinel, key: sentinel };
+    await writePrivateArtifact({ ...f }, "progress.json", "progress", progress);
+    await writePrivateArtifact({ ...f }, "progress.json", "progress", { ...progress, turnsDone: 2, elapsedMs: 5 });
+    const saved = JSON.parse(await readFile(join(f.outputRoot, "progress.json"), "utf8"));
+    expect(saved).toEqual({ arm: "current-only", turnsDone: 2, turnsTotal: 3, elapsedMs: 5, phase: 0, judgedDone: 0, judgedTotal: 0, retries: 0 });
+    expect((await lstat(join(f.outputRoot, "progress.json"))).mode & 0o077).toBe(0);
+    expect(await readdir(f.outputRoot)).toEqual(["progress.json"]);
+    expect(() => serializePrivateArtifact("progress", { ...progress, turnsDone: 4 })).toThrow("private_input_invalid");
+    expect(() => serializePrivateArtifact("progress", { ...progress, arm: sentinel })).toThrow("private_input_invalid");
+  });
+  it("reports genuine budget exhaustion as a stable code, never trusting arbitrary error-code properties", async () => {
+    expect(privateCode(new BenchmarkError("runtime_budget_exhausted"))).toBe("private_budget_exhausted");
+    expect(privateCode(new BenchmarkError("budget_exhausted"))).toBe("private_budget_exhausted");
+    expect(privateCode({ code: "runtime_budget_exhausted", message: sentinel })).toBe("private_operation_failed");
+    const f = await fixture();
+    await expect(privateMain({ private: true, "private-mode": "retrieval", "private-input-root": f.inputRoot, "private-output-root": f.outputRoot, "private-store-root": f.storeRoot },
+      { root, env: {}, repositories: f.repositories, stdout() {}, prepareBuild: async () => null,
+        loadInputs: async () => ({ turns: validateTurns(turns()), registration: registration() }), loadModules: async () => {
+          const modules = await productionModules({ privateEvaluation: true });
+          return { ...modules, bujo: { ...modules.bujo, safeRebuildMemoryIndex() { throw new BenchmarkError("runtime_budget_exhausted"); } } };
+        } })).rejects.toThrow("private_budget_exhausted");
+    expect(JSON.parse(await readFile(join(f.outputRoot, "error.json"), "utf8"))).toEqual({ code: "private_budget_exhausted" });
+    expect(JSON.parse(await readFile(join(f.outputRoot, "progress.json"), "utf8")).turnsDone).toBe(0);
+  });
+  for (const snapshot of ["approximate_as_of", "present_diagnostic"]) it(`reuses ${snapshot} snapshots per arm, shares embeddings, and preserves conversation/service state`, async () => {
+    const f = await fixture(), builds = [], services = [], contexts = [], resets = [], texts = [];
+    const selected = turns().map((turn, i) => ({ ...turn, conversationId: opaque(100), timestamp: ["2030-01-01T23:50:00.000Z", "2030-01-01T23:55:00.000Z", "2030-01-02T00:05:00.000Z"][i] }));
+    await writeFile(join(f.storeRoot, "daily", "2029-01-01.md"), grammar.serializeBullet(bullet("prior", "2029-01-01T00:00:00.000Z")), { mode: 0o600 });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, options) => { const input = JSON.parse(options.body).input; texts.push(...input); return new Response(JSON.stringify({ embeddings: input.map(() => [1, 0, 0]) })); });
+    const modules = await productionModules({ privateEvaluation: true });
+    await privateMain({ private: true, "private-mode": "retrieval", "private-input-root": f.inputRoot, "private-output-root": f.outputRoot, "private-store-root": f.storeRoot, "private-dimension": "3" },
+      { root, env: {}, repositories: f.repositories, stdout() {}, prepareBuild: async () => null, loadInputs: async () => ({ turns: validateTurns(selected), registration: { ...registration(), snapshot } }),
+        loadModules: async () => ({ ...modules,
+          bujo: { ...modules.bujo, safeRebuildMemoryIndex(args) { builds.push(args.root); return modules.bujo.safeRebuildMemoryIndex(args); } },
+          controllerMemory: { ...modules.controllerMemory, ensureSharedMemoryRetrieval(...args) {
+            const service = modules.controllerMemory.ensureSharedMemoryRetrieval(...args); services.push(service);
+            const load = service.load.bind(service); service.load = (...params) => { contexts.push(params[2].retainedContext); return load(...params); };
+            const reset = service.resetRecallContext.bind(service); service.resetRecallContext = (...params) => { resets.push(contexts.length); return reset(...params); };
+            return service;
+          } },
+        }) });
+    expect(builds.length).toBe(services.length * (snapshot === "present_diagnostic" ? 1 : 2)); expect(services.length).toBeGreaterThan(1);
+    expect(contexts.every((value) => value === false)).toBe(true); expect(resets).toEqual(services.map((_service, index) => (index + 1) * selected.length));
+    expect(texts.length).toBe(new Set(texts).size);
+    expect(texts.some((text) => text.toLowerCase().includes("which pottery wheel is available") && text.toLowerCase().includes("and avery"))).toBe(true);
+    const observed = JSON.parse(await readFile(join(f.outputRoot, "observations.json"), "utf8"));
+    expect(observed.filter((row) => row.id === selected[1].id).every((row) => row.indexingEmbeddingRequests === 0)).toBe(true);
+    expect(observed.some((row) => row.indexingEmbeddingCacheHits > 0)).toBe(true);
+    expect(observed.some((row) => row.embeddingCacheHits > 0)).toBe(true);
+    const progress = JSON.parse(await readFile(join(f.outputRoot, "progress.json"), "utf8")); expect(progress.turnsDone).toBe(selected.length);
+    for (const name of await readdir(f.outputRoot)) expect(await readFile(join(f.outputRoot, name), "utf8")).not.toContain(sentinel);
+  }, 60000);
+});
+
+describe("private hosted judge authentication and failure codes", () => {
+  it("threads the explicit lazy Pi auth resolver and retains typed runtime auth/budget failures", async () => {
+    const resolver = vi.fn(), run = vi.fn(async () => ({ text: "{\"label\":\"useful\"}" }));
+    const factory = vi.fn(() => resolver), create = vi.fn(() => ({ run, async disposeAllSessions() {} }));
+    const budget = new Budget({ limits: { runtimeMs: 60000, chatSteps: 10, estimatedInputTokens: 10000 }, perCall: {} });
+    const modules = { runtime: { createPiOAuthApiKeyResolver: factory, createMonoRuntime: create } };
+    try {
+      const runtime = privatePiRuntime(modules, root, budget, { piAuthPath: "/OWNER-ONLY/FICTIONAL-AUTH.json" });
+      expect(factory).toHaveBeenCalledWith({ path: "/OWNER-ONLY/FICTIONAL-AUTH.json" });
+      expect(create).toHaveBeenCalledWith({ workspace: root, resolvePiApiKey: resolver }); expect(resolver).not.toHaveBeenCalled();
+      const options = { messages: [{ role: "user", content: sentinel }], maxTurns: 1, allowedTools: [], mcpServers: {} };
+      await runtime.run("fictional system", options);
+      run.mockResolvedValueOnce({ failureKind: "provider_auth", error: sentinel });
+      await expect(runtime.run("fictional system", options)).rejects.toThrow("private_provider_auth_failed");
+      run.mockResolvedValueOnce({ failureKind: "provider_protocol", error: sentinel });
+      await expect(runtime.run("fictional system", options)).rejects.toThrow("private_provider_failed");
+      run.mockRejectedValueOnce(new BenchmarkError("runtime_budget_exhausted"));
+      await expect(runtime.run("fictional system", options)).rejects.toThrow("private_budget_exhausted");
+      expect(JSON.stringify(budget.events)).not.toContain(sentinel);
+    } finally { budget.close(); }
+  });
+  for (const scenario of ["missing-auth", "unreadable-auth", "auth", "setup", "runtime", "route", "invalid-json", "invalid-label", "empty", "budget", "success"]) it(`maps hosted judge ${scenario} through the real evaluator/app path without raw diagnostics`, async () => {
+    const f = await fixture(), route = "openai-codex:fictional-model", resolver = vi.fn();
+    resolver.readCredential = vi.fn(async () => { if (scenario === "unreadable-auth") throw new Error(sentinel); return { type: "api_key", key: "FICTIONAL_KEY" }; });
+    const checkAuth = vi.fn(async () => scenario === "missing-auth" ? undefined : { source: "stored", type: "api_key" });
+    const rebuild = vi.fn();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, options) => {
+      if (!url.endsWith("/api/embed")) throw new Error("fictional_unexpected_network");
+      const input = JSON.parse(options.body).input;
+      return new Response(JSON.stringify({ embeddings: input.map(() => Array(768).fill(0)) }));
+    });
+    const expected = { "missing-auth": "private_provider_auth_failed", "unreadable-auth": "private_provider_auth_failed", auth: "private_provider_auth_failed", setup: "private_judge_unavailable", runtime: "private_provider_failed", route: "private_provider_route_refused", "invalid-json": "private_judge_output_invalid", "invalid-label": "private_judge_output_invalid", empty: "private_judge_output_invalid", budget: "private_budget_exhausted" }[scenario];
+    const r = { ...registration(), productionRoutes: [route] };
+    const factory = vi.fn(() => resolver), run = vi.fn(async () => {
+      if (scenario === "budget") throw new BenchmarkError("runtime_budget_exhausted");
+      return scenario === "auth" ? { failureKind: "provider_auth", error: sentinel } : scenario === "runtime" ? { failureKind: "provider_unavailable", error: sentinel }
+        : { text: scenario === "invalid-json" ? sentinel : scenario === "empty" ? "" : JSON.stringify({ label: scenario === "invalid-label" ? sentinel : "partial", ignored: sentinel }) };
+    });
+    const create = vi.fn(() => ({ async run(system, options) {
+      expect((await lstat(options.cwd)).isDirectory()).toBe(true);
+      expect((await lstat(options.cwd)).mode & 0o777).toBe(0o700);
+      return run(system, options);
+    }, async disposeAllSessions() {} }));
+    const loadModules = async () => {
+      const modules = await productionModules({ privateEvaluation: true });
+      rebuild.mockImplementation(modules.bujo.safeRebuildMemoryIndex);
+      return { ...modules,
+        providerAuth: { checkPiProviderAuth: checkAuth },
+        bujo: { ...modules.bujo, safeRebuildMemoryIndex: rebuild },
+        runtime: { ...modules.runtime, createPiOAuthApiKeyResolver: factory, createMonoRuntime: create },
+        app: { ...modules.app, ...(scenario === "setup" ? { createConfiguredCurationLlm() { throw new Error(sentinel); } } : {}) },
+      };
+    };
+    const execution = privateMain({ private: true, "private-mode": "retrieval", "private-input-root": f.inputRoot, "private-output-root": f.outputRoot, "private-store-root": f.storeRoot,
+      "private-judge": route, "allow-private-provider-route": scenario === "route" ? [] : [route], "pi-auth-path": f.authPath },
+      { root, env: {}, repositories: f.repositories, stdout() {}, prepareBuild: async () => null, loadModules, loadInputs: async () => ({ turns: validateTurns(turns()), registration: r }) });
+    if (expected) {
+      await expect(execution).rejects.toThrow(expected);
+      expect(JSON.parse(await readFile(join(f.outputRoot, "error.json"), "utf8"))).toEqual({ code: expected });
+    } else {
+      await execution; expect(run).toHaveBeenCalledOnce(); expect(factory).toHaveBeenCalledWith({ path: f.authPath });
+      expect(JSON.parse(await readFile(join(f.outputRoot, "model-review.json"), "utf8"))).toHaveLength(1);
+    }
+    for (const name of await readdir(f.outputRoot)) expect(await readFile(join(f.outputRoot, name), "utf8")).not.toContain(sentinel);
+    if (["route", "setup", "missing-auth", "unreadable-auth"].includes(scenario)) { expect(rebuild).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled(); }
+    if (scenario === "route") expect(create).not.toHaveBeenCalled();
+    expect((await readdir(f.outputRoot)).some((name) => name.startsWith("clone-") || name.startsWith("judge-"))).toBe(false);
+  }, 30000);
+  it("uses Pi's real side-effect-free auth check, refuses absent auth before snapshots, and never invents a default credential store", async () => {
+    const f = await fixture(), modules = await productionModules({ privateEvaluation: true });
+    const route = "openai-codex:fictional-model", run = vi.fn(), factory = vi.fn(), rebuild = vi.fn();
+    const checkAuth = vi.fn((provider, credential, _environment, signal) => modules.providerAuth.checkPiProviderAuth(provider, credential, {}, signal));
+    await expect(privateMain({ private: true, "private-mode": "retrieval", "private-input-root": f.inputRoot, "private-output-root": f.outputRoot, "private-store-root": f.storeRoot,
+      "private-judge": route, "allow-private-provider-route": [route] }, { root, env: {}, repositories: f.repositories, prepareBuild: async () => null,
+      loadInputs: async () => ({ turns: validateTurns(turns()), registration: { ...registration(), productionRoutes: [route] } }),
+      loadModules: async () => ({ ...modules, providerAuth: { checkPiProviderAuth: checkAuth }, bujo: { ...modules.bujo, safeRebuildMemoryIndex: rebuild },
+        runtime: { ...modules.runtime, createPiOAuthApiKeyResolver: factory, createMonoRuntime: () => ({ run, async disposeAllSessions() {} }) } }) })).rejects.toThrow("private_provider_auth_failed");
+    expect(checkAuth).toHaveBeenCalledOnce(); expect(factory).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled(); expect(rebuild).not.toHaveBeenCalled();
+    expect(JSON.parse(await readFile(join(f.outputRoot, "error.json"), "utf8"))).toEqual({ code: "private_provider_auth_failed" });
+    expect((await readdir(f.outputRoot)).includes("progress.json")).toBe(false);
+  });
+  it("maps missing judge runtime/auth-check setup to unavailable and does not trust arbitrary runtime code properties", async () => {
+    const budget = new Budget({ limits: { runtimeMs: 60000, chatSteps: 10, estimatedInputTokens: 10000 }, perCall: {} });
+    try {
+      expect(() => privatePiRuntime({ runtime: { createMonoRuntime() { throw new Error(sentinel); } } }, root, budget)).toThrow("private_judge_unavailable");
+      const runtime = privatePiRuntime({ runtime: { createMonoRuntime: () => ({ async run() { throw Object.assign(new Error(sentinel), { code: "private_provider_auth_failed" }); } }) } }, root, budget);
+      await expect(runtime.checkAuth("openai-codex")).rejects.toThrow("private_judge_unavailable");
+      await expect(runtime.run("fictional system", { messages: [{ role: "user", content: sentinel }], maxTurns: 1, allowedTools: [], mcpServers: {} })).rejects.toThrow("private_provider_failed");
+    } finally { budget.close(); }
+  });
+  it("labels initial embedding failures separately from judge setup failures", async () => {
+    const budget = new Budget({ limits: { runtimeMs: 60000, embeddingCalls: 10, estimatedInputTokens: 10000 }, perCall: { embeddingTimeoutMs: 1000 } });
+    const cache = privateEmbeddingCache();
+    try {
+      const provider = cache.wrap({ id: "fictional", async embed() { throw new Error(sentinel); } }, { budget, model: "fictional", dimension: 3, tag: {} });
+      await expect(provider.embed([sentinel])).rejects.toThrow("private_embedding_failed");
+    } finally { cache.clear(); budget.close(); }
+  });
+});
+
+describe("private judge reliability and review fixes", () => {
+  const items = () => [
+    { id: opaque(101), turnId: opaque(1), ownerText: "Fictional pottery question", text: sentinel },
+    { id: opaque(102), turnId: opaque(1), ownerText: "Fictional pottery question", text: sentinel },
+    { id: opaque(103), turnId: opaque(2), ownerText: "Another fictional question", text: sentinel },
+    { id: opaque(104), turnId: opaque(1), ownerText: "Fictional pottery question", text: "Fictional second line" },
+  ];
+  const budgetForJudge = () => new Budget({ limits: { runtimeMs: 60000, chatSteps: 100, estimatedInputTokens: 10000 }, perCall: {} });
+  it("validates concurrency flags as integers 1–8, defaulting to four", () => {
+    expect(privateJudgeConcurrency()).toBe(4);
+    for (const value of [1, 2, 4, 8]) expect(privateJudgeConcurrency(String(value))).toBe(value);
+    for (const value of [0, 9, "2.5", "2.0", "", "-1", sentinel, true, null]) expect(() => privateJudgeConcurrency(value)).toThrow("private_arguments_invalid");
+    expect(parseArguments(["--private", "--private-judge-concurrency", "2"])["private-judge-concurrency"]).toBe("2");
+  });
+  it("bounds in-flight calls, reuses exact turn/line labels across arms, and serializes progress", async () => {
+    const budget = budgetForJudge(), progress = []; let active = 0, maximum = 0, writing = 0;
+    const complete = vi.fn(async () => { active += 1; maximum = Math.max(maximum, active); await new Promise((resolve) => setTimeout(resolve, 5)); active -= 1; return '{"label":"useful"}'; });
+    try {
+      const labels = await judgePrivateItems({ items: items(), definitions: registration().definitions, judge: { complete }, budget, concurrency: 2,
+        onProgress: async (value) => { expect(writing++).toBe(0); await new Promise((resolve) => setTimeout(resolve, 1)); progress.push(value); writing -= 1; } });
+      expect(maximum).toBe(2); expect(complete).toHaveBeenCalledTimes(3); expect(labels).toEqual(items().map(({ id }) => ({ id, label: "useful" })));
+      expect(progress.map((value) => value.judgedDone)).toEqual([0, 1, 2, 3]);
+      expect(progress.at(-1)).toEqual({ phase: 1, judgedDone: 3, judgedTotal: 3, retries: 0 });
+      expect(JSON.stringify(progress)).not.toContain(sentinel);
+    } finally { budget.close(); }
+  });
+  it("retries only trusted transient failures, at most three attempts with bounded exponential jitter", async () => {
+    const budget = budgetForJudge(), sleep = vi.fn(async () => {}), progress = [];
+    const complete = vi.fn().mockRejectedValueOnce(new PrivateProviderError(true)).mockRejectedValueOnce(new PrivateProviderError(true)).mockResolvedValueOnce('{"label":"partial"}');
+    try {
+      const labels = await judgePrivateItems({ items: items().slice(0, 2), definitions: {}, judge: { complete }, budget, concurrency: 1, sleep, random: () => 0.5, onProgress: async (value) => progress.push(value) });
+      expect(complete).toHaveBeenCalledTimes(3); expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([1000, 2000]);
+      expect(labels).toEqual(items().slice(0, 2).map(({ id }) => ({ id, label: "partial" })));
+      expect(progress.at(-1)).toEqual({ phase: 1, judgedDone: 1, judgedTotal: 1, retries: 2 });
+      complete.mockReset().mockRejectedValue(new PrivateProviderError(true)); sleep.mockClear();
+      await expect(judgePrivateItems({ items: items().slice(0, 1), definitions: {}, judge: { complete }, budget, sleep })).rejects.toThrow("private_provider_failed");
+      expect(complete).toHaveBeenCalledTimes(3); expect(sleep).toHaveBeenCalledTimes(2);
+    } finally { budget.close(); }
+  });
+  for (const code of ["private_provider_auth_failed", "private_provider_route_refused", "private_judge_output_invalid", "private_budget_exhausted"]) it(`never retries ${code}`, async () => {
+    const budget = budgetForJudge(), sleep = vi.fn(), complete = vi.fn(async () => { throw new PrivateError(code); });
+    try {
+      await expect(judgePrivateItems({ items: items(), definitions: {}, judge: { complete }, budget, concurrency: 1, sleep })).rejects.toThrow(code);
+      expect(complete).toHaveBeenCalledOnce(); expect(sleep).not.toHaveBeenCalled();
+    } finally { budget.close(); }
+  });
+  it("does not retry malformed judge output or arbitrary provider retryability properties", async () => {
+    const budget = budgetForJudge(), sleep = vi.fn();
+    try {
+      for (const text of [sentinel, "null", "{}", '{"label":"invalid"}']) {
+        const complete = vi.fn(async () => text);
+        await expect(judgePrivateItems({ items: items(), definitions: {}, judge: { complete }, budget, concurrency: 1, sleep })).rejects.toThrow("private_judge_output_invalid");
+        expect(complete).toHaveBeenCalledOnce();
+      }
+      const complete = vi.fn(async () => { throw Object.assign(new Error(sentinel), { retryable: true, code: "private_provider_failed" }); });
+      await expect(judgePrivateItems({ items: items(), definitions: {}, judge: { complete }, budget, concurrency: 1, sleep })).rejects.toThrow("private_provider_failed");
+      expect(complete).toHaveBeenCalledOnce(); expect(sleep).not.toHaveBeenCalled();
+    } finally { budget.close(); }
+  });
+  it("respects reservation exhaustion and the global deadline during retry backoff", async () => {
+    for (const scenario of ["quota", "deadline"]) {
+      const budget = budgetForJudge(), sleep = vi.fn(async () => { if (scenario === "deadline") { budget.exhausted = true; budget.controller.abort(); } });
+      budget.plan.limits.chatSteps = 1; let providerCalls = 0;
+      const complete = vi.fn(async () => { budget.reserve({ chatSteps: 1 }); providerCalls += 1; throw new PrivateProviderError(true); });
+      try {
+        await expect(judgePrivateItems({ items: items(), definitions: {}, judge: { complete }, budget, concurrency: 1, sleep })).rejects.toThrow("private_budget_exhausted");
+        expect(providerCalls).toBe(1); expect(budget.exhausted).toBe(true);
+      } finally { budget.close(); }
+    }
+  });
+  it("stops new admissions and cancels/settles siblings after a terminal pool failure", async () => {
+    const budget = budgetForJudge(); let active = 0;
+    const complete = vi.fn(async (_prompt, { abortSignal }) => {
+      active += 1;
+      try {
+        if (complete.mock.calls.length === 1) { await new Promise((resolve) => setTimeout(resolve, 5)); throw new PrivateError("private_provider_auth_failed"); }
+        await new Promise((resolve) => abortSignal.addEventListener("abort", resolve, { once: true }));
+        throw new PrivateError("private_provider_failed");
+      } finally { active -= 1; }
+    });
+    try {
+      await expect(judgePrivateItems({ items: items(), definitions: {}, judge: { complete }, budget, concurrency: 2 })).rejects.toThrow("private_provider_auth_failed");
+      expect(complete).toHaveBeenCalledTimes(2); expect(active).toBe(0); expect(budget.pending.size).toBe(0);
+    } finally { budget.close(); }
+  });
+  it("maps trusted native transient transport results without retaining raw failure text", async () => {
+    const modules = await productionModules({ privateEvaluation: true }), budget = budgetForJudge();
+    const run = vi.fn(async () => ({ failureKind: "provider_unavailable", error: `Connection error. ${sentinel}` }));
+    try {
+      const runtime = privatePiRuntime({ ...modules, runtime: { ...modules.runtime, createMonoRuntime: () => ({ run }) } }, root, budget);
+      const options = { messages: [{ role: "user", content: sentinel }], maxTurns: 1, allowedTools: [], mcpServers: {} };
+      const failure = await runtime.run("fictional system", options).catch((error) => error);
+      expect(failure).toBeInstanceOf(PrivateProviderError); expect(failure.retryable).toBe(true); expect(failure.message).toBe("private_provider_failed");
+      run.mockResolvedValueOnce({ failureKind: "provider_unavailable", error: `Model not found. ${sentinel}` });
+      const permanent = await runtime.run("fictional system", options).catch((error) => error); expect(permanent.retryable).toBe(false);
+      expect(run.mock.calls[0][1].sessionKeepAlive).toBe(false); expect(JSON.stringify(budget.events)).not.toContain(sentinel);
+    } finally { budget.close(); }
+  });
+  it("keeps numeric judge checkpoints closed and rejects invalid progress fields", async () => {
+    const f = await fixture(); await mkdir(f.outputRoot, { mode: 0o700 });
+    const value = { arm: "current-only", turnsDone: 3, turnsTotal: 3, elapsedMs: 5, phase: 1, judgedDone: 2, judgedTotal: 4, retries: 1 };
+    await writePrivateArtifact(f, "progress.json", "progress", { ...value, text: sentinel, path: sentinel, key: sentinel });
+    expect(JSON.parse(await readFile(join(f.outputRoot, "progress.json"), "utf8"))).toEqual(value);
+    for (const extra of [{ phase: "judge" }, { phase: 2 }, { judgedDone: 5 }, { judgedTotal: -1 }, { retries: 9 }, { retries: 0.5 }]) expect(() => serializePrivateArtifact("progress", { ...value, ...extra })).toThrow("private_input_invalid");
+  });
+  it("refuses unsafe auth metadata with real external files, never reading credential content", async () => {
+    const rootInfo = await lstat("/");
+    const dir = await mkdtemp(join(homedir(), "fictional-auth-test-")); dirs.push(dir);
+    const path = join(dir, "auth.json"); await writeFile(path, "{}", { mode: 0o600 });
+    expect(await validatePrivateAuthPath(path, [root])).toBe(path);
+    await chmod(path, 0o640); await expect(validatePrivateAuthPath(path, [root])).rejects.toThrow("private_auth_path_refused"); await chmod(path, 0o600);
+    await symlink(path, join(dir, "alias.json")); await expect(validatePrivateAuthPath(join(dir, "alias.json"), [root])).rejects.toThrow("private_auth_path_refused");
+    await symlink(dir, join(dir, "parent-alias")); await expect(validatePrivateAuthPath(join(dir, "parent-alias", "auth.json"), [root])).rejects.toThrow("private_auth_path_refused");
+    const hardlink = join(dir, "linked-auth.json"); await link(path, hardlink);
+    await expect(validatePrivateAuthPath(path, [root])).rejects.toThrow("private_auth_path_refused"); await rm(hardlink);
+    await expect(validatePrivateAuthPath(dir, [root])).rejects.toThrow("private_auth_path_refused");
+    await expect(validatePrivateAuthPath(join(dir, "absent.json"), [root])).rejects.toThrow("private_auth_path_refused");
+    await expect(validatePrivateAuthPath("relative.json", [root])).rejects.toThrow("private_auth_path_refused");
+    await chmod(dir, 0o755); expect(await validatePrivateAuthPath(path, [root])).toBe(path);
+    for (const mode of [0o775, 0o777]) { await chmod(dir, mode); await expect(validatePrivateAuthPath(path, [root])).rejects.toThrow("private_auth_path_refused"); }
+    await chmod(dir, 0o700);
+    // Foreign ownership cannot be manufactured without privilege. Exercise the
+    // actual parent guard with real root-owned metadata instead of mocking fs.
+    if (process.getuid() !== 0) expect(() => requirePrivateAuthParent(rootInfo)).toThrow("private_auth_path_refused");
+    const f = await fixture(); await expect(validatePrivateAuthPath(f.authPath, [root])).rejects.toThrow("private_auth_path_refused");
+    const loadInputs = vi.fn(), loadModules = vi.fn(), prepareBuild = vi.fn();
+    await expect(privateMain({ private: true, "private-mode": "retrieval", "private-input-root": f.inputRoot, "private-output-root": f.outputRoot, "private-store-root": f.storeRoot, "pi-auth-path": join(dir, "alias.json") },
+      { root, env: {}, repositories: f.repositories, loadInputs, loadModules, prepareBuild })).rejects.toThrow("private_auth_path_refused");
+    expect(loadInputs).not.toHaveBeenCalled(); expect(loadModules).not.toHaveBeenCalled(); expect(prepareBuild).not.toHaveBeenCalled(); expect((await readdir(f.dir)).includes("output")).toBe(false);
+  });
+  it("retains trusted query-quota exhaustion swallowed by the real recall/harness wrappers", async () => {
+    const f = await fixture(), modules = await productionModules({ privateEvaluation: true }), budgets = new Set();
+    await writeFile(join(f.storeRoot, "daily", "2029-01-01.md"), grammar.serializeBullet(bullet("fictional", "2029-01-01T00:00:00.000Z")), { mode: 0o600 });
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, options) => { const input = JSON.parse(options.body).input; return new Response(JSON.stringify({ embeddings: input.map(() => [1, 0, 0]) })); });
+    const reserve = Budget.prototype.reserve;
+    vi.spyOn(Budget.prototype, "reserve").mockImplementation(function(cost) {
+      budgets.add(this);
+      // Let the real initial index call consume its one request, then have the
+      // real query embedding reservation (not a fake throw) exhaust admission.
+      if (cost.embeddingCalls) this.plan.limits.embeddingCalls = 1;
+      return reserve.call(this, cost);
+    });
+    const create = vi.fn(modules.app.createConfiguredMemory);
+    await expect(privateMain({ private: true, "private-mode": "retrieval", "private-input-root": f.inputRoot, "private-output-root": f.outputRoot, "private-store-root": f.storeRoot, "private-dimension": "3" },
+      { root, env: {}, repositories: f.repositories, stdout() {}, prepareBuild: async () => null,
+        loadInputs: async () => ({ turns: validateTurns(turns().slice(0, 1)), registration: registration() }),
+        loadModules: async () => ({ ...modules, app: { ...modules.app, createConfiguredMemory: create } }) })).rejects.toThrow("private_budget_exhausted");
+    expect(create).toHaveBeenCalledOnce(); expect(fetch).toHaveBeenCalledOnce(); expect([...budgets].some((budget) => budget.exhausted && budget.used.embeddingCalls === 1)).toBe(true);
+    expect(JSON.parse(await readFile(join(f.outputRoot, "error.json"), "utf8"))).toEqual({ code: "private_budget_exhausted" });
+    expect(JSON.parse(await readFile(join(f.outputRoot, "progress.json"), "utf8")).turnsDone).toBe(0);
+    for (const name of await readdir(f.outputRoot)) expect(await readFile(join(f.outputRoot, name), "utf8")).not.toContain(sentinel);
+  });
+});
+
 describe("private memory evaluation measurement", () => {
   it("writes blinded sheets containing only opaque IDs and labels", () => {
     const sheets = blindSheets([row(1, "current-only"), row(2, "profile-on")]);
@@ -365,7 +735,12 @@ describe("private memory evaluation measurement", () => {
     const observed = JSON.parse(await readFile(join(f.outputRoot, "observations.json"), "utf8"));
     const semantic = observed.filter((entry) => entry.arm === "semantic-only");
     expect(semantic).toHaveLength(turns().length);
-    expect(semantic.every((entry) => entry.status === "completed" && entry.bytes > 0 && entry.indexingEmbeddingRequests > 0)).toBe(true);
+    expect(semantic.every((entry) => entry.status === "completed" && entry.bytes > 0)).toBe(true);
+    // Earlier arms warmed the volatile cache; supported semantic replay still
+    // rebuilds its own index once, then reuses it for this same-day fixture.
+    expect(semantic[0].indexingEmbeddingRequests).toBe(0);
+    expect(semantic[0].indexingEmbeddingCacheHits).toBeGreaterThan(0);
+    expect(semantic.slice(1).every((entry) => entry.indexingEmbeddingRequests === 0 && entry.indexingEmbeddingCacheHits === 0)).toBe(true);
     for (const [id, kind] of [[opaque(1), "similarity"], [opaque(2), "guidance"], [opaque(3), "similarity"]]) {
       expect(semantic.find((entry) => entry.id === id).lines.map((line) => line.kind)).toEqual([kind]);
     }

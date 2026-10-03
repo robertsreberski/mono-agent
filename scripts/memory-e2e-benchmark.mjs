@@ -12,7 +12,7 @@ export function parseArguments(argv) {
   const flags = {};
   const boolean = new Set(["dry-run", "real", "help", "allow-hosted-locomo-transfer", "allow-measured-output", "private", "private-review"]);
   const valued = new Set(["corpus", "dataset", "split", "reader", "extractor", "embedding-provider", "embedding-model", "dimension", "confirm-plan", "pi-auth-path", "locomo-experiment", "locomo-arm", "reuse-artifact",
-    "private-mode", "private-input-root", "private-output-root", "private-store-root", "private-embedding-model", "private-dimension", "private-capture-route", "private-judge", "private-max-runtime-ms", "allow-private-provider-route"]);
+    "private-mode", "private-input-root", "private-output-root", "private-store-root", "private-embedding-model", "private-dimension", "private-capture-route", "private-judge", "private-judge-concurrency", "private-max-runtime-ms", "allow-private-provider-route"]);
   for (let i = 0; i < argv.length; i += 1) {
     const key = argv[i].replace(/^--/u, "");
     if (argv[i] !== `--${key}` || (Object.hasOwn(flags, key) && key !== "allow-private-provider-route") || (!boolean.has(key) && !valued.has(key))) throw new Error("invalid_arguments");

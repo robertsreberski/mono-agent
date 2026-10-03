@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Keep private memory judging bounded with concurrent, deduplicated calls,
+  transient-only retries and numeric judging progress. Refuse unsafe Pi auth
+  files and writable/foreign auth parents, and preserve budget-exhaustion codes
+  when recall wrappers swallow reservation failures.
+
+- Fix private memory judges to use an explicitly selected Pi auth store and
+  owner-private workspace; check hosted credential availability before snapshot
+  indexing and report distinct code-only setup, auth, runtime and output errors.
+
+- Keep private BuJo retrieval replay bounded by reusing conservative UTC-day
+  snapshots and volatile shared embedding results; meter only real embedding
+  calls, count cache hits separately, and expose content-free private progress
+  with a specific budget-exhaustion code. Preserve cold replay service state
+  across store rebuilds and leave present diagnostics/capture chronology intact.
+
 - Fix intention-policy boundary validation, dated profile competitors and
   deliberate fact-sheet currentness; preserve supported ends when omitted and
   deny recency to invalid recording instants.

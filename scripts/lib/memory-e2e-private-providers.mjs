@@ -1,4 +1,4 @@
-import { PrivateError } from "./memory-e2e-private-input.mjs";
+import { PrivateError, privateCode } from "./memory-e2e-private-input.mjs";
 
 // Refuse presence, not just recognized values: SDK parsers can themselves warn
 // for invalid levels. The shared guard covers every admitted native Pi route,
@@ -17,6 +17,20 @@ export function privateEmbeddingFetch(input, options = {}) {
   return fetch(input, { ...options, redirect: "error" });
 }
 
+// Retry authority is a trusted instance, never an arbitrary provider property.
+export class PrivateProviderError extends PrivateError {
+  constructor(retryable = false) { super("private_provider_failed"); this.retryable = retryable === true; }
+}
+export function assertPrivateBudget(budget) {
+  if (budget.exhausted) throw new PrivateError("private_budget_exhausted");
+  try { budget.reserve({}); }
+  catch (error) { if (privateCode(error) === "private_budget_exhausted") throw new PrivateError("private_budget_exhausted"); throw error; }
+}
+function transientFailure(modules, errorText, failureKind) {
+  return ["timeout", "stall"].includes(failureKind)
+    || modules.providerFailures?.retryableProviderFailureInfo({ errorText, failureKind }).retryable === true;
+}
+
 const routePattern = /^[a-z0-9-]+:[A-Za-z0-9:._/-]{1,160}$/u;
 export function validatePrivateRoute(route, allowed, registration, runtime) {
   if (typeof route !== "string" || !routePattern.test(route) || route.includes("..")) throw new PrivateError("private_provider_route_refused");
@@ -33,36 +47,64 @@ export function assertPrivateRuntimeOptions(options) {
     || (options.observers?.length ?? 0) !== 0 || (options.allowedTools?.length ?? 0) !== 0
     || Object.keys(options.mcpServers ?? {}).length !== 0) throw new PrivateError("private_isolation_required");
 }
-export function privatePiRuntime(modules, workspace, budget) {
+export function privatePiRuntime(modules, workspace, budget, { piAuthPath } = {}) {
   assertPrivateProviderEnvironment();
-  const raw = modules.runtime.createMonoRuntime({ workspace });
+  let raw, resolvePiApiKey;
+  try {
+    // Same lazy credential-store seam as production/real benchmarks. Selecting
+    // credentials is execution-only: no auth path or credential enters artifacts.
+    resolvePiApiKey = piAuthPath === undefined ? undefined : modules.runtime.createPiOAuthApiKeyResolver({ path: piAuthPath });
+    raw = modules.runtime.createMonoRuntime({ workspace, ...(resolvePiApiKey === undefined ? {} : { resolvePiApiKey }) });
+  } catch { throw new PrivateError("private_judge_unavailable"); }
   return {
+    async checkAuth(provider) {
+      assertPrivateProviderEnvironment();
+      budget.reserve({});
+      if (typeof modules.providerAuth?.checkPiProviderAuth !== "function") throw new PrivateError("private_judge_unavailable");
+      try {
+        // Pi checks credential/environment availability without a request or
+        // OAuth refresh. The actual run still owns entitlement/refresh failures.
+        const credential = await budget.wait(Promise.resolve().then(() => resolvePiApiKey?.readCredential(provider)));
+        const auth = await budget.wait(modules.providerAuth.checkPiProviderAuth(provider, credential, process.env, budget.controller.signal));
+        if (!auth) throw new PrivateError("private_provider_auth_failed");
+      } catch (error) {
+        throw new PrivateError(privateCode(error) === "private_budget_exhausted" ? "private_budget_exhausted" : "private_provider_auth_failed");
+      }
+    },
     async run(system, options) {
       assertPrivateProviderEnvironment();
       assertPrivateRuntimeOptions(options);
+      assertPrivateBudget(budget);
       budget.privateChatCalls = (budget.privateChatCalls ?? 0) + 1;
       const inputTokens = Math.ceil(Buffer.byteLength(system + JSON.stringify(options.messages), "utf8") / 3);
       budget.reserve({ chatSteps: options.maxTurns ?? 1, estimatedInputTokens: inputTokens * (options.maxTurns ?? 1) });
       try {
         // No durable session root and no content event callbacks are forwarded.
-        const result = await budget.wait(raw.run(system, { ...options, piMaxRetries: 0, piTransport: "sse", keepAlive: false, providerCheckMaxTokens: 4096,
+        const result = await budget.wait(raw.run(system, { ...options, piMaxRetries: 0, piTransport: "sse", keepAlive: false, sessionKeepAlive: false, providerCheckMaxTokens: 4096,
           abortSignal: AbortSignal.any([options.abortSignal, budget.controller.signal, AbortSignal.timeout(60000)].filter(Boolean)) }));
-        if (result.failureKind || result.error) throw new PrivateError("private_provider_failed");
+        if (result.failureKind === "provider_auth") throw new PrivateError("private_provider_auth_failed");
+        if (result.failureKind || result.error) throw new PrivateProviderError(transientFailure(modules, typeof result.error === "string" ? result.error : "", result.failureKind));
         return result;
-      } catch { throw new PrivateError("private_provider_failed"); }
+      } catch (error) {
+        assertPrivateBudget(budget);
+        if (error instanceof PrivateError) throw error;
+        if (privateCode(error) === "private_budget_exhausted") throw new PrivateError("private_budget_exhausted");
+        throw new PrivateProviderError(transientFailure(modules, error instanceof Error ? error.message : "", null));
+      }
     },
     async disposeAllSessions() { await raw.disposeAllSessions?.(); },
   };
 }
 /** Tool-less local completion through the app's existing memoryRuntime seam.
  * Unlike a generic HTTP adapter this refuses redirects and caps response bytes. */
-export function privateCompletionRuntime(modules, route, workspace, budget) {
+export function privateCompletionRuntime(modules, route, workspace, budget, auth = {}) {
   assertPrivateProviderEnvironment();
-  if (!route.startsWith("ollama:")) return privatePiRuntime(modules, workspace, budget);
+  if (!route.startsWith("ollama:")) return privatePiRuntime(modules, workspace, budget, auth);
   return {
     async run(system, options) {
       assertPrivateProviderEnvironment();
       assertPrivateRuntimeOptions(options);
+      assertPrivateBudget(budget);
       budget.privateChatCalls = (budget.privateChatCalls ?? 0) + 1;
       const prompt = options.messages.map((message) => message.content).join("\n\n");
       budget.reserve({ chatSteps: 1, estimatedInputTokens: Math.ceil(Buffer.byteLength(system + prompt) / 3) });
@@ -73,7 +115,7 @@ export function privateCompletionRuntime(modules, route, workspace, budget) {
             format: options.outputSchema ?? "json", options: { num_predict: 4096 } }),
           signal: AbortSignal.any([options.abortSignal, budget.controller.signal, AbortSignal.timeout(60000)].filter(Boolean)),
         }));
-        if (!response.ok || !response.body) throw new PrivateError("private_provider_failed");
+        if (!response.ok || !response.body) throw new PrivateProviderError(response.status === 429 || response.status >= 500);
         const reader = response.body.getReader(); const chunks = []; let bytes = 0;
         try {
           for (;;) { const { done, value } = await reader.read(); if (done) break; bytes += value.byteLength;
@@ -83,7 +125,12 @@ export function privateCompletionRuntime(modules, route, workspace, budget) {
         if (typeof data.response !== "string") throw new PrivateError("private_provider_failed");
         budget.reserve({ outputTokens: Math.ceil(Buffer.byteLength(data.response) / 3) });
         return { text: data.response, ...(options.outputSchema === undefined ? {} : { structuredResult: JSON.parse(data.response) }) };
-      } catch (error) { throw new PrivateError(error instanceof PrivateError ? error.code : "private_provider_failed"); }
+      } catch (error) {
+        assertPrivateBudget(budget);
+        if (error instanceof PrivateError) throw error;
+        if (privateCode(error) === "private_budget_exhausted") throw new PrivateError("private_budget_exhausted");
+        throw new PrivateProviderError(transientFailure(modules, error instanceof Error ? error.message : "", null));
+      }
     },
     async disposeAllSessions() {},
   };
